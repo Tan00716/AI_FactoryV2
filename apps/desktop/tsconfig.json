@@ -1,0 +1,1 @@
+{"compilerOptions":{"jsx":"react-jsx","lib":["ES2022","DOM","DOM.Iterable"],"module":"Bundler","moduleResolution":"Bundler","noEmit":true,"target":"ES2022"},"extends":"../../tsconfig.base.json","include":["src","vite.config.ts"]}

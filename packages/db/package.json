@@ -1,0 +1,1 @@
+{"description":"SQLite persistence layer for the AI Engineering Factory prototype (node:sqlite, local-first)","main":"dist/index.js","name":"@ai-factory/db","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/index.d.ts","version":"0.1.0"}
