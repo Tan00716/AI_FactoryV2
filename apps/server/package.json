@@ -1,0 +1,17 @@
+{
+  "description": "Local HTTP API for the AI Engineering Factory prototype",
+  "main": "dist/index.js",
+  "name": "@ai-factory/server",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "version": "0.1.0",
+  "dependencies": {
+    "@ai-factory/core": "0.1.0",
+    "@ai-factory/db": "0.1.0",
+    "@ai-factory/git": "0.1.0",
+    "@ai-factory/qa": "0.1.0",
+    "@ai-factory/approvals": "0.1.0"
+  }
+}
