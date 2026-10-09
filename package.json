@@ -1,0 +1,26 @@
+{
+  "description": "AI Engineering Factory IDE \u2014 runnable prototype skeleton",
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "name": "ai-factory",
+  "private": true,
+  "scripts": {
+    "build": "npm run build -w @ai-factory/core && npm run build -w @ai-factory/db && npm run build -w @ai-factory/git && npm run build -w @ai-factory/qa && npm run build -w @ai-factory/approvals && npm run build -w @ai-factory/server && npm run build -w @ai-factory/desktop",
+    "build:electron": "./node_modules/.bin/tsc -p apps/desktop/tsconfig.electron.json",
+    "demo": "npm run build -w @ai-factory/core && node packages/core/dist/demo/evidence-chain.demo.js",
+    "dev": "npm run build && node scripts/dev.mjs",
+    "electron": "npm run build && npm run build:electron && electron apps/desktop/dist-electron/main.js",
+    "test": "npm run build -w @ai-factory/core && npm run build -w @ai-factory/git && npm run build -w @ai-factory/qa && npm run build -w @ai-factory/approvals && node --test packages/core/dist/tests/*.test.js packages/git/dist/tests/*.test.js packages/qa/dist/tests/*.test.js packages/approvals/dist/tests/*.test.js",
+    "demo:qa": "npm run build -w @ai-factory/qa && node packages/qa/dist/demo/qa-loop.demo.js"
+  },
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ]
+}

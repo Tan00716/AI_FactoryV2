@@ -1,0 +1,196 @@
+/**
+ * Shared domain types for the AI Engineering Factory prototype.
+ * Spec references: §8 Task System, §11 Task Status System,
+ * §15 AI Employee, §17 Autonomy Levels, §42 Evidence Engine, §44 Permissions.
+ */
+
+/** §11 — default workflow states (happy path). */
+export type WorkflowState =
+  | 'TODO'
+  | 'PLANNING'
+  | 'IN_PROGRESS'
+  | 'CODE_REVIEW'
+  | 'PENDING_QA'
+  | 'QA'
+  | 'PENDING_UAT_MERGE'
+  | 'UAT'
+  | 'PENDING_PROD'
+  | 'PROD_DEPLOYING'
+  | 'PROD_VERIFICATION'
+  | 'DONE';
+
+/** §11 — exception states. */
+export type ExceptionState =
+  | 'BLOCKED'
+  | 'QA_FAILED'
+  | 'UAT_FAILED'
+  | 'PROD_FAILED'
+  | 'ROLLBACK'
+  | 'CANCELLED'
+  | 'REJECTED'
+  | 'ESCALATED';
+
+export type TaskStatus = WorkflowState | ExceptionState;
+
+/** Terminal states: no outgoing transitions. */
+export const TERMINAL_STATES: ReadonlySet<TaskStatus> = new Set([
+  'DONE',
+  'CANCELLED',
+  'REJECTED',
+]);
+
+/** §42 — evidence kinds the gates understand. */
+export type EvidenceType =
+  | 'plan'
+  | 'code_change'
+  | 'code_review'
+  | 'ci_result'
+  | 'qa_result'
+  | 'security_report'
+  | 'approval'
+  | 'merge'
+  | 'deployment'
+  | 'smoke_test'
+  | 'uat_result';
+
+export type EvidenceStatus = 'DRAFT' | 'SEALED';
+
+/** §37-style machine-readable verdict payloads live inside `payload`. */
+export interface Evidence {
+  id: string;
+  taskId: string;
+  type: EvidenceType;
+  title: string;
+  /** Arbitrary machine-readable payload, e.g. { verdict:'PASS', total:524, passed:524 }. */
+  payload: Record<string, unknown>;
+  status: EvidenceStatus;
+  createdBy: string;
+  createdAt: string;
+  sealedAt: string | null;
+}
+
+/** §8 — Task object (prototype subset of the full field list). */
+export interface Task {
+  id: string;
+  projectId: string;
+  parentTaskId: string | null;
+  title: string;
+  goal: string;
+  description: string;
+  priority: 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
+  severity: 'BLOCKER' | 'CRITICAL' | 'MAJOR' | 'MINOR' | 'TRIVIAL';
+  acceptanceCriteria: string[];
+  constraints: string[];
+  workspace: string;
+  creator: string;
+  status: TaskStatus;
+  currentAgentId: string | null;
+  assignedAgentIds: string[];
+  subtaskIds: string[];
+  /** §60 — dependency edges: { kind, taskId }. */
+  dependencies: TaskDependency[];
+  risk: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+/** §60 — dependency relationship kinds. */
+export type DependencyKind =
+  | 'blocked_by'
+  | 'depends_on'
+  | 'parallel_with'
+  | 'child_of'
+  | 'related_to';
+
+export interface TaskDependency {
+  kind: DependencyKind;
+  taskId: string;
+}
+
+/** §17 — autonomy levels 0–5. */
+export type AutonomyLevel = 0 | 1 | 2 | 3 | 4 | 5;
+
+/** §44 — capability permission strings (prototype subset). */
+export type Permission =
+  | 'filesystem.read'
+  | 'filesystem.write'
+  | 'filesystem.delete'
+  | 'shell.execute'
+  | 'git.commit'
+  | 'git.push'
+  | 'git.merge'
+  | 'github.pull_request'
+  | 'database.read'
+  | 'database.write'
+  | 'deploy.dev'
+  | 'deploy.uat'
+  | 'deploy.prod'
+  | 'secret.read'
+  | 'agent.create'
+  | 'agent.modify'
+  | 'agent.delete'
+  | 'mcp.install'
+  | 'skill.install'
+  | 'workflow.modify';
+
+export const ALL_PERMISSIONS: ReadonlyArray<Permission> = [
+  'filesystem.read',
+  'filesystem.write',
+  'filesystem.delete',
+  'shell.execute',
+  'git.commit',
+  'git.push',
+  'git.merge',
+  'github.pull_request',
+  'database.read',
+  'database.write',
+  'deploy.dev',
+  'deploy.uat',
+  'deploy.prod',
+  'secret.read',
+  'agent.create',
+  'agent.modify',
+  'agent.delete',
+  'mcp.install',
+  'skill.install',
+  'workflow.modify',
+];
+
+/** §15 — AI Employee definition (prototype subset). */
+export interface Agent {
+  id: string;
+  name: string;
+  displayName: string;
+  jobTitle: string;
+  department: string;
+  parentAgentId: string | null;
+  mission: string;
+  instructions: string;
+  skills: string[];
+  rules: string[];
+  model: string;
+  reasoningLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+  tools: string[];
+  permissions: Permission[];
+  autonomyLevel: AutonomyLevel;
+  status: 'ONLINE' | 'IDLE' | 'WORKING' | 'BLOCKED' | 'FAILED' | 'PAUSED' | 'ARCHIVED';
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** §70 — immutable audit record. */
+export interface AuditRecord {
+  id: string;
+  ts: string;
+  actor: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  details: Record<string, unknown>;
+}
+
+export function nowIso(): string {
+  return new Date().toISOString();
+}
