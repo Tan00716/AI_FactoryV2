@@ -1,0 +1,1 @@
+{"description":"Safe parallel scheduling, file-overlap coordination and task locking (spec §61–§63)","main":"dist/src/index.js","name":"@ai-factory/coordination","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

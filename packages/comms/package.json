@@ -1,0 +1,1 @@
+{"description":"Structured agent-to-agent communication: typed message primitives over task-isolated channels (§22)","main":"dist/src/index.js","name":"@ai-factory/comms","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}
