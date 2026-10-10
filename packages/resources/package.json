@@ -1,0 +1,1 @@
+{"description":"Resource Management: budgets, usage metering, concurrency gates (§79)","main":"dist/src/index.js","name":"@ai-factory/resources","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

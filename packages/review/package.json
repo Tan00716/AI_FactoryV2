@@ -1,0 +1,1 @@
+{"description":"Code Review Agent: deterministic 10-dimension static review + workflow gate evidence (§35, §12)","main":"dist/src/index.js","name":"@ai-factory/review","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}
