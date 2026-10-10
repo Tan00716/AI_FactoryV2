@@ -15,6 +15,8 @@ import type {
   WorkflowEngine,
 } from '@ai-factory/core';
 import type { FactoryDatabase } from '@ai-factory/db';
+import type { NotificationEngine } from '@ai-factory/notifications';
+import type { EventBus } from '@ai-factory/events';
 
 export interface RouteContext {
   tasks: TaskManager;
@@ -23,6 +25,10 @@ export interface RouteContext {
   agents: AgentRegistry;
   engine: WorkflowEngine;
   fdb: FactoryDatabase;
+  /** In-app notification engine (spec module 30). */
+  notify: NotificationEngine;
+  /** System Event Bus — spec §91, shared singleton created in index.ts. */
+  bus: EventBus;
   json(res: ServerResponse, status: number, body: unknown): void;
   readBody(req: IncomingMessage): Promise<Record<string, unknown>>;
 }
