@@ -1,0 +1,1 @@
+{"description":"Cross-cutting security: credential isolation, prompt-injection defense, MCP/skill scan, sandbox policy (§71–§76)","main":"dist/src/index.js","name":"@ai-factory/security","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}
