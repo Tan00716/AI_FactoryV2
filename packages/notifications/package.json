@@ -1,0 +1,1 @@
+{"dependencies":{},"description":"Rule-driven Notification Engine: event → conditions → notification + in-app delivery records (spec module 30)","main":"dist/src/index.js","name":"@ai-factory/notifications","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

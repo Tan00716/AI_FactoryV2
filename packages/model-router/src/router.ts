@@ -1,0 +1,137 @@
+/**
+ * Deterministic model routing — spec §30, honoring §29 (shared ChatGPT plan pool).
+ *
+ * Rules, applied in order:
+ *  1. Hard constraints filter the catalog: privacy=sensitive → local models
+ *     only; needsVision → vision-capable only; requiredTools → tool-capable
+ *     only; contextNeeded → models with a large enough context window.
+ *  2. If the shared pool is exhausted (currentUsage.usedPct >=
+ *     POOL_EXHAUSTED_PCT), non-local models are deprioritized: the primary is
+ *     chosen from local models when any survive the hard filters, because the
+ *     5h pool is SHARED across agents — the router must not assume per-agent
+ *     headroom (§29).
+ *  3. Remaining candidates are scored deterministically (stable sort, so ties
+ *     break by catalog order): task-type fit, reasoning need, complexity,
+ *     latency/cost preferences.
+ *  4. fallback = next-best candidate; emergency = local-private when eligible,
+ *     else fast-classifier, else the last-resort candidate.
+ *
+ * `reason` records every rule that fired so the decision is auditable.
+ */
+import { CONTEXT_RANK, MODEL_CATALOG, POOL_EXHAUSTED_PCT } from './catalog';
+import type { ContextSize, ModelRef, RouteDecision, RouteRequest, TaskType } from './types';
+
+/** Natural best-fit model per task type (§30 examples). */
+const TASK_FIT: Record<TaskType, string> = {
+  classification: 'fast-classifier',
+  coding: 'code-coder',
+  architecture: 'reasoning-architect',
+  vision: 'vision-capable',
+  testing: 'code-coder',
+  review: 'code-coder',
+  research: 'reasoning-architect',
+};
+
+function satisfiesHardConstraints(m: ModelRef, req: RouteRequest): boolean {
+  if (req.privacy === 'sensitive' && m.provider !== 'local') return false;
+  if (req.needsVision && !m.capabilities.vision) return false;
+  if (req.requiredTools.length > 0 && !m.capabilities.tools) return false;
+  if (CONTEXT_RANK[m.capabilities.maxContext] < CONTEXT_RANK[req.contextNeeded]) return false;
+  return true;
+}
+
+function scoreModel(m: ModelRef, req: RouteRequest): { score: number; why: string[] } {
+  let score = 0;
+  const why: string[] = [];
+  if (req.privacy === 'sensitive' && m.provider === 'local') {
+    score += 1000;
+    why.push('privacy=sensitive → local model (§30)');
+  }
+  if (TASK_FIT[req.taskType] === m.model) {
+    score += 120;
+    why.push(`taskType=${req.taskType} → ${m.model} (§30)`);
+  }
+  if (req.needsReasoning && m.capabilities.reasoning) {
+    score += 60;
+    why.push('needsReasoning → reasoning-capable model');
+  }
+  if (req.complexity >= 4 && m.capabilities.reasoning) {
+    score += 50;
+    why.push(`complexity=${req.complexity} → reasoning-capable model`);
+  }
+  if (req.complexity <= 2 && req.taskType === 'classification' && m.latencyTier === 'low' && m.costTier === 'low') {
+    score += 40;
+    why.push('simple classification → fast, cheap model (§30)');
+  }
+  if (req.latencyPref === 'low' && m.latencyTier === 'low') {
+    score += 20;
+    why.push('latencyPref=low');
+  }
+  if (req.costPref === 'low' && m.costTier === 'low') {
+    score += 20;
+    why.push('costPref=low');
+  }
+  return { score, why };
+}
+
+/** Last-resort model: local first, then fast, then whatever survived. */
+function pickEmergency(pool: ModelRef[]): ModelRef {
+  return (
+    pool.find((m) => m.model === 'local-private') ??
+    pool.find((m) => m.model === 'fast-classifier') ??
+    pool[pool.length - 1]
+  );
+}
+
+export function route(
+  request: RouteRequest,
+  catalog: readonly ModelRef[] = MODEL_CATALOG,
+): RouteDecision {
+  const reasons: string[] = [];
+  const poolExhausted = request.currentUsage.usedPct >= POOL_EXHAUSTED_PCT;
+
+  const eligible = catalog.filter((m) => satisfiesHardConstraints(m, request));
+  // The seed catalog always yields at least one candidate; if a custom
+  // catalog yields none, fall back to the full catalog rather than crash.
+  const pool = eligible.length > 0 ? eligible : [...catalog];
+  if (eligible.length === 0) {
+    reasons.push('no model satisfied all hard constraints — routing over full catalog as last resort');
+  }
+
+  // §29: the shared 5h pool is one pool across ALL agents. When exhausted,
+  // prefer local models for the primary slot whenever one is eligible.
+  let primaryPool = pool;
+  if (poolExhausted) {
+    const localOnly = pool.filter((m) => m.provider === 'local');
+    if (localOnly.length > 0) {
+      primaryPool = localOnly;
+      reasons.push(
+        `shared ChatGPT plan pool exhausted at ${request.currentUsage.usedPct}% — ` +
+          'preferring local model for primary (§29); the 5h allowance is shared across agents, not per-agent',
+      );
+    } else {
+      reasons.push(
+        `shared ChatGPT plan pool exhausted at ${request.currentUsage.usedPct}% — ` +
+          'no eligible local model, using shared-pool model anyway',
+      );
+    }
+  }
+
+  const scored = primaryPool.map((m) => ({ m, ...scoreModel(m, request) }));
+  // Stable sort: equal scores keep catalog order → deterministic.
+  scored.sort((a, b) => b.score - a.score);
+
+  const primary = scored[0].m;
+  const fallback = scored[1]?.m ?? primary;
+  const emergency = pickEmergency(pool);
+
+  reasons.unshift(
+    `primary=${primary.model} [${scored[0].why.join(', ') || 'best available'}]`,
+    `fallback=${fallback.model}`,
+    `emergency=${emergency.model}`,
+  );
+
+  return { primary, fallback, emergency, reason: reasons.join(' | ') };
+}
+
+export { POOL_EXHAUSTED_PCT };
