@@ -1,0 +1,52 @@
+# electron-builder packaging config for the AI Factory IDE desktop app.
+#
+# Build on Windows with:  npm run dist
+# (requires `npm i -D electron-builder electron` first; NOT executed in CI —
+#  see README "打包".)
+#
+# Layout notes:
+#  - Electron main process:  apps/desktop/dist-electron/main.js  ("main")
+#  - Renderer (Vite build):   apps/desktop/dist/
+#  - Local backend:           apps/server/dist  → packaged as extraResources/server
+#    (the main process spawns it from process.resourcesPath in production)
+#  - Domain packages:         packages/*/dist  (required by the backend at runtime)
+
+appId: com.aifactory.ide
+productName: AI Factory
+copyright: Copyright © 2026 AI Factory
+
+directories:
+  output: release
+
+files:
+  # Electron main process (compiled)
+  - apps/desktop/dist-electron/**/*
+  # Renderer (Vite production bundle)
+  - apps/desktop/dist/**/*
+  # Domain packages' compiled output (backend runtime deps)
+  - packages/*/dist/**/*
+  # Production node_modules (electron-builder prunes devDependencies)
+  - node_modules/**/*
+  - package.json
+  - "!**/*.tsbuildinfo"
+  - "!**/*.map"
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,LICENSE*}"
+  - "!**/node_modules/.bin"
+
+extraResources:
+  # Local backend, spawned by the main process (see apps/desktop/electron/main.ts)
+  - from: apps/server/dist
+    to: server
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: AI Factory

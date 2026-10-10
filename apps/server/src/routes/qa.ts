@@ -48,7 +48,7 @@ const QA_SPECIALIST_KINDS: readonly QaSpecialistKind[] = [
   'Security',
 ];
 
-interface QaRunRecord {
+export interface QaRunRecord {
   id: string;
   taskId: string;
   categories: TestCategory[];
@@ -65,6 +65,14 @@ interface QaRunRecord {
 
 /** In-memory run store — the coordinator may persist this later. */
 const runs = new Map<string, QaRunRecord>();
+
+/**
+ * Read-only snapshot of all QA runs for cross-module aggregation
+ * (e.g. GET /api/stats). Returns cloned records.
+ */
+export function listQaRuns(): QaRunRecord[] {
+  return [...runs.values()].map((r) => ({ ...r }));
+}
 
 function slimAgent(a: { id: string; name: string; displayName: string; jobTitle: string; status: string; autonomyLevel: number }) {
   return {
@@ -235,6 +243,12 @@ export async function handleQaRoutes(
         attempts,
         escalated,
       });
+      // §91 — QA completion is a first-class bus event.
+      ctx.bus.emit(
+        'QA_COMPLETED',
+        { runId, taskId, verdict: payload.verdict, attempts, escalated },
+        'qa',
+      );
       record.status = payload.verdict === 'PASS' ? 'COMPLETED' : 'FAILED';
       record.verdict = payload.verdict;
       record.attempts = attempts;

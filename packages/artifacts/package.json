@@ -1,0 +1,1 @@
+{"description":"First-class artifact system: typed artifacts with schemas, validation, sealing, linking, and workflow hooks (spec §23)","main":"dist/src/index.js","name":"@ai-factory/artifacts","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}
