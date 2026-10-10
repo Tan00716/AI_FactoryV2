@@ -1,0 +1,1 @@
+{"description":"System Event Bus with §91 event types, in-memory pub/sub, retention, and secret redaction for traces","main":"dist/src/index.js","name":"@ai-factory/events","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}
