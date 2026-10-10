@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/core":"0.1.0"},"description":"Policy engine: 7-layer policy resolution (global→tool), project.yaml/organization.yaml parsing, full §44 capability permission engine","main":"dist/src/index.js","name":"@ai-factory/policy","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

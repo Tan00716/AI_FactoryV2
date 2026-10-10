@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/policy":"0.1.0"},"description":"Project import/export: .ai/ directory structure (spec §4 item 33, §98, §99, §103)","main":"dist/src/index.js","name":"@ai-factory/project-io","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}
