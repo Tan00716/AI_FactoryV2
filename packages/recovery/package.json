@@ -1,0 +1,1 @@
+{"description":"Snapshot / Recovery engine: immutable snapshots, failure classification, recovery strategies, recovery loop (§77–§78)","main":"dist/src/index.js","name":"@ai-factory/recovery","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}
