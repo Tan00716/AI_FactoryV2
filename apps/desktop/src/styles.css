@@ -44,6 +44,34 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 sys
 .st-working { background: var(--green); }
 .st-idle { background: var(--accent); }
 .st-blocked, .st-failed { background: var(--red); }
+.st-active { background: var(--yellow); }
+
+/* Notification bell (spec module 30) + Knowledge Center (§88–§89) */
+.bell-btn { position: relative; background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 16px; }
+.bell-badge { position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; border-radius: 9px; background: var(--red); color: #fff; font-size: 11px; line-height: 18px; text-align: center; padding: 0 4px; }
+.notif-dropdown { position: absolute; right: 0; top: 34px; width: 380px; max-height: 480px; overflow-y: auto; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; z-index: 50; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.notif-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.notif-list li { display: flex; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.notif-unread { background: rgba(0,122,204,.08); }
+.notif-read { opacity: .75; cursor: default; }
+
+.knowledge-layout { display: flex; gap: 12px; }
+.knowledge-cats { width: 200px; flex-shrink: 0; border-right: 1px solid var(--border); padding-right: 8px; }
+.knowledge-cats button { display: block; width: 100%; text-align: left; margin-bottom: 4px; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 6px 8px; color: var(--text); cursor: pointer; }
+.knowledge-cats button.sel { background: var(--bg3); border-color: var(--border); }
+.knowledge-cats .count { float: right; color: var(--muted); }
+.knowledge-list { flex: 1; min-width: 0; }
+
+.subtabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.subtabs button { background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 4px 12px; color: var(--text); cursor: pointer; }
+.subtabs button.sel { background: var(--bg3); border-color: var(--accent); }
+
+.feed-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+.feed-card h5 { margin: 0 0 6px; font-size: 14px; }
+.feed-field { margin: 6px 0; font-size: 12px; }
+.feed-field .lbl { color: var(--accent); font-weight: 600; margin-right: 4px; }
+.feed-actions { display: flex; gap: 8px; margin-top: 10px; }
+.feed-decided { color: var(--muted); font-style: italic; }
 .muted { color: var(--muted); }
 .pill { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 0 8px; font-size: 11px; }
 
@@ -112,3 +140,95 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .bottom-body { flex: 1; overflow-y: auto; padding: 8px 12px; font-family: ui-monospace, monospace; font-size: 12px; }
 .act-row { display: flex; gap: 10px; padding: 2px 0; }
 .term { color: var(--green); }
+
+/* project settings panel (spec module 33 import/export) */
+.panel { padding: 16px; overflow-y: auto; }
+.panel h3 { margin: 0 0 8px; font-size: 15px; }
+.panel .row { display: flex; gap: 8px; margin: 12px 0; }
+.panel button { background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+.panel button:hover { border-color: var(--accent); }
+.panel .ok { color: var(--green); }
+.issue-list, .file-list { list-style: none; padding: 0; margin: 8px 0; }
+.issue-list li { padding: 4px 0; border-bottom: 1px solid var(--border); }
+.file-list li { padding: 2px 0; color: var(--muted); }
+.panel code { background: var(--bg3); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+/* ---------- §84 Organization 可视化图 ---------- */
+.org-graph-wrap { display: flex; flex-direction: column; min-height: 0; }
+.org-graph-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 8px 0; }
+.zoom-controls { display: flex; gap: 6px; align-items: center; }
+.zoom-controls button { padding: 2px 10px; }
+.org-graph-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; font-size: 11px; color: var(--muted); }
+.legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.org-graph-scroll { overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg2); max-height: 60vh; }
+.org-svg text { user-select: none; }
+.org-pop { position: absolute; top: 12px; right: 12px; width: 260px; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 12px; z-index: 5; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.org-pop-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.org-pop-row { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-top: 4px; }
+
+/* ---------- Agents 列表/图谱切换 ---------- */
+.panel-head-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.view-toggle button { border: 0; border-radius: 0; padding: 4px 14px; }
+.view-toggle button.active { background: var(--accent); color: #fff; }
+.clickable { cursor: pointer; }
+.clickable:hover { color: var(--accent); }
+.org-name.clickable:hover { text-decoration: underline; }
+
+/* ---------- §85 完整看板 ---------- */
+.lane.exception .lane-title { color: var(--yellow); }
+.lane.dragover { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--bg3); }
+.card-top { display: flex; gap: 8px; align-items: center; font-size: 11px; margin-bottom: 4px; }
+.card-id { color: var(--muted); font-family: monospace; }
+.risk { font-size: 10px; border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+.r-low { color: var(--green); }
+.r-medium { color: var(--yellow); }
+.r-high, .r-critical { color: var(--red); }
+.card-progress { position: relative; height: 14px; background: var(--bg2); border-radius: 4px; margin-top: 6px; overflow: hidden; }
+.card-progress-bar { height: 100%; background: var(--accent); border-radius: 4px; }
+.card-progress-label { position: absolute; right: 4px; top: 0; font-size: 10px; line-height: 14px; color: var(--text); }
+.card-gate { font-size: 11px; margin-top: 4px; }
+.gate-ok { color: var(--green); }
+.gate-req { color: var(--yellow); }
+.pill.warn { color: var(--yellow); border-color: var(--yellow); }
+
+/* ---------- toast（门禁拒绝等） ---------- */
+.toast { position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px; align-items: center; padding: 10px 16px; border-radius: 8px; z-index: 50; max-width: 80%; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.toast.err { background: #3a1f1f; border: 1px solid var(--red); color: #ffd9d2; }
+.toast.ok { background: #1f3a2a; border: 1px solid var(--green); color: #d2ffe9; }
+.toast button { padding: 2px 8px; }
+
+/* ---------- §86 / §87 详情抽屉 ---------- */
+.detail.wide { width: 560px; }
+.drawer-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 12px 0; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.drawer-tabs button { border: 0; border-radius: 4px; padding: 4px 10px; color: var(--muted); background: transparent; }
+.drawer-tabs button:hover { color: var(--text); }
+.drawer-tabs button.active { background: var(--bg3); color: var(--text); }
+.drawer-body { padding-bottom: 24px; }
+.timeline { list-style: none; padding: 0; }
+.timeline li { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.qa-run { border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+.trace-item { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; }
+.trace-item summary { padding: 6px 8px; cursor: pointer; font-size: 12px; }
+.kv { display: flex; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.kv span:first-child { color: var(--muted); min-width: 72px; }
+ul.plain { list-style: none; padding: 0; }
+ul.plain li { padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+
+/* ---------- Activity / Events / Models panels (§67, §68, §90, §91) ---------- */
+.act-ts { min-width: 78px; }
+.link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; text-decoration: underline; }
+.link:hover { border: 0; }
+button.run-row { display: flex; width: 100%; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; color: var(--text); cursor: pointer; }
+button.run-row:hover { border-color: var(--accent); }
+.pill-event { color: var(--accent); border-color: var(--accent); }
+.pill.ok { color: var(--green); border-color: var(--green); }
+.filter-box { margin: 8px 0 12px; }
+.filter-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.filter-chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 12px; padding: 2px 10px; font-size: 11px; cursor: pointer; color: var(--muted); }
+.filter-chip.on { color: var(--text); border-color: var(--accent); background: var(--bg3); }
+.filter-chip input { margin: 0; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.data-table th, .data-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.data-table th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 1px; }
+.data-table code { font-size: 11px; }

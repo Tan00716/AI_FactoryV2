@@ -93,6 +93,13 @@ export async function handleApprovalRoutes(
         requiredApprover: typeof body['requiredApprover'] === 'string' ? (body['requiredApprover'] as string) : undefined,
         ttlMs: typeof ttlMs === 'number' ? ttlMs : undefined,
       });
+      // Notification trigger (module 30): new approval request → MEDIUM.
+      ctx.notify.emit({
+        type: 'APPROVAL_PENDING',
+        actor: typeof body['requestedBy'] === 'string' && body['requestedBy'] ? (body['requestedBy'] as string) : 'human',
+        entity: { kind: 'approval', id: approval.id, label: action },
+        detail: { riskLevel: approval.riskLevel, taskId: approval.taskId },
+      });
       return ctx.json(res, 201, approval), true;
     } catch (e) {
       const msg = (e as Error).message;
@@ -139,6 +146,18 @@ export async function handleApprovalRoutes(
         approved: body['approved'] as boolean,
         decidedBy,
       });
+      // §91 — approval decisions are gate verdicts on the bus.
+      ctx.bus.emit(
+        approval.status === 'APPROVED' ? 'GATE_PASSED' : 'GATE_FAILED',
+        {
+          approvalId: approval.id,
+          action: approval.action,
+          decision: approval.status,
+          decidedBy,
+          taskId: approval.taskId ?? undefined,
+        },
+        'approvals',
+      );
       // §41: an approved, task-bound approval satisfies the PENDING_PROD →
       // PROD_DEPLOYING gate once attached as 'approval' evidence.
       if (approval.status === 'APPROVED' && approval.taskId) {

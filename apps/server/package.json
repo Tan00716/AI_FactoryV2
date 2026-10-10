@@ -12,6 +12,24 @@
     "@ai-factory/db": "0.1.0",
     "@ai-factory/git": "0.1.0",
     "@ai-factory/qa": "0.1.0",
-    "@ai-factory/approvals": "0.1.0"
+    "@ai-factory/review": "0.1.0",
+    "@ai-factory/approvals": "0.1.0",
+    "@ai-factory/cicd": "0.1.0",
+    "@ai-factory/skills": "0.1.0",
+    "@ai-factory/memory": "0.1.0",
+    "@ai-factory/model-router": "0.1.0",
+    "@ai-factory/runtime": "0.1.0",
+    "@ai-factory/orchestrator": "0.1.0",
+    "@ai-factory/projects": "0.1.0",
+    "@ai-factory/employee-factory": "0.1.0",
+    "@ai-factory/squads": "0.1.0",
+    "@ai-factory/mcp": "0.1.0",
+    "@ai-factory/knowledge": "0.1.0",
+    "@ai-factory/notifications": "0.1.0",
+    "@ai-factory/evaluation": "0.1.0",
+    "@ai-factory/events": "0.1.0",
+    "@ai-factory/policy": "0.1.0",
+    "@ai-factory/dashboard": "0.1.0",
+    "@ai-factory/project-io": "0.1.0"
   }
 }

@@ -33,10 +33,40 @@ import {
   nowIso,
 } from '@ai-factory/core';
 import { FactoryDatabase, seedIfEmpty } from '@ai-factory/db';
+import { NotificationEngine } from '@ai-factory/notifications';
 import type { RouteContext } from './routes/context';
 import { handleGitRoutes } from './routes/git';
 import { handleQaRoutes } from './routes/qa';
 import { handleApprovalRoutes } from './routes/approvals';
+import { handleCicdRoutes } from './routes/cicd';
+import { handleSkillsRoutes } from './routes/skills';
+import { handleMemoryRoutes } from './routes/memory';
+import { handleModelRouterRoutes } from './routes/model-router';
+import { handleRuntimeRoutes } from './routes/runtime';
+import { handleOrchestratorRoutes } from './routes/orchestrator';
+import { handleWorkforceRoutes } from './routes/workforce';
+import { handleMcpRoutes } from './routes/mcp';
+import { handleKnowledgeRoutes } from './routes/knowledge';
+import { handleEvaluationRoutes } from './routes/evaluation';
+import { handleProjectsRoutes } from './routes/projects';
+import { handleProjectIoRoutes } from './routes/project-io';
+import { handleReviewRoutes } from './routes/review';
+import { handleReleaseRoutes } from './routes/releases';
+import { handlePolicyRoutes } from './routes/policy';
+import { handleExecRoutes } from './routes/exec';
+import { handleFileRoutes } from './routes/files';
+import { handleChangesRoutes } from './routes/changes';
+import { handleSecurityRoutes } from './routes/security';
+import { handleRecoveryRoutes } from './routes/recovery';
+import { handleResourceRoutes } from './routes/resources';
+import { handleAutonomyRoutes } from './routes/autonomy';
+import { handleCoordinationRoutes } from './routes/coordination';
+import { handleDisputeRoutes } from './routes/disputes';
+import { handleDashboardRoutes } from './routes/dashboard';
+import { handleNotificationRoutes } from './routes/notifications';
+import { handleEventRoutes } from './routes/events';
+import { handleActivityRoutes } from './routes/activity';
+import { EventBus } from '@ai-factory/events';
 
 const PORT = Number(process.env.PORT ?? 3100);
 const DB_PATH = process.env.DB_PATH ?? './data/factory.db';
@@ -53,6 +83,9 @@ const evidence = new EvidenceEngine(fdb.evidence);
 const audit = new AuditLog(fdb.audit);
 const agents = new AgentRegistry(fdb.agents);
 const engine = new WorkflowEngine({ tasks, evidence, audit });
+const notify = new NotificationEngine();
+/** System Event Bus — spec §91; shared by all route modules via RouteContext. */
+const bus = new EventBus({ retention: 2000 });
 
 seedIfEmpty(fdb);
 
@@ -119,14 +152,46 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true, ts: nowIso() });
     }
 
-    // Modular routes: git (§34), qa (§36–§38), approvals (§45, §69).
+    // Modular routes: git (§34), qa (§36–§38), approvals (§45, §69),
+    // cicd (§39–§41, §77), skills (§47–§49, §74), memory (§54–§58),
+    // model-router (§28–§30), runtime (§24–§27), orchestrator (§92–§95, §21),
+    // workforce (§14, §18–§20, §59), mcp (§46, §73), knowledge (§50–§53),
+    // evaluation (§57–§58).
     // Each handler returns true when it owned the path.
     const routeCtx: RouteContext = {
-      tasks, evidence, audit, agents, engine, fdb, json, readBody,
+      tasks, evidence, audit, agents, engine, fdb, notify, bus, json, readBody,
     };
     if (await handleGitRoutes(req, res, url, routeCtx)) return;
     if (await handleQaRoutes(req, res, url, routeCtx)) return;
     if (await handleApprovalRoutes(req, res, url, routeCtx)) return;
+    if (await handleCicdRoutes(req, res, url, routeCtx)) return;
+    if (await handleSkillsRoutes(req, res, url, routeCtx)) return;
+    if (await handleMemoryRoutes(req, res, url, routeCtx)) return;
+    if (await handleModelRouterRoutes(req, res, url, routeCtx)) return;
+    if (await handleRuntimeRoutes(req, res, url, routeCtx)) return;
+    if (await handleOrchestratorRoutes(req, res, url, routeCtx)) return;
+    if (await handleWorkforceRoutes(req, res, url, routeCtx)) return;
+    if (await handleMcpRoutes(req, res, url, routeCtx)) return;
+    if (await handleKnowledgeRoutes(req, res, url, routeCtx)) return;
+    if (await handleEvaluationRoutes(req, res, url, routeCtx)) return;
+    if (await handleProjectsRoutes(req, res, url, routeCtx)) return;
+    if (await handleProjectIoRoutes(req, res, url, routeCtx)) return;
+    if (await handleReviewRoutes(req, res, url, routeCtx)) return;
+    if (await handleReleaseRoutes(req, res, url, routeCtx)) return;
+    if (await handlePolicyRoutes(req, res, url, routeCtx)) return;
+    if (await handleExecRoutes(req, res, url, routeCtx)) return;
+    if (await handleFileRoutes(req, res, url, routeCtx)) return;
+    if (await handleChangesRoutes(req, res, url, routeCtx)) return;
+    if (await handleSecurityRoutes(req, res, url, routeCtx)) return;
+    if (await handleRecoveryRoutes(req, res, url, routeCtx)) return;
+    if (await handleResourceRoutes(req, res, url, routeCtx)) return;
+    if (await handleAutonomyRoutes(req, res, url, routeCtx)) return;
+    if (await handleCoordinationRoutes(req, res, url, routeCtx)) return;
+    if (await handleDisputeRoutes(req, res, url, routeCtx)) return;
+    if (await handleDashboardRoutes(req, res, url, routeCtx)) return;
+    if (await handleNotificationRoutes(req, res, url, routeCtx)) return;
+    if (await handleEventRoutes(req, res, url, routeCtx)) return;
+    if (await handleActivityRoutes(req, res, url, routeCtx)) return;
 
     // Projects
     if (path === '/api/projects' && method === 'GET') {
@@ -186,6 +251,7 @@ const server = createServer(async (req, res) => {
         creator: 'human',
       });
       audit.record('human', 'TASK_CREATED', 'task', t.id, { title: t.title });
+      bus.emit('TASK_CREATED', { taskId: t.id, title: t.title, projectId: t.projectId }, 'tasks');
       return json(res, 201, taskView(t.id));
     }
 
@@ -204,6 +270,26 @@ const server = createServer(async (req, res) => {
         try {
           const r = engine.requestTransition(id, to, actor);
           if (!r.ok) return json(res, 422, r);
+          // Notification trigger (module 30): a task entering BLOCKED pings
+          // the human with a HIGH-priority in-app notification.
+          if (to === 'BLOCKED') {
+            const t = tasks.get(id);
+            notify.emit({
+              type: 'TASK_BLOCKED',
+              actor,
+              entity: { kind: 'task', id, label: t.title },
+              detail: { from: r.from ?? undefined },
+            });
+          }
+          // §91 — task lifecycle events on the system bus.
+          bus.emit(
+            'WORKFLOW_TRANSITIONED',
+            { taskId: id, from: r.from ?? undefined, to, actor },
+            'workflow',
+          );
+          if (to === 'DONE') {
+            bus.emit('TASK_COMPLETED', { taskId: id, actor }, 'workflow');
+          }
           return json(res, 200, { ...r, task: taskView(id) });
         } catch (e) {
           return json(res, 404, { error: (e as Error).message });
@@ -279,6 +365,7 @@ const server = createServer(async (req, res) => {
           skills: Array.isArray(b['skills']) ? (b['skills'] as string[]) : undefined,
         });
         audit.record('human', 'AGENT_CREATED', 'agent', a.id, { name: a.name, jobTitle: a.jobTitle });
+        bus.emit('AGENT_CREATED', { agentId: a.id, name: a.name, jobTitle: a.jobTitle }, 'workforce');
         return json(res, 201, a);
       } catch (e) {
         return json(res, 400, { error: (e as Error).message });
