@@ -17,6 +17,7 @@ import {
   TaskStore,
 } from '@ai-factory/core';
 import type { Approval, ApprovalStore } from '@ai-factory/approvals';
+import type { MemoryEntry } from '@ai-factory/memory';
 import { SCHEMA } from './schema';
 
 const J = {
@@ -306,6 +307,75 @@ export class SqliteAuditStore implements AuditStore {
   }
 }
 
+// ---------------------------------------------------------------- memory ---
+// Structured memory entries (spec §54–§56). The lifecycle logic (dedup,
+// decay, verify) lives in @ai-factory/memory's MemoryStore; this store is
+// the durable SQL backing with the same row mapping.
+function rowToMemoryEntry(r: Record<string, unknown>): MemoryEntry {
+  const s = (k: string) => r[k] as string;
+  return {
+    id: s('id'),
+    scope: s('scope') as MemoryEntry['scope'],
+    scopeId: s('scope_id'),
+    type: s('type') as MemoryEntry['type'],
+    title: s('title'),
+    content: s('content'),
+    source: s('source'),
+    confidence: Number(r['confidence'] ?? 0),
+    createdBy: s('created_by'),
+    evidenceIds: J.parse<string[]>(r['evidence_ids'] as string, []),
+    lastVerifiedAt: s('last_verified_at'),
+    applicableScope: s('applicable_scope'),
+    expiresAt: (r['expires_at'] as string) ?? null,
+    status: s('status') as MemoryEntry['status'],
+    createdAt: s('created_at'),
+    updatedAt: s('updated_at'),
+  };
+}
+
+export class SqliteMemoryStore {
+  constructor(private db: DatabaseSync) {}
+  upsert(e: MemoryEntry): void {
+    this.db.prepare(
+      `INSERT INTO memory_entries
+         (id, scope, scope_id, type, title, content, source, confidence,
+          created_by, evidence_ids, last_verified_at, applicable_scope,
+          expires_at, status, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET
+         title=excluded.title, content=excluded.content, source=excluded.source,
+         confidence=excluded.confidence, evidence_ids=excluded.evidence_ids,
+         last_verified_at=excluded.last_verified_at,
+         applicable_scope=excluded.applicable_scope, expires_at=excluded.expires_at,
+         status=excluded.status, updated_at=excluded.updated_at`,
+    ).run(
+      e.id, e.scope, e.scopeId, e.type, e.title, e.content, e.source, e.confidence,
+      e.createdBy, J.stringify(e.evidenceIds), e.lastVerifiedAt, e.applicableScope,
+      e.expiresAt, e.status, e.createdAt, e.updatedAt,
+    );
+  }
+  get(id: string): MemoryEntry | undefined {
+    const r = this.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? rowToMemoryEntry(r) : undefined;
+  }
+  query(f: { scope?: string; scopeId?: string; type?: string; includeExpired?: boolean }): MemoryEntry[] {
+    const where: string[] = [];
+    const params: (string | number | null)[] = [];
+    if (f.scope) { where.push('scope = ?'); params.push(f.scope); }
+    if (f.scopeId) { where.push('scope_id = ?'); params.push(f.scopeId); }
+    if (f.type) { where.push('type = ?'); params.push(f.type); }
+    if (!f.includeExpired) { where.push("status != 'EXPIRED'"); }
+    const sql = `SELECT * FROM memory_entries${where.length ? ' WHERE ' + where.join(' AND ') : ''}
+      ORDER BY confidence DESC, updated_at DESC`;
+    return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(rowToMemoryEntry);
+  }
+  count(): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM memory_entries').get() as { n: number }).n;
+  }
+}
+
 // --------------------------------------------------------------- database ---
 export interface ProjectRow {
   id: string;
@@ -323,6 +393,7 @@ export class FactoryDatabase {
   readonly agents: SqliteAgentStore;
   readonly audit: SqliteAuditStore;
   readonly approvals: SqliteApprovalStore;
+  readonly memory: SqliteMemoryStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -333,6 +404,7 @@ export class FactoryDatabase {
     this.agents = new SqliteAgentStore(this.db);
     this.audit = new SqliteAuditStore(this.db);
     this.approvals = new SqliteApprovalStore(this.db);
+    this.memory = new SqliteMemoryStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------

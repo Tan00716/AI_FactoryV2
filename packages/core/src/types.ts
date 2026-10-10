@@ -127,6 +127,7 @@ export type Permission =
   | 'deploy.uat'
   | 'deploy.prod'
   | 'secret.read'
+  | 'secret.write' // §44 full list: added additively (policy package needs it)
   | 'agent.create'
   | 'agent.modify'
   | 'agent.delete'
@@ -149,6 +150,7 @@ export const ALL_PERMISSIONS: ReadonlyArray<Permission> = [
   'deploy.uat',
   'deploy.prod',
   'secret.read',
+  'secret.write', // §44 full list: added additively (policy package needs it)
   'agent.create',
   'agent.modify',
   'agent.delete',

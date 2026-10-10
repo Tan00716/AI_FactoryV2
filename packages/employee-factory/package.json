@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/core":"0.1.0"},"description":"Dynamic AI employee factory: specialty templates, creation governance, self-modification proposals (spec §18, §19, §59)","main":"dist/src/index.js","name":"@ai-factory/employee-factory","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

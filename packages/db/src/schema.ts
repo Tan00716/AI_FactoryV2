@@ -133,4 +133,28 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_evidence_task ON evidence(task_id);
 CREATE INDEX IF NOT EXISTS idx_approvals_task ON approvals(task_id);
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts);
+
+-- Structured memory engine (spec §54–§56). Row mapping notes live in
+-- packages/memory/src/sql.ts (MEMORY_SCHEMA); this is the same DDL.
+CREATE TABLE IF NOT EXISTS memory_entries (
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT DEFAULT '',
+  source TEXT DEFAULT '',
+  confidence REAL DEFAULT 0,
+  created_by TEXT DEFAULT '',
+  evidence_ids TEXT DEFAULT '[]',
+  last_verified_at TEXT NOT NULL,
+  applicable_scope TEXT DEFAULT '',
+  expires_at TEXT,
+  status TEXT DEFAULT 'ACTIVE',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_entries_scope
+  ON memory_entries (scope, scope_id);
 `;
