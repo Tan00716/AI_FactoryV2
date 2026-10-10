@@ -25,6 +25,31 @@ export interface BoardCard {
   id: string; title: string; priority: string; status: string; risk: string;
   agent: string | null; agentCount: number; updatedAt: string;
 }
+/** §85 full board: task rows come from GET /api/tasks (grouped client-side). */
+export interface TaskSummary {
+  id: string; projectId: string; parentTaskId: string | null; title: string;
+  priority: string; status: string; risk: string;
+  currentAgentId: string | null; assignedAgentIds: string[];
+  createdAt: string; updatedAt: string;
+}
+/** §87 — full AI employee record from GET /api/agents. */
+export interface AgentFull {
+  id: string; name: string; displayName: string; jobTitle: string; department: string;
+  parentAgentId: string | null; mission: string; instructions: string;
+  skills: string[]; rules: string[]; model: string; reasoningLevel: string;
+  tools: string[]; permissions: string[]; autonomyLevel: number;
+  status: string; version: number; createdAt: string; updatedAt: string;
+}
+export interface DeploymentRecord {
+  id: string; taskId?: string; environment?: string; status?: string;
+  createdAt?: string; [k: string]: unknown;
+}
+export interface MemoryEntry {
+  id: string; scope?: string; scopeId?: string; type?: string;
+  title?: string; content?: string; confidence?: number; updatedAt?: string;
+  [k: string]: unknown;
+}
+export interface FileEntry { name: string; path: string; type: 'dir' | 'file' }
 export interface EvidenceItem {
   id: string; type: string; title: string; payload: Record<string, unknown>;
   status: 'DRAFT' | 'SEALED'; createdBy: string; createdAt: string;
@@ -34,7 +59,8 @@ export interface TaskDetail {
   id: string; title: string; goal: string; description: string; priority: string;
   status: string; risk: string; currentAgentId: string | null;
   assignedAgentIds: string[]; subtaskIds: string[]; dependencies: unknown[];
-  acceptanceCriteria: string[]; createdAt: string; updatedAt: string;
+  acceptanceCriteria: string[]; constraints: string[]; workspace?: string;
+  createdAt: string; updatedAt: string;
   completedAt: string | null; evidence: EvidenceItem[]; nextStates: NextState[];
 }
 export interface OrgNode {
@@ -45,6 +71,15 @@ export interface AuditRecord {
   id: string; ts: string; actor: string; action: string;
   entityType: string; entityId: string; details: Record<string, unknown>;
 }
+export interface DashboardStat {
+  key: string; label: string; value: number | string | null;
+  unit?: string; source: string; note?: string;
+}
+export interface DashboardStats {
+  generatedAt: string;
+  status: Record<string, DashboardStat>;
+  metrics: Record<string, DashboardStat>;
+}
 
 export const api = {
   health: () => req<{ ok: boolean }>('/health'),
@@ -53,6 +88,9 @@ export const api = {
     req<{ projectId: string; columns: Record<string, BoardCard[]> }>(
       `/board?projectId=${encodeURIComponent(projectId)}`,
     ),
+  /** §85 full-board source: all tasks of a project, grouped client-side. */
+  tasks: (projectId?: string) =>
+    req<TaskSummary[]>(`/tasks${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`),
   createTask: (input: { projectId: string; title: string; goal?: string; priority?: string }) =>
     req<TaskDetail>('/tasks', { method: 'POST', body: JSON.stringify(input) }),
   task: (id: string) => req<TaskDetail>(`/tasks/${id}`),
@@ -62,7 +100,33 @@ export const api = {
     ),
   attachEvidence: (id: string, input: { type: string; title: string; payload?: object }) =>
     req<EvidenceItem>(`/tasks/${id}/evidence`, { method: 'POST', body: JSON.stringify(input) }),
-  agents: () => req<unknown[]>('/agents'),
+  agents: () => req<AgentFull[]>('/agents'),
   org: () => req<OrgNode[]>('/org'),
   audit: (limit = 100) => req<AuditRecord[]>(`/audit?limit=${limit}`),
+  deployments: () => req<DeploymentRecord[]>('/deployments'),
+  memoryEntries: (scope: string, scopeId: string) =>
+    req<MemoryEntry[]>(`/memory?scope=${encodeURIComponent(scope)}&scopeId=${encodeURIComponent(scopeId)}`),
+  files: (root: string) =>
+    req<{ root: string; entries: FileEntry[] }>(`/files?root=${encodeURIComponent(root)}`),
+  policyEffective: () => req<unknown>('/policy/effective'),
+  mcpServers: () => req<{ servers?: Array<{ name: string; status?: string; [k: string]: unknown }> } | Array<{ name: string }>>('/mcp'),
+  evaluations: (taskId: string) =>
+    req<{ evaluations: Array<{ evaluationId: string; verdict: string; score?: number; createdAt?: string; [k: string]: unknown }> }>(
+      `/evaluations?taskId=${encodeURIComponent(taskId)}`,
+    ),
+  /** §87 评估页签：agent 能力画像（无记录时 404 → 暂无）。 */
+  agentProfile: (agentId: string) =>
+    req<{ profile: { agentId: string; [k: string]: unknown } }>(
+      `/profiles/${encodeURIComponent(agentId)}`,
+    ),
+  exportProject: (id: string) =>
+    req<{ projectId: string; exportedAt: string; format: string; files: Record<string, string> }>(
+      `/projects/${encodeURIComponent(id)}/export`,
+    ),
+  importProject: (id: string, files: Record<string, string>) =>
+    req<{ ok: boolean; targetDir?: string; written?: string[]; issues?: { file: string; message: string }[] }>(
+      `/projects/${encodeURIComponent(id)}/import`,
+      { method: 'POST', body: JSON.stringify({ files }) },
+    ),
+  stats: () => req<DashboardStats>('/stats'),
 };

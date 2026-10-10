@@ -1,158 +1,266 @@
-import { useState } from 'react';
-import { api, BoardCard, TaskDetail } from '../api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { api, TaskSummary, NextState } from '../api';
 
-/** §85 simplified columns: fold the 19 engine states into 6 board lanes. */
-const LANES: { title: string; states: string[] }[] = [
-  { title: 'TODO', states: ['TODO', 'PLANNING', 'BLOCKED'] },
-  { title: 'IN PROGRESS', states: ['IN_PROGRESS', 'CODE_REVIEW'] },
-  { title: 'QA', states: ['PENDING_QA', 'QA', 'QA_FAILED'] },
-  { title: 'UAT', states: ['PENDING_UAT_MERGE', 'UAT', 'UAT_FAILED'] },
-  { title: 'PROD', states: ['PENDING_PROD', 'PROD_DEPLOYING', 'PROD_VERIFICATION', 'PROD_FAILED', 'ROLLBACK'] },
-  { title: 'DONE', states: ['DONE', 'CANCELLED', 'REJECTED', 'ESCALATED'] },
-];
+/**
+ * Task Board 完整版 — spec §85.
+ * 12 条 happy-path 列 + 2 条异常列（BLOCKED / FAILED）。
+ * 终端态 CANCELLED / REJECTED / ESCALATED 并入 DONE 列，
+ * ROLLBACK 并入 FAILED 列（卡片上保留原始状态标识）。
+ * 拖拽卡片跨列 = POST /tasks/:id/transition 发起工作流流转；
+ * 门禁拒绝（422）时 toast 显示缺少的证据。
+ */
 
-const EVIDENCE_TYPES = [
-  'plan', 'code_change', 'code_review', 'ci_result', 'qa_result',
-  'security_report', 'approval', 'merge', 'deployment', 'smoke_test', 'uat_result',
-];
-
-function TaskDetailView({ taskId, onClose, onChanged }: {
-  taskId: string; onClose: () => void; onChanged: () => void;
-}) {
-  const [task, setTask] = useState<TaskDetail | null>(null);
-  const [error, setError] = useState('');
-  const [denied, setDenied] = useState<string[]>([]);
-  const [evType, setEvType] = useState('qa_result');
-  const [evTitle, setEvTitle] = useState('');
-  const [evPass, setEvPass] = useState(true);
-
-  const load = () => {
-    api.task(taskId).then(setTask).catch((e: Error) => setError(e.message));
-  };
-  if (!task && !error) load();
-
-  const move = async (to: string) => {
-    setDenied([]);
-    setError('');
-    try {
-      await api.transition(taskId, to);
-      load();
-      onChanged();
-    } catch (e) {
-      const err = e as Error & { missing?: string[]; status: number };
-      if (err.status === 422 && err.missing) {
-        // Gate denial (§12): show exactly what evidence is missing.
-        setDenied(err.missing);
-      } else {
-        setError(err.message);
-      }
-    }
-  };
-
-  const attach = async () => {
-    if (!evTitle.trim()) return;
-    await api.attachEvidence(taskId, {
-      type: evType,
-      title: evTitle.trim(),
-      payload: { verdict: evPass ? 'PASS' : 'FAIL' },
-    });
-    setEvTitle('');
-    load();
-    onChanged();
-  };
-
-  if (error) return <div className="detail"><p className="err">{error}</p><button onClick={onClose}>Close</button></div>;
-  if (!task) return <div className="detail"><p className="muted">Loading…</p></div>;
-
-  return (
-    <div className="detail">
-      <div className="detail-head">
-        <h2>{task.title}</h2>
-        <button onClick={onClose}>✕</button>
-      </div>
-      <p className="muted">{task.id.slice(0, 8)} · {task.status} · {task.priority} · risk {task.risk}</p>
-      {task.goal && <p><b>Goal:</b> {task.goal}</p>}
-      {task.acceptanceCriteria.length > 0 && (
-        <p><b>Acceptance:</b> {task.acceptanceCriteria.join('; ')}</p>
-      )}
-
-      <h4>Request transition (§13 — the engine decides)</h4>
-      <div className="btn-row">
-        {task.nextStates.map((n) => (
-          <button key={n.to} title={n.requires.join('\n') || n.note} onClick={() => move(n.to)}>
-            → {n.to}
-          </button>
-        ))}
-      </div>
-      {denied.length > 0 && (
-        <div className="denied">
-          <b>⛔ Transition denied — missing evidence (§12):</b>
-          <ul>{denied.map((m, i) => <li key={i}>{m}</li>)}</ul>
-        </div>
-      )}
-
-      <h4>Evidence (§42)</h4>
-      {task.evidence.length === 0 && <p className="muted">No evidence attached yet.</p>}
-      <ul className="ev-list">
-        {task.evidence.map((e) => (
-          <li key={e.id}>
-            <span className={`seal ${e.status.toLowerCase()}`}>{e.status}</span>
-            <b>{e.type}</b> — {e.title}
-            <span className="muted"> by {e.createdBy}</span>
-          </li>
-        ))}
-      </ul>
-      <div className="ev-form">
-        <select value={evType} onChange={(e) => setEvType(e.target.value)}>
-          {EVIDENCE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-        </select>
-        <input placeholder="Evidence title" value={evTitle} onChange={(e) => setEvTitle(e.target.value)} />
-        <label><input type="checkbox" checked={evPass} onChange={(e) => setEvPass(e.target.checked)} /> PASS</label>
-        <button onClick={attach}>Attach</button>
-      </div>
-    </div>
-  );
+interface Lane {
+  title: string;
+  states: string[];
+  /** 拖拽落点的主目标状态（多态列由引擎 nextStates 解析）。 */
+  primary: string | null;
+  exception?: boolean;
 }
 
-export function Board({ columns, onChanged, onCreate }: {
-  columns: Record<string, BoardCard[]>;
+const LANES: Lane[] = [
+  { title: 'TODO', states: ['TODO'], primary: 'TODO' },
+  { title: 'PLANNING', states: ['PLANNING'], primary: 'PLANNING' },
+  { title: 'IN PROGRESS', states: ['IN_PROGRESS'], primary: 'IN_PROGRESS' },
+  { title: 'CODE REVIEW', states: ['CODE_REVIEW'], primary: 'CODE_REVIEW' },
+  { title: 'PENDING QA', states: ['PENDING_QA'], primary: 'PENDING_QA' },
+  { title: 'QA', states: ['QA'], primary: 'QA' },
+  { title: 'PENDING UAT MERGE', states: ['PENDING_UAT_MERGE'], primary: 'PENDING_UAT_MERGE' },
+  { title: 'UAT', states: ['UAT'], primary: 'UAT' },
+  { title: 'PENDING PROD', states: ['PENDING_PROD'], primary: 'PENDING_PROD' },
+  { title: 'PROD DEPLOYING', states: ['PROD_DEPLOYING'], primary: 'PROD_DEPLOYING' },
+  { title: 'PROD VERIFICATION', states: ['PROD_VERIFICATION'], primary: 'PROD_VERIFICATION' },
+  { title: 'DONE', states: ['DONE', 'CANCELLED', 'REJECTED', 'ESCALATED'], primary: 'DONE' },
+  { title: 'BLOCKED', states: ['BLOCKED'], primary: 'BLOCKED', exception: true },
+  {
+    title: 'FAILED',
+    states: ['QA_FAILED', 'UAT_FAILED', 'PROD_FAILED', 'ROLLBACK'],
+    primary: null, // 由引擎 nextStates 在列内解析合法目标
+    exception: true,
+  },
+];
+
+/** Happy-path 进度标尺：TODO=0% … DONE=100%。 */
+const HAPPY_PATH = [
+  'TODO', 'PLANNING', 'IN_PROGRESS', 'CODE_REVIEW', 'PENDING_QA', 'QA',
+  'PENDING_UAT_MERGE', 'UAT', 'PENDING_PROD', 'PROD_DEPLOYING',
+  'PROD_VERIFICATION', 'DONE',
+];
+
+function progressOf(status: string): number | null {
+  const i = HAPPY_PATH.indexOf(status);
+  return i < 0 ? null : Math.round((i / (HAPPY_PATH.length - 1)) * 100);
+}
+
+function runtimeOf(createdAt: string): string {
+  const ms = Date.now() - new Date(createdAt).getTime();
+  if (!(ms >= 0)) return '—';
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return '刚刚';
+  if (m < 60) return `${m}分钟`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}小时${m % 60 ? `${m % 60}分钟` : ''}`;
+  const d = Math.floor(h / 24);
+  return `${d}天${h % 24 ? `${h % 24}小时` : ''}`;
+}
+
+interface Toast {
+  kind: 'ok' | 'err';
+  text: string;
+}
+
+export function Board({ tasks, onChanged, onCreate, onSelectTask }: {
+  tasks: TaskSummary[];
   onChanged: () => void;
   onCreate: () => void;
+  onSelectTask: (id: string) => void;
 }) {
-  const [selected, setSelected] = useState<string | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const [dragOver, setDragOver] = useState<string | null>(null);
+  /** taskId → 下一步门禁所需的证据标签（当前门禁）。 */
+  const [gates, setGates] = useState<Record<string, string[]>>({});
+  /** taskId → nextStates，供多态列拖拽解析合法目标。 */
+  const [nextStates, setNextStates] = useState<Record<string, NextState[]>>({});
+
+  const showToast = useCallback((kind: Toast['kind'], text: string) => {
+    setToast({ kind, text });
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // 懒加载每张卡片的 nextStates → 当前门禁（§12）。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const entries: [string, string[], NextState[]][] = await Promise.all(
+        tasks.map(async (t): Promise<[string, string[], NextState[]]> => {
+          try {
+            const d = await api.task(t.id);
+            const reqs = [...new Set(d.nextStates.flatMap((n) => n.requires))];
+            return [t.id, reqs, d.nextStates];
+          } catch {
+            return [t.id, [], []];
+          }
+        }),
+      );
+      if (cancelled) return;
+      const g: Record<string, string[]> = {};
+      const n: Record<string, NextState[]> = {};
+      for (const [id, reqs, ns] of entries) {
+        g[id] = reqs;
+        n[id] = ns;
+      }
+      setGates(g);
+      setNextStates(n);
+    })();
+    return () => { cancelled = true; };
+  }, [tasks]);
+
+  const byLane = useMemo(
+    () =>
+      LANES.map((lane) => ({
+        lane,
+        cards: tasks.filter((t) => lane.states.includes(t.status)),
+      })),
+    [tasks],
+  );
+
+  const dropTarget = useCallback(
+    (taskId: string, lane: Lane): string | null => {
+      if (lane.primary) return lane.primary;
+      // 多态列（FAILED）：在引擎允许的 nextStates 里找落在该列的状态。
+      const allowed = (nextStates[taskId] ?? []).map((n) => n.to);
+      return allowed.find((s) => lane.states.includes(s)) ?? null;
+    },
+    [nextStates],
+  );
+
+  const onDropCard = useCallback(
+    async (taskId: string, lane: Lane) => {
+      setDragOver(null);
+      const card = tasks.find((t) => t.id === taskId);
+      if (!card) return;
+      const to = dropTarget(taskId, lane);
+      if (!to) {
+        showToast('err', `引擎不允许将「${card.title}」直接移入 ${lane.title} 列`);
+        return;
+      }
+      if (to === card.status) return;
+      try {
+        const r = await api.transition(taskId, to);
+        showToast('ok', `✓ ${card.title}: ${r.from} → ${r.to}`);
+        onChanged();
+      } catch (e) {
+        const err = e as Error & { missing?: string[]; status?: number };
+        if (err.status === 422 && err.missing) {
+          showToast('err', `⛔ 门禁拒绝（缺证据）: ${err.missing.join('；')}`);
+        } else {
+          showToast('err', `流转失败: ${err.message}`);
+        }
+      }
+    },
+    [tasks, dropTarget, onChanged, showToast],
+  );
 
   return (
     <div className="board-wrap">
       <div className="board-head">
-        <h2>Task Board</h2>
+        <h2>Task Board <span className="muted">§85 · {tasks.length} tasks</span></h2>
         <button className="primary" onClick={onCreate}>+ New Task</button>
       </div>
       <div className="board">
-        {LANES.map((lane) => {
-          const cards = lane.states.flatMap((s) => columns[s] ?? []);
-          return (
-            <div key={lane.title} className="lane">
-              <div className="lane-title">{lane.title} <span className="count">{cards.length}</span></div>
-              {cards.map((c) => (
-                <div key={c.id} className="card" onClick={() => setSelected(c.id)}>
-                  <div className="card-title">{c.title}</div>
-                  <div className="card-meta">
-                    <span className={`prio ${c.priority.toLowerCase()}`}>{c.priority}</span>
-                    <span className="muted">{c.status}</span>
-                  </div>
-                  <div className="card-meta">
-                    <span>{c.agent ?? 'unassigned'}</span>
-                    <span className="muted">risk {c.risk}</span>
-                  </div>
-                </div>
-              ))}
+        {byLane.map(({ lane, cards }) => (
+          <div
+            key={lane.title}
+            className={`lane${lane.exception ? ' exception' : ''}${dragOver === lane.title ? ' dragover' : ''}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(lane.title);
+            }}
+            onDragLeave={() => setDragOver((d) => (d === lane.title ? null : d))}
+            onDrop={(e) => {
+              e.preventDefault();
+              const taskId = e.dataTransfer.getData('text/task-id');
+              if (taskId) void onDropCard(taskId, lane);
+            }}
+          >
+            <div className="lane-title">
+              {lane.title} <span className="count">{cards.length}</span>
             </div>
-          );
-        })}
+            {cards.map((c) => (
+              <TaskCard
+                key={c.id}
+                task={c}
+                gates={gates[c.id]}
+                onOpen={() => onSelectTask(c.id)}
+              />
+            ))}
+          </div>
+        ))}
       </div>
-      {selected && (
-        <TaskDetailView taskId={selected} onClose={() => setSelected(null)} onChanged={onChanged} />
+      {toast && (
+        <div className={`toast ${toast.kind}`}>
+          <span>{toast.text}</span>
+          <button onClick={() => setToast(null)}>✕</button>
+        </div>
       )}
+    </div>
+  );
+}
+
+function TaskCard({ task, gates, onOpen }: {
+  task: TaskSummary;
+  gates?: string[];
+  onOpen: () => void;
+}) {
+  const progress = progressOf(task.status);
+  return (
+    <div
+      className="card"
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/task-id', task.id);
+        e.dataTransfer.effectAllowed = 'move';
+      }}
+      onClick={onOpen}
+      title="点击打开任务详情 §86 · 拖拽跨列发起流转"
+    >
+      <div className="card-top">
+        <span className="card-id">#{task.id.slice(0, 8)}</span>
+        <span className={`prio ${task.priority.toLowerCase()}`}>{task.priority}</span>
+        <span className={`risk r-${task.risk.toLowerCase()}`}>{task.risk}</span>
+      </div>
+      <div className="card-title">{task.title}</div>
+      <div className="card-meta">
+        <span>👤 {task.currentAgentId ? task.currentAgentId.slice(0, 8) : '未分配'}</span>
+        <span className="muted">{task.assignedAgentIds.length} agents</span>
+      </div>
+      <div className="card-meta">
+        <span className="muted">⏱ {runtimeOf(task.createdAt)}</span>
+        <span className="muted">{task.status}</span>
+      </div>
+      {progress !== null ? (
+        <div className="card-progress">
+          <div className="card-progress-bar" style={{ width: `${progress}%` }} />
+          <span className="card-progress-label">{progress}%</span>
+        </div>
+      ) : (
+        <div className="card-meta"><span className="pill warn">{task.status}</span></div>
+      )}
+      <div className="card-gate">
+        <span className="muted">门禁: </span>
+        {gates === undefined ? (
+          <span className="muted">…</span>
+        ) : gates.length === 0 ? (
+          <span className="gate-ok">无（可直接流转）</span>
+        ) : (
+          <span className="gate-req">{gates.join(' · ')}</span>
+        )}
+      </div>
     </div>
   );
 }
