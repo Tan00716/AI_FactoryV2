@@ -17,7 +17,7 @@ import {
   TaskStore,
 } from '@ai-factory/core';
 import type { Approval, ApprovalStore } from '@ai-factory/approvals';
-import type { MemoryEntry } from '@ai-factory/memory';
+import type { CrossProjectReusable, MemoryEntry } from '@ai-factory/memory';
 import { SCHEMA } from './schema';
 
 const J = {
@@ -201,9 +201,10 @@ export class SqliteAgentStore implements AgentStore {
 
 // ------------------------------------------------------------- approvals ---
 /**
- * Spec §69 columns added after the approvals table first shipped
- * (agent_id, required_approver, evidence_ids, expires_at). Existing local
- * DBs are migrated in place: only missing columns are added.
+ * SPEC v2 §23.3 columns. Existing local DBs are migrated in place: only
+ * missing columns are added. rowToApproval falls back to the v1 column names
+ * (id, requested_by, required_approver, expires_at) so pre-v2 databases keep
+ * working read-only.
  */
 export function migrateApprovalsTable(db: DatabaseSync): void {
   const cols = new Set(
@@ -215,30 +216,69 @@ export function migrateApprovalsTable(db: DatabaseSync): void {
   const add = (ddl: string, name: string): void => {
     if (!cols.has(name)) db.exec(`ALTER TABLE approvals ADD COLUMN ${ddl}`);
   };
-  add(`agent_id TEXT DEFAULT ''`, 'agent_id');
+  add(`approval_id TEXT`, 'approval_id');
+  add(`action_digest TEXT DEFAULT ''`, 'action_digest');
+  add(`requester TEXT DEFAULT ''`, 'requester');
+  add(`reversibility_ref TEXT DEFAULT ''`, 'reversibility_ref');
+  add(`requirement_version TEXT DEFAULT ''`, 'requirement_version');
+  add(`candidate_digest TEXT DEFAULT ''`, 'candidate_digest');
+  add(`environment TEXT DEFAULT ''`, 'environment');
+  add(`evidence_manifest_hash TEXT DEFAULT ''`, 'evidence_manifest_hash');
+  add(`policy_version TEXT DEFAULT ''`, 'policy_version');
+  add(`required_approvers TEXT DEFAULT '["human"]'`, 'required_approvers');
+  add(`decision_reason TEXT DEFAULT ''`, 'decision_reason');
+  add(`deadline TEXT`, 'deadline');
+  // v1 leftovers kept for read fallback:
+  add(`requested_by TEXT DEFAULT ''`, 'requested_by');
   add(`required_approver TEXT DEFAULT 'human'`, 'required_approver');
-  add(`evidence_ids TEXT DEFAULT '[]'`, 'evidence_ids');
   add(`expires_at TEXT`, 'expires_at');
   db.exec('CREATE INDEX IF NOT EXISTS idx_approvals_task ON approvals(task_id)');
 }
 
 function rowToApproval(r: Record<string, unknown>): Approval {
   const s = (k: string) => r[k] as string;
+  const first = (...ks: string[]): string => {
+    for (const k of ks) {
+      const v = r[k];
+      if (typeof v === 'string' && v !== '') return v;
+    }
+    return '';
+  };
+  let requiredApprovers: string[] = ['human'];
+  const rawApprovers = r['required_approvers'] as string | undefined;
+  if (typeof rawApprovers === 'string' && rawApprovers !== '') {
+    try {
+      const parsed: unknown = JSON.parse(rawApprovers);
+      if (Array.isArray(parsed) && parsed.every((e) => typeof e === 'string')) {
+        requiredApprovers = parsed as string[];
+      }
+    } catch {
+      // fall through to default
+    }
+  } else if (typeof r['required_approver'] === 'string' && r['required_approver'] !== '') {
+    requiredApprovers = [r['required_approver'] as string]; // v1 fallback
+  }
   return {
-    id: s('id'),
+    approval_id: first('approval_id', 'id'),
+    action_digest: s('action_digest') ?? '',
     action: s('action'),
-    requestedBy: s('requested_by') ?? '',
-    agentId: s('agent_id') ?? '',
-    taskId: s('task_id') ?? '',
-    riskLevel: (s('risk_level') ?? 'MEDIUM') as Approval['riskLevel'],
-    evidenceIds: J.parse<string[]>(r['evidence_ids'] as string, []),
-    requiredApprover: s('required_approver') ?? 'human',
+    task_id: s('task_id') ?? '',
+    requirement_version: s('requirement_version') ?? '',
+    candidate_digest: s('candidate_digest') ?? '',
+    environment: s('environment') ?? '',
+    risk_level: (s('risk_level') ?? 'MEDIUM') as Approval['risk_level'],
+    reversibility_ref: s('reversibility_ref') ?? '',
+    evidence_manifest_hash: s('evidence_manifest_hash') ?? '',
+    policy_version: s('policy_version') ?? '',
+    requester: first('requester', 'requested_by'),
+    required_approvers: requiredApprovers,
     status: (s('status') ?? 'PENDING') as Approval['status'],
     decision: (s('decision') ?? '') as Approval['decision'],
-    decidedBy: s('decided_by') ?? '',
-    createdAt: s('created_at'),
-    decidedAt: (r['decided_at'] as string) ?? null,
-    expiresAt: (r['expires_at'] as string) ?? null,
+    decision_reason: s('decision_reason') ?? '',
+    decided_by: s('decided_by') ?? '',
+    created_at: s('created_at'),
+    decided_at: (r['decided_at'] as string) ?? null,
+    deadline: (r['deadline'] as string) ?? (r['expires_at'] as string) ?? null,
   };
 }
 
@@ -246,24 +286,32 @@ export class SqliteApprovalStore implements ApprovalStore {
   constructor(private db: DatabaseSync) {}
   save(a: Approval): void {
     this.db.prepare(
-      `INSERT INTO approvals (id, task_id, action, requested_by, agent_id, risk_level,
-        evidence_ids, required_approver, status, decision, decided_by,
-        created_at, decided_at, expires_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-       ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, action=excluded.action,
-        requested_by=excluded.requested_by, agent_id=excluded.agent_id,
-        risk_level=excluded.risk_level, evidence_ids=excluded.evidence_ids,
-        required_approver=excluded.required_approver, status=excluded.status,
-        decision=excluded.decision, decided_by=excluded.decided_by,
-        decided_at=excluded.decided_at, expires_at=excluded.expires_at`,
+      `INSERT INTO approvals (approval_id, task_id, action, action_digest, requester,
+        risk_level, reversibility_ref, requirement_version, candidate_digest,
+        environment, evidence_manifest_hash, policy_version, required_approvers,
+        status, decision, decision_reason, decided_by, created_at, decided_at, deadline)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(approval_id) DO UPDATE SET task_id=excluded.task_id, action=excluded.action,
+        action_digest=excluded.action_digest, requester=excluded.requester,
+        risk_level=excluded.risk_level, reversibility_ref=excluded.reversibility_ref,
+        requirement_version=excluded.requirement_version,
+        candidate_digest=excluded.candidate_digest, environment=excluded.environment,
+        evidence_manifest_hash=excluded.evidence_manifest_hash,
+        policy_version=excluded.policy_version,
+        required_approvers=excluded.required_approvers, status=excluded.status,
+        decision=excluded.decision, decision_reason=excluded.decision_reason,
+        decided_by=excluded.decided_by, decided_at=excluded.decided_at,
+        deadline=excluded.deadline`,
     ).run(
-      a.id, a.taskId, a.action, a.requestedBy, a.agentId, a.riskLevel,
-      J.stringify(a.evidenceIds), a.requiredApprover, a.status, a.decision,
-      a.decidedBy, a.createdAt, a.decidedAt, a.expiresAt,
+      a.approval_id, a.task_id, a.action, a.action_digest, a.requester,
+      a.risk_level, a.reversibility_ref, a.requirement_version, a.candidate_digest,
+      a.environment, a.evidence_manifest_hash, a.policy_version,
+      J.stringify(a.required_approvers), a.status, a.decision, a.decision_reason,
+      a.decided_by, a.created_at, a.decided_at, a.deadline,
     );
   }
   get(id: string): Approval | undefined {
-    const r = this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) as
+    const r = this.db.prepare('SELECT * FROM approvals WHERE approval_id = ?').get(id) as
       | Record<string, unknown>
       | undefined;
     return r ? rowToApproval(r) : undefined;
@@ -311,6 +359,32 @@ export class SqliteAuditStore implements AuditStore {
 // Structured memory entries (spec §54–§56). The lifecycle logic (dedup,
 // decay, verify) lives in @ai-factory/memory's MemoryStore; this store is
 // the durable SQL backing with the same row mapping.
+/**
+ * SPEC v2 §43.2 columns. Existing local DBs are migrated in place: only
+ * missing columns are added (see migrateMemoryTable). Pre-v2 rows read
+ * back with secure defaults (internal classification, empty ACL).
+ */
+export function migrateMemoryTable(db: DatabaseSync): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(memory_entries)').all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
+  const add = (ddl: string, name: string): void => {
+    if (!cols.has(name)) db.exec(`ALTER TABLE memory_entries ADD COLUMN ${ddl}`);
+  };
+  add(`source_refs TEXT DEFAULT '[]'`, 'source_refs');
+  add(`confidence_kind TEXT DEFAULT 'model-self-assessed'`, 'confidence_kind');
+  add(`task_refs TEXT DEFAULT '[]'`, 'task_refs');
+  add(`access_scope TEXT DEFAULT '[]'`, 'access_scope');
+  add(`data_classification TEXT DEFAULT 'internal'`, 'data_classification');
+  add(`cross_project_reusable TEXT DEFAULT '{"allowed":false}'`, 'cross_project_reusable');
+  add(`supersedes TEXT DEFAULT '[]'`, 'supersedes');
+  add(`contradicts TEXT DEFAULT '[]'`, 'contradicts');
+  add(`index_version TEXT DEFAULT 'v1'`, 'index_version');
+}
+
 function rowToMemoryEntry(r: Record<string, unknown>): MemoryEntry {
   const s = (k: string) => r[k] as string;
   return {
@@ -321,13 +395,26 @@ function rowToMemoryEntry(r: Record<string, unknown>): MemoryEntry {
     title: s('title'),
     content: s('content'),
     source: s('source'),
+    sourceRefs: J.parse<string[]>((r['source_refs'] as string) ?? null, []),
     confidence: Number(r['confidence'] ?? 0),
+    confidenceKind:
+      (r['confidence_kind'] as MemoryEntry['confidenceKind']) ?? 'model-self-assessed',
     createdBy: s('created_by'),
     evidenceIds: J.parse<string[]>(r['evidence_ids'] as string, []),
+    taskRefs: J.parse<string[]>((r['task_refs'] as string) ?? null, []),
     lastVerifiedAt: s('last_verified_at'),
     applicableScope: s('applicable_scope'),
+    accessScope: J.parse<string[]>((r['access_scope'] as string) ?? null, []),
+    dataClassification: (r['data_classification'] as MemoryEntry['dataClassification']) ?? 'internal',
+    crossProjectReusable: J.parse<CrossProjectReusable>(
+      (r['cross_project_reusable'] as string) ?? null,
+      { allowed: false },
+    ),
     expiresAt: (r['expires_at'] as string) ?? null,
     status: s('status') as MemoryEntry['status'],
+    supersedes: J.parse<string[]>((r['supersedes'] as string) ?? null, []),
+    contradicts: J.parse<string[]>((r['contradicts'] as string) ?? null, []),
+    indexVersion: (r['index_version'] as string) ?? 'v1',
     createdAt: s('created_at'),
     updatedAt: s('updated_at'),
   };
@@ -338,21 +425,41 @@ export class SqliteMemoryStore {
   upsert(e: MemoryEntry): void {
     this.db.prepare(
       `INSERT INTO memory_entries
-         (id, scope, scope_id, type, title, content, source, confidence,
-          created_by, evidence_ids, last_verified_at, applicable_scope,
-          expires_at, status, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         (id, scope, scope_id, type, title, content, source, source_refs,
+          confidence, confidence_kind, created_by, evidence_ids, task_refs,
+          last_verified_at, applicable_scope, access_scope, data_classification,
+          cross_project_reusable, expires_at, status, supersedes, contradicts,
+          index_version, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, content=excluded.content, source=excluded.source,
-         confidence=excluded.confidence, evidence_ids=excluded.evidence_ids,
-         last_verified_at=excluded.last_verified_at,
-         applicable_scope=excluded.applicable_scope, expires_at=excluded.expires_at,
-         status=excluded.status, updated_at=excluded.updated_at`,
+         source_refs=excluded.source_refs, confidence=excluded.confidence,
+         confidence_kind=excluded.confidence_kind, evidence_ids=excluded.evidence_ids,
+         task_refs=excluded.task_refs, last_verified_at=excluded.last_verified_at,
+         applicable_scope=excluded.applicable_scope, access_scope=excluded.access_scope,
+         data_classification=excluded.data_classification,
+         cross_project_reusable=excluded.cross_project_reusable,
+         expires_at=excluded.expires_at, status=excluded.status,
+         supersedes=excluded.supersedes, contradicts=excluded.contradicts,
+         index_version=excluded.index_version, updated_at=excluded.updated_at`,
     ).run(
-      e.id, e.scope, e.scopeId, e.type, e.title, e.content, e.source, e.confidence,
-      e.createdBy, J.stringify(e.evidenceIds), e.lastVerifiedAt, e.applicableScope,
-      e.expiresAt, e.status, e.createdAt, e.updatedAt,
+      e.id, e.scope, e.scopeId, e.type, e.title, e.content, e.source,
+      J.stringify(e.sourceRefs), e.confidence, e.confidenceKind,
+      e.createdBy, J.stringify(e.evidenceIds), J.stringify(e.taskRefs),
+      e.lastVerifiedAt, e.applicableScope, J.stringify(e.accessScope),
+      e.dataClassification, J.stringify(e.crossProjectReusable),
+      e.expiresAt, e.status, J.stringify(e.supersedes), J.stringify(e.contradicts),
+      e.indexVersion, e.createdAt, e.updatedAt,
     );
+  }
+  /**
+   * §43.3 purge support: delete every row of one scope. Returns the number
+   * of rows removed. Used by the server purge endpoint alongside the
+   * in-memory store purge + registry cleanup.
+   */
+  deleteByScopeId(scopeId: string): number {
+    const r = this.db.prepare('DELETE FROM memory_entries WHERE scope_id = ?').run(scopeId);
+    return Number(r.changes ?? 0);
   }
   get(id: string): MemoryEntry | undefined {
     const r = this.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(id) as
@@ -366,7 +473,7 @@ export class SqliteMemoryStore {
     if (f.scope) { where.push('scope = ?'); params.push(f.scope); }
     if (f.scopeId) { where.push('scope_id = ?'); params.push(f.scopeId); }
     if (f.type) { where.push('type = ?'); params.push(f.type); }
-    if (!f.includeExpired) { where.push("status != 'EXPIRED'"); }
+    if (!f.includeExpired) { where.push("status != 'RETIRED'"); }
     const sql = `SELECT * FROM memory_entries${where.length ? ' WHERE ' + where.join(' AND ') : ''}
       ORDER BY confidence DESC, updated_at DESC`;
     return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(rowToMemoryEntry);
@@ -399,6 +506,7 @@ export class FactoryDatabase {
     this.db = new DatabaseSync(path);
     this.db.exec(SCHEMA);
     migrateApprovalsTable(this.db);
+    migrateMemoryTable(this.db);
     this.tasks = new SqliteTaskStore(this.db);
     this.evidence = new SqliteEvidenceStore(this.db);
     this.agents = new SqliteAgentStore(this.db);

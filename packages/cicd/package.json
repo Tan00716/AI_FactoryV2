@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/approvals":"0.1.0","@ai-factory/core":"0.1.0","@ai-factory/api-contracts":"0.1.0"},"description":"CI/CD engine: pipelines, environments, gated deployments, snapshots and auto-rollback (§39–§41, §77)","main":"dist/src/index.js","name":"@ai-factory/cicd","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

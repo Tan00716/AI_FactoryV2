@@ -14,3 +14,6 @@ export * from './yaml-util';
 export * from './export';
 export * from './validate';
 export * from './import';
+export * from './safe-export';
+export * from './untrusted-import';
+export * from './migrate-v1';

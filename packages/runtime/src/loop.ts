@@ -35,6 +35,14 @@ export interface AgentLoopOptions {
   onTrace?: (step: TraceStep) => void;
   /** Consecutive identical error signatures before stagnation; default 3 (§25). */
   stagnationLimit?: number;
+  /**
+   * SPEC v2 §25 — stagnation is "same fingerprint N times with NO NEW
+   * EVIDENCE". When provided, a failure with the same signature does NOT
+   * advance the stagnation counter if new evidence arrived since the last
+   * failure (the loop is learning, not stuck). Absent → legacy behavior:
+   * any repeat counts.
+   */
+  evidenceAddedSinceLastFailure?: () => boolean;
 }
 
 interface CheckpointState {
@@ -52,6 +60,7 @@ export class AgentLoop {
   private readonly clock: Clock;
   private readonly onTrace?: (step: TraceStep) => void;
   private readonly stagnationLimit: number;
+  private readonly evidenceAddedSinceLastFailure?: () => boolean;
 
   private phaseIdx = 0;
   private totalSteps = 0;
@@ -66,6 +75,7 @@ export class AgentLoop {
     this.clock = options.clock ?? systemClock;
     this.onTrace = options.onTrace;
     this.stagnationLimit = options.stagnationLimit ?? 3;
+    this.evidenceAddedSinceLastFailure = options.evidenceAddedSinceLastFailure;
   }
 
   /** Read-only view of current loop state. */
@@ -171,9 +181,10 @@ export class AgentLoop {
         const decision = result.decision ?? 'COMPLETE';
         switch (decision) {
           case 'COMPLETE':
+          case 'SUBMIT':
           case 'HANDOFF':
           case 'ESCALATE':
-            return this.outcome(decision, result.handoffTo);
+            return this.outcome(decision === 'SUBMIT' ? 'COMPLETE' : decision, result.handoffTo);
           case 'CONTINUE':
             this.phaseIdx = 0;
             break;
@@ -199,7 +210,10 @@ export class AgentLoop {
   private registerFailure(result: PhaseResult): void {
     const sig = result.errorSignature ?? result.error ?? 'unknown-error';
     if (sig === this.lastErrorSignature) {
-      this.consecutiveFailures += 1;
+      // §25: new evidence since the last failure means the loop is making
+      // progress (different test output, new diagnostics) — not stagnation.
+      const learned = this.evidenceAddedSinceLastFailure?.() ?? false;
+      this.consecutiveFailures = learned ? 1 : this.consecutiveFailures + 1;
     } else {
       this.lastErrorSignature = sig;
       this.consecutiveFailures = 1;

@@ -80,6 +80,41 @@ export interface DashboardStats {
   status: Record<string, DashboardStat>;
   metrics: Record<string, DashboardStat>;
 }
+/** §24/§29.1 三轴 factory 状态（control/health/capacity + ACK 门控显示）。 */
+export interface FactoryStatus {
+  control: string;
+  health: string;
+  capacity: string;
+  control_epoch: number;
+  pending_acks: string[];
+  display: string;
+  updated_at: string;
+}
+/** §30 watchdog 自身健康。 */
+export interface WatchdogSelf {
+  selfHealth: 'ok' | 'degraded';
+}
+/** §27 quota bucket 用量视图（unknown 时字段缺失，不编造百分比）。 */
+export interface QuotaBucketView {
+  providerAccountId: string;
+  workspaceId: string;
+  limitBucket: string;
+  used?: number;
+  limit?: number;
+  resetAt?: string;
+  authState: string;
+  freshness: string;
+  collectedAt: string;
+}
+/** §33 incident 列表项。 */
+export interface IncidentSummary {
+  id: string;
+  title: string;
+  severity: string;
+  status: string;
+  detectedAt: string;
+  updatedAt: string;
+}
 
 export const api = {
   health: () => req<{ ok: boolean }>('/health'),
@@ -129,4 +164,12 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ files }) },
     ),
   stats: () => req<DashboardStats>('/stats'),
+  /** §29.1 全局 Factory Strip：三轴状态（ACK 门控显示在 display）。 */
+  factoryStatus: () => req<FactoryStatus>('/factory/status'),
+  /** §30 watchdog 自身健康。 */
+  watchdogSelf: () => req<WatchdogSelf>('/watchdog/self'),
+  /** §27 quota buckets 用量（unknown 字段保持缺失）。 */
+  quotaBuckets: () => req<{ buckets: QuotaBucketView[] }>('/quota/buckets'),
+  /** §33 incidents 列表。 */
+  incidents: () => req<{ incidents: IncidentSummary[] }>('/incidents'),
 };

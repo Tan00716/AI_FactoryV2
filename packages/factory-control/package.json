@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/api-contracts":"0.1.0"},"description":"SPEC v2 §24 factory runtime control plane: 3-axis state, operation semantics, control epochs, worker ACKs, emergency stop","main":"dist/src/index.js","name":"@ai-factory/factory-control","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

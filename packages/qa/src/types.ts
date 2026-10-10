@@ -51,13 +51,14 @@ export interface CategoryResult {
   output?: string;
 }
 
-/** §38 — the six failure classes the analyzer must distinguish. */
+/** §38 — the seven failure classes the analyzer must distinguish (v2 §38.3). */
 export type FailureClass =
   | 'PRODUCT_FAILURE'
   | 'TEST_FAILURE'
   | 'ENVIRONMENT_FAILURE'
   | 'INFRA_FAILURE'
   | 'AI_FAILURE'
+  | 'REQUIREMENT_AMBIGUITY'
   | 'UNKNOWN';
 
 /** One classified failure; feeds the failure loop owner assignment. */
@@ -92,11 +93,13 @@ export interface QaOrgSnapshot {
   specialists: Agent[];
 }
 
-/** QA specialist kinds per the §36 org chart. */
+/** QA specialist kinds per the §36 org chart (v2 §38.1 adds DB/Migration + Smoke). */
 export type QaSpecialistKind =
   | 'Functional'
   | 'API'
   | 'E2E'
   | 'Regression'
   | 'Performance'
-  | 'Security';
+  | 'Security'
+  | 'DBMigration'
+  | 'Smoke';

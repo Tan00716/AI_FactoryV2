@@ -10,6 +10,10 @@
  *  - agents     agent registry + org tree      [§15–§17, §44, §84]
  *  - audit      append-only audit log          [§70]
  *  - engine     transition orchestration       [§12, §13, §92]
+ *  - reason-codes 16 machine reason codes      [SPEC_V2 §49; local stand-in for @ai-factory/api-contracts]
+ *  - workflow-v2  three-state separation       [SPEC_V2 §18]
+ *  - engine-v2    v2 engine: finalize/rollback [SPEC_V2 §18, §19, §20.1]
+ *  - evidence-v2  18-field evidence contract, gates, disputes [SPEC_V2 §39]
  */
 export * from './types';
 export * from './workflow';
@@ -18,3 +22,7 @@ export * from './evidence';
 export * from './agents';
 export * from './audit';
 export * from './engine';
+export * from './reason-codes';
+export * from './workflow-v2';
+export * from './engine-v2';
+export * from './evidence-v2';

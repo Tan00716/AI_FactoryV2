@@ -1,0 +1,35 @@
+
+> ai-factory@0.1.0 demo:dispute
+> npm run build -w @ai-factory/evaluation && node packages/evaluation/dist/demo/disagreement.demo.js
+
+
+> @ai-factory/evaluation@0.1.0 build
+> tsc -p tsconfig.json
+
+== §97 gate: where is independent verification useful? ==
+  [security] use=true — independent verification enabled: high-stakes scenario 'security' (§97)
+  [docs] use=false — skipped: 'docs' is a routine task — independent verification would spend tokens for no value (§97)
+
+== §96 dispute 1: Coder PASS vs Reviewer FAIL ==
+  opened dsp_361cf915-0c5d-454b-8387-7db4a685c9f9 (coder PASS vs reviewer FAIL), evidenceReady=false
+  status → ADJUDICATED
+  winner: side A (confidence 0.88)
+  rationale: coder prevails on evidence: 3 cited item(s), evidence completeness and test coverage outweigh reviewer's case (score 0.88 vs 0.00).
+
+== §96 dispute 2: no evidence on either side → ESCALATED ==
+  status → ESCALATED
+  escalation esc_95740c35-0614-4602-815b-bbd78ddf1bc4
+  reasons: neither side cited evidence — nothing for the evaluator to weigh | independent evaluator abstained: the evidence does not discriminate a winner
+  pending human actions:
+    - Human review required: coder (PASS) vs reviewer (FAIL).
+    - Inspect the cited evidence from both sides listed below.
+    - Re-run the disputed checks and attach fresh evidence.
+    - Cast the deciding verdict and record the rationale.
+
+== audit trail ==
+  [2026-10-10T08:21:14.159Z] dispute_opened dsp_361cf915-0c5d-454b-8387-7db4a685c9f9
+  [2026-10-10T08:21:15.159Z] evidence_collected dsp_361cf915-0c5d-454b-8387-7db4a685c9f9
+  [2026-10-10T08:21:15.159Z] adjudicated dsp_361cf915-0c5d-454b-8387-7db4a685c9f9
+  [2026-10-10T08:21:16.159Z] dispute_opened dsp_4fa707d5-5bcd-4557-9b95-dbf95b92cb4e
+  [2026-10-10T08:21:17.159Z] evidence_collected dsp_4fa707d5-5bcd-4557-9b95-dbf95b92cb4e
+  [2026-10-10T08:21:17.159Z] escalated dsp_4fa707d5-5bcd-4557-9b95-dbf95b92cb4e

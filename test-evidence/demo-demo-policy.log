@@ -1,0 +1,30 @@
+
+> ai-factory@0.1.0 demo:policy
+> npm run build -w @ai-factory/policy && node packages/policy/dist/demo/policy.demo.js
+
+
+> @ai-factory/policy@0.1.0 build
+> tsc -p tsconfig.json
+
+global: security.production_write = denied (locked)
+project MyApp: attempts security.production_write = allowed
+
+[EVENT] overrideDenied → security.production_write
+
+denials: 1
+  key      : security.production_write
+  attempted: project@MyApp → "allowed"
+  winner   : global@__global__ → "denied" (locked=true)
+  allowed  : false
+
+effective policy for project/MyApp:
+{
+  "security.production_write": "denied"
+}
+
+project.yaml  → ok=true, errors=0
+organization.yaml → ok=true, errors=0
+
+invalid project.yaml → ok=false
+  [INVALID_ENUM] workflow.production_approval: "production_approval" must be one of: human, ai, auto
+  [OUT_OF_RANGE] agents.max_concurrent: "max_concurrent" must be between 1 and 100

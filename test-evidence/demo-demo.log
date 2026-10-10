@@ -1,0 +1,80 @@
+
+> ai-factory@0.1.0 demo
+> npm run build -w @ai-factory/core && node packages/core/dist/demo/evidence-chain.demo.js
+
+
+> @ai-factory/core@0.1.0 build
+> tsc -p tsconfig.json
+
+
+[step 1] PM picks up the task: TODO → PLANNING
+   ✅ TODO → PLANNING
+
+[step 2] PM plans, attaches the PLAN artifact: PLANNING → IN PROGRESS
+   📎 evidence attached: plan (56b8bfee…)
+   ✅ PLANNING → IN_PROGRESS
+
+[step 3] Coder implements and submits a commit: IN PROGRESS → CODE REVIEW
+   📎 evidence attached: code_change (428d04a8…)
+   ✅ IN_PROGRESS → CODE_REVIEW
+
+[step 4] Reviewer approves: CODE REVIEW → PENDING QA → QA
+   📎 evidence attached: code_review (3954dac5…)
+   ✅ CODE_REVIEW → PENDING_QA
+   ✅ PENDING_QA → QA
+
+[step 5] QA finishes — but the security report is NOT attached yet.
+   📎 evidence attached: ci_result (542da5d7…)
+   📎 evidence attached: qa_result (4808165c…)
+   Attempting QA → PENDING_UAT_MERGE without security evidence…
+   ⛔ DENIED QA → PENDING_UAT_MERGE: Security report = PASS — missing or verdict ≠ PASS
+   👆 The engine refused and named the missing item. "Tests passed" alone is not enough (§2.4).
+
+[step 6] Security scan completes and its evidence is attached — retry the gate.
+   📎 evidence attached: security_report (15028d5e…)
+   ✅ QA → PENDING_UAT_MERGE
+
+[step 7] Merge to UAT, UAT passes.
+   📎 evidence attached: merge (8d8fde26…)
+   ✅ PENDING_UAT_MERGE → UAT
+   📎 evidence attached: uat_result (0a1733f1…)
+   ✅ UAT → PENDING_PROD
+
+[step 8] Production gate: human approval required (§41 Mode A).
+   📎 evidence attached: approval (e464e0b7…)
+   ✅ PENDING_PROD → PROD_DEPLOYING
+
+[step 9] Deploy + production smoke test → DONE.
+   📎 evidence attached: deployment (f3298f3d…)
+   ✅ PROD_DEPLOYING → PROD_VERIFICATION
+   📎 evidence attached: smoke_test (49b42d84…)
+   ✅ PROD_VERIFICATION → DONE
+
+🎉 Task "Fix payment success but order stays Pending" is DONE (completed at 2026-10-10T08:18:33.192Z)
+
+--- Evidence chain (all gate evidence is now SEALED/immutable) ---
+   [SEALED] plan — plan evidence
+   [SEALED] code_change — code_change evidence
+   [SEALED] code_review — code_review evidence
+   [SEALED] ci_result — ci_result evidence
+   [SEALED] qa_result — qa_result evidence
+   [SEALED] security_report — security_report evidence
+   [SEALED] merge — merge evidence
+   [SEALED] uat_result — uat_result evidence
+   [SEALED] approval — approval evidence
+   [SEALED] deployment — deployment evidence
+   [SEALED] smoke_test — smoke_test evidence
+
+--- Audit trail (append-only) ---
+   2026-10-10T08:18:33.138Z  4032f39a-787d-4e66-ada7-ca6cc55a712c  WORKFLOW_TRANSITIONED  task:2a556a44…
+   2026-10-10T08:18:33.153Z  4032f39a-787d-4e66-ada7-ca6cc55a712c  WORKFLOW_TRANSITIONED  task:2a556a44…
+   2026-10-10T08:18:33.160Z  3dfe7f70-1c3e-49eb-aba2-914149e6a1cf  WORKFLOW_TRANSITIONED  task:2a556a44…
+   2026-10-10T08:18:33.167Z  reviewer-01  WORKFLOW_TRANSITIONED  task:2a556a44…
+   2026-10-10T08:18:33.169Z  865a208c-cbf1-4547-8fab-2033985985a0  WORKFLOW_TRANSITIONED  task:2a556a44…
+   2026-10-10T08:18:33.176Z  865a208c-cbf1-4547-8fab-2033985985a0  WORKFLOW_TRANSITION_DENIED  task:2a556a44…
+   2026-10-10T08:18:33.178Z  865a208c-cbf1-4547-8fab-2033985985a0  WORKFLOW_TRANSITIONED  task:2a556a44…
+   2026-10-10T08:18:33.178Z  devops-01  WORKFLOW_TRANSITIONED  task:2a556a44…
+   2026-10-10T08:18:33.186Z  865a208c-cbf1-4547-8fab-2033985985a0  WORKFLOW_TRANSITIONED  task:2a556a44…
+   2026-10-10T08:18:33.186Z  human  WORKFLOW_TRANSITIONED  task:2a556a44…
+   2026-10-10T08:18:33.190Z  devops-01  WORKFLOW_TRANSITIONED  task:2a556a44…
+   2026-10-10T08:18:33.192Z  devops-01  WORKFLOW_TRANSITIONED  task:2a556a44…

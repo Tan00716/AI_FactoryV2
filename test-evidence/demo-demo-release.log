@@ -1,0 +1,64 @@
+
+> ai-factory@0.1.0 demo:release
+> npm run build -w @ai-factory/cicd && node packages/cicd/dist/demo/release.demo.js
+
+
+> @ai-factory/cicd@0.1.0 build
+> tsc -p tsconfig.json
+
+Release Manager demo — §40 environments, §41 approval gates, §77 snapshots/rollback
+
+=== Environments (§40) ===
+  env-local  LOCAL  policy=none  secrets=[none]  health=script:process exit code 0
+  env-dev  DEV  policy=none  secrets=[dev-secrets]  health=http:/healthz → 200
+  env-uat  UAT  policy=ai  secrets=[uat-secrets]  health=http:/healthz → 200, then smoke tests
+  env-prod  PROD  policy=human  secrets=[prod-secrets]  health=http:/healthz → 200, then smoke tests + canary check
+  (secretRefs are reference names only — never values)
+
+=== Release creation (semver + changelog draft) ===
+  isValidSemver('1.4.0') → true
+  bumpVersion('1.4.0','minor') → 1.5.0
+  📝 audit: RELEASE_CREATED (release 03d7bc29, status draft)
+  release 03d7bc29 v1.4.0 [draft]
+  changelog draft:
+    - feat: dark mode toggle
+    - fix: session race on login
+
+[step 1] Deploy to UAT (policy: ai — approval attached)
+  📝 audit: RELEASE_CREATED (release c985e677, status draft)
+  📝 audit: RELEASE_APPROVAL_ADDED (release c985e677, status draft)
+  📝 audit: RELEASE_APPROVED (release c985e677, status approved)
+  📝 audit: RELEASE_DEPLOY_STARTED (release c985e677, status deploying)
+  🚀 helm upgrade → UAT
+  📝 audit: RELEASE_DEPLOY_STEP_OK (release c985e677, status undefined)
+  🩺 health check [http] /healthz → 200, then smoke tests … OK
+  📝 audit: RELEASE_DEPLOYED (release c985e677, status deployed)
+  ✅ UAT deploy → deployed (snapshot 060a523c)
+
+[step 2] Deploy to PROD with no approval → refused (policy: human)
+  📝 audit: RELEASE_APPROVAL_REQUIRED (release c985e677, status pending_approval)
+  ⛔ refused: policy='human' — Deploy of release c985e677-c94c-40b2-bb63-a5c72bd28794 to env-prod refused: approval policy is 'human' and no granted approval is attached
+  release parked at status 'pending_approval' (pending_approval)
+
+[step 3] Human approves → PROD deploy succeeds
+  📝 audit: RELEASE_APPROVAL_ADDED (release c985e677, status pending_approval)
+  📝 audit: RELEASE_APPROVED (release c985e677, status approved)
+  release status now 'approved' (approved)
+  📝 audit: RELEASE_DEPLOY_STARTED (release c985e677, status deploying)
+  🚀 helm upgrade --atomic → PROD
+  📝 audit: RELEASE_DEPLOY_STEP_OK (release c985e677, status undefined)
+  🩺 health check [http] /healthz → 200, then smoke tests + canary check … OK
+  📝 audit: RELEASE_DEPLOYED (release c985e677, status deployed)
+  ✅ PROD deploy → deployed
+
+[step 4] Health-check failure → automatic rollback (§77)
+  📝 audit: RELEASE_CREATED (release 2a1dd351, status draft)
+  📝 audit: RELEASE_DEPLOY_STARTED (release 2a1dd351, status deploying)
+  🚀 docker compose up --build → DEV
+  📝 audit: RELEASE_DEPLOY_STEP_OK (release 2a1dd351, status undefined)
+  🩺 health check [http] /healthz → 200 … FAILED (500)
+  📝 audit: RELEASE_ROLLED_BACK (release 2a1dd351, status rolled_back)
+  🔁 deploy → rolled_back (health check failed (http /healthz → 200))
+  pre-deploy snapshot 7abdd997 restored automatically
+
+✅ demo complete: UAT deployed, PROD gated on human approval then deployed, unhealthy deploy rolled back

@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/core":"0.1.0"},"description":"Requirement as first-class artifact: immutable versions, ACs, completion targets, impact analysis (SPEC_V2 §16)","main":"dist/src/index.js","name":"@ai-factory/requirements","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

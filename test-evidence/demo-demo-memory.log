@@ -1,0 +1,32 @@
+
+> ai-factory@0.1.0 demo:memory
+> npm run build -w @ai-factory/memory && node packages/memory/dist/demo/memory.demo.js
+
+
+> @ai-factory/memory@0.1.0 build
+> tsc -p tsconfig.json
+
+— 1. entries across all five scopes —
+  [system/global] Fact "PostgreSQL default isolation is READ COMMITTED" conf=1 status=ACTIVE
+  [project/shop] Decision "Use idempotent payment callbacks" conf=0.95 status=ACTIVE
+
+— 2. dedup merge: same lesson written twice —
+  same id: true (entries in store: 6)
+  confidence: 0.7 -> 0.85 (max wins)
+  evidence: ["ev-7a","ev-7b"] (union)
+
+— 3. expiry: expired entry auto-marked and excluded —
+  status after read: EXPIRED
+  in default query: false
+  in includeExpired query: true
+
+— 4. decay + verify —
+  t+0ms   conf=0.8
+  t+600ms conf=0.6 (decay −0.2)
+  after verify('tech-lead'): conf=0.7 status=ACTIVE
+
+— 5. lessonFromEvaluation → store —
+  [task/task-101] Lesson "Lesson from task task-101" conf=0.83 status=ACTIVE
+  [task/task-101] Failure "Failure in task task-101: staging secret missing at first deploy" conf=0.73 status=ACTIVE
+
+done — 10 entries in store.

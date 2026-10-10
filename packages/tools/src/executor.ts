@@ -1,0 +1,291 @@
+/**
+ * Tool execution with execution-point capability enforcement — SPEC v2 §33.
+ *
+ * The critical rule: permission is decided by (action, resource) against the
+ * caller's CapabilityGrant — never by tool name. An alternate path (python
+ * `open`, another MCP server) attempting a denied action gets the same
+ * DENIED verdict as the "official" tool.
+ *
+ * Exit-code truth: a natural-language "success" in output never overrides a
+ * non-zero exit code.
+ */
+import { randomUUID } from 'node:crypto';
+import { REASON_CODES, type ReasonCode } from '@ai-factory/api-contracts';
+import type {
+  CapabilityGrant,
+  ExecutionOutcome,
+  ExecutionRecord,
+  ToolCall,
+  ToolMetadata,
+  ToolPrincipal,
+} from './types';
+import type { ToolRegistry } from './registry';
+import { validateInput } from './schema';
+
+export class ToolDeniedError extends Error {
+  readonly code = 'TOOL_DENIED';
+  readonly reasonCode: ReasonCode;
+  constructor(reasonCode: ReasonCode, message: string) {
+    super(`${reasonCode}: ${message}`);
+    this.name = 'ToolDeniedError';
+    this.reasonCode = reasonCode;
+  }
+}
+
+export interface RunnerResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  artifacts?: string[];
+  /** Runner's own note, e.g. "success" — never overrides exitCode. */
+  note?: string;
+}
+
+export type ToolRunner = (
+  call: ResolvedToolCall,
+) => Promise<RunnerResult> | RunnerResult;
+
+export interface ResolvedToolCall extends ToolCall {
+  tool: ToolMetadata;
+}
+
+export interface ExecutorOptions {
+  runner: ToolRunner;
+  now?: () => number;
+  /** Max chars kept per stream; longer output is truncated with a marker. */
+  maxOutputChars?: number;
+}
+
+const SECRET_PATTERNS: RegExp[] = [
+  /secret:\/\/[^\s"'<>]+/g,
+  /(?<=password\s*=\s*")[^"]+(?=")/gi,
+  /(?<=api[_-]?key\s*=\s*")[^"]+(?=")/gi,
+];
+
+function redactText(text: string): { text: string; redacted: boolean } {
+  let out = text;
+  let redacted = false;
+  for (const pattern of SECRET_PATTERNS) {
+    pattern.lastIndex = 0;
+    if (pattern.test(out)) {
+      pattern.lastIndex = 0;
+      out = out.replace(pattern, '***');
+      redacted = true;
+    }
+  }
+  return { text: out, redacted };
+}
+
+function isoNow(now?: () => number): string {
+  return new Date(now ? now() : Date.now()).toISOString();
+}
+
+export class ToolExecutor {
+  private readonly log: ExecutionRecord[] = [];
+  private readonly idempotency = new Map<string, string>();
+
+  constructor(
+    private readonly registry: ToolRegistry,
+    private readonly opts: ExecutorOptions,
+  ) {}
+
+  /** Full audit log, including DENIED attempts. */
+  attempts(): ExecutionRecord[] {
+    return this.log.map((r) => ({ ...r }));
+  }
+
+  /**
+   * Execute a tool call. Always returns a record (denials included);
+   * use executeOrThrow() for exception semantics.
+   */
+  async execute(call: ToolCall): Promise<ExecutionRecord> {
+    const startedAt = isoNow(this.opts.now);
+
+    // Idempotency: same key → same record, no re-execution.
+    if (call.idempotencyKey) {
+      const priorId = this.idempotency.get(call.idempotencyKey);
+      if (priorId) {
+        const prior = this.log.find((r) => r.id === priorId);
+        if (prior) return { ...prior, note: 'idempotent replay — not re-executed' };
+      }
+    }
+
+    const deny = (reasonCode: ReasonCode, message: string): ExecutionRecord => {
+      const record = this.finishRecord(call, null, '', '', {
+        outcome: 'DENIED',
+        startedAt,
+        note: `${reasonCode}: ${message}`,
+        toolVersion: 'unknown',
+      });
+      return record;
+    };
+
+    let tool: ToolMetadata;
+    try {
+      tool = this.registry.get(call.toolId, call.toolVersion);
+    } catch {
+      return deny('UNSUPPORTED_CAPABILITY', `unknown tool ${call.toolId}`);
+    }
+
+    if (tool.approvalPolicy === 'BLOCKED') {
+      return deny('POLICY_DENIED', `tool ${tool.id} is BLOCKED by approval policy`);
+    }
+
+    const issues = validateInput(tool.inputSchema, call.args);
+    if (issues.length > 0) {
+      return deny(
+        'POLICY_DENIED',
+        `input schema violations: ${issues.map((i) => `${i.field} ${i.message}`).join('; ')}`,
+      );
+    }
+
+    const grantIssue = checkGrant(call, tool, this.opts.now);
+    if (grantIssue) return deny(grantIssue.code, grantIssue.message);
+
+    const resolved: ResolvedToolCall = { ...call, tool };
+    let result: RunnerResult;
+    try {
+      result = await this.runWithTimeout(resolved, tool.timeoutMs);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return this.finishRecord(call, null, '', '', {
+        outcome: 'TIMED_OUT',
+        startedAt,
+        note: message,
+        toolVersion: tool.version,
+      });
+    }
+
+    // Exit-code truth: the runner's note never overrides exitCode.
+    const outcome: ExecutionOutcome = result.exitCode === 0 ? 'SUCCEEDED' : 'FAILED';
+    return this.finishRecord(call, result.exitCode, result.stdout, result.stderr, {
+      outcome,
+      startedAt,
+      note: result.note,
+      toolVersion: tool.version,
+      artifacts: result.artifacts,
+    });
+  }
+
+  /** Throw ToolDeniedError when the outcome is DENIED. */
+  async executeOrThrow(call: ToolCall): Promise<ExecutionRecord> {
+    const record = await this.execute(call);
+    if (record.outcome === 'DENIED') {
+      const code = record.note?.split(':')[0] as ReasonCode;
+      throw new ToolDeniedError(
+        (Object.keys(REASON_CODES) as ReasonCode[]).includes(code) ? code : 'POLICY_DENIED',
+        record.note ?? 'denied',
+      );
+    }
+    return record;
+  }
+
+  private async runWithTimeout(call: ResolvedToolCall, timeoutMs: number): Promise<RunnerResult> {
+    return await new Promise<RunnerResult>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`tool timed out after ${timeoutMs}ms`)), timeoutMs);
+      Promise.resolve()
+        .then(() => this.opts.runner(call))
+        .then((r) => {
+          clearTimeout(timer);
+          resolve(r);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  }
+
+  private finishRecord(
+    call: ToolCall,
+    exitCode: number | null,
+    stdout: string,
+    stderr: string,
+    partial: {
+      outcome: ExecutionOutcome;
+      startedAt: string;
+      note?: string;
+      toolVersion: string;
+      artifacts?: string[];
+    },
+  ): ExecutionRecord {
+    const max = this.opts.maxOutputChars ?? 64_000;
+    const trim = (s: string) => (s.length > max ? s.slice(0, max) + '…[truncated]' : s);
+    const argvR = redactText(JSON.stringify(call.args));
+    const outR = redactText(trim(stdout));
+    const errR = redactText(trim(stderr));
+    const record: ExecutionRecord = {
+      id: randomUUID(),
+      toolId: call.toolId,
+      toolVersion: partial.toolVersion,
+      action: call.action,
+      resource: call.resource,
+      argv: JSON.parse(argvR.text) as Record<string, unknown>,
+      cwd: call.cwd ?? process.cwd(),
+      envRef: 'env:default',
+      principal: { ...call.principal },
+      capabilityId: call.capability.id,
+      startedAt: partial.startedAt,
+      endedAt: isoNow(this.opts.now),
+      exitCode,
+      stdout: outR.text,
+      stderr: errR.text,
+      outcome: partial.outcome,
+      redacted: argvR.redacted || outR.redacted || errR.redacted,
+      artifacts: partial.artifacts ?? [],
+      note: partial.note,
+    };
+    this.log.push(record);
+    if (call.idempotencyKey && partial.outcome !== 'DENIED') {
+      this.idempotency.set(call.idempotencyKey, record.id);
+    }
+    return { ...record };
+  }
+}
+
+/**
+ * Execution-point capability check. Returns null when allowed, otherwise the
+ * denial reason. Checked dimensions: grant identity, revocation, expiry,
+ * action granted, resource prefix, and the tool actually offering the action.
+ */
+export function checkGrant(
+  call: ToolCall,
+  tool: ToolMetadata,
+  now?: () => number,
+): { code: ReasonCode; message: string } | null {
+  const grant: CapabilityGrant = call.capability;
+  if (grant.revoked) {
+    return { code: 'UNAUTHORIZED', message: `capability ${grant.id} revoked` };
+  }
+  if (grant.principalId !== call.principal.id) {
+    return { code: 'UNAUTHORIZED', message: 'capability does not belong to the caller' };
+  }
+  if (grant.expiresAt && (now ? now() : Date.now()) >= new Date(grant.expiresAt).getTime()) {
+    return { code: 'AUTHORIZATION_EXPIRED', message: `capability ${grant.id} expired` };
+  }
+  if (!grant.actions.includes(call.action)) {
+    return {
+      code: 'POLICY_DENIED',
+      message: `action '${call.action}' not granted (have: ${grant.actions.join(', ') || 'none'})`,
+    };
+  }
+  const covered = grant.resourcePrefixes.some(
+    (prefix) => call.resource === prefix || call.resource.startsWith(prefix),
+  );
+  if (!covered) {
+    return {
+      code: 'SCOPE_VIOLATION',
+      message: `resource '${call.resource}' outside granted prefixes`,
+    };
+  }
+  if (!tool.capabilities.includes(call.action)) {
+    return {
+      code: 'UNSUPPORTED_CAPABILITY',
+      message: `tool ${tool.id} does not offer action '${call.action}'`,
+    };
+  }
+  return null;
+}
+
+/** Re-export for convenience. */
+export type { ToolPrincipal as Principal };

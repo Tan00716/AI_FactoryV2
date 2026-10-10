@@ -1,0 +1,45 @@
+
+> ai-factory@0.1.0 demo:resources
+> npm run build -w @ai-factory/resources && node packages/resources/dist/demo/budget-blowout.demo.js
+
+
+> @ai-factory/resources@0.1.0 build
+> tsc -p tsconfig.json
+
+Task task-demo-blowout budget: 10,000 tokens
+consume ok: planner +4000 tokens
+consume ok: coder +4000 tokens
+REJECTED: coder wanted 5000 tokens — tokens exceeded for task task-demo-blowout (used=8000, limit=10000)
+increase request 046ca67e… → status: pending
+
+--- audit trail ---
+[AUDIT] actor=system action=BUDGET_EXCEEDED task=task-demo-blowout dimension=tokens used=8000/10000
+--- human notifications ---
+[HUMAN] Task task-demo-blowout exceeded its tokens budget (used 8000 of 10000). Increase requested — awaiting approval.
+--- remaining budget --- 2000 tokens
+--- pending increases --- 1
+--- usage summary (by agent) ---
+{
+  "planner": {
+    "total": 4000,
+    "kinds": {
+      "timeMs": 0,
+      "tokens": 4000,
+      "toolCalls": 0,
+      "retries": 0,
+      "storageBytes": 0,
+      "processes": 0
+    }
+  },
+  "coder": {
+    "total": 4000,
+    "kinds": {
+      "timeMs": 0,
+      "tokens": 4000,
+      "toolCalls": 0,
+      "retries": 0,
+      "storageBytes": 0,
+      "processes": 0
+    }
+  }
+}

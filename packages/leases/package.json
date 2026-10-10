@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/api-contracts":"0.1.0"},"description":"SPEC v2 §22 durable leases with fencing tokens, STALE_OWNER rejection, ordered resource locks","main":"dist/src/index.js","name":"@ai-factory/leases","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

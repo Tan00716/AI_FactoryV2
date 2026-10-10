@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/core":"0.1.0"},"description":"Deterministic progress engine: 100*sum(w_i*c_i)/sum(w_i), weight plan versions, invalidation (SPEC_V2 §20)","main":"dist/src/index.js","name":"@ai-factory/progress","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

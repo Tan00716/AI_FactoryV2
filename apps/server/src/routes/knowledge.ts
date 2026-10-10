@@ -1,20 +1,28 @@
 /**
- * Knowledge routes — spec §50 (hierarchy), §51 (sources), §52 (scout),
- * §53 (lifecycle + promotion policy).
+ * Knowledge routes — spec §44 (Knowledge Engine, Scout, Update Feed).
  *
- *   GET  /api/knowledge?q=&projectId=&taskId=   hierarchical query (§50)
+ *   GET  /api/knowledge?q=&projectId=&taskId=   hierarchical query
  *   POST /api/knowledge                          {title, content, tags?, scope, source}
  *   GET  /api/knowledge/:id                      item + lifecycle history
  *   POST /api/knowledge/:id/transition           {to, actor, note?, evidence?}
+ *   GET  /api/knowledge/sources/rank?type=       source rating (§44: rankSource
+ *                                                score, credibility, doubled
+ *                                                community threshold)
  *   POST /api/knowledge/scout                    {candidate: ScoutCandidate}
+ *                                                → proposal CANDIDATE only;
+ *                                                never mutates live objects;
+ *                                                independent scout budget
  *   POST /api/knowledge/:id/publish              {actor, skillId, summary?} → proposal+notice only
  *
- * Publishing never modifies agents (§53): /publish returns a proposal and a
+ * Publishing never modifies agents (§44): /publish returns a proposal and a
  * notice; applying them is an external, separately-approved step.
  * Every lifecycle transition writes an audit record.
  *
- *   GET  /api/knowledge/feed              Update Feed cards (spec §89)
- *   POST /api/knowledge/feed/:id/decision {decision: 'adopt'|'ignore', actor?}
+ *   GET  /api/knowledge/feed              Update Feed cards (spec §44):
+ *                                          change/why-relevant/official-source/
+ *                                          affected/risk/action/evaluation
+ *   POST /api/knowledge/feed/:id/decision {cardId, decision: 'activate'|'defer'|'reject'
+ *                                          (legacy: 'adopt'|'ignore'), actor?}
  *                                          → audit record only; never touches agents
  *
  * The coordinator wires this in: handleKnowledgeRoutes(req, res, url, ctx).
@@ -24,10 +32,17 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   KnowledgeStore,
   KnowledgeScout,
+  rankSource,
+  recordFeedDecision,
   sampleFeedCards,
+  sourceRank,
+  verificationThreshold,
+  SOURCE_CREDIBILITY,
+  type FeedAction,
   type LifecycleState,
   type NewKnowledgeInput,
   type QueryContext,
+  type SourceType,
 } from '@ai-factory/knowledge';
 import type { RouteContext } from './context';
 
@@ -88,7 +103,30 @@ export async function handleKnowledgeRoutes(
     }
   }
 
+  // GET /api/knowledge/sources/rank?type= — source rating (§44).
+  if (method === 'GET' && path === `${PREFIX}/sources/rank`) {
+    const type = url.searchParams.get('type') as SourceType | null;
+    const valid: SourceType[] = [
+      'official_spec', 'official_docs', 'official_release',
+      'primary_article', 'research', 'community',
+    ];
+    if (!type || !valid.includes(type)) {
+      return ctx.json(res, 400, { error: `type must be one of: ${valid.join(', ')}` }), true;
+    }
+    return ctx.json(res, 200, {
+      type,
+      score: rankSource(type),
+      rank: sourceRank(type),
+      credibility: SOURCE_CREDIBILITY[type],
+      // Community sources need DOUBLED verification (§44: 社区资料需更强验证).
+      verificationThreshold: verificationThreshold(type),
+      communityDoubled: type === 'community',
+    }), true;
+  }
+
   // POST /api/knowledge/scout — before the :id matcher.
+  // Produces proposal CANDIDATES only: the scout never mutates running
+  // employee/skill/policy objects and runs on an independent budget.
   if (method === 'POST' && path === `${PREFIX}/scout`) {
     const body = await ctx.readBody(req);
     const candidate = body['candidate'] as Record<string, unknown> | undefined;
@@ -96,13 +134,19 @@ export async function handleKnowledgeRoutes(
       return ctx.json(res, 400, { error: 'candidate {title, rawContent, topic, source, scope} is required' }), true;
     }
     try {
-      const result = await scout.run(candidate as never);
-      ctx.audit.record('system', 'KNOWLEDGE_SCOUT_RUN', 'knowledge_scout', String((result as { runId?: string }).runId ?? 'n/a'), {
+      const budgetTotal = Number(body['budgetTotal']);
+      const result = await scout.run(candidate as never, {
+        ...(Number.isFinite(budgetTotal) ? { budget: { total: budgetTotal } } : {}),
+      });
+      ctx.audit.record('system', 'KNOWLEDGE_SCOUT_RUN', 'knowledge_scout', result.artifact.proposal?.id ?? 'n/a', {
         title: candidate['title'],
+        proposalKind: result.artifact.proposal?.kind,
+        budget: result.budget,
       });
       return ctx.json(res, 200, result), true;
     } catch (e) {
-      return ctx.json(res, 400, { error: (e as Error).message }), true;
+      const code = (e as { code?: string }).code;
+      return ctx.json(res, 400, { error: (e as Error).message, ...(code ? { code } : {}) }), true;
     }
   }
 
@@ -118,22 +162,29 @@ export async function handleKnowledgeRoutes(
     return ctx.json(res, 200, { cards, source: 'sample' }), true;
   }
 
-  // POST /api/knowledge/feed/:id/decision — adopt/ignore a feed card.
-  // Records an audit entry only; adopting never modifies agents (§53 policy).
+  // POST /api/knowledge/feed/:id/decision — Activate/Defer/Reject a feed card.
+  // Records an audit entry only; adopting never modifies agents (§44).
   if (method === 'POST' && id === 'feed' && rest === '/decision') {
     const body = await ctx.readBody(req);
     const cardId = typeof body['cardId'] === 'string' ? body['cardId'] : null;
-    const decision = body['decision'];
+    const raw = body['decision'];
     const actor = typeof body['actor'] === 'string' ? body['actor'] : 'human';
-    if (!cardId || (decision !== 'adopt' && decision !== 'ignore')) {
-      return ctx.json(res, 400, { error: "cardId and decision 'adopt'|'ignore' are required" }), true;
+    // Legacy mapping: adopt → Activate, ignore → Reject.
+    const action: FeedAction | undefined =
+      raw === 'activate' || raw === 'adopt' ? 'Activate'
+        : raw === 'defer' ? 'Defer'
+          : raw === 'reject' || raw === 'ignore' ? 'Reject'
+            : undefined;
+    if (!cardId || !action) {
+      return ctx.json(res, 400, { error: "cardId and decision 'activate'|'defer'|'reject' are required" }), true;
     }
     const card = sampleFeedCards().find((c) => c.id === cardId);
     if (!card) return ctx.json(res, 404, { error: `feed card not found: ${cardId}` }), true;
+    const decided = recordFeedDecision(card, action, { by: actor });
     ctx.audit.record(actor, 'KNOWLEDGE_FEED_DECISION', 'knowledge_feed', cardId, {
-      decision, title: card.title, recommendedAction: card.recommendedAction,
+      decision: action, title: card.title, recommendedAction: card.recommendedAction,
     });
-    return ctx.json(res, 200, { ok: true, cardId, decision }), true;
+    return ctx.json(res, 200, { ok: true, cardId, decision: action, card: decided }), true;
   }
 
   // GET /api/knowledge/:id

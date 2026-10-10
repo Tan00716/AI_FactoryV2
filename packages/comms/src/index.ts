@@ -35,3 +35,20 @@ export type {
   PostInput,
   CommsErrorCode,
 } from './channel.ts';
+
+export {
+  REPORT_SCHEMA_VERSION,
+  ReportError,
+  ReportLog,
+} from './report.ts';
+export type {
+  ManagementReport,
+  ManagementReportStatus,
+  NewManagementReport,
+  RefExistenceChecker,
+  ReportErrorCode,
+  ReportRisk,
+  ReportSubmitContext,
+  RiskSeverity,
+  SystemReportFields,
+} from './report.ts';

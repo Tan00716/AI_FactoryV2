@@ -1,0 +1,40 @@
+
+> ai-factory@0.1.0 demo:knowledge
+> npm run build -w @ai-factory/knowledge && node packages/knowledge/dist/demo/knowledge.demo.js
+
+
+> @ai-factory/knowledge@0.1.0 build
+> tsc -p tsconfig.json
+
+== 1. Ingest candidate knowledge ==
+   candidate: "Loop engineering: retry with backoff" (source: official_docs)
+
+== 2. Scout pipeline ==
+   … discover ✓
+   … collect ✓
+   … verify ✓
+   … normalize ✓
+   … compare ✓
+   … evaluate ✓
+   … store ✓
+   … skill_proposal ✓
+   … publish ✓
+   stages: discover:ok → collect:ok → verify:ok → normalize:ok → compare:ok → evaluate:ok → store:ok → skill_proposal:ok → publish:ok
+   stored item: know_6d9ceca8-2ae3-42d3-bda4-f183c7bf2038 [DISCOVERED]
+   evaluation score: 66 (passed=true)
+
+== 3. Lifecycle → ACTIVE (gated) ==
+   DISCOVERED → UNVERIFIED  (actor=demo-operator)
+   UNVERIFIED → VALIDATED  (actor=demo-operator)
+   VALIDATED → EVALUATED  (actor=demo-operator)
+   EVALUATED → APPROVED  (actor=demo-operator)
+   published: proposal prop_bdbb02f8-4ba4-4443-9470-de8e3c07735c [PENDING]
+   notice: "Knowledge "Loop engineering: retry with backoff" proposed for skill loop-engineering. Awaiting external approval — no agent was modified by this publication."
+   [external] skill registry applied proposal prop_bdbb02f8-4ba4-4443-9470-de8e3c07735c → skill loop-engineering
+   APPROVED → ACTIVE  (actor=demo-operator)
+
+== 4. Hierarchical query (TASK → … → GLOBAL) ==
+   [PROJECT] Project deploy checklist — ACTIVE
+   [GLOBAL] Loop engineering: retry with backoff — ACTIVE
+
+2 hit(s); most specific scope wins, broader scopes fall back.

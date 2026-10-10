@@ -1,1 +1,1 @@
-{"compilerOptions":{"outDir":"dist","rootDir":"src"},"extends":"../../tsconfig.base.json","include":["src/**/*"]}
+{"compilerOptions":{"allowImportingTsExtensions":true,"outDir":"dist","rewriteRelativeImportExtensions":true,"rootDir":"."},"extends":"../../tsconfig.base.json","include":["src/**/*","tests/**/*","demo/**/*"]}

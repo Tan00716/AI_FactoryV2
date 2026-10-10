@@ -10,3 +10,4 @@
  */
 export * from './squad';
 export * from './org-designer';
+export * from './org-graph';

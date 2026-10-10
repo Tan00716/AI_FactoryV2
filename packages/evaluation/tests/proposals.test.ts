@@ -5,7 +5,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { ProposalBoard, ProposalTransitionError } from '../src/index';
+import { ProposalBoard, ProposalTransitionError, LockedDomainError } from '../src/index';
 
 function board(now = 1_000): ProposalBoard {
   return new ProposalBoard({ now: () => now });
@@ -158,5 +158,73 @@ describe('ProposalBoard lifecycle', () => {
     });
     b.approve(a.proposalId, 'human:cto');
     assert.deepEqual(b.pending().map((p) => p.proposalId), [c.proposalId]);
+  });
+});
+
+describe('locked domains — rejected at creation [§45.2]', () => {
+  it('rejects a proposal that targets lock-rules via targetDomains', () => {
+    const b = board();
+    assert.throws(
+      () =>
+        b.propose({
+          kind: 'org-rule',
+          title: 'Simplify execution',
+          description: 'Speed up the loop.',
+          proposedBy: 'human:cto',
+          targetDomains: ['lock-rules'],
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof LockedDomainError);
+        assert.equal(err.code, 'LOCKED_DOMAIN');
+        assert.equal(err.domain, 'lock-rules');
+        return true;
+      },
+    );
+  });
+
+  it('rejects locked proposals regardless of approver — even human:cto cannot file one', () => {
+    const b = board();
+    const before = b.pending().length;
+    assert.throws(
+      () =>
+        b.propose({
+          kind: 'process',
+          title: 'Remove human authority from deploys',
+          description: 'Agents should deploy without asking.',
+          proposedBy: 'human:cto',
+        }),
+      (err: unknown) => err instanceof LockedDomainError && err.code === 'LOCKED_DOMAIN',
+    );
+    // Rejected at creation: nothing was stored, nothing to approve.
+    assert.equal(b.pending().length, before);
+  });
+
+  it('detects each locked domain: human authority, permission ceiling, AC, gate standards', () => {
+    const b = board();
+    const cases: Array<[string, string, string]> = [
+      ['human-authority', 'Grant agents prod admin', 'Bypass human authority for speed.'],
+      ['permission-ceiling', 'Raise the caps', 'Lift the permission ceiling on tool access.'],
+      ['access-control', 'Loosen AC', 'Relax the access control on the model registry.'],
+      ['gate-standards', 'Weaken gates', 'Lower the gate standards for canary promotion.'],
+    ];
+    for (const [domain, title, description] of cases) {
+      assert.throws(
+        () => b.propose({ kind: 'org-rule', title, description, proposedBy: 'agent-x' }),
+        (err: unknown) =>
+          err instanceof LockedDomainError && err.domain === domain && err.code === 'LOCKED_DOMAIN',
+        `expected LOCKED_DOMAIN for ${domain}`,
+      );
+    }
+  });
+
+  it('a benign proposal with similar-sounding words still passes', () => {
+    const b = board();
+    const p = b.propose({
+      kind: 'skill-improvement',
+      title: 'Cache lint results',
+      description: 'Skip unchanged files; keep the review gate intact.',
+      proposedBy: 'agent-x',
+    });
+    assert.equal(p.status, 'PROPOSED');
   });
 });

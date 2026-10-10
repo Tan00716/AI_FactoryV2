@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/api-contracts":"0.1.0","@ai-factory/security":"0.1.0"},"description":"SPEC v2 §33 Tool Registry: tool metadata, side-effect classification, execution-point capability enforcement, unified execution audit","main":"dist/src/index.js","name":"@ai-factory/tools","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

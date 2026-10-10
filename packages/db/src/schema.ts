@@ -102,20 +102,26 @@ CREATE TABLE IF NOT EXISTS evidence (
 );
 
 CREATE TABLE IF NOT EXISTS approvals (
-  id TEXT PRIMARY KEY,
+  approval_id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL REFERENCES tasks(id),
   action TEXT NOT NULL,
-  requested_by TEXT DEFAULT '',
-  agent_id TEXT DEFAULT '',
+  action_digest TEXT DEFAULT '',
+  requester TEXT DEFAULT '',
   risk_level TEXT DEFAULT 'MEDIUM',
-  evidence_ids TEXT DEFAULT '[]',
-  required_approver TEXT DEFAULT 'human',
+  reversibility_ref TEXT DEFAULT '',
+  requirement_version TEXT DEFAULT '',
+  candidate_digest TEXT DEFAULT '',
+  environment TEXT DEFAULT '',
+  evidence_manifest_hash TEXT DEFAULT '',
+  policy_version TEXT DEFAULT '',
+  required_approvers TEXT DEFAULT '["human"]',
   status TEXT DEFAULT 'PENDING',
   decision TEXT DEFAULT '',
+  decision_reason TEXT DEFAULT '',
   decided_by TEXT DEFAULT '',
   created_at TEXT NOT NULL,
   decided_at TEXT,
-  expires_at TEXT
+  deadline TEXT
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -134,8 +140,9 @@ CREATE INDEX IF NOT EXISTS idx_evidence_task ON evidence(task_id);
 CREATE INDEX IF NOT EXISTS idx_approvals_task ON approvals(task_id);
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(ts);
 
--- Structured memory engine (spec §54–§56). Row mapping notes live in
+-- Structured memory engine (SPEC v2 §43.2). Row mapping notes live in
 -- packages/memory/src/sql.ts (MEMORY_SCHEMA); this is the same DDL.
+-- Older databases are migrated in place by migrateMemoryTable in db.ts.
 CREATE TABLE IF NOT EXISTS memory_entries (
   id TEXT PRIMARY KEY,
   scope TEXT NOT NULL,
@@ -144,17 +151,59 @@ CREATE TABLE IF NOT EXISTS memory_entries (
   title TEXT NOT NULL,
   content TEXT DEFAULT '',
   source TEXT DEFAULT '',
+  source_refs TEXT DEFAULT '[]',
   confidence REAL DEFAULT 0,
+  confidence_kind TEXT DEFAULT 'model-self-assessed',
   created_by TEXT DEFAULT '',
   evidence_ids TEXT DEFAULT '[]',
+  task_refs TEXT DEFAULT '[]',
   last_verified_at TEXT NOT NULL,
   applicable_scope TEXT DEFAULT '',
+  access_scope TEXT DEFAULT '[]',
+  data_classification TEXT DEFAULT 'internal',
+  cross_project_reusable TEXT DEFAULT '{"allowed":false}',
   expires_at TEXT,
   status TEXT DEFAULT 'ACTIVE',
+  supersedes TEXT DEFAULT '[]',
+  contradicts TEXT DEFAULT '[]',
+  index_version TEXT DEFAULT 'v1',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_entries_scope
   ON memory_entries (scope, scope_id);
+
+-- SPEC v2 §48.3: requirement (id, version) uniqueness; versions are immutable.
+CREATE TABLE IF NOT EXISTS requirement_versions (
+  requirement_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  payload TEXT DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (requirement_id, version)
+);
+
+-- SPEC v2 §21.4 / §48.3: budget reservations; settlement idempotency is
+-- enforced by (reservation_id) primary key + state machine in code.
+CREATE TABLE IF NOT EXISTS budget_reservations (
+  reservation_id TEXT PRIMARY KEY,
+  envelope_id TEXT NOT NULL,
+  amount_minor INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'RESERVED',
+  created_at TEXT NOT NULL,
+  settled_at TEXT
+);
+
+-- SPEC v2 §48.4: durable outbox — key state changes commit with their
+-- outbox events in one transaction.
+CREATE TABLE IF NOT EXISTS outbox_events (
+  event_id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  aggregate_id TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  payload TEXT DEFAULT '{}',
+  dispatched_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_undispatched
+  ON outbox_events (dispatched_at);
 `;

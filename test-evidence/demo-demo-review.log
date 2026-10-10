@@ -1,0 +1,25 @@
+
+> ai-factory@0.1.0 demo:review
+> npm run build -w @ai-factory/review && node packages/review/dist/demo/review.demo.js
+
+
+> @ai-factory/review@0.1.0 build
+> tsc -p tsconfig.json
+
+
+=== Case A — hardcoded key + SQL concat, no tests ===
+verdict : CHANGES_REQUESTED (expected CHANGES_REQUESTED)
+gate    : DENIED
+findings: 3
+  [ERROR] [security] src/auth/login.ts:1 — Hardcoded credential 'API_KEY' — read from env or a secret store instead.
+  [ERROR] [security] src/auth/login.ts:4 — SQL built via string concatenation/interpolation — SQL injection risk; use parameterized queries.
+  [WARNING] [testCoverage] src/auth/login.ts — New source file 'src/auth/login.ts' has no corresponding test file in this change.
+evidence: { type: 'code_review', verdict: 'CHANGES_REQUESTED', findings: 3 }
+
+=== Case B — clean change with tests ===
+verdict : PASS (expected PASS)
+gate    : OPEN
+findings: 0
+evidence: { type: 'code_review', verdict: 'PASS', findings: 0 }
+
+done.

@@ -93,6 +93,8 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  /** SPEC_V2 §18–§20 — v2 state separation (optional; managed by WorkflowEngineV2). */
+  v2?: TaskV2Extension;
 }
 
 /** §60 — dependency relationship kinds. */
@@ -102,6 +104,30 @@ export type DependencyKind =
   | 'parallel_with'
   | 'child_of'
   | 'related_to';
+
+/** SPEC_V2 §18–§20 — v2 three-state separation on Task (optional; owned by WorkflowEngineV2). */
+import type {
+  ConditionRecord,
+  LifecycleMilestone,
+  MilestoneStatus,
+  ReleaseState,
+  WorkflowStage,
+} from './workflow-v2';
+
+export interface TaskV2Extension {
+  /** §18.1 workflow stage (13 stages). */
+  workflowStage?: WorkflowStage;
+  /** §18.3 independent condition field. */
+  condition?: ConditionRecord;
+  /** §19 lifecycle milestones. */
+  milestones?: Partial<Record<LifecycleMilestone, MilestoneStatus>>;
+  /** §19 current effective release state (history kept separately). */
+  releaseState?: ReleaseState;
+  /** §20.1 final seal: 1 only after finalize() commits DONE atomically. */
+  finalSeal?: 0 | 1;
+  /** Optimistic-concurrency version, bumped on every v2 mutation. */
+  taskVersion?: number;
+}
 
 export interface TaskDependency {
   kind: DependencyKind;

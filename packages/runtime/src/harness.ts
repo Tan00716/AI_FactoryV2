@@ -23,6 +23,7 @@ import {
   systemClock,
   TraceStep,
 } from './types';
+import type { StepIntentStore } from './durable';
 
 export interface AuditEvent {
   t: number;
@@ -45,6 +46,13 @@ export interface HarnessOptions {
   /** Audit callback; every denial is reported here. */
   onAudit?: (event: AuditEvent) => void;
   onTrace?: (step: TraceStep) => void;
+  /**
+   * SPEC v2 §28.1 — when provided, the tool-call intent is persisted BEFORE
+   * execution and the result committed after. Absent → legacy behavior.
+   */
+  intentStore?: StepIntentStore;
+  /** Run id stamped onto persisted intents. */
+  runId?: string;
 }
 
 /** Default mapping from tool name to the core Permission it requires. */
@@ -141,8 +149,15 @@ export class Harness {
   async runTool(name: string, args: unknown, impl: ToolImpl): Promise<unknown> {
     this.checkPermission(name);
     this.trace('HARNESS', `tool:${name}`, 'start');
+    // §28.1 — persist the intent BEFORE executing the tool.
+    const intent = this.options.intentStore?.persistIntent(
+      this.options.runId ?? 'unknown-run',
+      name,
+      args,
+    );
     try {
       const result = await this.withTimeout(`tool:${name}`, async () => impl(args));
+      if (intent) this.options.intentStore?.recordResult(intent.id, true, { ok: true });
       this.collectEvidence({
         type: 'tool_result',
         title: `tool ${name} ok`,
@@ -151,6 +166,7 @@ export class Harness {
       this.trace('HARNESS', `tool:${name}`, 'ok');
       return result;
     } catch (err) {
+      if (intent) this.options.intentStore?.recordResult(intent.id, false, { ok: false });
       const message = err instanceof Error ? err.message : String(err);
       this.audit('tool.failed', `${name}: ${message}`);
       this.trace('HARNESS', `tool:${name}`, `fail: ${message}`);

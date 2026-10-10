@@ -57,15 +57,15 @@ describe('lifecycle — gated state machine [§53]', () => {
 
   it('UNVERIFIED → VALIDATED requires enough verifications for the source', () => {
     const store = new KnowledgeStore({ clock: makeClock() });
-    const item = add(store, 'community'); // threshold 4
+    const item = add(store, 'community'); // §44 doubled threshold: 8
     store.transition(item.id, 'UNVERIFIED', { actor: 'scout' });
     assert.throws(
-      () => store.transition(item.id, 'VALIDATED', { actor: 'scout', evidence: { verifications: verifs(2) } }),
-      /requires 4 independent verification\(s\)/,
+      () => store.transition(item.id, 'VALIDATED', { actor: 'scout', evidence: { verifications: verifs(4) } }),
+      /requires 8 independent verification\(s\)/,
     );
     const { item: next } = store.transition(item.id, 'VALIDATED', {
       actor: 'scout',
-      evidence: { verifications: verifs(4) },
+      evidence: { verifications: verifs(8) },
     });
     assert.equal(next.state, 'VALIDATED');
   });

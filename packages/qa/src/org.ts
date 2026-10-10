@@ -16,6 +16,8 @@ const SPECIALIST_SKILLS: Record<QaSpecialistKind, string[]> = {
   Regression: ['regression-suite', 'test-selection', 'flakiness-triage'],
   Performance: ['load-testing', 'profiling', 'benchmarking'],
   Security: ['owasp-testing', 'dependency-audit', 'secret-scan'],
+  DBMigration: ['migration-testing', 'rollback-verification', 'data-integrity'],
+  Smoke: ['smoke-testing', 'health-checks', 'critical-path'],
 };
 
 /**
@@ -87,9 +89,11 @@ export function qaSpecialistFor(
 ): string {
   if (agents) {
     const lower = category.toLowerCase();
+    // v2 §38.1: database/migration categories are owned by the DBMigration specialist.
+    const name = lower === 'database' || lower === 'migration' ? 'qa-dbmigration' : `qa-${lower}`;
     const hit = agents
       .list()
-      .find((a) => a.department === 'QA' && a.name === `qa-${lower}`);
+      .find((a) => a.department === 'QA' && a.name === name);
     if (hit) return hit.name;
     const lead = agents.list().find((a) => a.name === QA_LEAD_NAME);
     if (lead) return lead.name;

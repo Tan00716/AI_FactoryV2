@@ -46,6 +46,8 @@ const QA_SPECIALIST_KINDS: readonly QaSpecialistKind[] = [
   'Regression',
   'Performance',
   'Security',
+  'DBMigration',
+  'Smoke',
 ];
 
 export interface QaRunRecord {

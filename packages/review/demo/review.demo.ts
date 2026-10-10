@@ -13,7 +13,10 @@
  *   node packages/review/dist/demo/review.demo.js
  */
 import {
+  IndependenceRequiredError,
+  assertReviewIndependence,
   meetsGate,
+  planIndependentReview,
   reviewCode,
   reviewGateEvidence,
   ReviewInput,
@@ -83,5 +86,38 @@ function run(title: string, input: ReviewInput, expected: string): void {
 
 run('Case A — hardcoded key + SQL concat, no tests', PROBLEM, 'CHANGES_REQUESTED');
 run('Case B — clean change with tests', CLEAN, 'PASS');
+
+// Case C — v2 §37: self-review is refused with INDEPENDENCE_REQUIRED.
+console.log('\n=== Case C — self-review refused (v2 §37) ===');
+try {
+  assertReviewIndependence({
+    reviewerId: 'agent-coder-1',
+    reviewerRunId: 'run-review-1',
+    implementerId: 'agent-coder-1',
+    implementerRunId: 'run-code-1',
+    gateStoreWritableByImplementer: false,
+    collectorWritableByImplementer: false,
+  });
+  console.error('DEMO MISMATCH: self-review was allowed!');
+  process.exitCode = 1;
+} catch (err) {
+  const ok = err instanceof IndependenceRequiredError && err.code === 'INDEPENDENCE_REQUIRED';
+  console.log(`self-review refused: ${ok} (code=${err instanceof IndependenceRequiredError ? err.code : '?'})`);
+  if (!ok) process.exitCode = 1;
+}
+
+// Case D — v2 §37: no independent reviewer available → BLOCKED, never fabricated.
+console.log('\n=== Case D — no independent reviewer → BLOCKED ===');
+const plan = planIndependentReview(
+  [{ reviewerId: 'agent-coder-1', reviewerRunId: 'run-x' }],
+  {
+    implementerId: 'agent-coder-1',
+    implementerRunId: 'run-code-1',
+    gateStoreWritableByImplementer: false,
+    collectorWritableByImplementer: false,
+  },
+);
+console.log(`plan status: ${plan.status} (expected BLOCKED)`);
+if (plan.status !== 'BLOCKED') process.exitCode = 1;
 
 console.log('\ndone.');

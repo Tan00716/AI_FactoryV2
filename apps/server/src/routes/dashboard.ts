@@ -51,9 +51,9 @@ export async function handleDashboardRoutes(
       endedAt: d.endedAt,
     })),
     approvals: ctx.fdb.approvals.list().map((a) => ({
-      id: a.id,
+      id: a.approval_id,
       status: a.status,
-      decidedBy: a.decidedBy,
+      decidedBy: a.decided_by,
     })),
   };
 

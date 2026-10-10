@@ -1,0 +1,1 @@
+{"dependencies":{},"description":"SPEC v2 §49 API contracts: core TypeScript types, zero-dependency runtime validators, 16 unified reason codes","main":"dist/src/index.js","name":"@ai-factory/api-contracts","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

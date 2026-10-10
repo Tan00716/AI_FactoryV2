@@ -10,10 +10,24 @@
 import { randomUUID } from 'node:crypto';
 import {
   ImprovementProposal,
+  LOCKED_DOMAINS,
+  LockedDomain,
   NewProposal,
   ProposalKind,
   ProposalStatus,
 } from './types';
+
+/** A proposal tried to modify a locked domain — rejected at creation [§45.2]. */
+export class LockedDomainError extends Error {
+  readonly code = 'LOCKED_DOMAIN';
+  constructor(
+    message: string,
+    readonly domain: LockedDomain,
+  ) {
+    super(message);
+    this.name = 'LockedDomainError';
+  }
+}
 
 export interface ProposalBoardOptions {
   /** Defaults to `Date.now`; inject a fake clock in tests/demos. */
@@ -47,6 +61,56 @@ export class ProposalTransitionError extends Error {
 
 const TERMINAL: ProposalStatus[] = ['APPLIED', 'REJECTED'];
 
+/**
+ * Locked-domain screen (§45.2). Returns the offending domain when a
+ * proposal would directly modify one of: lock rules, human authority,
+ * permission ceilings, access control (AC), gate standards.
+ *
+ * Detection is two-layer:
+ *  1. explicit `targetDomains` on the proposal input;
+ *  2. keyword scan of title + description as a backstop.
+ *
+ * The screen runs at CREATION — before any approval step — so the outcome
+ * does not depend on who the approver would have been.
+ */
+export function detectLockedDomain(input: Pick<NewProposal, 'title' | 'description' | 'targetDomains'>): LockedDomain | null {
+  for (const d of input.targetDomains ?? []) {
+    const normalized = d.trim().toLowerCase().replace(/[\s_]+/g, '-');
+    if ((LOCKED_DOMAINS as readonly string[]).includes(normalized)) {
+      return normalized as LockedDomain;
+    }
+  }
+  const text = `${input.title} ${input.description}`.toLowerCase();
+  const patterns: Array<[RegExp, LockedDomain]> = [
+    [/\block[\s-]?rules?\b/, 'lock-rules'],
+    [/\bhuman authority\b/, 'human-authority'],
+    [/\bpermission (ceiling|ceilings|upper bound|upper bounds)\b/, 'permission-ceiling'],
+    [/\baccess control\b/, 'access-control'],
+    [/\bgate standards?\b/, 'gate-standards'],
+  ];
+  for (const [re, domain] of patterns) {
+    if (re.test(text)) return domain;
+  }
+  return null;
+}
+
+/**
+ * Assert a proposal does not touch a locked domain.
+ * Throws LockedDomainError (code LOCKED_DOMAIN) on a hit.
+ */
+export function assertNoLockedDomain(input: Pick<NewProposal, 'title' | 'description' | 'targetDomains'>): void {
+  const hit = detectLockedDomain(input);
+  if (hit) {
+    throw new LockedDomainError(
+      `Proposal rejected at creation: it would modify the locked domain '${hit}'. ` +
+        'Lock rules, human authority, permission ceilings, access control, and gate ' +
+        'standards cannot be changed by improvement proposals; they require a policy ' +
+        'change by an authorized human.',
+      hit,
+    );
+  }
+}
+
 function defaultCanApprove(proposal: ImprovementProposal, approver: string): boolean {
   const isHumanOrGovernance = approver === 'governance' || approver.startsWith('human:');
   if (proposal.criticalOrgRule) return isHumanOrGovernance;
@@ -66,11 +130,16 @@ export class ProposalBoard {
   }
 
   /**
-   * Create a proposal in PROPOSED state. If the board's policy auto-approves
-   * it, the proposal moves PROPOSED → APPROVED immediately with the policy
-   * recorded as the approver — never straight to APPLIED.
+   * Create a proposal in PROPOSED state. The locked-domain screen runs FIRST:
+   * a proposal that would modify lock rules, human authority, permission
+   * ceilings, access control, or gate standards is rejected at creation with
+   * LOCKED_DOMAIN — before any approval step and regardless of approver.
+   * If the board's policy auto-approves it, the proposal moves PROPOSED →
+   * APPROVED immediately with the policy recorded as the approver — never
+   * straight to APPLIED.
    */
   propose(input: NewProposal): ImprovementProposal {
+    assertNoLockedDomain(input);
     const proposal: ImprovementProposal = {
       proposalId: `prop_${randomUUID()}`,
       kind: input.kind,

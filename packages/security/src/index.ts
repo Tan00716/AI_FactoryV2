@@ -11,6 +11,9 @@
  *                   → {score, findings, verdict}                  [§73/§74/§75]
  *  - sandbox      ExecutionEnvironment abstraction (local/strong),
  *                   risk → policy resolution, directory-escape guard [§76]
+ *  - isolation    IsolationBackend abstraction, ConfinementReport,
+ *                   fail-closed autonomous-shell gate, WorkspaceRecord
+ *                   (§7.2), extended path-threat analysis [SPEC v2 §7]
  *  - routes       registerSecurityRoutes(router, deps):
  *                   POST /api/security/scan, POST /api/security/redact
  */
@@ -18,4 +21,5 @@ export * from './credentials';
 export * from './injection';
 export * from './scanner';
 export * from './sandbox';
+export * from './isolation';
 export * from './routes';

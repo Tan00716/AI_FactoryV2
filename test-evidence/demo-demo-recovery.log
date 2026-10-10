@@ -1,0 +1,24 @@
+
+> ai-factory@0.1.0 demo:recovery
+> npm run build -w @ai-factory/recovery && node packages/recovery/dist/demo/deploy-rollback.demo.js
+
+
+> @ai-factory/recovery@0.1.0 build
+> tsc -p tsconfig.json
+
+snapshot 7ba7b48f taken (1 file(s)) — sealed: true
+deploy shipped a broken bundle
+[audit] run_started (attempt 0) 
+[audit] attempt_failed (attempt 0) BUILD_ERROR build failed: failed to compile app.js
+[audit] strategy_selected (attempt 0) BUILD_ERROR retry
+[audit] strategy_executed (attempt 0) BUILD_ERROR retry
+[audit] attempt_failed (attempt 1) BUILD_ERROR build failed: failed to compile app.js
+[audit] strategy_selected (attempt 1) BUILD_ERROR revert-change
+>> revert-change: restoring pre-deploy snapshot
+>> current (broken) state backed up as 0f8205e5 (tag: pre-restore:7ba7b48f-ac6b-42f0-907f-43fe7720c553)
+[audit] strategy_executed (attempt 1) BUILD_ERROR revert-change
+[audit] run_succeeded (attempt 2) 
+
+result: success after 3 attempt(s)
+strategy history: retry → revert-change
+app.js now: "v1 stable\n"

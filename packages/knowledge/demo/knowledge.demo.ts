@@ -1,9 +1,11 @@
 /**
- * @ai-factory/knowledge demo — full pipeline:
- *   1. ingest a candidate knowledge item
- *   2. run the scout through all nine stages
- *   3. drive the lifecycle to ACTIVE through the gated chain
- *   4. hierarchical query with scope fallback
+ * @ai-factory/knowledge demo — v2 hardened pipeline (spec §44):
+ *   1. source rating (rankSource) + community doubled verification
+ *   2. scout: collect → normalize → compare → verify → evaluate → proposal
+ *      — produces proposal CANDIDATES only; live objects stay byte-identical
+ *   3. lifecycle gates → ACTIVE (external proposal/approval/applier)
+ *   4. distribution license gate for external scripts
+ *   5. Update Feed: Activate/Defer/Reject + source-unavailable marking
  *
  * Run: node packages/knowledge/dist/demo/knowledge.demo.js
  */
@@ -11,6 +13,12 @@ import {
   KnowledgeScout,
   KnowledgeStore,
   applyProposal,
+  assertDistributable,
+  rankSource,
+  recordFeedDecision,
+  markSourceUnavailable,
+  sampleFeedCards,
+  verificationThreshold,
   type LifecycleState,
   type TransitionEvidence,
 } from '../src/index';
@@ -22,100 +30,95 @@ async function main(): Promise<void> {
   const store = new KnowledgeStore({ clock });
   const scout = new KnowledgeScout({ clock });
 
-  // Seed a project-scoped item so the query demo shows fallback levels.
-  const seeded = store.add({
-    title: 'Project deploy checklist',
-    content: 'Always deploy to staging first; production requires two approvals.',
-    tags: ['deploy'],
-    scope: { level: 'PROJECT', organizationId: 'acme', projectId: 'ai-factory' },
-    source: { type: 'official_docs', name: 'acme runbook', retrievedAt: clock.now() },
-    initialState: 'UNVERIFIED',
-  });
-  store.transition(seeded.id, 'VALIDATED', {
-    actor: 'demo',
-    evidence: { verifications: [{ method: 'runbook-read', verifiedAt: clock.now(), by: 'demo' }] },
-  });
+  console.log('== 1. Source rating (§44) ==');
+  for (const type of ['official_spec', 'official_docs', 'official_release', 'primary_article', 'research', 'community'] as const) {
+    console.log(`   ${type}: score=${rankSource(type)} verify-threshold=${verificationThreshold(type)}`);
+  }
+  console.log('   → community sources need DOUBLED verification (8).');
 
-  console.log('== 1. Ingest candidate knowledge ==');
-  const candidate = {
-    title: 'Loop engineering: retry with backoff',
-    rawContent:
-      'When an agent loop step fails transiently, retry with exponential backoff and jitter, ' +
-      'capped at five attempts, then escalate to a human operator. Backoff starts at 200ms and ' +
-      'doubles per attempt; jitter prevents thundering-herd retries across parallel workers. ' +
-      'Permanent failures (4xx-class, validation errors) must never be retried.',
-    topic: 'Loop Engineering',
-    tags: ['loop', 'retry'],
-    source: { type: 'official_docs' as const, name: 'vendor agent guide', retrievedAt: clock.now() },
-    scope: { level: 'GLOBAL' as const },
-    verifications: [{ method: 'doc-read', verifiedAt: clock.now(), by: 'scout' }],
-  };
-  console.log(`   candidate: "${candidate.title}" (source: ${candidate.source.type})`);
-
-  console.log('\n== 2. Scout pipeline ==');
-  const { artifact, records } = await scout.run(candidate, {
-    store,
-    hooks: {
-      onStageStart: (s) => process.stdout.write(`   … ${s}`),
-      onStageComplete: () => process.stdout.write(' ✓\n'),
+  console.log('\n== 2. Scout: candidates only, never live-object mutation ==');
+  const liveEmployee = { id: 'emp-1', skills: ['debugging'], state: 'running' };
+  const before = JSON.stringify(liveEmployee);
+  const { artifact, records, budget } = await scout.run(
+    {
+      title: 'Loop engineering: retry with backoff',
+      rawContent:
+        'When an agent loop step fails transiently, retry with exponential backoff and jitter, ' +
+        'capped at five attempts, then escalate to a human operator. Backoff starts at 200ms and ' +
+        'doubles per attempt; jitter prevents thundering-herd retries across parallel workers. ' +
+        'Permanent failures (4xx-class, validation errors) must never be retried.',
+      topic: 'Loop Engineering',
+      tags: ['loop', 'retry'],
+      source: { type: 'official_docs' as const, name: 'vendor agent guide', retrievedAt: clock.now() },
+      scope: { level: 'GLOBAL' as const },
+      verifications: [{ method: 'doc-read', verifiedAt: clock.now(), by: 'scout' }],
     },
-  });
+    {
+      store,
+      budget: { total: 10 },
+      hooks: {
+        onStageStart: (s) => process.stdout.write(`   … ${s}`),
+        onStageComplete: () => process.stdout.write(' ✓\n'),
+      },
+    },
+  );
   console.log(`   stages: ${records.map((r) => `${r.stage}:${r.status}`).join(' → ')}`);
-  console.log(`   stored item: ${artifact.storedItem!.id} [${artifact.storedItem!.state}]`);
-  console.log(`   evaluation score: ${artifact.evaluation!.score} (passed=${artifact.evaluation!.passed})`);
+  console.log(`   budget: total=${budget.total} spent=${budget.spent} exhausted=${budget.exhausted}`);
+  console.log(`   proposal candidate: ${artifact.proposal!.id} [${artifact.proposal!.status}]`);
+  console.log(`   live employee byte-identical: ${JSON.stringify(liveEmployee) === before}`);
 
-  console.log('\n== 3. Lifecycle → ACTIVE (gated) ==');
-  const id = artifact.storedItem!.id;
+  console.log('\n== 3. Lifecycle → ACTIVE (gated; proposal → approval → external applier) ==');
+  const p = artifact.proposal!;
+  const item = store.add({
+    title: p.title,
+    content: p.content,
+    tags: p.tags,
+    scope: p.scope,
+    source: p.source,
+  });
   const actor = 'demo-operator';
   const step = (to: LifecycleState, evidence: TransitionEvidence, note?: string) => {
-    const { item, transition } = store.transition(id, to, { actor, evidence, note });
+    const { transition } = store.transition(item.id, to, { actor, evidence, note });
     console.log(`   ${transition.from} → ${transition.to}  (actor=${transition.actor})`);
-    return item;
   };
   step('UNVERIFIED', {}, 'scout intake');
-  step('VALIDATED', { verifications: candidate.verifications }, 'meets source threshold (1)');
-  const evaluation = artifact.evaluation!;
-  step('EVALUATED', { evaluation: { ...evaluation, by: 'eval-service' } }, 'score ≥ 60');
-
-  // Publish produces proposal + notice ONLY — no agent is touched.
+  step('VALIDATED', { verifications: [{ method: 'doc-read', verifiedAt: clock.now(), by: 'demo' }] }, 'meets source threshold (1)');
+  step('EVALUATED', { evaluation: { score: artifact.evaluation!.score, passed: true, evaluatedAt: clock.now(), by: 'eval-service' } }, 'score ≥ 60');
   step('APPROVED', { approval: { approved: true, by: 'cto', decidedAt: clock.now() } }, 'external approval');
-  const { proposal, notice } = store.publishForPromotion(id, { actor, skillId: 'loop-engineering' });
-  console.log(`   published: proposal ${proposal.id} [${proposal.status}]`);
-  console.log(`   notice: "${notice.message}"`);
-
-  // External approval + external applier. The package never rewrites agents itself.
+  const { proposal, notice } = store.publishForPromotion(item.id, { actor, skillId: 'loop-engineering' });
+  console.log(`   published: proposal ${proposal.id} [${proposal.status}] — "${notice.message}"`);
   const decided = store.decideProposal(proposal, 'APPROVED', 'cto');
   const applied = applyProposal(
     decided,
-    (p) => {
-      // This callback lives OUTSIDE the package: the real skill registry write.
-      console.log(`   [external] skill registry applied proposal ${p.id} → skill ${p.skillId}`);
-    },
+    (ap) => console.log(`   [external] skill registry applied proposal ${ap.id} → skill ${ap.skillId}`),
     'ops',
   );
   step('ACTIVE', { appliedProposalId: applied.proposalId }, 'published via approved proposal');
 
-  console.log('\n== 4. Hierarchical query (TASK → … → GLOBAL) ==');
-  // Activate the seeded project item for the query demo.
-  store.transition(seeded.id, 'EVALUATED', {
-    actor: 'demo',
-    evidence: { evaluation: { score: 80, passed: true, evaluatedAt: clock.now(), by: 'eval' } },
+  console.log('\n== 4. Distribution license gate ==');
+  const script = store.add({
+    title: 'External retry helper',
+    content: '…',
+    tags: ['external_script'],
+    scope: { level: 'GLOBAL' },
+    source: { type: 'primary_article', name: 'blog', retrievedAt: clock.now() },
   });
-  store.transition(seeded.id, 'APPROVED', {
-    actor: 'demo',
-    evidence: { approval: { approved: true, by: 'cto', decidedAt: clock.now() } },
-  });
-  store.transition(seeded.id, 'ACTIVE', {
-    actor: 'demo',
-    evidence: { appliedProposalId: 'prop_seed' },
-  });
-
-  const ctx = { organizationId: 'acme', projectId: 'ai-factory', employeeId: 'emp-7', taskId: 'task-42' };
-  const hits = store.query(ctx);
-  for (const h of hits) {
-    console.log(`   [${h.matchedScope.level}] ${h.item.title} — ${h.item.state}`);
+  try {
+    assertDistributable(script);
+    console.log('   ERROR: should have been refused');
+  } catch (e) {
+    console.log(`   refused (no license): ${(e as Error).name} — ${(e as Error).message.split(' — ')[0]}`);
   }
-  console.log(`\n${hits.length} hit(s); most specific scope wins, broader scopes fall back.`);
+
+  console.log('\n== 5. Update Feed: Activate/Defer/Reject ==');
+  const cards = sampleFeedCards();
+  const decided1 = recordFeedDecision(cards[0], 'Activate', { by: 'human:cto', now: clock.now });
+  const decided2 = recordFeedDecision(cards[1], 'Defer', { by: 'human:cto', now: clock.now });
+  console.log(`   "${decided1.title}" → ${decided1.action} by ${decided1.actionBy}`);
+  console.log(`   "${decided2.title}" → ${decided2.action} by ${decided2.actionBy}`);
+  const unavailable = markSourceUnavailable(cards[2]);
+  console.log(`   "${unavailable.title}" sourceAvailable=${unavailable.sourceAvailable} ` +
+    `(verified date kept: ${unavailable.lastVerifiedAt})`);
 }
 
 main().catch((err) => {

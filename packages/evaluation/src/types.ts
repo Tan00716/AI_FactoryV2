@@ -180,4 +180,85 @@ export interface NewProposal {
   criticalOrgRule?: boolean;
   proposedBy: string;
   lessonIds?: string[];
+  /**
+   * The policy domains this proposal would modify, if any.
+   * LOCKED domains (lock rules, human authority, permission ceilings,
+   * access control, gate standards) are rejected at CREATION with
+   * LOCKED_DOMAIN — before any approval step, regardless of the approver.
+   */
+  targetDomains?: string[];
+}
+
+/* ------------------------------------------------------------------ */
+/* §45 locked domains: not directly modifiable by improvement proposals */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Locked domains [§45.2]: Lock Rules, Human Authority, permission ceilings,
+ * Access Control (AC), Gate Standards. No improvement proposal may directly
+ * modify these — attempts are rejected at proposal creation (LOCKED_DOMAIN).
+ * Changing them requires a policy change by an authorized human.
+ */
+export const LOCKED_DOMAINS = [
+  'lock-rules',
+  'human-authority',
+  'permission-ceiling',
+  'access-control',
+  'gate-standards',
+] as const;
+
+export type LockedDomain = (typeof LOCKED_DOMAINS)[number];
+
+/* ------------------------------------------------------------------ */
+/* §45.3 independent evaluation: train/holdout separation, full attempts */
+/* ------------------------------------------------------------------ */
+
+/** Which side of the train/holdout boundary an eval sample sits on. */
+export type EvalSplit = 'train' | 'holdout';
+
+/** One evaluation sample, explicitly marked with its split [§45.3]. */
+export interface EvalSample {
+  sampleId: string;
+  /** Task this sample was drawn from, if any. */
+  taskId?: string;
+  /** The material being evaluated (prompt, transcript, trace, …). */
+  content: string;
+  /** train = may select/improve on; holdout = benchmark only, never training. */
+  split: EvalSplit;
+  /** Where the sample came from (task run id, benchmark set name, …). */
+  source: string;
+}
+
+/** Why an evaluation is being run. */
+export type EvaluationPurpose =
+  | 'training_selection' // tuning/selecting on samples — holdout FORBIDDEN
+  | 'benchmark' // holdout benchmark — holdout allowed
+  | 'independent_check'; // §45.2 independent regression/security eval
+
+/** One recorded execution attempt — ALL attempts are kept, not just the best [§45.3]. */
+export interface EvaluationAttempt {
+  attemptId: string;
+  at: number;
+  /** Wall-clock ms and token cost of this attempt. */
+  cost: { durationMs: number; tokensUsed: number };
+  success: boolean;
+  score?: number;
+  /** Why this attempt failed (present when success === false). */
+  failureReason?: string;
+  /** Side effects observed during the attempt (files written, tools called, …). */
+  sideEffects: string[];
+}
+
+/** Full record of an evaluation: every attempt, cost, failure and side effect [§45.3]. */
+export interface EvaluationRun {
+  runId: string;
+  sampleId: string;
+  purpose: EvaluationPurpose;
+  /** Every attempt in order — never pruned to "best only". */
+  attempts: EvaluationAttempt[];
+  totalCost: { durationMs: number; tokensUsed: number };
+  /** Best score across attempts (informational; attempts are not dropped). */
+  bestScore: number | null;
+  passed: boolean;
+  executedAt: number;
 }

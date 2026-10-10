@@ -64,14 +64,16 @@ function releaseManager(ctx: RouteContext, actor: string): ReleaseManager {
 
 /** Map an @ai-factory/approvals ticket onto a release ApprovalRef. */
 function approvalRefFromTicket(
-  ticket: { id: string; decidedBy: string; requestedBy: string; requiredApprover: string; decidedAt: string | null },
+  ticket: { approval_id: string; decided_by: string; requester: string; required_approvers: string[]; decided_at: string | null },
 ): ApprovalRef {
   return {
-    approvalId: ticket.id,
-    approver: ticket.decidedBy || ticket.requestedBy,
+    approvalId: ticket.approval_id,
+    approver: ticket.decided_by || ticket.requester,
     decision: 'APPROVED',
-    decidedAt: ticket.decidedAt,
-    level: ticket.requiredApprover === 'human' ? 'human' : 'ai',
+    decidedAt: ticket.decided_at,
+    level: ticket.required_approvers.some((r) => r === 'human' || r.startsWith('human:'))
+      ? 'human'
+      : 'ai',
   };
 }
 

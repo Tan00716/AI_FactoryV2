@@ -1,14 +1,1 @@
-{
-  "description": "SQLite persistence layer for the AI Engineering Factory prototype (node:sqlite, local-first)",
-  "main": "dist/index.js",
-  "name": "@ai-factory/db",
-  "scripts": {
-    "build": "tsc -p tsconfig.json"
-  },
-  "types": "dist/index.d.ts",
-  "version": "0.1.0",
-  "dependencies": {
-    "@ai-factory/memory": "0.1.0",
-    "@ai-factory/approvals": "0.1.0"
-  }
-}
+{"dependencies":{"@ai-factory/approvals":"0.1.0","@ai-factory/leases":"0.1.0","@ai-factory/memory":"0.1.0"},"description":"SQLite persistence layer for the AI Engineering Factory prototype (node:sqlite, local-first)","main":"dist/src/index.js","name":"@ai-factory/db","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

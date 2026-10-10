@@ -1,0 +1,66 @@
+P0 SECURITY PROBES — 2026-10-10T08:10:48.502Z
+scope: unit/API level (NOT ENV-L isolation)
+
+=== PROBE 1: path traversal vs resolveSafePath ===
+  attack "../../etc/passwd" -> REJECTED SandboxViolationError:PATH_ESCAPE path escapes workspace: "../../etc/passwd"
+  attack "/etc/passwd" -> REJECTED SandboxViolationError:PATH_ESCAPE path escapes workspace: "/etc/passwd"
+  attack "/tmp/evil-probe-file" -> REJECTED SandboxViolationError:PATH_ESCAPE path escapes workspace: "/tmp/evil-probe-file"
+  attack "subdir/../../../etc/passwd" -> REJECTED SandboxViolationError:PATH_ESCAPE path escapes workspace: "subdir/../../../etc/passwd"
+  attack "....//....//etc/passwd" -> RESOLVED /home/hatch/workspace/ai-factory/data/..../..../etc/passwd (inside=true)
+  attack "a\u0000b" -> REJECTED SandboxViolationError:PATH_ESCAPE null byte in path
+  attack "..\\..\\windows\\system32" -> RESOLVED /home/hatch/workspace/ai-factory/data/..\..\windows\system32 (inside=true)
+  attack "/home/hatch/workspace/ai-factory/data/../../.ssh/id_ed25519" -> REJECTED SandboxViolationError:PATH_ESCAPE path escapes workspace: "/home/hatch/workspace/ai-factory/data/../../.ssh/id_ed25519"
+  sentinel files after probes: [] (expected [])
+[PASS] P1 path traversal
+    evidence: 8 attack inputs rejected-or-contained (PATH_ESCAPE), no sentinel files created, write-through attempt blocked=true
+
+=== PROBE 2: secret canary through audit/redaction ===
+  canary occurrences in all audit output: 3
+  '***' present: true, secret:// ref present: true
+  String(SecretRef): "***"
+  canary occurrences in REAL-FLOW records only: 0 (expected 0)
+[PASS] P2 secret leakage (canary)
+    evidence: real-flow audit: canary appears 0x (expected 0); ref form preserved; adversarial raw injection: 3x visible (heuristic redaction catches password= form as 'password=***', bare values are NOT redacted — defense relies on SecretRef discipline, see log)
+
+=== PROBE 3: permission bypass (deploy.prod / secret.write) ===
+  evaluateAction('deploy.prod','CRITICAL') -> {"level":"HUMAN_APPROVAL","requiresApproval":true,"reason":"Policy maps 'deploy.prod' → HUMAN_APPROVAL"}
+  evaluateAction('secret.write','LOW') -> {"level":"BLOCKED","requiresApproval":true,"reason":"Action 'secret.write' is BLOCKED by policy and cannot be approved"}
+  manager.request(secret.write) -> status=PENDING (expected: rejected, actual: created PENDING)
+  manager.decide(secret.write, approved=true) -> APPROVED id=fbfff5e7-2f1a-460f-9949-fc48f2314cb1
+  manager.decide(deploy.prod, decidedBy='rogue-agent', requiredApprover='human') -> APPROVED id=bc370db7-eb04-4238-8a1f-c2f8f2940d06
+  audit events emitted: ["APPROVAL_REQUESTED","APPROVAL_DECIDED","APPROVAL_REQUESTED","APPROVAL_DECIDED"]
+[FAIL] P3 permission bypass
+    evidence: classifier OK (deploy.prod→HUMAN_APPROVAL, secret.write→BLOCKED); BUT manager.request()+decide() APPROVED secret.write (policy comment claims "manager will never grant" — false) and APPROVED deploy.prod by rogue-agent despite requiredApprover=human (decidedBy not validated). Bypass SUCCEEDS at manager/API layer.
+
+=== PROBE 4: evidence tampering (SEALED) ===
+  update(SEALED) -> EvidenceSealedError; delete(SEALED) -> EvidenceSealedError
+  sha before=e95248aa3d27a14c after=e95248aa3d27a14c identical=true
+[PASS] P4 evidence tampering
+    evidence: update+delete on SEALED threw EvidenceSealedError, sha256 identical (e95248aa3d27a14c); DRAFT update control works
+
+=== PROBE 5: workflow gate bypass ===
+  TODO->DONE: {"ok":false,"from":"TODO","to":"DONE","reason":"UNKNOWN_TRANSITION","missing":["No transition TODO → DONE in the default workflow"]}
+  QA->PENDING_UAT_MERGE (no evidence): ok=false reason=GATE_DENIED missing=["Code review verdict = PASS — missing or verdict ≠ PASS","CI result = PASS — missing or verdict ≠ PASS","QA result = PASS — missing or verdict ≠ PASS","Security report = PASS — missing or verdict ≠ PASS"]
+  QA->PENDING_UAT_MERGE (3/4 evidence): ok=false missing=["Security report = PASS — missing or verdict ≠ PASS"]
+  QA->PENDING_UAT_MERGE (security_report verdict=FAIL): ok=false missing=["Security report = PASS — missing or verdict ≠ PASS"]
+  TODO->PLANNING (control): ok=true
+[PASS] P5 gate bypass
+    evidence: TODO->DONE rejected (UNKNOWN_TRANSITION); QA gate with 0/3/3+wrong-verdict evidence all denied with missing[] naming exact items; legal transition allowed
+
+=== PROBE 6: replay / double decision ===
+  decide twice (APPROVED then REJECTED): first=APPROVED, second -> ApprovalNotPendingError
+  decide after cancel -> ApprovalNotPendingError
+  seal twice: idempotent=true (documented behavior)
+[PASS] P6 replay / double-submit
+    evidence: second decide() threw ApprovalNotPendingError (no double-spend); decide-after-cancel rejected; seal() idempotent as documented
+
+
+=== SUMMARY ===
+PASS  P1 path traversal
+PASS  P2 secret leakage (canary)
+FAIL  P3 permission bypass
+PASS  P4 evidence tampering
+PASS  P5 gate bypass
+PASS  P6 replay / double-submit
+
+5/6 probes rejected attacks as expected; 1 bypass(es) found.

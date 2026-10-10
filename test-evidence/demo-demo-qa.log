@@ -1,0 +1,21 @@
+
+> ai-factory@0.1.0 demo:qa
+> npm run build -w @ai-factory/qa && node packages/qa/dist/demo/qa-loop.demo.js
+
+
+> @ai-factory/qa@0.1.0 build
+> tsc -p tsconfig.json
+
+QA loop demo — sample copied to /tmp/qa-demo-SL0Bxz
+
+  🛠  attempt 1 failure: [PRODUCT_FAILURE] → owner coder
+     not ok 1 - sums two numbers
+  🔧 fix applied: removed the off-by-one in sum()
+
+QA loop finished: attempts=3 escalated=false
+verdict=PASS total=3 passed=3 failed=0
+  [PASS] unit: 3/3 passed, 0 failed (660ms)
+failures:
+  attempt 1 unit PRODUCT_FAILURE owner=coder: not ok 1 - sums two numbers
+
+✅ demo complete: failure detected → classified → fixed → green

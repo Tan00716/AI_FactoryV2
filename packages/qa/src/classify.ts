@@ -44,11 +44,20 @@ const ASSERTION_RE =
 const TEST_HARNESS_RE =
   /test\s+runner|beforeeach|aftereach|before\s+all|after\s+all|mocha|jest\.|vitest|setup\s+file|teardown/i;
 
+/**
+ * v2 §38.3 — business ambiguity signals route to Human. Checked after
+ * infra/env (a DNS error inside an ambiguous spec is still an env problem)
+ * but before the assertion heuristic, and never on empty input.
+ */
+const AMBIGUITY_RE =
+  /requirement(s)?\s+(unclear|ambiguous|missing)|ambiguous\s+(spec|requirement|business)|business\s+rule\s+(unclear|unknown)|spec\s+unclear|what\s+should\s+it\s+do\?/i;
+
 export function classifyFailure(input: FailureInput): FailureClass {
   const text = [input.message, input.stderr ?? ''].join('\n');
   if (AI_TOOL_RE.test(text)) return 'AI_FAILURE';
   if (ENV_RE.test(text)) return 'ENVIRONMENT_FAILURE';
   if (INFRA_RE.test(text)) return 'INFRA_FAILURE';
+  if (AMBIGUITY_RE.test(text)) return 'REQUIREMENT_AMBIGUITY';
   if (ASSERTION_RE.test(text)) {
     return TEST_HARNESS_RE.test(text) ? 'TEST_FAILURE' : 'PRODUCT_FAILURE';
   }

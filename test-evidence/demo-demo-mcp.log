@@ -1,0 +1,16 @@
+
+> ai-factory@0.1.0 demo:mcp
+> npm run build -w @ai-factory/mcp && node packages/mcp/dist/demo/mcp.demo.js
+
+
+> @ai-factory/mcp@0.1.0 build
+> tsc -p tsconfig.json
+
+registered: github-mcp@1.2.0 (trust UNKNOWN, policy BLOCKED)
+install attempt 1 → ok=false status=BLOCKED
+  reason: install denied: github-mcp@1.2.0 has approval policy BLOCKED (trust UNKNOWN)
+install attempt 2 → ok=false status=PENDING_REVIEW
+human approval → ok=true status=INSTALLED
+tool call create_issue → allowed=true reason=ok version=1.2.0
+usage log: ["create_issue@1.2.0"]
+tool call create_issue (agent disabled) → allowed=false reason=denied: server 'github-mcp@1.2.0' is disabled for the requested scope

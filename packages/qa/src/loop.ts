@@ -53,6 +53,7 @@ export function assignOwner(
     case 'ENVIRONMENT_FAILURE':
     case 'INFRA_FAILURE':
     case 'AI_FAILURE':
+    case 'REQUIREMENT_AMBIGUITY':
     case 'UNKNOWN':
       return 'human';
   }

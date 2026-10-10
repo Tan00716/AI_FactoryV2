@@ -107,8 +107,50 @@ export interface KnowledgeSource {
   type: SourceType;
   /** Human-readable name, e.g. "Node.js LTS release notes". */
   name: string;
+  /** Canonical URL of the source material (every record carries one). */
   url?: string;
+  /** Publisher / author of the source material. */
+  publisher?: string;
+  /** When this source record was retrieved (ms epoch). */
   retrievedAt: number;
+  /** When the source material itself was published (ms epoch). */
+  publishedAt?: number;
+  /** Spec/product version the material applies to, e.g. "node>=20". */
+  applicableVersion?: string;
+  /** Content hash of the retrieved material (dedup + tamper evidence). */
+  contentHash?: string;
+  /** What part of the source was cited, e.g. "§3.2 release notes". */
+  citationScope?: string;
+  /** License of the source material; required for redistribution. */
+  license?: string;
+}
+
+/** Source metadata fields every knowledge record should carry [§44]. */
+export const SOURCE_METADATA_FIELDS = [
+  'url',
+  'publisher',
+  'retrievedAt',
+  'publishedAt',
+  'applicableVersion',
+  'contentHash',
+  'citationScope',
+  'license',
+] as const;
+
+export type SourceMetadataField = (typeof SOURCE_METADATA_FIELDS)[number];
+
+/**
+ * List the source metadata fields missing from a knowledge record.
+ * A missing URL/publisher or an unavailable source must be marked on the
+ * Update Feed rather than silently trusted [§44].
+ */
+export function missingSourceMetadata(source: KnowledgeSource): SourceMetadataField[] {
+  const missing: SourceMetadataField[] = [];
+  for (const field of SOURCE_METADATA_FIELDS) {
+    const v = source[field];
+    if (v === undefined || v === null || v === '') missing.push(field);
+  }
+  return missing;
 }
 
 /* ------------------------------------------------------------------ */
@@ -164,13 +206,15 @@ export class LifecycleError extends Error {
 }
 
 export class ScoutError extends Error {
-  readonly code = 'SCOUT_STAGE_FAILED';
+  readonly code: string;
   constructor(
     message: string,
     readonly stage: string,
     readonly records: unknown[],
+    code = 'SCOUT_STAGE_FAILED',
   ) {
     super(message);
+    this.code = code;
     this.name = 'ScoutError';
   }
 }

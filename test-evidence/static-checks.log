@@ -1,0 +1,48 @@
+=== SECRET SCAN (excluding node_modules, dist, .git, test fixtures) ===
+---scan done---
+=== README COMMANDS vs package.json ===
+OK   build
+OK   build:electron
+OK   demo
+OK   demo:artifacts
+OK   demo:autonomy
+OK   demo:cicd
+OK   demo:comms
+OK   demo:coordination
+OK   demo:dispute
+OK   demo:evaluation
+OK   demo:factory
+OK   demo:knowledge
+OK   demo:mcp
+OK   demo:memory
+OK   demo:orchestrator
+OK   demo:policy
+OK   demo:projects
+OK   demo:qa
+OK   demo:recovery
+OK   demo:release
+OK   demo:resources
+OK   demo:review
+OK   demo:runtime
+OK   demo:security
+OK   demo:skills
+OK   dev
+OK   electron
+=== TSC STRICT ===
+tsconfig.base.json strict=true
+npm run build: BUILD_EXIT=0 (0 errors, all 29 packages)
+desktop tsconfig.check.json strict: 0 errors
+
+=== SECRET SCAN ===
+3 hits, all placeholders/test fixtures (review.test.ts, review.demo.ts, StabilityPanel.tsx demo default) - NO real hardcoded secrets
+
+=== README COMMANDS ===
+all npm run commands in README exist in package.json scripts
+ℹ tests 993
+ℹ suites 197
+ℹ pass 993
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 36190.343982

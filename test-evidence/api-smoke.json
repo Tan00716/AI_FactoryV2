@@ -1,0 +1,669 @@
+[
+ {
+  "group": "health",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/health",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {
+   "ok": true
+  }
+ },
+ {
+  "group": "tasks",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/tasks?projectId=proj-myapp",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {
+   "list_len": 6
+  }
+ },
+ {
+  "group": "tasks",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/tasks/a4e4b418-7b03-44ca-8101-a3277cda6e43/transition",
+  "status": 422,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "ok": false
+  }
+ },
+ {
+  "group": "git",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/git/status?repo=/home/hatch/workspace/ai-factory",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "git",
+  "kind": "negative",
+  "method": "GET",
+  "path": "/api/git/status",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "repo query param is required"
+  }
+ },
+ {
+  "group": "qa",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/qa/org",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {
+   "lead": {
+    "id": "67f80a13-49fc-43ff-9567-056c6cf5a99e",
+    "name": "qa-lead",
+    "displayName": "QA Lead",
+    "jobTitle": "QA Lead",
+    "status": "IDLE",
+    "autonomyLevel": 3
+   },
+   "specialists": []
+  }
+ },
+ {
+  "group": "qa",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/qa/specialists",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "kind must be one of: Functional, API, E2E, Regression, Performance, Security"
+  }
+ },
+ {
+  "group": "approvals",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/approvals",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {
+   "list_len": 1
+  }
+ },
+ {
+  "group": "approvals",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/approvals/evaluate",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "action is required"
+  }
+ },
+ {
+  "group": "approvals",
+  "kind": "positive2",
+  "method": "POST",
+  "path": "/api/approvals",
+  "status": 201,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {
+   "id": "418d2ebe-e920-4cc8-ad95-63093dfd51df",
+   "status": "PENDING"
+  }
+ },
+ {
+  "group": "approvals",
+  "kind": "negative2",
+  "method": "POST",
+  "path": "/api/approvals/418d2ebe-e920-4cc8-ad95-63093dfd51df/decision",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "approved (boolean) is required"
+  }
+ },
+ {
+  "group": "cicd",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/environments",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "cicd",
+  "kind": "positive2",
+  "method": "POST",
+  "path": "/api/pipelines",
+  "status": 201,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {
+   "id": "12d37504-eff0-443f-ad67-a44c75b5d60b"
+  }
+ },
+ {
+  "group": "cicd",
+  "kind": "negative",
+  "method": "GET",
+  "path": "/api/pipelines/does-not-exist",
+  "status": 404,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "pipeline does-not-exist not found"
+  }
+ },
+ {
+  "group": "skills",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/skills",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "skills",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/skills/install",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "skill definition is required"
+  }
+ },
+ {
+  "group": "memory",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/memory",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "memory",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/memory",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "scope must be one of employee|project|organization|task|system"
+  }
+ },
+ {
+  "group": "mcp",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/mcp",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "mcp",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/mcp/install",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "name and version are required"
+  }
+ },
+ {
+  "group": "knowledge",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/knowledge",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "knowledge",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/knowledge",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "title and content are required"
+  }
+ },
+ {
+  "group": "evaluation",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/evaluations",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "evaluation",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/evaluations",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "taskId and agentId are required"
+  }
+ },
+ {
+  "group": "models",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/models",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "models",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/router/route",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "taskType (string) and complexity (1-5) are required"
+  }
+ },
+ {
+  "group": "events",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/events",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "events",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/events/emit",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "type (non-empty string) is required"
+  }
+ },
+ {
+  "group": "activity",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/activity",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "runs",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/runs",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "runs",
+  "kind": "negative",
+  "method": "GET",
+  "path": "/api/runs/does-not-exist",
+  "status": 404,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "run not found"
+  }
+ },
+ {
+  "group": "stats",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/stats",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {
+   "status": {
+    "activeTasks": {
+     "key": "activeTasks",
+     "label": "\u6d3b\u8dc3\u4efb\u52a1",
+     "value": 6,
+     "source": "\u4efb\u52a1\u5b58\u50a8 tasks (GET /api/tasks)",
+     "unit": "\u4e2a"
+    },
+    "blockedTasks": {
+     "key": "blockedTasks",
+     "label": "\u963b\u585e\u4efb\u52a1",
+     "value": 0,
+     "source": "\u4efb\u52a1\u5b58\u50a8 tasks (GET /api/tasks)",
+     "unit": "\u4e2a"
+    },
+    "runningAgents": {
+     "key": "runningAgents",
+     "label": "\u8fd0\u884c\u4e2d Agent",
+     "value": 1,
+     "source": "\u667a\u80fd\u4f53\u6ce8\u518c\u8868 agents (GET /api/agents)",
+     "unit": "\u4e2a"
+    },
+    "qaFailures": {
+     "key": "qaFailures",
+     "label": "QA \u5931\u8d25",
+     "value": null,
+     "source": "QA \u8fd0\u884c\u8bb0\u5f55 (GET /api/qa/runs)",
+     "note": "\u6682\u65e0\u6570\u636e"
+    },
+    "latestDeployment": {
+     "key": "latestDeployment",
+     "label": "\u6700\u8fd1\u90e8\u7f72",
+     "value": null,
+     "source": "CI/CD \u90e8\u7f72\u8bb0\u5f55 (GET /api/deployments)",
+     "note": "\u6682\u65e0\u6570\u636e"
+    },
+    "productionStatus": {
+     "key": "productionStatus",
+     "label": "\u751f\u4ea7\u72b6\u6001",
+     "value": null,
+     "source": "CI/CD \u90e8\u7f72\u8bb0\u5f55 (GET /api/deployments)",
+     "note": "\u6682\u65e0\u6570\u636e"
+    },
+    "resourceUsage": {
+     "key": "resourceUsage",
+     "label": "\u8d44\u6e90\u7528\u91cf",
+     "value": null,
+     "source": "\u8d44\u6e90\u7528\u91cf\u8bb0\u5f55 (GET /api/resources/usage)",
+     "note": "\u6682\u65e0\u6570\u636e"
+    }
+   }
+  }
+ },
+ {
+  "group": "projects",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/projects/templates",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "projects",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/projects/exec",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "command is required"
+  }
+ },
+ {
+  "group": "review",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/review/dimensions",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "review",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/review",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "files is required: array of {path, before?, after?}"
+  }
+ },
+ {
+  "group": "releases",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/releases",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "releases",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/releases",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "version is required (semver)"
+  }
+ },
+ {
+  "group": "policy",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/policy/layers",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "policy",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/policy/validate",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "kind must be 'project' or 'organization'"
+  }
+ },
+ {
+  "group": "security",
+  "kind": "positive",
+  "method": "POST",
+  "path": "/api/security/scan",
+  "status": 400,
+  "expect": "2xx",
+  "pass": false,
+  "fields": {
+   "error": "manifest requires: name (string), instructions (string), scripts (string[]), declared {network, fileAccess, shell}"
+  }
+ },
+ {
+  "group": "security",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/security/scan",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "manifest object is required"
+  }
+ },
+ {
+  "group": "recovery",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/recovery/snapshots",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "recovery",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/recovery/snapshots/nope/restore",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "snapshot not found: nope"
+  }
+ },
+ {
+  "group": "resources",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/resources/usage",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "resources",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/resources/consume",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "taskId and usage are required"
+  }
+ },
+ {
+  "group": "autonomy",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/autonomy/mode",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "autonomy",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/autonomy/decide",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "action.kind is required"
+  }
+ },
+ {
+  "group": "coordination",
+  "kind": "positive",
+  "method": "POST",
+  "path": "/api/coordination/schedule",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "coordination",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/coordination/locks",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "kind, key and holder are required"
+  }
+ },
+ {
+  "group": "disputes",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/disputes",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {}
+ },
+ {
+  "group": "disputes",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/disputes",
+  "status": 400,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "verdictA and verdictB are required"
+  }
+ },
+ {
+  "group": "notifications",
+  "kind": "positive",
+  "method": "GET",
+  "path": "/api/notifications",
+  "status": 200,
+  "expect": "2xx",
+  "pass": true,
+  "fields": {
+   "unread": 1
+  }
+ },
+ {
+  "group": "notifications",
+  "kind": "negative",
+  "method": "POST",
+  "path": "/api/notifications/nope/read",
+  "status": 404,
+  "expect": "4xx",
+  "pass": true,
+  "fields": {
+   "error": "notification not found"
+  }
+ }
+]

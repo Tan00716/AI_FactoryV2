@@ -1,0 +1,45 @@
+
+> ai-factory@0.1.0 demo:skills
+> npm run build -w @ai-factory/skills && node packages/skills/dist/demo/skills.demo.js
+
+
+> @ai-factory/skills@0.1.0 build
+> tsc -p tsconfig.json
+
+== 1. install a clean skill ==
+installed: 1.0.0 ACTIVE
+
+== 2. install a risky skill (network + shell) ==
+kind:         INSTALL_APPROVAL_REQUIRED
+requestId:    install-req-1
+skill:        remote-runner@2.1.0
+reason:       Install blocked: security checklist produced HIGH-severity finding(s). A human must approve (HUMAN_APPROVAL) before this skill becomes available.
+overall:      HIGH
+high findings:
+  [INSTRUCTIONS] Instructions mention credentials/secrets in an exfiltration context (api keys, passwords, uploads).
+  [SCRIPTS] Suspicious script name(s) under scripts/: run-remote.sh.
+  [NETWORK] Skill declares outbound network access — needs stronger policy (HUMAN_APPROVAL).
+  [FILE_ACCESS] Skill declares WRITE file access — can mutate the workspace/machine.
+  [SHELL] Skill declares shell/process execution — needs stronger policy (HUMAN_APPROVAL).
+registry now holds: doc-formatter
+
+== 3. install builtins + discovery ==
+installed skills: clean-code, code-review, debugging, doc-formatter, e2e-testing, git, refactoring, security-review, unit-testing
+
+candidates for "Fix flaky e2e test":
+  e2e-testing@1.0.0  score=11  — keyword match: "flaky" (skill keyword)
+  unit-testing@1.0.0  score=4  — keyword match: "test" (skill keyword)
+  debugging@1.0.0  score=1  — keyword match: "test" (id/description)
+
+discovery record: discovery-1
+selected: e2e-testing
+reason:   Auto-selected top 1 candidate(s) by discovery score.
+
+loaded instructions for "e2e-testing" (1235 chars, first 400 shown):
+# E2E Testing
+
+Use this skill when testing complete user journeys through the real application stack. E2E tests verify that the pieces work together — they are slow and expensive, so reserve them for critical paths: sign-up, checkout, core workflows. Everything else belongs in unit or integration tests.
+
+Make tests stable by design: select elements by role, label, or test id — never by CSS class o…
+
+(only this one skill's SKILL.md was loaded — §48)

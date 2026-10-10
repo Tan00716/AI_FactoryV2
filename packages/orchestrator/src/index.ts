@@ -7,9 +7,11 @@
  *  - selection           weighted agent scoring + ranking                 [§94]
  *  - orchestrator        state → next-action decisions, handoffs           [§92]
  *  - patterns            manager vs handoff pattern chooser               [§21]
+ *  - delegation          §12.2 delegation records: scope/budget/depth/cycle enforcement
  */
 export * from './auto-decomposition';
 export * from './scheduler';
 export * from './selection';
 export * from './orchestrator';
 export * from './patterns';
+export * from './delegation';

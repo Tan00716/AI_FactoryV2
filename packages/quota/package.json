@@ -1,0 +1,1 @@
+{"dependencies":{},"description":"Quota-aware factory: buckets, limit policies, cross-model handoff packages (§27)","main":"dist/src/index.js","name":"@ai-factory/quota","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

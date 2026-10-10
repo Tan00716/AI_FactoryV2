@@ -124,3 +124,117 @@ describe('resolveEffectivePolicy merge', () => {
     assert.equal(rb.policy['x'], 'beta-x');
   });
 });
+
+describe('§23.1 restrictive intersection merge', () => {
+  it('deny-wins: a deny at any layer beats allows', () => {
+    const store = new PolicyStore();
+    store.set('global', GLOBAL_SCOPE_ID, {
+      'net.egress': { value: 'allowed', locked: true, merge: 'deny-wins', denyValue: 'denied' },
+    });
+    store.set('project', 'myapp', { 'net.egress': 'allowed' });
+    store.set('tool', 'browser', { 'net.egress': 'denied' });
+    const r = store.resolveEffectivePolicy({
+      layer: 'tool', project: 'myapp', tool: 'browser',
+    });
+    assert.equal(r.policy['net.egress'], 'denied');
+    assert.equal(r.hits['net.egress'].strategy, 'deny-wins');
+    assert.equal(r.hits['net.egress'].winner.layer, 'tool');
+    assert.equal(r.denials.length, 0); // intersection, not an override attempt
+  });
+
+  it('deny-wins: no deny present falls back to upper-wins', () => {
+    const store = new PolicyStore();
+    store.set('global', GLOBAL_SCOPE_ID, {
+      'net.egress': { value: 'allowed', locked: true, merge: 'deny-wins', denyValue: 'denied' },
+    });
+    store.set('project', 'myapp', { 'net.egress': 'allowed' });
+    const r = store.resolveEffectivePolicy({ layer: 'project', project: 'myapp' });
+    assert.equal(r.policy['net.egress'], 'allowed');
+    assert.equal(r.attempts.length, 0); // identical values: no conflict
+  });
+
+  it('strictest-min: numeric ceiling resolves to the smallest value', () => {
+    const store = new PolicyStore();
+    store.set('global', GLOBAL_SCOPE_ID, {
+      'budget.max_tokens': { value: 100000, locked: true, merge: 'strictest-min' },
+    });
+    store.set('organization', 'acme', { 'budget.max_tokens': 50000 });
+    store.set('project', 'myapp', { 'budget.max_tokens': 200000 }); // looser: ignored
+    const r = store.resolveEffectivePolicy({
+      layer: 'project', organization: 'acme', project: 'myapp',
+    });
+    assert.equal(r.policy['budget.max_tokens'], 50000);
+    assert.equal(r.hits['budget.max_tokens'].strategy, 'strictest-min');
+    assert.equal(r.hits['budget.max_tokens'].winner.layer, 'organization');
+    assert.equal(r.hits['budget.max_tokens'].contributing.length, 3);
+  });
+
+  it('strictest-max: numeric floor resolves to the largest value', () => {
+    const store = new PolicyStore();
+    store.set('global', GLOBAL_SCOPE_ID, {
+      'sla.min_replicas': { value: 1, locked: true, merge: 'strictest-max' },
+    });
+    store.set('project', 'myapp', { 'sla.min_replicas': 3 });
+    const r = store.resolveEffectivePolicy({ layer: 'project', project: 'myapp' });
+    assert.equal(r.policy['sla.min_replicas'], 3);
+    assert.equal(r.hits['sla.min_replicas'].strategy, 'strictest-max');
+  });
+
+  it('strictest merge with non-numeric values throws a clear error', () => {
+    const store = new PolicyStore();
+    store.set('global', GLOBAL_SCOPE_ID, {
+      'budget.max_tokens': { value: 100000, locked: true, merge: 'strictest-min' },
+    });
+    store.set('project', 'myapp', { 'budget.max_tokens': 'unlimited' });
+    assert.throws(
+      () => store.resolveEffectivePolicy({ layer: 'project', project: 'myapp' }),
+      /requires all numeric values/,
+    );
+  });
+
+  it('policy_hash is stable for identical inputs and changes with any input', () => {
+    const build = () => {
+      const s = new PolicyStore();
+      s.set('global', GLOBAL_SCOPE_ID, { 'a': 1 });
+      s.set('project', 'p', { 'b': 2 });
+      return s.resolveEffectivePolicy({ layer: 'project', project: 'p' });
+    };
+    const r1 = build();
+    const r2 = build();
+    assert.equal(r1.policy_hash, r2.policy_hash);
+    assert.equal(r1.policy_hash.length, 64);
+    const s3 = new PolicyStore();
+    s3.set('global', GLOBAL_SCOPE_ID, { 'a': 1 });
+    s3.set('project', 'p', { 'b': 3 }); // changed value
+    const r3 = s3.resolveEffectivePolicy({ layer: 'project', project: 'p' });
+    assert.notEqual(r1.policy_hash, r3.policy_hash);
+  });
+
+  it('resolution records evaluation inputs and per-key hits', () => {
+    const store = new PolicyStore();
+    store.set('global', GLOBAL_SCOPE_ID, { 'g': 1 });
+    store.set('project', 'myapp', { 'p': 2 });
+    const r = store.resolveEffectivePolicy({ layer: 'project', project: 'myapp' });
+    assert.deepEqual(r.inputs.documents.map((d) => d.layer), ['global', 'organization', 'project']);
+    assert.deepEqual(r.inputs.documents[0].keys, ['g']);
+    assert.equal(r.hits['g'].winner.layer, 'global');
+    assert.equal(r.hits['p'].winner.layer, 'project');
+    assert.equal(r.hits['g'].strategy, 'upper-wins');
+  });
+
+  it('chained override: an allowed lower override becomes effective for deeper layers', () => {
+    const store = new PolicyStore();
+    store.set('organization', 'acme', { 'x': { value: 'org', locked: false } });
+    store.set('project', 'myapp', { 'x': 'proj' }); // allowed; now effective
+    store.set('task', 't1', { 'x': 'task' }); // vs project rule (locked by default) → denied
+    const r = store.resolveEffectivePolicy({
+      layer: 'task', organization: 'acme', project: 'myapp', task: 't1',
+    });
+    assert.equal(r.policy['x'], 'proj');
+    assert.equal(r.attempts.length, 2);
+    assert.equal(r.attempts[0].allowed, true);
+    assert.equal(r.attempts[1].allowed, false);
+    assert.equal(r.denials.length, 1);
+    assert.equal(r.denials[0].winner.layer, 'project');
+  });
+});

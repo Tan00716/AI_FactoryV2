@@ -1,0 +1,56 @@
+[PASS] health       positive GET  /api/health                                             -> 200 {'ok': True}
+[PASS] tasks        positive GET  /api/tasks?projectId=proj-myapp                         -> 200 {'list_len': 6}
+[PASS] tasks        negative POST /api/tasks/a4e4b418-7b03-44ca-8101-a3277cda6e43/transition -> 422 {'ok': False}
+[PASS] git          positive GET  /api/git/status?repo=/home/hatch/workspace/ai-factory   -> 200 {}
+[PASS] git          negative GET  /api/git/status                                         -> 400 {'error': 'repo query param is required'}
+[PASS] qa           positive GET  /api/qa/org                                             -> 200 {'lead': {'id': '67f80a13-49fc-43ff-9567-056c6cf5a99e', 'name': 'qa-lead', 'displayName': 'QA Lead', 'jobTitle': 'QA Lead', 'status': 'IDLE', 'autonomyLevel': 3}, 'specialists': []}
+[PASS] qa           negative POST /api/qa/specialists                                     -> 400 {'error': 'kind must be one of: Functional, API, E2E, Regression, Performance, Security'}
+[PASS] approvals    positive GET  /api/approvals                                          -> 200 {'list_len': 1}
+[PASS] approvals    negative POST /api/approvals/evaluate                                 -> 400 {'error': 'action is required'}
+[PASS] approvals    positive2 POST /api/approvals                                          -> 201 {'id': '418d2ebe-e920-4cc8-ad95-63093dfd51df', 'status': 'PENDING'}
+[PASS] approvals    negative2 POST /api/approvals/418d2ebe-e920-4cc8-ad95-63093dfd51df/decision -> 400 {'error': 'approved (boolean) is required'}
+[PASS] cicd         positive GET  /api/environments                                       -> 200 {}
+[PASS] cicd         positive2 POST /api/pipelines                                          -> 201 {'id': '12d37504-eff0-443f-ad67-a44c75b5d60b'}
+[PASS] cicd         negative GET  /api/pipelines/does-not-exist                           -> 404 {'error': 'pipeline does-not-exist not found'}
+[PASS] skills       positive GET  /api/skills                                             -> 200 {}
+[PASS] skills       negative POST /api/skills/install                                     -> 400 {'error': 'skill definition is required'}
+[PASS] memory       positive GET  /api/memory                                             -> 200 {}
+[PASS] memory       negative POST /api/memory                                             -> 400 {'error': 'scope must be one of employee|project|organization|task|system'}
+[PASS] mcp          positive GET  /api/mcp                                                -> 200 {}
+[PASS] mcp          negative POST /api/mcp/install                                        -> 400 {'error': 'name and version are required'}
+[PASS] knowledge    positive GET  /api/knowledge                                          -> 200 {}
+[PASS] knowledge    negative POST /api/knowledge                                          -> 400 {'error': 'title and content are required'}
+[PASS] evaluation   positive GET  /api/evaluations                                        -> 200 {}
+[PASS] evaluation   negative POST /api/evaluations                                        -> 400 {'error': 'taskId and agentId are required'}
+[PASS] models       positive GET  /api/models                                             -> 200 {}
+[PASS] models       negative POST /api/router/route                                       -> 400 {'error': 'taskType (string) and complexity (1-5) are required'}
+[PASS] events       positive GET  /api/events                                             -> 200 {}
+[PASS] events       negative POST /api/events/emit                                        -> 400 {'error': 'type (non-empty string) is required'}
+[PASS] activity     positive GET  /api/activity                                           -> 200 {}
+[PASS] runs         positive GET  /api/runs                                               -> 200 {}
+[PASS] runs         negative GET  /api/runs/does-not-exist                                -> 404 {'error': 'run not found'}
+[PASS] stats        positive GET  /api/stats                                              -> 200 {'status': {'activeTasks': {'key': 'activeTasks', 'label': '活跃任务', 'value': 6, 'source': '任务存储 tasks (GET /api/tasks)', 'unit': '个'}, 'blockedTasks': {'key': 'blockedTasks', 'label': '阻塞任务', 'value': 0, 'source': '任务存储 tasks (GET /api/tasks)', 'unit': '个'}, 'runningAgents': {'key': 'runningAgents', 'label': '运行中 Agent', 'value': 1, 'source': '智能体注册表 agents (GET /api/agents)', 'unit': '个'}, 'qaFailures': {'key': 'qaFailures', 'label': 'QA 失败', 'value': None, 'source': 'QA 运行记录 (GET /api/qa/runs)', 'note': '暂无数据'}, 'latestDeployment': {'key': 'latestDeployment', 'label': '最近部署', 'value': None, 'source': 'CI/CD 部署记录 (GET /api/deployments)', 'note': '暂无数据'}, 'productionStatus': {'key': 'productionStatus', 'label': '生产状态', 'value': None, 'source': 'CI/CD 部署记录 (GET /api/deployments)', 'note': '暂无数据'}, 'resourceUsage': {'key': 'resourceUsage', 'label': '资源用量', 'value': None, 'source': '资源用量记录 (GET /api/resources/usage)', 'note': '暂无数据'}}}
+[PASS] projects     positive GET  /api/projects/templates                                 -> 200 {}
+[PASS] projects     negative POST /api/projects/exec                                      -> 400 {'error': 'command is required'}
+[PASS] review       positive GET  /api/review/dimensions                                  -> 200 {}
+[PASS] review       negative POST /api/review                                             -> 400 {'error': 'files is required: array of {path, before?, after?}'}
+[PASS] releases     positive GET  /api/releases                                           -> 200 {}
+[PASS] releases     negative POST /api/releases                                           -> 400 {'error': 'version is required (semver)'}
+[PASS] policy       positive GET  /api/policy/layers                                      -> 200 {}
+[PASS] policy       negative POST /api/policy/validate                                    -> 400 {'error': "kind must be 'project' or 'organization'"}
+[FAIL] security     positive POST /api/security/scan                                      -> 400 {'error': 'manifest requires: name (string), instructions (string), scripts (string[]), declared {network, fileAccess, shell}'}
+[PASS] security     negative POST /api/security/scan                                      -> 400 {'error': 'manifest object is required'}
+[PASS] recovery     positive GET  /api/recovery/snapshots                                 -> 200 {}
+[PASS] recovery     negative POST /api/recovery/snapshots/nope/restore                    -> 400 {'error': 'snapshot not found: nope'}
+[PASS] resources    positive GET  /api/resources/usage                                    -> 200 {}
+[PASS] resources    negative POST /api/resources/consume                                  -> 400 {'error': 'taskId and usage are required'}
+[PASS] autonomy     positive GET  /api/autonomy/mode                                      -> 200 {}
+[PASS] autonomy     negative POST /api/autonomy/decide                                    -> 400 {'error': 'action.kind is required'}
+[PASS] coordination positive POST /api/coordination/schedule                              -> 200 {}
+[PASS] coordination negative POST /api/coordination/locks                                 -> 400 {'error': 'kind, key and holder are required'}
+[PASS] disputes     positive GET  /api/disputes                                           -> 200 {}
+[PASS] disputes     negative POST /api/disputes                                           -> 400 {'error': 'verdictA and verdictB are required'}
+[PASS] notifications positive GET  /api/notifications                                      -> 200 {'unread': 1}
+[PASS] notifications negative POST /api/notifications/nope/read                            -> 404 {'error': 'notification not found'}
+
+==== 53/54 checks passed ====

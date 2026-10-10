@@ -174,11 +174,11 @@ export function buildRunDetail(ctx: RouteContext, runId: string): RunDetail | nu
 
   const approvals = task
     ? ctx.fdb.approvals.listByTask(task.id).map((a) => ({
-        id: a.id,
+        id: a.approval_id,
         action: a.action,
         status: a.status,
         decision: a.decision,
-        decidedBy: a.decidedBy,
+        decidedBy: a.decided_by,
       }))
     : [];
 

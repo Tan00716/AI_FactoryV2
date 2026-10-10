@@ -64,6 +64,12 @@ export interface ReviewInput {
   diff?: string;
   /** Project convention keywords, e.g. ['no-console', 'kebab-case-filenames']. */
   projectConventions?: string[];
+  /**
+   * SPEC v2 §37: the reviewer's own words about the change ("already
+   * verified", rationale, …). Readable by the reviewer, but NEVER evidence —
+   * reviewCode() only inspects files/diffs, so notes cannot flip a verdict.
+   */
+  implementerNotes?: string;
 }
 
 export interface ReviewSummary {

@@ -1,0 +1,20 @@
+
+> ai-factory@0.1.0 demo:artifacts
+> npm run build -w @ai-factory/artifacts && node packages/artifacts/dist/demo/artifacts.demo.js
+
+
+> @ai-factory/artifacts@0.1.0 build
+> tsc -p tsconfig.json
+
+Task task-demo-4242: building the artifact chain…
+created   [DRAFT] CODE_CHANGE "Add retry budget to coder loop"
+created   [DRAFT] TEST_RESULT "qa loop tests — all green"  → linked: CODE_CHANGE
+hook generated   [DRAFT] FINAL_REPORT "Final report: retry budget for coder loop"
+sealed CODE_CHANGE, TEST_RESULT and FINAL_REPORT
+
+Artifact chain for task-demo-4242:
+  [SEALED] CODE_CHANGE "Add retry budget to coder loop"  → linked: TEST_RESULT, FINAL_REPORT
+  [SEALED] FINAL_REPORT "Final report: retry budget for coder loop"  → linked: CODE_CHANGE, TEST_RESULT
+  [SEALED] TEST_RESULT "qa loop tests — all green"  → linked: CODE_CHANGE, FINAL_REPORT
+
+3 artifacts total; sealed: 3

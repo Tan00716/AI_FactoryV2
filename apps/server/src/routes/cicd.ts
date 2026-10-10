@@ -261,10 +261,9 @@ export async function handleCicdRoutes(
         const manager = approvalManager(ctx);
         approval = manager.request({
           action: outcome.pendingApproval.action,
-          requestedBy: actor,
-          taskId,
-          riskLevel: 'HIGH',
-          evidenceIds: [],
+          requester: actor,
+          task_id: taskId,
+          risk_level: 'HIGH',
         });
       }
       return ctx.json(res, 200, {

@@ -1,9 +1,20 @@
 /**
- * @ai-factory/knowledge — AI Knowledge Scout pipeline (spec §52).
+ * @ai-factory/knowledge — AI Knowledge Scout pipeline (spec §44).
  *
  * Stage machine:
- *   discover → collect → verify → normalize → compare → evaluate →
- *   store → skill_proposal → publish
+ *   collect → normalize → compare → verify → evaluate → proposal
+ *
+ * IRON RULES (hardened v2):
+ *  1. The scout NEVER mutates running employee/skill/policy objects. It
+ *     only reads them (compare stage) and emits PROPOSAL CANDIDATES.
+ *     Handlers receive immutable snapshots; the artifact is built by
+ *     copying, never by mutating the candidate. A test snapshots live
+ *     objects byte-for-byte before/after a run and asserts zero drift.
+ *  2. The scout has an INDEPENDENT budget (spec: "Scout 有独立预算，
+ *     P4 调度，不挤占 P0 和用户任务"). Collection consumes budget; when
+ *     the budget is exhausted the scout STOPS COLLECTING and aborts the
+ *     run with SCOUT_BUDGET_EXHAUSTED instead of dipping into other
+ *     pools.
  *
  * Each stage is a handler that can be INJECTED (real fetchers/verifiers are
  * wired in later by the caller); defaults are deterministic and offline.
@@ -15,19 +26,16 @@ import type { Clock, KnowledgeItem, KnowledgeScope, KnowledgeSource } from './ty
 import { systemClock } from './types';
 import { ScoutError } from './types';
 import { verificationThreshold } from './sources';
-import type { SkillProposal } from './promotion';
 import type { KnowledgeStore } from './store';
 
+/** The §44 scout pipeline, in spec order. */
 export const SCOUT_STAGES = [
-  'discover',
   'collect',
-  'verify',
   'normalize',
   'compare',
+  'verify',
   'evaluate',
-  'store',
-  'skill_proposal',
-  'publish',
+  'proposal',
 ] as const;
 
 export type ScoutStage = (typeof SCOUT_STAGES)[number];
@@ -51,18 +59,36 @@ export interface VerificationEvidence {
   notes?: string;
 }
 
+/** A proposal CANDIDATE the scout produced — data only, never an action. */
+export interface ScoutProposal {
+  id: string;
+  kind: 'knowledge_intake' | 'skill_creation' | 'policy_notice';
+  /** Title of the candidate knowledge that motivated this proposal. */
+  title: string;
+  summary: string;
+  /** Snapshot of the normalized candidate content. */
+  content: string;
+  tags: string[];
+  scope: KnowledgeScope;
+  /** Snapshot of the source metadata at proposal time. */
+  source: KnowledgeSource;
+  evaluationScore: number;
+  evaluationPassed: boolean;
+  duplicateOf: string[];
+  proposedBy: 'knowledge-scout';
+  proposedAt: number;
+  status: 'PROPOSED';
+}
+
 /** Artifact accumulated as the scout walks the pipeline. */
 export interface ScoutArtifact {
   candidate: ScoutCandidate;
-  discoveredAt?: number;
   collectedAt?: number;
   payload?: string;
   normalized?: { title: string; content: string; tags: string[] };
   duplicates: string[];
   evaluation?: { score: number; passed: boolean; evaluatedAt: number; by: string };
-  storedItem?: KnowledgeItem;
-  proposal?: SkillProposal;
-  published?: boolean;
+  proposal?: ScoutProposal;
 }
 
 export type StageStatus = 'ok' | 'failed' | 'skipped';
@@ -90,7 +116,17 @@ export type StageHandler = (
 export interface StageContext {
   clock: Clock;
   store?: KnowledgeStore;
-  skillId?: string;
+}
+
+/**
+ * Independent scout budget [§44]. Collection is the billable step:
+ * each collect consumes `costPerCollect` units. The scout stops collecting
+ * when the remaining budget cannot cover one more collect — it never
+ * borrows from other pools.
+ */
+export interface ScoutBudget {
+  total: number;
+  costPerCollect?: number;
 }
 
 export interface ScoutRunOptions {
@@ -103,12 +139,14 @@ export interface ScoutRunOptions {
   skip?: readonly ScoutStage[];
   clock?: Clock;
   store?: KnowledgeStore;
-  skillId?: string;
+  /** Independent scout budget; defaults to a sane offline allowance. */
+  budget?: ScoutBudget;
 }
 
 export interface ScoutRunResult {
   artifact: ScoutArtifact;
   records: StageRecord[];
+  budget: { total: number; spent: number; exhausted: boolean };
 }
 
 /* ------------------------------------------------------------------ */
@@ -119,31 +157,20 @@ function normalizeText(s: string): string {
   return s.trim().replace(/\s+/g, ' ');
 }
 
+const DEFAULT_COST_PER_COLLECT = 1;
+
 export const defaultHandlers: Record<ScoutStage, StageHandler> = {
-  discover: (artifact, ctx) => {
+  collect: (artifact, ctx) => {
     const c = artifact.candidate;
-    if (!c.title.trim()) throw new Error('discover: candidate title is empty');
-    if (!c.rawContent.trim()) throw new Error('discover: candidate content is empty');
-    if (!c.topic.trim()) throw new Error('discover: candidate topic is empty');
-    return { ...artifact, discoveredAt: ctx.clock.now() };
-  },
-
-  collect: (artifact, ctx) => ({
-    ...artifact,
-    collectedAt: ctx.clock.now(),
-    payload: normalizeText(artifact.candidate.rawContent),
-  }),
-
-  verify: (artifact, ctx) => {
-    const need = verificationThreshold(artifact.candidate.source.type);
-    const have = artifact.candidate.verifications?.length ?? 0;
-    if (have < need) {
-      throw new Error(
-        `verify: source '${artifact.candidate.source.type}' requires ${need} ` +
-          `independent verification(s), only ${have} attached.`,
-      );
-    }
-    return artifact;
+    if (!c.title.trim()) throw new Error('collect: candidate title is empty');
+    if (!c.rawContent.trim()) throw new Error('collect: candidate content is empty');
+    if (!c.topic.trim()) throw new Error('collect: candidate topic is empty');
+    // Return a COPY — handlers never mutate the candidate in place.
+    return {
+      ...artifact,
+      collectedAt: ctx.clock.now(),
+      payload: normalizeText(c.rawContent),
+    };
   },
 
   normalize: (artifact) => {
@@ -160,11 +187,24 @@ export const defaultHandlers: Record<ScoutStage, StageHandler> = {
   },
 
   compare: (artifact, ctx) => {
+    // Read-only: may READ running items for duplicate detection, never write.
     const title = (artifact.normalized?.title ?? artifact.candidate.title).toLowerCase();
     const duplicates = ctx.store
       ? ctx.store.all().filter((i) => i.title.toLowerCase() === title).map((i) => i.id)
       : [];
     return { ...artifact, duplicates };
+  },
+
+  verify: (artifact) => {
+    const need = verificationThreshold(artifact.candidate.source.type);
+    const have = artifact.candidate.verifications?.length ?? 0;
+    if (have < need) {
+      throw new Error(
+        `verify: source '${artifact.candidate.source.type}' requires ${need} ` +
+          `independent verification(s), only ${have} attached.`,
+      );
+    }
+    return artifact;
   },
 
   evaluate: (artifact, ctx) => {
@@ -177,38 +217,30 @@ export const defaultHandlers: Record<ScoutStage, StageHandler> = {
     };
   },
 
-  store: (artifact, ctx) => {
-    if (!ctx.store) return artifact;
+  proposal: (artifact, ctx) => {
+    // Produces a proposal CANDIDATE only. No mutation of agents/skills/policies.
     const c = artifact.candidate;
     const n = artifact.normalized;
-    const item = ctx.store.add({
+    const ev = artifact.evaluation;
+    const proposal: ScoutProposal = {
+      id: `scoutprop_${ctx.clock.now()}`,
+      kind: artifact.duplicates.length > 0 ? 'knowledge_intake' : 'skill_creation',
       title: n?.title ?? c.title,
+      summary: `Scout proposal: candidate "${n?.title ?? c.title}" passed verify+evaluate; ` +
+        `awaits lifecycle approval before anything is applied.`,
       content: n?.content ?? c.rawContent,
-      tags: n?.tags ?? c.tags ?? [],
-      scope: c.scope,
-      source: c.source,
-    });
-    return { ...artifact, storedItem: item };
-  },
-
-  skill_proposal: (artifact) => {
-    const item = artifact.storedItem;
-    if (!item) return artifact;
-    const proposal: SkillProposal = {
-      id: `scout_${item.id}`,
-      kind: 'create',
-      itemId: item.id,
-      itemTitle: item.title,
-      skillId: 'pending',
-      summary: `Scout draft: promote "${item.title}" after lifecycle approval.`,
+      tags: [...(n?.tags ?? c.tags ?? [])],
+      scope: { ...c.scope },
+      source: { ...c.source },
+      evaluationScore: ev?.score ?? 0,
+      evaluationPassed: ev?.passed ?? false,
+      duplicateOf: [...artifact.duplicates],
       proposedBy: 'knowledge-scout',
-      proposedAt: Date.now(),
-      status: 'PENDING',
+      proposedAt: ctx.clock.now(),
+      status: 'PROPOSED',
     };
     return { ...artifact, proposal };
   },
-
-  publish: (artifact) => ({ ...artifact, published: true }),
 };
 
 /* ------------------------------------------------------------------ */
@@ -225,12 +257,51 @@ export class KnowledgeScout {
   async run(candidate: ScoutCandidate, opts: ScoutRunOptions = {}): Promise<ScoutRunResult> {
     const clock = opts.clock ?? this.clock;
     const hooks = opts.hooks ?? {};
-    const ctx: StageContext = { clock, store: opts.store, skillId: opts.skillId };
+    const ctx: StageContext = { clock, store: opts.store };
 
-    let artifact: ScoutArtifact = { candidate, duplicates: [] };
+    const budgetTotal = opts.budget?.total ?? 1000;
+    const costPerCollect = opts.budget?.costPerCollect ?? DEFAULT_COST_PER_COLLECT;
+    let spent = 0;
+
+    let artifact: ScoutArtifact = {
+      // Deep-copy the candidate at intake so the scout can never mutate the caller's object.
+      candidate: {
+        ...candidate,
+        tags: [...(candidate.tags ?? [])],
+        source: { ...candidate.source },
+        scope: { ...candidate.scope },
+        verifications: candidate.verifications?.map((v) => ({ ...v })),
+      },
+      duplicates: [],
+    };
     const records: StageRecord[] = [];
 
     for (const stage of SCOUT_STAGES) {
+      // Budget gate: collect is billable. Exhausted budget stops collection.
+      if (stage === 'collect') {
+        if (spent + costPerCollect > budgetTotal) {
+          const record: StageRecord = {
+            stage,
+            status: 'failed',
+            attempts: 0,
+            startedAt: clock.now(),
+            finishedAt: clock.now(),
+            error:
+              `scout budget exhausted: total=${budgetTotal} spent=${spent} ` +
+              `costPerCollect=${costPerCollect} — stopping collection instead of ` +
+              'borrowing from other pools.',
+          };
+          records.push(record);
+          throw new ScoutError(
+            record.error!,
+            stage,
+            records,
+            'SCOUT_BUDGET_EXHAUSTED',
+          );
+        }
+        spent += costPerCollect;
+      }
+
       const handler = opts.handlers?.[stage] ?? defaultHandlers[stage];
       const maxRetries = opts.retry?.[stage] ?? 0;
       const record: StageRecord = {
@@ -278,6 +349,10 @@ export class KnowledgeScout {
       records.push(record);
     }
 
-    return { artifact, records };
+    return {
+      artifact,
+      records,
+      budget: { total: budgetTotal, spent, exhausted: spent >= budgetTotal },
+    };
   }
 }

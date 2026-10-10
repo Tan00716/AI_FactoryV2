@@ -24,7 +24,7 @@ export const LOOP_PHASES: readonly LoopPhase[] = [
 ];
 
 /** §24 — terminal decision after EVALUATE (plus in-loop CONTINUE/RETRY). */
-export type LoopDecision = 'CONTINUE' | 'RETRY' | 'HANDOFF' | 'ESCALATE' | 'COMPLETE';
+export type LoopDecision = 'CONTINUE' | 'RETRY' | 'HANDOFF' | 'ESCALATE' | 'COMPLETE' | 'SUBMIT';
 
 /** §25 — budgets. Exceeding any of them throws BudgetExceeded. */
 export interface LoopBudgets {

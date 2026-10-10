@@ -1,0 +1,68 @@
+
+> ai-factory@0.1.0 demo:orchestrator
+> npm run build -w @ai-factory/orchestrator && node packages/orchestrator/dist/demo/decompose.demo.js
+
+
+> @ai-factory/orchestrator@0.1.0 build
+> tsc -p tsconfig.json
+
+=== DECOMPOSITION PLAN ===
+goal: Orders transition to PAID when the payment gateway reports success
+
+acceptance criteria:
+  - Root cause of "payment success but order stays Pending" is identified and recorded as evidence
+  - A failing reproduction exists before the fix and passes after it
+  - Fix merged with code review approval
+  - Regression suite passes with no new failures
+
+risks:
+  - Root cause may differ from surface symptom; reproduction may be flaky
+  - Fix may introduce regressions in adjacent code paths
+  - Constraint must be respected: no downtime
+  - Constraint must be respected: idempotent order-state transitions
+
+subtasks:
+  1. [investigate] Investigate root cause of: payment success but order stays Pending (~2h)
+  2. [reproduce] Reproduce: payment success but order stays Pending (~2h)
+  3. [fix] Implement fix for: payment success but order stays Pending (~4h)
+  4. [test] Add/extend tests covering: payment success but order stays Pending (~3h)
+  5. [regression] Run regression suite after fix: payment success but order stays Pending (~2h)
+
+dependencies:
+  subtask 2 depends_on subtask 1
+  subtask 3 depends_on subtask 2
+  subtask 4 depends_on subtask 3
+  subtask 5 depends_on subtask 4
+
+required specialists: backend-engineer, qa-engineer
+test strategy: Reproduce-first: write a failing test that captures the bug, fix, then re-run the targeted suite plus the full regression suite before review.
+deployment strategy: Standard pipeline deploy (dev → UAT → prod) with a rollback plan; hotfix branch if the bug is production-impacting (P0/P1).
+
+=== SCHEDULER (concurrency 2) ===
+round 1: start sub-1
+round 2: start sub-2
+round 3: start sub-3
+round 4: start sub-4
+round 5: start sub-5
+execution order: sub-1 -> sub-2 -> sub-3 -> sub-4 -> sub-5
+
+=== AGENT SELECTION (investigate subtask) ===
+  PostgreSQL Specialist  score=92.5 (skills 30, tools 20, perms 15, role 3)
+  DB Specialist          score=70.8 (skills 15, tools 20, perms 15, role 3)
+  Backend Engineer       score=20.8 (skills 0, tools 0, perms 0, role 3)
+  QA Engineer            score=15.0 (skills 0, tools 0, perms 0, role 0)
+
+=== NEXT ACTIONS ===
+  TODO         -> decompose
+  IN_PROGRESS  -> run
+  QA_FAILED    -> retry
+  BLOCKED      -> escalate
+  DONE         -> complete
+
+=== HANDOFF ===
+  tech-lead -> pg @ 2026-10-10T08:19:22.894Z
+  reason: deep transaction/locking expertise required for the investigation subtask
+
+=== PATTERN ===
+  plan pattern: handoff
+demo complete.
