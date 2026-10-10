@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/core":"0.1.0"},"description":"Task squads vs persistent organization: temporary squads (§20), organization designer graph (§14)","main":"dist/src/index.js","name":"@ai-factory/squads","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}
