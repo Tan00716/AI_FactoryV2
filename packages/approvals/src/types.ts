@@ -10,7 +10,7 @@
  *            APPROVED → INVALIDATED (bound context changed: candidate digest,
  *            evidence manifest hash, policy version, or environment)
  *
- * Approval levels for sensitive actions (§23.4): AUTO, AI_REVIEW,
+ * Approval levels for sensitive actions (§23.4): AUTO, AI_REVIEW_PLUS_POLICY,
  * HUMAN_APPROVAL, BLOCKED.
  */
 
@@ -27,7 +27,7 @@ export type ApprovalStatus =
   | 'INVALIDATED';
 
 /** §23.4 — how much review a sensitive tool action needs. */
-export type ApprovalLevel = 'AUTO' | 'AI_REVIEW' | 'HUMAN_APPROVAL' | 'BLOCKED';
+export type ApprovalLevel = 'AUTO' | 'AI_REVIEW_PLUS_POLICY' | 'HUMAN_APPROVAL' | 'BLOCKED';
 
 /**
  * §23.3 approval object. An approval binds a decision to an exact context:

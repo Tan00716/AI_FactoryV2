@@ -253,7 +253,7 @@ describe('WorkflowEngineV2', () => {
       e.requestTransitionV2('t-1', to, 'agent-1', baseCtx());
     }
     // (test-only shortcut: walk remaining stages without gates)
-    const s = e.get('t-1');
+    const s = e.getMutable('t-1');
     s.stage = 'OUTCOME_VERIFICATION';
     const r = e.finalize('t-1', 'agent-1', goodSnapshot);
     assert.equal(r.ok, true);
@@ -267,7 +267,7 @@ describe('WorkflowEngineV2', () => {
   it('finalize() denial leaves state untouched (no partial commit)', () => {
     const e = engine();
     e.register('t-1');
-    e.get('t-1').stage = 'OUTCOME_VERIFICATION';
+    e.getMutable('t-1').stage = 'OUTCOME_VERIFICATION';
     const before = e.get('t-1').taskVersion;
     const r = e.finalize('t-1', 'agent-1', {
       ...goodSnapshot,
@@ -284,7 +284,7 @@ describe('WorkflowEngineV2', () => {
   it('finalize() refused when condition is not ACTIVE', () => {
     const e = engine();
     e.register('t-1');
-    e.get('t-1').stage = 'OUTCOME_VERIFICATION';
+    e.getMutable('t-1').stage = 'OUTCOME_VERIFICATION';
     e.setCondition('t-1', 'BLOCKED', 'x', 'agent-1');
     const r = e.finalize('t-1', 'agent-1', goodSnapshot);
     assert.equal(r.ok, false);
@@ -308,7 +308,7 @@ describe('WorkflowEngineV2', () => {
   it('invalidateCompletion(): COMPLETION_INVALIDATED appended, history not rewritten', () => {
     const e = engine();
     e.register('t-1');
-    e.get('t-1').stage = 'OUTCOME_VERIFICATION';
+    e.getMutable('t-1').stage = 'OUTCOME_VERIFICATION';
     const fr = e.finalize('t-1', 'agent-1', goodSnapshot);
     assert.equal(fr.ok, true);
     e.invalidateCompletion('t-1', 'human-1', 'regression found in prod');
@@ -321,5 +321,151 @@ describe('WorkflowEngineV2', () => {
     const doneHist = s.milestoneHistory.find((h) => h.milestone === 'DONE');
     assert.ok(doneHist && doneHist.invalidatedAt !== undefined);
     assert.equal(s.milestones.DONE.achieved, false);
+  });
+});
+
+describe('WorkflowEngineV2 §18.2 read barrier', () => {
+  it('get() returns a deep-frozen snapshot: top-level mutation throws', () => {
+    const e = engine();
+    e.register('t-1');
+    const s = e.get('t-1');
+    assert.throws(() => {
+      (s as { stage: unknown }).stage = 'DONE';
+    }, TypeError);
+    assert.equal(e.get('t-1').stage, 'TODO');
+  });
+
+  it('get() returns a deep-frozen snapshot: nested mutation throws', () => {
+    const e = engine();
+    e.register('t-1');
+    const s = e.get('t-1');
+    assert.throws(() => {
+      (s.milestones.DONE as { achieved: boolean }).achieved = true;
+    }, TypeError);
+    assert.throws(() => {
+      (s.condition as { condition: string }).condition = 'BLOCKED';
+    }, TypeError);
+    assert.equal(e.get('t-1').milestones.DONE.achieved, false);
+  });
+
+  it('get() returns a copy: engine state is unaffected by the snapshot', () => {
+    const e = engine();
+    e.register('t-1');
+    const a = e.get('t-1');
+    const b = e.get('t-1');
+    assert.notEqual(a, b);
+    assert.deepEqual(a, b);
+  });
+
+  it('getMutable() still returns the live reference for engine/test setup use', () => {
+    const e = engine();
+    e.register('t-1');
+    e.getMutable('t-1').stage = 'OUTCOME_VERIFICATION';
+    assert.equal(e.get('t-1').stage, 'OUTCOME_VERIFICATION');
+  });
+
+  it('get() on an unknown task still throws', () => {
+    const e = engine();
+    assert.throws(() => e.get('nope'), /Unknown task/);
+  });
+});
+
+describe('TransitionDefV2 optional §18.2 fields (additive)', () => {
+  it('accepts escalation and evidenceInvalidationRules without breaking checks', () => {
+    const def = {
+      intent: 'TEST_INTENT',
+      to: 'DONE',
+      entryConditions: [],
+      requiredEvidence: [],
+      gatePredicates: [],
+      failureConditions: [],
+      note: 'test edge',
+      escalation: { target: 'human', afterMs: 3_600_000, reason: 'stuck too long' },
+      evidenceInvalidationRules: [
+        { evidenceTypes: ['qa_result'], scope: 'stale-version', reason: 'new code' },
+      ],
+    } as const;
+    // Structural: the optional fields are carried on the def.
+    assert.equal(def.escalation?.target, 'human');
+    assert.equal(def.evidenceInvalidationRules?.[0].scope, 'stale-version');
+    // Behavioral: existing transition defs are unaffected by the addition.
+    const edge = DEFAULT_TRANSITIONS_V2['TODO']?.[0];
+    assert.ok(edge);
+  });
+
+  it('defs without the new fields still satisfy the interface', () => {
+    for (const edges of Object.values(DEFAULT_TRANSITIONS_V2)) {
+      for (const e of edges) {
+        assert.ok(e.escalation === undefined || typeof e.escalation === 'object');
+        assert.ok(e.evidenceInvalidationRules === undefined || Array.isArray(e.evidenceInvalidationRules));
+      }
+    }
+  });
+});
+
+describe('cancelTask (B-G-22)', () => {
+  it('sets condition CANCELLED, appends history, and audits', () => {
+    const audit = new AuditLog();
+    const e = new WorkflowEngineV2({ audit, now: () => 1700000000000 });
+    e.register('t-cancel');
+    const out = e.cancelTask('t-cancel', 'human:alice', 'no longer needed');
+    assert.equal(out.condition.condition, 'CANCELLED');
+    assert.equal(out.condition.reason, 'no longer needed');
+    assert.equal(out.condition.updatedBy, 'human:alice');
+    // Stage untouched (§18.3 three-state separation).
+    assert.equal(out.stage, 'TODO');
+    const last = out.completionHistory[out.completionHistory.length - 1];
+    assert.equal(last.kind, 'CANCELLED');
+    const events = audit.list().filter((r) => r.entityId === 't-cancel').map((r) => r.action);
+    assert.ok(events.includes('TASK_CANCELLED'));
+  });
+
+  it('is idempotent on an already-cancelled task', () => {
+    const audit = new AuditLog();
+    const e = new WorkflowEngineV2({ audit, now: () => 1700000000000 });
+    e.register('t-cancel-2');
+    e.cancelTask('t-cancel-2', 'human:alice', 'first');
+    const again = e.cancelTask('t-cancel-2', 'human:alice', 'second');
+    assert.equal(
+      again.completionHistory.filter((h) => h.kind === 'CANCELLED').length,
+      1,
+    );
+  });
+
+  it('best-effort releases leases; release failures are audited, not fatal', () => {
+    const audit = new AuditLog();
+    let releasedFor: string | null = null;
+    const e = new WorkflowEngineV2({
+      audit,
+      now: () => 1700000000000,
+      releaseLeases: (taskId) => {
+        releasedFor = taskId;
+        return 2;
+      },
+    });
+    e.register('t-cancel-3');
+    const out = e.cancelTask('t-cancel-3', 'human:alice', 'done');
+    assert.equal(releasedFor, 't-cancel-3');
+    assert.equal(out.condition.condition, 'CANCELLED');
+
+    const audit2 = new AuditLog();
+    const e2 = new WorkflowEngineV2({
+      audit: audit2,
+      now: () => 1700000000000,
+      releaseLeases: () => {
+        throw new Error('lease store down');
+      },
+    });
+    e2.register('t-cancel-4');
+    const out2 = e2.cancelTask('t-cancel-4', 'human:alice', 'done');
+    assert.equal(out2.condition.condition, 'CANCELLED');
+    const actions = audit2.list().filter((r) => r.entityId === 't-cancel-4').map((r) => r.action);
+    assert.ok(actions.includes('TASK_CANCEL_LEASE_RELEASE_FAILED'));
+    assert.ok(actions.includes('TASK_CANCELLED'));
+  });
+
+  it('throws for an unknown task', () => {
+    const e = engine();
+    assert.throws(() => e.cancelTask('nope', 'human:alice', 'x'), /Unknown task/);
   });
 });

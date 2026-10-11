@@ -133,7 +133,10 @@ export type ReportErrorCode =
   | 'DUPLICATE_REPORT'
   | 'STALE_SEQUENCE'
   | 'UNKNOWN_ARTIFACT_REF'
-  | 'UNKNOWN_EVIDENCE_REF';
+  | 'UNKNOWN_EVIDENCE_REF'
+  | 'UNKNOWN_REPORT'
+  | 'NOT_SUBMITTED'
+  | 'INVALID_DECISION';
 
 export class ReportError extends Error {
   readonly code: ReportErrorCode;
@@ -309,6 +312,36 @@ export class ReportLog {
   get(reportId: string): ManagementReport | undefined {
     const r = this.reports.get(reportId);
     return r ? { ...r } : undefined;
+  }
+
+  /**
+   * Decide a submitted report (§14 manager review).
+   * Only SUBMITTED_FOR_REVIEW reports can be decided; the decision is
+   * ACCEPTED | REJECTED | ESCALATED. Deciding is idempotent-safe in the
+   * sense that a second decide on a non-pending report throws
+   * ReportError('NOT_SUBMITTED') — no silent re-decision.
+   */
+  decideReport(
+    reportId: string,
+    decision: 'ACCEPTED' | 'REJECTED' | 'ESCALATED',
+    decidedBy: string,
+  ): ManagementReport {
+    const r = this.reports.get(reportId);
+    if (!r) throw new ReportError('UNKNOWN_REPORT', `report ${reportId} does not exist`);
+    if (r.status !== 'SUBMITTED_FOR_REVIEW') {
+      throw new ReportError(
+        'NOT_SUBMITTED',
+        `report ${reportId} is ${r.status}, not SUBMITTED_FOR_REVIEW — cannot decide`,
+      );
+    }
+    if (!['ACCEPTED', 'REJECTED', 'ESCALATED'].includes(decision)) {
+      throw new ReportError('INVALID_DECISION', `decision must be ACCEPTED | REJECTED | ESCALATED`);
+    }
+    const by = (decidedBy ?? '').trim();
+    if (!by) throw new ReportError('INVALID_SCHEMA', 'decidedBy is required');
+    const updated: ManagementReport = { ...r, status: decision };
+    this.reports.set(reportId, updated);
+    return { ...updated };
   }
 
   /** All reports for one task, in sequence order. */

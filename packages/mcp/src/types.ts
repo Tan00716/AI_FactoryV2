@@ -38,6 +38,18 @@ export interface McpServer {
   trustLevel: TrustLevel;
   approvalPolicy: ApprovalPolicy;
   networkRequirements?: string;
+  /**
+   * §34.2 [S4] — negotiated protocol version from the handshake. The
+   * implementation MUST persist this; it drives the legacy-server
+   * compatibility layer and contract-test gating on protocol upgrades.
+   */
+  negotiatedVersion?: string;
+  /**
+   * §34.2 [S4] — negotiated extension set from the handshake
+   * (per-request capability negotiation). MUST be persisted alongside
+   * the negotiated version.
+   */
+  extensionSet?: string[];
   registeredAt: number;
 }
 

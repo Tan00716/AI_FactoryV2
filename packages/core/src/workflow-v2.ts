@@ -150,7 +150,38 @@ export interface TransitionDefV2 {
   failureConditions: TaskConditionValue[];
   approverPolicy?: string;
   timeoutMs?: number;
+  /**
+   * §18.2 escalation: where a timed-out or gate-denied transition escalates
+   * (optional; additive in v2.1).
+   */
+  escalation?: TransitionEscalation;
+  /**
+   * §18.2 evidence invalidation rules fired when this transition is taken
+   * (optional; additive in v2.1).
+   */
+  evidenceInvalidationRules?: EvidenceInvalidationRule[];
   note: string;
+}
+
+/** §18.2 — where a timed-out or gate-denied transition escalates. */
+export interface TransitionEscalation {
+  /** Escalation target, e.g. 'human', 'security-authority', 'manager'. */
+  target: string;
+  /** ms after which the escalation fires; null/undefined = on gate denial. */
+  afterMs?: number | null;
+  /** Human-readable rationale. */
+  reason?: string;
+}
+
+/** §18.2 — which evidence this transition invalidates when it fires. */
+export interface EvidenceInvalidationRule {
+  /** Evidence types invalidated, e.g. ['code_review', 'qa_result']. */
+  evidenceTypes: string[];
+  /** 'all' invalidates every matching record; 'stale-version' only those
+   * collected against an older requirement version. */
+  scope: 'all' | 'stale-version';
+  /** Human-readable rationale. */
+  reason?: string;
 }
 
 const R = (

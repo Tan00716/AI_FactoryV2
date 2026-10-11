@@ -504,6 +504,9 @@ export class FactoryDatabase {
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
+    // SPEC §48 — foreign keys are declared in SCHEMA but SQLite does not
+    // enforce them unless this pragma is on for every connection.
+    this.db.exec('PRAGMA foreign_keys = ON');
     this.db.exec(SCHEMA);
     migrateApprovalsTable(this.db);
     migrateMemoryTable(this.db);

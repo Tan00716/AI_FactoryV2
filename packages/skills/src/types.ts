@@ -25,8 +25,61 @@
 /** §49 — where a skill comes from and how much it has been vetted. */
 export type SkillTrustLevel = 'OFFICIAL' | 'VERIFIED' | 'COMMUNITY' | 'UNREVIEWED';
 
-/** Skill lifecycle states (§49). Retired versions are never loaded into context. */
-export type SkillStatus = 'ACTIVE' | 'DEPRECATED' | 'RETIRED';
+/** Skill lifecycle states (§35). Retired versions are never loaded into context. */
+export type SkillStatus =
+  | 'DRAFT'
+  | 'QUARANTINED'
+  | 'VALIDATED'
+  | 'EVALUATED'
+  | 'APPROVED'
+  | 'ACTIVE'
+  | 'DEPRECATED'
+  | 'RETIRED';
+
+/**
+ * §35 — legal lifecycle transitions for one skill version.
+ *
+ * Agent self-built skills default to the Proposal flow:
+ *   DRAFT (生成) → VALIDATED (安全检查通过) → EVALUATED (独立评测)
+ *   → APPROVED (政策批准) → ACTIVE (激活)
+ * QUARANTINED is entered when a security check / evaluation flags the
+ * version; from there it goes back to DRAFT for rework or straight to
+ * RETIRED. ACTIVE → RETIRED directly is allowed for defective versions
+ * (block new launches per §35).
+ */
+export const SKILL_STATUS_TRANSITIONS: Readonly<
+  Record<SkillStatus, readonly SkillStatus[]>
+> = {
+  DRAFT: ['QUARANTINED', 'VALIDATED'],
+  QUARANTINED: ['DRAFT', 'RETIRED'],
+  VALIDATED: ['EVALUATED', 'QUARANTINED'],
+  EVALUATED: ['APPROVED', 'QUARANTINED'],
+  APPROVED: ['ACTIVE', 'QUARANTINED'],
+  ACTIVE: ['DEPRECATED', 'RETIRED'],
+  DEPRECATED: ['RETIRED', 'ACTIVE'],
+  RETIRED: [],
+};
+
+/** True when `to` is a legal lifecycle move from `from` (§35). */
+export function canTransitionSkillStatus(from: SkillStatus, to: SkillStatus): boolean {
+  return SKILL_STATUS_TRANSITIONS[from].includes(to);
+}
+
+/** Thrown when a lifecycle transition is not in SKILL_STATUS_TRANSITIONS. */
+export class SkillStatusTransitionError extends Error {
+  constructor(
+    public readonly skillId: string,
+    public readonly version: string,
+    public readonly from: SkillStatus,
+    public readonly to: SkillStatus,
+  ) {
+    super(
+      `skill ${skillId}@${version}: illegal status transition ${from} → ${to} ` +
+        `(legal: ${SKILL_STATUS_TRANSITIONS[from].join(', ') || 'none'})`,
+    );
+    this.name = 'SkillStatusTransitionError';
+  }
+}
 
 /**
  * §47 — the on-disk skill unit. `instructions` is the SKILL.md markdown text;

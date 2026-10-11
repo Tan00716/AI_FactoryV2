@@ -127,6 +127,13 @@ export interface ApprovalBindingContext {
   evidence_manifest_hash: string;
   policy_version: string;
   environment: string;
+  /**
+   * §23.3 risk substance: a material risk-level change after APPROVED
+   * invalidates the approval — the old decision must not cover a riskier action.
+   */
+  risk_level: RiskLevel;
+  /** §23.3 reversibility substance: changed reversibility invalidates too. */
+  reversibility_ref: string;
 }
 
 export interface InvalidationResult {

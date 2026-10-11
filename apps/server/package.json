@@ -38,6 +38,7 @@
     "@ai-factory/security": "0.1.0",
     "@ai-factory/skills": "0.1.0",
     "@ai-factory/squads": "0.1.0",
+    "@ai-factory/comms": "0.1.0",
     "@ai-factory/takeover": "0.1.0",
     "@ai-factory/tools": "0.1.0",
     "@ai-factory/watchdog": "0.1.0"

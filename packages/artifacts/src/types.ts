@@ -1,15 +1,15 @@
 /**
  * Artifact domain types — spec §23 (Artifact System).
  *
- * §23: "Artifacts are first-class objects" and "every important workflow
- * action should generate or reference an Artifact". The spec lists 19
- * supported artifact types; each type carries a schema here (required +
+ * §39.1: "Artifacts are first-class objects" and "every important workflow
+ * action should generate or reference an Artifact". The spec lists 27
+ * supported artifact types (19 v1 + 8 v2); each type carries a schema here (required +
  * optional field specs), and `ArtifactStore.create` validates the field
  * payload against the schema, refusing creation while naming the missing
  * or mistyped fields.
  */
 
-/** §23 — the 19 supported artifact types. */
+/** §39.1 — the 27 supported artifact types (19 v1 + 8 v2). */
 export type ArtifactType =
   | 'PLAN'
   | 'TASK_BREAKDOWN'
@@ -29,9 +29,18 @@ export type ArtifactType =
   | 'RELEASE'
   | 'INCIDENT'
   | 'ROLLBACK'
-  | 'FINAL_REPORT';
+  | 'FINAL_REPORT'
+  // §39.1 v2 additions
+  | 'REQUIREMENT_VERSION'
+  | 'DELEGATION'
+  | 'MANAGEMENT_REPORT'
+  | 'RISK_ASSESSMENT'
+  | 'OUTCOME_RESULT'
+  | 'HANDOFF'
+  | 'CHECKPOINT'
+  | 'IMPROVEMENT_PROPOSAL';
 
-/** All 19 types, in spec order. Useful for iteration / registration. */
+/** All 27 types, in spec order. Useful for iteration / registration. */
 export const ARTIFACT_TYPES: readonly ArtifactType[] = [
   'PLAN',
   'TASK_BREAKDOWN',
@@ -52,6 +61,15 @@ export const ARTIFACT_TYPES: readonly ArtifactType[] = [
   'INCIDENT',
   'ROLLBACK',
   'FINAL_REPORT',
+  // §39.1 v2 additions
+  'REQUIREMENT_VERSION',
+  'DELEGATION',
+  'MANAGEMENT_REPORT',
+  'RISK_ASSESSMENT',
+  'OUTCOME_RESULT',
+  'HANDOFF',
+  'CHECKPOINT',
+  'IMPROVEMENT_PROPOSAL',
 ];
 
 /**

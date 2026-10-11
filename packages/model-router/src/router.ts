@@ -4,7 +4,10 @@
  * Rules, applied in order:
  *  1. Hard constraints filter the catalog: privacy=sensitive → local models
  *     only; needsVision → vision-capable only; requiredTools → tool-capable
- *     only; contextNeeded → models with a large enough context window.
+ *     only; contextNeeded → models with a large enough context window;
+ *     availability=offline → never eligible (INV-29). When nothing survives,
+ *     route() returns unavailable=true with an explicit report instead of
+ *     silently degrading to an unsuitable model.
  *  2. If the shared pool is exhausted (currentUsage.usedPct >=
  *     POOL_EXHAUSTED_PCT), non-local models are deprioritized: the primary is
  *     chosen from local models when any survive the hard filters, because the
@@ -33,6 +36,9 @@ const TASK_FIT: Record<TaskType, string> = {
 };
 
 function satisfiesHardConstraints(m: ModelRef, req: RouteRequest): boolean {
+  // INV-29: an offline model is never eligible — not as primary, not as a
+  // silent fallback. Unavailability is reported explicitly by route().
+  if (m.availability === 'offline') return false;
   if (req.privacy === 'sensitive' && m.provider !== 'local') return false;
   if (req.needsVision && !m.capabilities.vision) return false;
   if (req.requiredTools.length > 0 && !m.capabilities.tools) return false;
@@ -91,12 +97,24 @@ export function route(
   const poolExhausted = request.currentUsage.usedPct >= POOL_EXHAUSTED_PCT;
 
   const eligible = catalog.filter((m) => satisfiesHardConstraints(m, request));
-  // The seed catalog always yields at least one candidate; if a custom
-  // catalog yields none, fall back to the full catalog rather than crash.
-  const pool = eligible.length > 0 ? eligible : [...catalog];
+  // INV-29: no silent degradation. When nothing is eligible (e.g. every
+  // candidate is offline), report unavailability explicitly instead of
+  // routing over the full catalog and pretending a model was chosen.
   if (eligible.length === 0) {
-    reasons.push('no model satisfied all hard constraints — routing over full catalog as last resort');
+    const offlineCount = catalog.filter((m) => m.availability === 'offline').length;
+    const why =
+      catalog.length > 0 && offlineCount === catalog.length
+        ? `all ${catalog.length} catalog models are offline`
+        : `no model satisfied all hard constraints (${offlineCount} of ${catalog.length} offline)`;
+    return {
+      primary: null,
+      fallback: null,
+      emergency: null,
+      unavailable: true,
+      reason: `INV-29: no model available — ${why}; refusing to silently degrade`,
+    };
   }
+  const pool = eligible;
 
   // §29: the shared 5h pool is one pool across ALL agents. When exhausted,
   // prefer local models for the primary slot whenever one is eligible.
@@ -131,7 +149,7 @@ export function route(
     `emergency=${emergency.model}`,
   );
 
-  return { primary, fallback, emergency, reason: reasons.join(' | ') };
+  return { primary, fallback, emergency, reason: reasons.join(' | '), unavailable: false };
 }
 
 export { POOL_EXHAUSTED_PCT };

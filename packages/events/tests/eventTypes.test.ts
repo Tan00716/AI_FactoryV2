@@ -1,4 +1,4 @@
-/** §91 event vocabulary tests. */
+/** §91 event vocabulary + §32.1 v2 additions tests. */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EVENT_TYPES, isEventType } from '../src/index.js';
@@ -16,18 +16,43 @@ const SPEC_91 = [
   'KNOWLEDGE_UPDATED', 'SKILL_UPDATED', 'MCP_UPDATED',
 ];
 
+/** The 10 v2 event types added by SPEC_V2 §32.1. */
+const SPEC_32_V2 = [
+  'AUTHORIZATION',
+  'REQUIREMENT_VERSION',
+  'DELEGATION_REPORT',
+  'CONTROL_EPOCH',
+  'LEASE_FENCING',
+  'QUOTA_HANDOFF',
+  'EVIDENCE_INVALIDATION',
+  'TAKEOVER',
+  'OUTCOME',
+  'COMPLETION_INVALIDATION',
+];
+
 describe('EVENT_TYPES', () => {
-  it('contains every §91 name, verbatim, with no extras', () => {
-    assert.deepEqual([...EVENT_TYPES].sort(), [...SPEC_91].sort());
+  it('contains every §91 name, verbatim', () => {
+    for (const name of SPEC_91) {
+      assert.ok((EVENT_TYPES as readonly string[]).includes(name), `missing §91 type ${name}`);
+    }
   });
 
-  it('has no duplicates', () => {
+  it('contains the 10 §32.1 v2 additions', () => {
+    for (const name of SPEC_32_V2) {
+      assert.ok((EVENT_TYPES as readonly string[]).includes(name), `missing §32.1 type ${name}`);
+    }
+  });
+
+  it('has 39 types total with no duplicates', () => {
+    assert.equal(EVENT_TYPES.length, 39);
     assert.equal(new Set(EVENT_TYPES).size, EVENT_TYPES.length);
   });
 
   it('isEventType guards the vocabulary', () => {
     assert.equal(isEventType('RUN_STARTED'), true);
     assert.equal(isEventType('QA_COMPLETED'), true);
+    assert.equal(isEventType('EVIDENCE_INVALIDATION'), true);
+    assert.equal(isEventType('COMPLETION_INVALIDATION'), true);
     assert.equal(isEventType('nope'), false);
     assert.equal(isEventType(42), false);
   });

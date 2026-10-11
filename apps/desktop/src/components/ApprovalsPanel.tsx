@@ -24,7 +24,7 @@ export interface ApprovalItem {
 }
 
 export interface ActionEvaluation {
-  level: 'AUTO' | 'AI_REVIEW' | 'HUMAN_APPROVAL' | 'BLOCKED';
+  level: 'AUTO' | 'AI_REVIEW_PLUS_POLICY' | 'HUMAN_APPROVAL' | 'BLOCKED';
   requiresApproval: boolean;
   reason: string;
 }

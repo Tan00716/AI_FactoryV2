@@ -1,5 +1,5 @@
 /**
- * Per-type schemas for the 19 §23 artifact types.
+ * Per-type schemas for the 27 §39.1 artifact types (19 v1 + 8 v2).
  *
  * Each schema declares a `required` list (enforced at create/update time)
  * and an `optional` list (documented but not enforced). Extra fields beyond
@@ -194,6 +194,83 @@ const SCHEMAS: ArtifactSchema[] = [
     ],
     optional: [f('metrics', 'record', 'Outcome metrics.'), f('followUps', 'string[]', 'Follow-up items.')],
   },
+  // §39.1 v2 additions
+  {
+    type: 'REQUIREMENT_VERSION',
+    description: 'A pinned requirement version (§16): requirement id + version, AC list.',
+    required: [
+      f('requirementId', 'string', 'Requirement identifier, e.g. REQ-001.'),
+      f('version', 'string', 'Pinned version, e.g. "2".'),
+      f('acceptanceCriteria', 'string[]', 'AC list for this version.'),
+    ],
+    optional: [f('changelog', 'string', 'What changed vs the previous version.')],
+  },
+  {
+    type: 'DELEGATION',
+    description: 'A structured delegation record (§12.2): delegator, delegatee, scope, expected outcome.',
+    required: [
+      f('from', 'string', 'Delegating employee/role.'),
+      f('to', 'string', 'Delegatee employee/role.'),
+      f('scope', 'string', 'Delegated scope of work.'),
+    ],
+    optional: [f('dueAt', 'isoDate', 'Expected completion time.'), f('reportId', 'string', 'Linked management report id.')],
+  },
+  {
+    type: 'MANAGEMENT_REPORT',
+    description: 'A structured management report snapshot (§14).',
+    required: [
+      f('reportId', 'string', 'Management report id.'),
+      f('taskId', 'string', 'Task the report covers.'),
+      f('summary', 'string', 'Report summary.'),
+    ],
+    optional: [f('risks', 'string[]', 'Reported risks.'), f('blockers', 'string[]', 'Reported blockers.')],
+  },
+  {
+    type: 'RISK_ASSESSMENT',
+    description: 'A risk assessment record (§41.1): risk level, factors, authorization basis.',
+    required: [
+      f('level', 'string', 'LOW | MEDIUM | HIGH | CRITICAL.'),
+      f('factors', 'string[]', 'Assessed risk factors.'),
+    ],
+    optional: [f('authorization', 'string', 'Who/what authorized the residual risk.'), f('mitigations', 'string[]', 'Mitigation actions.')],
+  },
+  {
+    type: 'OUTCOME_RESULT',
+    description: 'An outcome evaluation result (§45): whether the intended outcome was met.',
+    required: [
+      f('outcomeId', 'string', 'Outcome identifier.'),
+      f('verdict', 'string', 'MET | NOT_MET | PARTIAL.'),
+    ],
+    optional: [f('evidenceRefs', 'string[]', 'Evidence backing the verdict.'), f('measuredAt', 'isoDate', 'Measurement time.')],
+  },
+  {
+    type: 'HANDOFF',
+    description: 'A handoff record (§31/§14): context transferred between employees or runs.',
+    required: [
+      f('from', 'string', 'Handoff source.'),
+      f('to', 'string', 'Handoff target.'),
+      f('summary', 'string', 'Handoff summary.'),
+    ],
+    optional: [f('artifactRefs', 'string[]', 'Artifacts handed over.'), f('acceptedAt', 'isoDate', 'Acceptance time.')],
+  },
+  {
+    type: 'CHECKPOINT',
+    description: 'An execution checkpoint (§28): resumable state snapshot reference.',
+    required: [
+      f('runId', 'string', 'Run this checkpoint belongs to.'),
+      f('snapshotRef', 'string', 'Reference to the state snapshot.'),
+    ],
+    optional: [f('generation', 'number', 'Fencing generation at checkpoint time.'), f('note', 'string', 'Checkpoint note.')],
+  },
+  {
+    type: 'IMPROVEMENT_PROPOSAL',
+    description: 'An improvement proposal (§43/§45): suggested change with rationale.',
+    required: [
+      f('title', 'string', 'Proposal title.'),
+      f('rationale', 'string', 'Why this improvement is proposed.'),
+    ],
+    optional: [f('targetArea', 'string', 'Area targeted: process, skill, knowledge, tooling…'), f('expectedBenefit', 'string', 'Expected benefit.')],
+  },
 ];
 
 const BY_TYPE = new Map<ArtifactType, ArtifactSchema>(SCHEMAS.map((s) => [s.type, s]));
@@ -205,7 +282,7 @@ export function getSchema(type: ArtifactType): ArtifactSchema {
   return s;
 }
 
-/** All 19 schemas, in spec order. */
+/** All 27 schemas, in spec order. */
 export function listSchemas(): ArtifactSchema[] {
   return SCHEMAS.map((s) => ({ ...s, required: [...s.required], optional: [...s.optional] }));
 }

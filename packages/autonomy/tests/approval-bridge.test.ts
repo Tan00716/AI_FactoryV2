@@ -49,7 +49,7 @@ describe('requireApproval', () => {
 
   it('approvalTypeToLevel maps to the approvals package vocabulary', () => {
     assert.equal(approvalTypeToLevel('human'), 'HUMAN_APPROVAL');
-    assert.equal(approvalTypeToLevel('ai-review'), 'AI_REVIEW');
+    assert.equal(approvalTypeToLevel('ai-review'), 'AI_REVIEW_PLUS_POLICY');
     assert.equal(approvalTypeToLevel('auto'), 'AUTO');
   });
 });

@@ -3,7 +3,16 @@
  * §41 (PRODUCTION POLICY), §77 (SNAPSHOT / RECOVERY).
  */
 
-/** spec §39 — the pipeline stages, always executed in this order. */
+/**
+ * spec §40 — the 12 pipeline stages, always executed in this order:
+ * Build → Test → Lint → Typecheck → Security → Package → Artifact
+ * → Review/QA Gate → UAT → Release → Smoke/Observe/Outcome → Recovery.
+ *
+ * NOTE: v1 had 8 stages ending in deploy/smoke; v2 follows the §40 list.
+ * Deployment itself is governed by §41 (risk-based deployment/canary);
+ * the deploy.ts audit phases ('deploy', 'smoke') are unchanged plain
+ * strings, not StageName values.
+ */
 export type StageName =
   | 'build'
   | 'test'
@@ -11,10 +20,14 @@ export type StageName =
   | 'typecheck'
   | 'security'
   | 'package'
-  | 'deploy'
-  | 'smoke';
+  | 'artifact'
+  | 'review_gate'
+  | 'uat'
+  | 'release'
+  | 'smoke'
+  | 'recovery';
 
-/** The canonical stage order (spec §39: build → test → lint → typecheck → security → package → deploy → smoke). */
+/** The canonical stage order (spec §40: build → test → lint → typecheck → security → package → artifact → review_gate → uat → release → smoke → recovery). */
 export const PIPELINE_STAGE_ORDER: StageName[] = [
   'build',
   'test',
@@ -22,8 +35,12 @@ export const PIPELINE_STAGE_ORDER: StageName[] = [
   'typecheck',
   'security',
   'package',
-  'deploy',
+  'artifact',
+  'review_gate',
+  'uat',
+  'release',
   'smoke',
+  'recovery',
 ];
 
 /** Per-stage lifecycle. SKIPPED = handler reported nothing to do; the pipeline continues. */

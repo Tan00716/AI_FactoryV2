@@ -71,11 +71,21 @@ export interface RouteRequest {
 
 /** §30 — every agent gets a primary, a fallback, and an emergency model. */
 export interface RouteDecision {
-  primary: ModelRef;
-  fallback: ModelRef;
-  emergency: ModelRef;
+  /**
+   * Null when unavailable === true. INV-29: an unavailable provider is
+   * reported explicitly — never silently replaced by a "success".
+   */
+  primary: ModelRef | null;
+  fallback: ModelRef | null;
+  emergency: ModelRef | null;
   /** Human-readable trace of which rules fired, in order. */
   reason: string;
+  /**
+   * INV-29 — true when no catalog model satisfied the hard constraints
+   * (e.g. every candidate is offline). Callers MUST check this before
+   * using primary/fallback/emergency.
+   */
+  unavailable: boolean;
 }
 
 /** §28 — authentication/runtime profiles; never force everything onto an API key. */

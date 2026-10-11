@@ -19,8 +19,11 @@ import {
   InstallResult,
   InstallSkillDef,
   Skill,
+  SkillStatus,
+  SkillStatusTransitionError,
   SkillUsage,
   SkillVersion,
+  canTransitionSkillStatus,
 } from './types';
 
 export class SkillNotFoundError extends Error {
@@ -198,20 +201,69 @@ export class SkillRegistry {
     return cloneVersion(latest);
   }
 
-  /** §49 — mark a version DEPRECATED (still loadable, warns callers). */
-  deprecate(id: string, version: string): SkillVersion {
+  /**
+   * §35 — agent self-built skill proposal. Unlike install() (admin/human
+   * path, ACTIVE on success), a proposal starts at DRAFT and must walk the
+   * Proposal flow: DRAFT → VALIDATED (security) → EVALUATED (independent
+   * eval) → APPROVED (policy) → ACTIVE. No silent org-wide activation.
+   */
+  propose(def: InstallSkillDef): SkillVersion {
+    const now = new Date().toISOString();
+    const version: SkillVersion = {
+      version: def.version,
+      description: def.description,
+      compatibility: def.compatibility,
+      author: def.author,
+      source: def.source,
+      trustLevel: def.trustLevel,
+      createdAt: now,
+      updatedAt: now,
+      evaluationScore: def.evaluationScore,
+      content: {
+        instructions: def.content.instructions,
+        references: [...def.content.references],
+        scripts: [...def.content.scripts],
+        assets: [...def.content.assets],
+      },
+      status: 'DRAFT',
+      keywords: [...def.keywords],
+    };
+    let skill = this.skills.get(def.id);
+    if (!skill) {
+      skill = { id: def.id, versions: [] };
+      this.skills.set(def.id, skill);
+    }
+    if (skill.versions.some((v) => v.version === def.version)) {
+      throw new InvalidSkillDefError(`version ${def.version} of ${def.id} already exists`);
+    }
+    skill.versions.push(version);
+    skill.versions.sort((a, b) => compareVersions(a.version, b.version));
+    return cloneVersion(version);
+  }
+
+  /**
+   * §35 — move one version along the lifecycle. Only transitions listed in
+   * SKILL_STATUS_TRANSITIONS are allowed; anything else throws
+   * SkillStatusTransitionError. RETIRED is terminal.
+   */
+  transitionStatus(id: string, version: string, to: SkillStatus): SkillVersion {
     const v = this.requireVersion(id, version);
-    v.status = 'DEPRECATED';
+    if (!canTransitionSkillStatus(v.status, to)) {
+      throw new SkillStatusTransitionError(id, version, v.status, to);
+    }
+    v.status = to;
     v.updatedAt = new Date().toISOString();
     return cloneVersion(v);
   }
 
+  /** §49 — mark a version DEPRECATED (still loadable, warns callers). */
+  deprecate(id: string, version: string): SkillVersion {
+    return this.transitionStatus(id, version, 'DEPRECATED');
+  }
+
   /** §49 — mark a version RETIRED (never loaded into context again). */
   retire(id: string, version: string): SkillVersion {
-    const v = this.requireVersion(id, version);
-    v.status = 'RETIRED';
-    v.updatedAt = new Date().toISOString();
-    return cloneVersion(v);
+    return this.transitionStatus(id, version, 'RETIRED');
   }
 
   private requireVersion(id: string, version: string): SkillVersion {

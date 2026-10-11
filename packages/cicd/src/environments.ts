@@ -41,7 +41,7 @@ export function evaluateApprovalPolicy(env: EnvironmentName): ActionEvaluation {
 export function approvalPolicyFor(env: EnvironmentName): ApprovalPolicy {
   const level: ApprovalLevel = evaluateApprovalPolicy(env).level;
   if (level === 'HUMAN_APPROVAL') return 'HUMAN_APPROVAL';
-  if (level === 'AI_REVIEW') return 'AI_REVIEW';
+  if (level === 'AI_REVIEW_PLUS_POLICY') return 'AI_REVIEW';
   if (level === 'AUTO') return 'AUTO';
   throw new ApprovalBlockedError(approvalActionFor(env));
 }

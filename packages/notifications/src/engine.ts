@@ -6,6 +6,7 @@
  * each. Read state (read/unread) is tracked per notification.
  */
 import { randomUUID } from 'node:crypto';
+import { redactSecrets } from '@ai-factory/security';
 import { DEFAULT_RULES, matchRules } from './rules';
 import type {
   Clock,
@@ -41,11 +42,14 @@ export class NotificationEngine {
     const created: Notification[] = [];
     for (const rule of matchRules(event, this.rules)) {
       const o = rule.build(event);
+      // SPEC §5 — rule templates interpolate free-form event details, which
+      // may carry secrets (tokens, passwords, connection strings). Redact
+      // at the single choke point before anything is stored or delivered.
       const n: Notification = {
         id: randomUUID(),
         type: o.type ?? event.type,
-        title: o.title,
-        body: o.body,
+        title: redactSecrets(o.title),
+        body: redactSecrets(o.body),
         priority: o.priority,
         entity: event.entity,
         actor: event.actor ?? 'system',

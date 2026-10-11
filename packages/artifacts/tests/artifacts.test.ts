@@ -1,5 +1,5 @@
 /**
- * Tests for the artifact system (spec §23).
+ * Tests for the artifact system (spec §39.1: 27 types = 19 v1 + 8 v2).
  * Run: node --test dist/tests/artifacts.test.js   (after tsc -p tsconfig.json)
  */
 import { describe, it } from 'node:test';
@@ -17,7 +17,7 @@ import {
   listSchemas,
 } from '../src/index';
 
-/** Minimal valid payload for every one of the 19 types. */
+/** Minimal valid payload for every one of the 27 types. */
 const VALID_FIELDS: Record<ArtifactType, Record<string, unknown>> = {
   PLAN: { objective: 'ship v1', steps: ['design', 'code', 'test'] },
   TASK_BREAKDOWN: { subtasks: ['a', 'b'] },
@@ -38,6 +38,15 @@ const VALID_FIELDS: Record<ArtifactType, Record<string, unknown>> = {
   INCIDENT: { severity: 'sev3', title: 'blip', description: 'brief outage', status: 'resolved' },
   ROLLBACK: { rollbackToVersion: '0.9.0', reason: 'regression', status: 'success' },
   FINAL_REPORT: { title: 'report', summary: 'done', outcomes: ['shipped'] },
+  // §39.1 v2 additions
+  REQUIREMENT_VERSION: { requirementId: 'REQ-001', version: '2', acceptanceCriteria: ['a1'] },
+  DELEGATION: { from: 'mgr', to: 'coder', scope: 'implement login' },
+  MANAGEMENT_REPORT: { reportId: 'r-1', taskId: 'task-1', summary: 'on track' },
+  RISK_ASSESSMENT: { level: 'MEDIUM', factors: ['auth change'] },
+  OUTCOME_RESULT: { outcomeId: 'o-1', verdict: 'MET' },
+  HANDOFF: { from: 'coder', to: 'qa', summary: 'code ready' },
+  CHECKPOINT: { runId: 'run-1', snapshotRef: 'snap-1' },
+  IMPROVEMENT_PROPOSAL: { title: 'cache builds', rationale: 'save CI minutes' },
 };
 
 function store(): ArtifactStore {
@@ -49,10 +58,10 @@ function make(type: ArtifactType, s: ArtifactStore = store(), fields: Record<str
 }
 
 describe('schemas', () => {
-  it('declares exactly 19 types matching the spec list', () => {
-    assert.equal(ARTIFACT_TYPES.length, 19);
+  it('declares exactly 27 types matching the spec list (19 v1 + 8 v2)', () => {
+    assert.equal(ARTIFACT_TYPES.length, 27);
     assert.deepEqual([...ARTIFACT_TYPES].sort(), Object.keys(VALID_FIELDS).sort());
-    assert.equal(listSchemas().length, 19);
+    assert.equal(listSchemas().length, 27);
   });
 
   it('every type has a non-empty required field list', () => {

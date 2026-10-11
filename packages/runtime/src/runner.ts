@@ -74,7 +74,7 @@ function defaultStepFn(ctx: DefaultStepContext): StepFn {
           payload: {
             agentId: agent.id,
             taskId: task.id,
-            model: routing?.primary.model ?? adapter.name,
+            model: routing?.primary?.model ?? adapter.name,
           },
         });
         return { ok: true, note: `observing task ${task.id}` };
@@ -85,7 +85,7 @@ function defaultStepFn(ctx: DefaultStepContext): StepFn {
       case 'PLAN':
         return {
           ok: true,
-          note: `plan via ${routing?.primary.model ?? adapter.name}`,
+          note: `plan via ${routing?.primary?.model ?? adapter.name}`,
         };
 
       case 'ACT': {
@@ -161,12 +161,18 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
       type: 'model_routing',
       title: 'model routing decision',
       payload: {
-        primary: routing.primary.model,
-        fallback: routing.fallback.model,
-        emergency: routing.emergency.model,
+        primary: routing.primary?.model ?? null,
+        fallback: routing.fallback?.model ?? null,
+        emergency: routing.emergency?.model ?? null,
+        unavailable: routing.unavailable,
         reason: routing.reason,
       },
     });
+    // INV-29: report unavailability explicitly — never simulate success with
+    // an unsuitable model.
+    if (routing.unavailable || routing.primary === null) {
+      throw new Error(`no model available for route request: ${routing.reason}`);
+    }
     pushTrace('RUNNER', 'model routing', `primary=${routing.primary.model}`);
   }
 

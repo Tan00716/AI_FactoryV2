@@ -208,19 +208,21 @@ export async function handleApprovalRoutes(
   }
 
   // POST /api/approvals/:id/invalidate — §23.3 bound-context invalidation.
-  // Body: { candidate_digest?, evidence_manifest_hash?, policy_version?, environment? }
+  // Body: { candidate_digest?, evidence_manifest_hash?, policy_version?, environment?, risk_level?, reversibility_ref? }
   // Fields omitted from the body keep the approval's recorded values.
   if (method === 'POST' && id && sub === 'invalidate') {
     const body = await ctx.readBody(req);
     try {
       const current = manager.get(id);
-      const strOrCurrent = (k: 'candidate_digest' | 'evidence_manifest_hash' | 'policy_version' | 'environment'): string =>
+      const strOrCurrent = (k: 'candidate_digest' | 'evidence_manifest_hash' | 'policy_version' | 'environment' | 'reversibility_ref'): string =>
         typeof body[k] === 'string' ? (body[k] as string) : current[k];
       const result = manager.invalidate(id, {
         candidate_digest: strOrCurrent('candidate_digest'),
         evidence_manifest_hash: strOrCurrent('evidence_manifest_hash'),
         policy_version: strOrCurrent('policy_version'),
         environment: strOrCurrent('environment'),
+        risk_level: typeof body['risk_level'] === 'string' ? (body['risk_level'] as RiskLevel) : current.risk_level,
+        reversibility_ref: strOrCurrent('reversibility_ref'),
       });
       return ctx.json(res, 200, { approval: manager.get(id), ...result }), true;
     } catch (e) {

@@ -49,6 +49,14 @@ describe('Scheduler', () => {
     assert.deepEqual(s.nextBatch([]), ['incident', 'critical', 'normal', 'normal2', 'enhancement']);
   });
 
+  it('P4 Research sorts after P3 (§21.1 five levels)', () => {
+    const s = new Scheduler({ concurrencyLimit: 10 });
+    s.enqueue({ id: 'research', priority: 'P4', dependsOn: [] });
+    s.enqueue({ id: 'enhancement', priority: 'P3', dependsOn: [] });
+    s.enqueue({ id: 'incident', priority: 'P0', dependsOn: [] });
+    assert.deepEqual(s.nextBatch([]), ['incident', 'enhancement', 'research']);
+  });
+
   it('drives a full dependency chain to completion', () => {
     const s = chainScheduler();
     const order: string[] = [];

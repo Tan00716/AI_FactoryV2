@@ -36,8 +36,20 @@ export class McpRegistry {
    * Register (or re-register) a server definition. Defaults to
    * trust UNKNOWN + approval BLOCKED unless the definition is an
    * update of an already-assessed server (trust is preserved).
+   *
+   * §34.2 [S4]: pass `opts.negotiatedVersion` / `opts.extensionSet` on a
+   * successful handshake — they are persisted on the registration record
+   * and preserved across re-registrations that do not supply new values.
    */
-  register(def: McpServerDefinition, opts?: { trust?: TrustLevel; policy?: ApprovalPolicy }): McpServer {
+  register(
+    def: McpServerDefinition,
+    opts?: {
+      trust?: TrustLevel;
+      policy?: ApprovalPolicy;
+      negotiatedVersion?: string;
+      extensionSet?: string[];
+    },
+  ): McpServer {
     const k = McpRegistry.key(def.name, def.version);
     const existing = this.servers.get(k);
     const server: McpServer = {
@@ -52,6 +64,13 @@ export class McpRegistry {
       trustLevel: opts?.trust ?? existing?.trustLevel ?? DEFAULT_TRUST,
       approvalPolicy: opts?.policy ?? existing?.approvalPolicy ?? DEFAULT_POLICY,
       networkRequirements: def.networkRequirements,
+      negotiatedVersion: opts?.negotiatedVersion ?? existing?.negotiatedVersion,
+      extensionSet:
+        opts?.extensionSet !== undefined
+          ? [...opts.extensionSet]
+          : existing?.extensionSet !== undefined
+            ? [...existing.extensionSet]
+            : undefined,
       registeredAt: existing?.registeredAt ?? this.clock.now(),
     };
     this.servers.set(k, server);

@@ -54,7 +54,37 @@ export interface ExecutorOptions {
   now?: () => number;
   /** Max chars kept per stream; longer output is truncated with a marker. */
   maxOutputChars?: number;
+  /**
+   * §23.4 approval gate, injected by the coordinator (e.g. wired to
+   * @ai-factory/approvals). When absent, tools at HUMAN_APPROVAL /
+   * AI_REVIEW_PLUS_POLICY are DENIED fail-closed and the denial is
+   * audit-logged — a sensitive tool must never execute without an
+   * approval path.
+   */
+  approvalChecker?: ApprovalChecker;
 }
+
+/**
+ * Result of an approval check for a sensitive tool execution — SPEC v2 §23.4.
+ * Produced by the coordinator; the executor itself stays dependency-free.
+ */
+export interface ApprovalCheckResult {
+  approved: boolean;
+  /** Human/machine-readable rationale for the decision. */
+  reason?: string;
+  /** Approval record id when approved through the approvals package. */
+  approvalId?: string;
+}
+
+/**
+ * Decides whether a HUMAN_APPROVAL / AI_REVIEW_PLUS_POLICY tool call may
+ * proceed. Async to allow human-in-the-loop or policy-engine lookups.
+ */
+export type ApprovalChecker = (
+  call: ToolCall,
+  tool: ToolMetadata,
+  level: 'HUMAN_APPROVAL' | 'AI_REVIEW_PLUS_POLICY',
+) => Promise<ApprovalCheckResult> | ApprovalCheckResult;
 
 const SECRET_PATTERNS: RegExp[] = [
   /secret:\/\/[^\s"'<>]+/g,
@@ -129,6 +159,35 @@ export class ToolExecutor {
 
     if (tool.approvalPolicy === 'BLOCKED') {
       return deny('POLICY_DENIED', `tool ${tool.id} is BLOCKED by approval policy`);
+    }
+
+    // §23.4 approval gate: HUMAN_APPROVAL / AI_REVIEW_PLUS_POLICY tools must
+    // pass an injected checker before execution. Fail-closed when no checker
+    // is configured — the denial is audit-logged like any other.
+    if (
+      tool.approvalPolicy === 'HUMAN_APPROVAL' ||
+      tool.approvalPolicy === 'AI_REVIEW_PLUS_POLICY'
+    ) {
+      const checker = this.opts.approvalChecker;
+      if (!checker) {
+        return deny(
+          'POLICY_DENIED',
+          `tool ${tool.id} requires ${tool.approvalPolicy} but no approval checker is configured — denied fail-closed`,
+        );
+      }
+      let check: ApprovalCheckResult;
+      try {
+        check = await checker(call, tool, tool.approvalPolicy);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return deny('POLICY_DENIED', `approval checker error for tool ${tool.id}: ${message}`);
+      }
+      if (!check.approved) {
+        return deny(
+          'POLICY_DENIED',
+          `tool ${tool.id} denied by approval checker${check.reason ? `: ${check.reason}` : ''}`,
+        );
+      }
     }
 
     const issues = validateInput(tool.inputSchema, call.args);

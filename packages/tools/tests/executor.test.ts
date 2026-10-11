@@ -225,3 +225,73 @@ describe('registry', () => {
     assert.throws(() => registry.register(fsWriteTool('fs.write')), /already registered/);
   });
 });
+
+describe('§23.4 approval gate at execution point', () => {
+  function gatedExecutor(
+    policy: 'HUMAN_APPROVAL' | 'AI_REVIEW_PLUS_POLICY' | 'AUTO',
+    opts: Partial<import('../src/index').ExecutorOptions> = {},
+  ) {
+    const registry = new ToolRegistry();
+    registry.register({ ...fsWriteTool('gated.tool'), approvalPolicy: policy });
+    let runs = 0;
+    const executor = new ToolExecutor(registry, {
+      now: () => 1_700_000_000_000,
+      runner: () => {
+        runs += 1;
+        return { exitCode: 0, stdout: 'ok', stderr: '' };
+      },
+      ...opts,
+    });
+    return { executor, runs: () => runs };
+  }
+
+  it('HUMAN_APPROVAL tool executes when the checker approves', async () => {
+    const { executor, runs } = gatedExecutor('HUMAN_APPROVAL', {
+      approvalChecker: () => ({ approved: true, approvalId: 'appr-1' }),
+    });
+    const r = await executor.execute(call({ toolId: 'gated.tool' }));
+    assert.equal(r.outcome, 'SUCCEEDED');
+    assert.equal(runs(), 1);
+  });
+
+  it('HUMAN_APPROVAL tool is DENIED when the checker denies', async () => {
+    const { executor, runs } = gatedExecutor('HUMAN_APPROVAL', {
+      approvalChecker: () => ({ approved: false, reason: 'human said no' }),
+    });
+    const r = await executor.execute(call({ toolId: 'gated.tool' }));
+    assert.equal(r.outcome, 'DENIED');
+    assert.match(r.note ?? '', /POLICY_DENIED/);
+    assert.match(r.note ?? '', /human said no/);
+    assert.equal(runs(), 0);
+  });
+
+  it('AI_REVIEW_PLUS_POLICY tool is DENIED fail-closed without a checker', async () => {
+    const { executor, runs } = gatedExecutor('AI_REVIEW_PLUS_POLICY');
+    const r = await executor.execute(call({ toolId: 'gated.tool' }));
+    assert.equal(r.outcome, 'DENIED');
+    assert.match(r.note ?? '', /no approval checker is configured/);
+    assert.equal(runs(), 0);
+    // The denial is audit-logged.
+    assert.equal(executor.attempts().length, 1);
+    assert.equal(executor.attempts()[0].outcome, 'DENIED');
+  });
+
+  it('checker errors are DENIED, not executed', async () => {
+    const { executor, runs } = gatedExecutor('HUMAN_APPROVAL', {
+      approvalChecker: () => {
+        throw new Error('checker exploded');
+      },
+    });
+    const r = await executor.execute(call({ toolId: 'gated.tool' }));
+    assert.equal(r.outcome, 'DENIED');
+    assert.match(r.note ?? '', /approval checker error/);
+    assert.equal(runs(), 0);
+  });
+
+  it('AUTO tools are unaffected by the gate', async () => {
+    const { executor, runs } = gatedExecutor('AUTO');
+    const r = await executor.execute(call({ toolId: 'gated.tool' }));
+    assert.equal(r.outcome, 'SUCCEEDED');
+    assert.equal(runs(), 1);
+  });
+});

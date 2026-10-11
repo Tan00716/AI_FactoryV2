@@ -4,7 +4,7 @@
  * requireApproval(action, mode) answers: does this action need an approval,
  * and what kind? The approval type vocabulary (human / ai-review / auto)
  * intentionally mirrors the approvals package's ApprovalLevel
- * (HUMAN_APPROVAL / AI_REVIEW / AUTO) WITHOUT importing it — there is no
+ * (HUMAN_APPROVAL / AI_REVIEW_PLUS_POLICY / AUTO) WITHOUT importing it — there is no
  * hard dependency; a coordinator can translate ApprovalType into real
  * Approval records when the approvals package is wired in.
  */
@@ -13,7 +13,7 @@ import { ActionInput, AutonomyMode } from './types';
 import type { AutonomyDecision } from './decide';
 
 /**
- * Loose approval type. human ≈ HUMAN_APPROVAL, ai-review ≈ AI_REVIEW,
+ * Loose approval type. human ≈ HUMAN_APPROVAL, ai-review ≈ AI_REVIEW_PLUS_POLICY,
  * auto ≈ AUTO in @ai-factory/approvals.
  */
 export type ApprovalType = 'human' | 'ai-review' | 'auto';
@@ -57,6 +57,6 @@ export function requireApproval(
  */
 export function approvalTypeToLevel(
   t: ApprovalType,
-): 'HUMAN_APPROVAL' | 'AI_REVIEW' | 'AUTO' {
-  return t === 'human' ? 'HUMAN_APPROVAL' : t === 'ai-review' ? 'AI_REVIEW' : 'AUTO';
+): 'HUMAN_APPROVAL' | 'AI_REVIEW_PLUS_POLICY' | 'AUTO' {
+  return t === 'human' ? 'HUMAN_APPROVAL' : t === 'ai-review' ? 'AI_REVIEW_PLUS_POLICY' : 'AUTO';
 }

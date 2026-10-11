@@ -16,9 +16,10 @@
  */
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { relative, resolve } from 'path';
+import { dirname, relative, resolve, sep } from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
+import { UnverifiedBackend } from '@ai-factory/security';
 
 const execFileAsync = promisify(execFile);
 
@@ -27,6 +28,14 @@ const execFileAsync = promisify(execFile);
  * it). All execution is confined to this tree.
  */
 const WORKSPACE_ROOT = resolve(process.cwd());
+
+/**
+ * SPEC §4.1 — control-plane data directory. The control DB lives here
+ * (same default as index.ts: DB_PATH ?? './data/factory.db'); agents must
+ * never read or write it, even through `node -e`. Human terminals are only
+ * barred from this one directory — everything else keeps working.
+ */
+const CONTROL_DATA_DIR = dirname(resolve(process.env.DB_PATH ?? './data/factory.db'));
 
 const TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_CHARS = 32 * 1024;
@@ -171,6 +180,24 @@ export async function handleExecRoutes(
     return true;
   }
 
+  // §7.5 fail-closed: autonomous (non-human) shell execution requires a
+  // verified isolation backend. This server runs commands on the host
+  // directly, so no backend can prove confinement — refuse outright.
+  // Human terminals are unaffected.
+  if (actor !== 'human') {
+    const report = new UnverifiedBackend().verifyConfinement();
+    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
+      reason: 'CONFINEMENT_UNAVAILABLE',
+    });
+    ctx.json(res, 403, {
+      error:
+        `CONFINEMENT_UNAVAILABLE: autonomous shell execution requires a verified ` +
+        `isolation backend (backend '${report.backend}' cannot prove confinement)`,
+      code: 'CONFINEMENT_UNAVAILABLE',
+    });
+    return true;
+  }
+
   // 1) deny patterns on the raw command line
   for (const re of DENY_PATTERNS) {
     if (re.test(command)) {
@@ -207,6 +234,24 @@ export async function handleExecRoutes(
     cwd = resolveCwd(body['cwd'] as string | undefined);
   } catch (err) {
     ctx.json(res, 403, { error: (err as Error).message });
+    return true;
+  }
+
+  // 3b) §4.1 — the control-plane data dir is off-limits: neither the cwd
+  // nor any argument may resolve inside it (or even name it — catches
+  // `node -e` DB reads, `cat data/factory.db`, absolute paths, etc.).
+  const hitsForbidden = (p: string): boolean => {
+    if (p.includes(CONTROL_DATA_DIR)) return true;
+    const r = resolve(cwd, p);
+    return r === CONTROL_DATA_DIR || r.startsWith(CONTROL_DATA_DIR + sep);
+  };
+  if (hitsForbidden(cwd) || tokens.slice(1).some(hitsForbidden)) {
+    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
+      reason: 'control-plane data directory is off-limits',
+    });
+    ctx.json(res, 403, {
+      error: `command refused: the control-plane data directory (${CONTROL_DATA_DIR}) is off-limits`,
+    });
     return true;
   }
 

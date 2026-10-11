@@ -80,6 +80,23 @@ export interface WorkerSignals {
   loopStagnated?: boolean;
   /** Worker is legitimately idle/waiting — heartbeats may be sparse. */
   explicitState?: 'IDLE' | 'WAITING' | 'BLOCKED' | 'RECOVERING';
+  /**
+   * §30 — expected total duration of the worker's current job (ms). Lets the
+   * watchdog distinguish a legitimately long job from a stall instead of
+   * killing on a fixed timeout.
+   */
+  expectedDurationMs?: number;
+  /**
+   * §30 — caller-reported progress marker. A fresh checkpoint proves liveness
+   * even without heartbeats or file changes.
+   */
+  progressCheckpoint?: {
+    phase?: string;
+    done?: number;
+    total?: number;
+    /** ms timestamp of the checkpoint. */
+    at?: number;
+  };
 }
 
 export interface WorkerStatus {

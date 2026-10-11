@@ -52,7 +52,7 @@ export interface TaskV2State {
   requirementRef: string | null;
   completionTarget: 'IMPLEMENTATION' | 'VERIFIED_DELIVERY' | 'RELEASED_OUTCOME';
   completionHistory: Array<{
-    kind: 'COMPLETED' | 'COMPLETION_INVALIDATED';
+    kind: 'COMPLETED' | 'COMPLETION_INVALIDATED' | 'CANCELLED';
     at: string;
     by: string;
     reason: string;
@@ -66,6 +66,13 @@ export interface EngineV2Deps {
   now?: () => number;
   /** Called with sealed evidence ids after a successful transition. */
   onSealEvidence?: (ids: string[]) => void;
+  /**
+   * Best-effort lease release on cancelTask(). The engine does not track
+   * leases itself; the coordinator wires this to the @ai-factory/leases
+   * manager (release by task-owned lease ids). Returns the number of
+   * leases released. Throwing aborts nothing — the failure is audit-logged.
+   */
+  releaseLeases?: (taskId: string) => number;
 }
 
 /** Snapshot the completion predicates are evaluated against (§20.1). */
@@ -137,6 +144,15 @@ export type FinalizeResult =
 
 const AUTHORIZED: ActorAuthorization = { status: 'AUTHORIZED', expiresAt: null };
 
+/** Recursively freeze an object graph. Used by get() (§18.2 read barrier). */
+function deepFreeze<T>(obj: T): T {
+  if (obj === null || typeof obj !== 'object') return obj;
+  for (const key of Object.getOwnPropertyNames(obj)) {
+    deepFreeze((obj as Record<string, unknown>)[key]);
+  }
+  return Object.freeze(obj);
+}
+
 function emptyMilestones(): Record<LifecycleMilestone, MilestoneStatus> {
   const m = (achieved: boolean): MilestoneStatus => ({
     achieved,
@@ -199,14 +215,29 @@ export class WorkflowEngineV2 {
     return state;
   }
 
-  get(taskId: string): TaskV2State {
+  /**
+   * §18.2 — internal live accessor. Returns the mutable engine-owned state.
+   * Engine mutators (and package tests setting up fixtures) use this;
+   * external callers MUST use get(), which returns a deep-frozen snapshot.
+   */
+  getMutable(taskId: string): TaskV2State {
     const s = this.states.get(taskId);
     if (!s) throw new Error(`Unknown task ${taskId}`);
     return s;
   }
 
+  /**
+   * §18.2 read barrier — public read returns a deep copy, deep-frozen.
+   * Mutating the returned object (or any nested object) throws, so a
+   * caller cannot bypass gate checks by rewriting stage / condition /
+   * milestones on the object it was handed.
+   */
+  get(taskId: string): TaskV2State {
+    return deepFreeze(structuredClone(this.getMutable(taskId)));
+  }
+
   private mutate(taskId: string, fn: (s: TaskV2State) => void): TaskV2State {
-    const s = this.get(taskId);
+    const s = this.getMutable(taskId);
     fn(s);
     s.taskVersion += 1;
     s.updatedAt = this.iso();
@@ -483,6 +514,47 @@ export class WorkflowEngineV2 {
       };
     });
     this.deps.audit.record(actor, 'COMPLETION_INVALIDATED', 'task', taskId, { reason });
+    return out;
+  }
+
+  /**
+   * Cancel a task. Sets the orthogonal condition to CANCELLED (the workflow
+   * stage is left untouched — §18.3 three-state separation), appends a
+   * CANCELLED completion-history entry, writes a TASK_CANCELLED audit event,
+   * and best-effort releases task-associated leases. Idempotent: cancelling
+   * an already-cancelled task is a no-op. Lease-release failures are
+   * audit-logged and never fatal.
+   */
+  cancelTask(taskId: string, actor: string, reason: string): TaskV2State {
+    const s = this.get(taskId);
+    if (s.condition.condition === 'CANCELLED') return s;
+    const now = this.iso();
+    const out = this.mutate(taskId, (st) => {
+      st.condition = {
+        condition: 'CANCELLED',
+        reason,
+        resumeState: null,
+        blockedOn: [],
+        updatedAt: now,
+        updatedBy: actor,
+      };
+      st.completionHistory.push({ kind: 'CANCELLED', at: now, by: actor, reason });
+    });
+    let leasesReleased = 0;
+    const releaser = this.deps.releaseLeases;
+    if (releaser) {
+      try {
+        leasesReleased = releaser(taskId);
+      } catch (err) {
+        this.deps.audit.record(actor, 'TASK_CANCEL_LEASE_RELEASE_FAILED', 'task', taskId, {
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    this.deps.audit.record(actor, 'TASK_CANCELLED', 'task', taskId, {
+      reason,
+      leasesReleased,
+    });
     return out;
   }
 }

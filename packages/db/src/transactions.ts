@@ -347,6 +347,14 @@ export interface DeployInput {
 export interface DeployDeps {
   registerIdempotencyKey(key: string, operationId: string): 'NEW' | 'SEEN_SAME' | 'SEEN_DIFFERENT';
   acquireDeployLease(resourceId: string, runId: string, ttlMs: number): number;
+  /**
+   * §22.3 final-execution-point fencing check. Re-validates the fencing
+   * token acquired in 'acquire-deploy-lease' immediately before the broker
+   * executes: a superseded/expired owner is rejected as STALE_OWNER and the
+   * broker never runs. Optional for backward compatibility; production
+   * wiring MUST provide it (wire to WriterLeaseGuard.validateWriter).
+   */
+  validateDeployLease?(resourceId: string, fencingToken: number): void;
   checkApprovedDigest(artifactDigest: string, approvedDigest: string): void;
   /** The broker performs the external action; may throw or return UNKNOWN. */
   brokerExecute(input: DeployInput): ExternalOpResult;
@@ -394,6 +402,12 @@ export function deployScript(deps: DeployDeps, input: DeployInput): Array<TxStep
     {
       name: 'broker-execute',
       run(ctx) {
+        // §22.3: re-validate the fencing token at the final execution point,
+        // not just when the lease was acquired — a stale owner must never
+        // reach the broker.
+        if (deps.validateDeployLease) {
+          deps.validateDeployLease(input.resourceId, ctx.vars.get('fencingToken') as number);
+        }
         const result = deps.brokerExecute(input);
         ctx.vars.set('opResult', result);
         ctx.outbox.push({

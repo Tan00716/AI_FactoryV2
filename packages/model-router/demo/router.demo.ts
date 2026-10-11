@@ -55,9 +55,13 @@ const requests: Array<[string, RouteRequest]> = [
 for (const [label, req] of requests) {
   const d = route(req);
   console.log(`\n### ${label}`);
+  if (d.unavailable || d.primary === null) {
+    console.log(`unavailable: ${d.reason}`);
+    continue;
+  }
   console.log(`primary:   ${d.primary.model} (${d.primary.provider})`);
-  console.log(`fallback:  ${d.fallback.model}`);
-  console.log(`emergency: ${d.emergency.model}`);
+  console.log(`fallback:  ${d.fallback!.model}`);
+  console.log(`emergency: ${d.emergency!.model}`);
   console.log(`reason:    ${d.reason}`);
 }
 

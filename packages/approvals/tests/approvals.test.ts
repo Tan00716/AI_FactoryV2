@@ -46,6 +46,8 @@ const BINDING = {
   evidence_manifest_hash: 'sha256:manifest-1',
   policy_version: 'v2-test',
   environment: 'prod',
+  risk_level: 'HIGH' as const,
+  reversibility_ref: '',
 };
 
 function requestDeploy(manager: ApprovalManager) {
@@ -331,6 +333,7 @@ describe('§23.3 invalidation on bound-context change', () => {
       'evidence_manifest_hash',
       'policy_version',
       'environment',
+      'reversibility_ref',
     ] as const;
     for (const field of fields) {
       const { manager } = makeManager();
@@ -340,6 +343,16 @@ describe('§23.3 invalidation on bound-context change', () => {
       assert.equal(r.invalidated, true, field);
       assert.deepEqual(r.changed, [field]);
     }
+  });
+
+  it('a risk_level change INVALIDATES the approval (§23.3 risk substance)', () => {
+    const { manager } = makeManager();
+    const a = requestDeploy(manager);
+    manager.decide(a.approval_id, { approved: true, decided_by: 'human' });
+    const r = manager.invalidate(a.approval_id, { ...BINDING, risk_level: 'CRITICAL' });
+    assert.equal(r.invalidated, true);
+    assert.deepEqual(r.changed, ['risk_level']);
+    assert.equal(manager.get(a.approval_id).status, 'INVALIDATED');
   });
 
   it('an INVALIDATED approval cannot produce an evidence payload', () => {
@@ -392,9 +405,9 @@ describe('evaluateAction policy matrix', () => {
     }
   });
 
-  it('deploy.uat / git.push → AI_REVIEW', () => {
-    assert.equal(evaluateAction('deploy.uat').level, 'AI_REVIEW');
-    assert.equal(evaluateAction('git.push').level, 'AI_REVIEW');
+  it('deploy.uat / git.push → AI_REVIEW_PLUS_POLICY', () => {
+    assert.equal(evaluateAction('deploy.uat').level, 'AI_REVIEW_PLUS_POLICY');
+    assert.equal(evaluateAction('git.push').level, 'AI_REVIEW_PLUS_POLICY');
     assert.equal(evaluateAction('deploy.uat').requiresApproval, true);
   });
 });

@@ -74,3 +74,37 @@ test('emit with actor defaults to system', () => {
   const [m] = eng.emit({ type: 'GENERIC', actor: 'human' });
   assert.equal(m.actor, 'human');
 });
+
+test('§5: secrets interpolated into title/body are redacted', () => {
+  const eng = new NotificationEngine({ clock });
+  const [n] = eng.emit({
+    type: 'BUILD_FAILED',
+    entity: { kind: 'build', id: 'b1', label: 'b1' },
+    detail: { reason: 'deploy failed, password=hunter2' },
+  });
+  assert.ok(!n.body.includes('hunter2'), `body leaked secret: ${n.body}`);
+  assert.match(n.body, /\*\*\*/);
+});
+
+test('§5: redaction also applies to custom rules via the same choke point', () => {
+  const eng = new NotificationEngine({
+    clock,
+    rules: [
+      {
+        id: 'custom',
+        eventTypes: ['GENERIC'],
+        build: (e) => ({
+          title: `custom ${String(e.detail?.['note'] ?? '')}`,
+          body: `api_key=${String(e.detail?.['key'] ?? '')}`,
+          priority: 'INFO' as const,
+        }),
+      },
+    ],
+  });
+  const [n] = eng.emit({
+    type: 'GENERIC',
+    detail: { note: 'nothing secret here', key: 'sk-abcdefghijklmnop1234' },
+  });
+  assert.ok(!n.body.includes('sk-abcdefghijklmnop1234'));
+  assert.equal(n.title, 'custom nothing secret here');
+});

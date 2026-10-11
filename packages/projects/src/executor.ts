@@ -17,6 +17,10 @@
  */
 import { spawn } from 'node:child_process';
 import { resolve, sep } from 'node:path';
+import {
+  assertConfinementForAutonomousShell,
+  UnverifiedBackend,
+} from '@ai-factory/security';
 import type {
   AuditEvent,
   ExecOptions,
@@ -147,6 +151,15 @@ export class WorkspaceExecutor {
     this.allowed = merged;
     this.defaultTimeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    // SPEC §7.5 fail-closed: autonomous shell execution requires a backend
+    // that can PROVE confinement. A missing backend fails closed via the
+    // always-unverified backend. Human/operator use (autonomous=false) is
+    // unaffected.
+    if (opts.autonomous === true) {
+      assertConfinementForAutonomousShell(
+        opts.isolationBackend ?? new UnverifiedBackend(),
+      );
+    }
   }
 
   get timeoutMs(): number {

@@ -29,33 +29,33 @@ function baseRequest(): RouteRequest {
 describe('route', () => {
   it('routes privacy=sensitive tasks to the local model (§30)', () => {
     const d = route({ ...baseRequest(), privacy: 'sensitive', taskType: 'coding', complexity: 5 });
-    assert.equal(d.primary.model, 'local-private');
-    assert.equal(d.primary.provider, 'local');
+    assert.equal(d.primary!.model, 'local-private');
+    assert.equal(d.primary!.provider, 'local');
     assert.match(d.reason, /privacy=sensitive/);
   });
 
   it('routes vision tasks to the vision-capable model', () => {
     const d = route({ ...baseRequest(), taskType: 'vision', needsVision: true });
-    assert.equal(d.primary.model, 'vision-capable');
-    assert.ok(d.primary.capabilities.vision);
+    assert.equal(d.primary!.model, 'vision-capable');
+    assert.ok(d.primary!.capabilities.vision);
   });
 
   it('routes simple classification to the fast model (§30)', () => {
     const d = route(baseRequest());
-    assert.equal(d.primary.model, 'fast-classifier');
+    assert.equal(d.primary!.model, 'fast-classifier');
     assert.match(d.reason, /simple classification/);
   });
 
   it('prefers local/fallback when the shared pool is exhausted (§29)', () => {
     const d = route({ ...baseRequest(), currentUsage: { usedPct: 100 } });
-    assert.equal(d.primary.model, 'local-private');
+    assert.equal(d.primary!.model, 'local-private');
     assert.match(d.reason, /pool exhausted/);
     assert.match(d.reason, /shared across agents/);
   });
 
   it('does not treat 99% usage as exhausted', () => {
     const d = route({ ...baseRequest(), currentUsage: { usedPct: 99 } });
-    assert.equal(d.primary.model, 'fast-classifier');
+    assert.equal(d.primary!.model, 'fast-classifier');
   });
 
   it('routes complex coding to the code-coder primary (§30)', () => {
@@ -67,7 +67,7 @@ describe('route', () => {
       contextNeeded: 'large',
       requiredTools: ['shell'],
     });
-    assert.equal(d.primary.model, 'code-coder');
+    assert.equal(d.primary!.model, 'code-coder');
     assert.match(d.reason, /complexity=5/);
   });
 
@@ -79,22 +79,22 @@ describe('route', () => {
       needsReasoning: true,
       contextNeeded: 'large',
     });
-    assert.equal(d.primary.model, 'reasoning-architect');
+    assert.equal(d.primary!.model, 'reasoning-architect');
   });
 
   it('filters out models that cannot meet the context requirement', () => {
     const d = route({ ...baseRequest(), contextNeeded: 'large' });
-    assert.notEqual(d.primary.model, 'fast-classifier');
-    assert.notEqual(d.primary.model, 'local-private');
+    assert.notEqual(d.primary!.model, 'fast-classifier');
+    assert.notEqual(d.primary!.model, 'local-private');
   });
 
   it('always returns distinct primary/fallback and a local-or-fast emergency', () => {
     for (const taskType of ['coding', 'research', 'testing', 'review'] as const) {
       const d = route({ ...baseRequest(), taskType, complexity: 3 });
-      assert.notEqual(d.fallback.model, d.primary.model);
+      assert.notEqual(d.fallback!.model, d.primary!.model);
       assert.ok(
-        d.emergency.model === 'local-private' || d.emergency.model === 'fast-classifier',
-        `unexpected emergency ${d.emergency.model}`,
+        d.emergency!.model === 'local-private' || d.emergency!.model === 'fast-classifier',
+        `unexpected emergency ${d.emergency!.model}`,
       );
     }
   });
@@ -125,5 +125,44 @@ describe('getAccountStatus', () => {
     assert.equal(s.usage.usedPct, 42);
     assert.equal(s.usage.authenticated, false);
     assert.ok(s.profile.plan?.includes('shared 5h pool'));
+  });
+});
+
+describe('INV-29 availability (no silent degradation)', () => {
+  it('never selects an offline model as primary', () => {
+    const catalog = MODEL_CATALOG.map((m) =>
+      m.model === 'fast-classifier' ? { ...m } : { ...m, availability: 'offline' as const },
+    );
+    const d = route(baseRequest(), catalog);
+    assert.equal(d.unavailable, false);
+    assert.equal(d.primary!.model, 'fast-classifier');
+    assert.notEqual(d.primary!.availability, 'offline');
+  });
+
+  it('reports unavailability explicitly when every model is offline', () => {
+    const catalog = MODEL_CATALOG.map((m) => ({ ...m, availability: 'offline' as const }));
+    const d = route(baseRequest(), catalog);
+    assert.equal(d.unavailable, true);
+    assert.equal(d.primary, null);
+    assert.equal(d.fallback, null);
+    assert.equal(d.emergency, null);
+    assert.match(d.reason, /INV-29/);
+    assert.match(d.reason, /all .* offline/);
+  });
+
+  it('reports unavailability when hard constraints eliminate everything', () => {
+    const d = route({ ...baseRequest(), needsVision: true, privacy: 'sensitive' }, [
+      {
+        provider: 'cloud',
+        model: 'vision-only-cloud',
+        capabilities: { vision: true, tools: false, reasoning: false, maxContext: 'small' },
+        costTier: 'low',
+        latencyTier: 'low',
+        availability: 'online',
+      },
+    ]);
+    assert.equal(d.unavailable, true);
+    assert.equal(d.primary, null);
+    assert.match(d.reason, /no model satisfied all hard constraints/);
   });
 });

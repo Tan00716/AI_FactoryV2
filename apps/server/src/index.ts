@@ -72,6 +72,7 @@ import { handleQuotaRoutes } from './routes/quota';
 import { handleWatchdogRoutes } from './routes/watchdog';
 import { handleTakeoverRoutes } from './routes/takeover';
 import { handleDisputeRoutes } from './routes/disputes';
+import { handleReportRoutes } from './routes/reports';
 import { handleDashboardRoutes } from './routes/dashboard';
 import { handleNotificationRoutes } from './routes/notifications';
 import { handleEventRoutes } from './routes/events';
@@ -79,6 +80,9 @@ import { handleActivityRoutes } from './routes/activity';
 import { EventBus } from '@ai-factory/events';
 
 const PORT = Number(process.env.PORT ?? 3100);
+// SPEC §7.4 — the control-plane API binds loopback by default. Override
+// only for an explicitly planned deployment (AI_FACTORY_HOST).
+const HOST = process.env.AI_FACTORY_HOST ?? '127.0.0.1';
 const DB_PATH = process.env.DB_PATH ?? './data/factory.db';
 
 function ensureDir(dbPath: string): void {
@@ -208,6 +212,7 @@ const server = createServer(async (req, res) => {
     if (await handleWatchdogRoutes(req, res, url, routeCtx)) return;
     if (await handleTakeoverRoutes(req, res, url, routeCtx)) return;
     if (await handleDisputeRoutes(req, res, url, routeCtx)) return;
+    if (await handleReportRoutes(req, res, url, routeCtx)) return;
     if (await handleDashboardRoutes(req, res, url, routeCtx)) return;
     if (await handleNotificationRoutes(req, res, url, routeCtx)) return;
     if (await handleEventRoutes(req, res, url, routeCtx)) return;
@@ -412,6 +417,6 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`[ai-factory] API listening on http://localhost:${PORT} (db: ${DB_PATH})`);
+server.listen(PORT, HOST, () => {
+  console.log(`[ai-factory] API listening on http://${HOST}:${PORT} (db: ${DB_PATH})`);
 });

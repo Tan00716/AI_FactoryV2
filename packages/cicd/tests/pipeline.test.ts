@@ -1,5 +1,5 @@
 /**
- * Tests for the pipeline runner (spec §39).
+ * Tests for the pipeline runner (spec §40: 12 stages).
  * Run: node --test dist/tests/pipeline.test.js   (after tsc -p tsconfig.json)
  */
 import { describe, it } from 'node:test';
@@ -11,14 +11,28 @@ import {
 } from '../src/index';
 
 describe('PipelineRunner', () => {
-  it('runs a green pipeline through all 8 stages in order', async () => {
+  it('runs a green pipeline through all 12 §40 stages in order', async () => {
     const started: StageName[] = [];
     const runner = new PipelineRunner({
       onStageStart: (s) => started.push(s.name),
     });
     const pipeline = runner.createPipeline('DEV', 'abc123');
     assert.equal(pipeline.status, 'QUEUED');
-    assert.equal(pipeline.stages.length, 8);
+    assert.equal(pipeline.stages.length, 12);
+    assert.deepEqual(PIPELINE_STAGE_ORDER, [
+      'build',
+      'test',
+      'lint',
+      'typecheck',
+      'security',
+      'package',
+      'artifact',
+      'review_gate',
+      'uat',
+      'release',
+      'smoke',
+      'recovery',
+    ]);
 
     const done = await runner.run(pipeline);
     assert.equal(done.status, 'SUCCEEDED');
@@ -95,8 +109,8 @@ describe('PipelineRunner', () => {
     assert.equal(done.status, 'SUCCEEDED');
     assert.ok(auditActions.includes('PIPELINE_STARTED'));
     assert.ok(auditActions.includes('PIPELINE_SUCCEEDED'));
-    assert.equal(auditActions.filter((a) => a === 'STAGE_SUCCEEDED').length, 8);
-    assert.equal(evidenceTypes.filter((t) => t === 'stage-artifact').length, 8);
+    assert.equal(auditActions.filter((a) => a === 'STAGE_SUCCEEDED').length, 12);
+    assert.equal(evidenceTypes.filter((t) => t === 'stage-artifact').length, 12);
   });
 
   it('refuses to run a non-QUEUED pipeline', async () => {

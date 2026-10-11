@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceExecutor, DEFAULT_TIMEOUT_MS } from '../src/index';
 import type { AuditEvent, WorkspacePermission } from '../src/index';
+import type { IsolationBackend } from '@ai-factory/security';
+import { ConfinementUnavailableError, UnverifiedBackend } from '@ai-factory/security';
 
 let root: string;
 let audits: AuditEvent[];
@@ -145,5 +147,60 @@ describe('WorkspaceExecutor audit', () => {
     assert.equal(audits[0].exitCode, 0);
     assert.equal(audits[1].kind, 'exec_rejected');
     assert.match(audits[1].reason ?? '', /not in whitelist/);
+  });
+});
+
+describe('WorkspaceExecutor §7.5 fail-closed gate', () => {
+  const base = () => ({
+    root,
+    permissions: ['EXECUTE', 'READ'] as WorkspacePermission[],
+    agentId: 'test-agent',
+  });
+
+  it('autonomous=true without a backend throws ConfinementUnavailableError', () => {
+    assert.throws(
+      () => new WorkspaceExecutor({ ...base(), autonomous: true }),
+      ConfinementUnavailableError,
+    );
+  });
+
+  it('autonomous=true with an unverified backend throws', () => {
+    assert.throws(
+      () =>
+        new WorkspaceExecutor({
+          ...base(),
+          autonomous: true,
+          isolationBackend: new UnverifiedBackend(),
+        }),
+      ConfinementUnavailableError,
+    );
+  });
+
+  it('autonomous=true with a verified backend constructs and runs', async () => {
+    const verified: IsolationBackend = {
+      name: 'test-vm',
+      kind: 'vm',
+      verifyConfinement: () => ({
+        backend: 'test-vm',
+        kind: 'vm',
+        verified: true,
+        verified_at: '2026-01-01T00:00:00.000Z',
+        checks: [],
+        limitations: [],
+      }),
+    };
+    const ex = new WorkspaceExecutor({
+      ...base(),
+      autonomous: true,
+      isolationBackend: verified,
+    });
+    const res = await ex.exec('echo ok');
+    assert.equal(res.exitCode, 0);
+  });
+
+  it('autonomous defaults to false: no gate, existing behavior unchanged', async () => {
+    const ex = new WorkspaceExecutor({ ...base() });
+    const res = await ex.exec('echo ok');
+    assert.equal(res.exitCode, 0);
   });
 });

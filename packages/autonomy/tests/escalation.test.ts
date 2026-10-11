@@ -75,3 +75,34 @@ describe('evaluateEscalation', () => {
     assert.equal(isHumanNeedReason(undefined), false);
   });
 });
+
+describe('EscalationRecord §15 contract fields (additive)', () => {
+  it('carries the 8 optional escalation-contract fields when provided', () => {
+    const rec = needsHuman('security-issue', {
+      now: () => 1_700_000_000_000,
+      originalCommand: 'deploy prod --force',
+      authPolicyVersion: 'policy@v7',
+      evidenceRefs: ['ev-1', 'ev-2'],
+      impactScope: 'prod cluster A',
+      stoppedActions: ['deploy.prod'],
+      suggestion: 'revoke the capability and rotate the key',
+      deadline: '2026-10-12T00:00:00.000Z',
+      recipient: 'human:alice',
+    });
+    assert.equal(rec.originalCommand, 'deploy prod --force');
+    assert.equal(rec.authPolicyVersion, 'policy@v7');
+    assert.deepEqual(rec.evidenceRefs, ['ev-1', 'ev-2']);
+    assert.equal(rec.impactScope, 'prod cluster A');
+    assert.deepEqual(rec.stoppedActions, ['deploy.prod']);
+    assert.equal(rec.suggestion, 'revoke the capability and rotate the key');
+    assert.equal(rec.deadline, '2026-10-12T00:00:00.000Z');
+    assert.equal(rec.recipient, 'human:alice');
+  });
+
+  it('the new fields are optional — old callers unaffected', () => {
+    const rec = needsHuman('budget-exceeded', { now: () => 1_700_000_000_000 });
+    assert.equal(rec.originalCommand, undefined);
+    assert.equal(rec.recipient, undefined);
+    assert.equal(rec.severity, 'high');
+  });
+});

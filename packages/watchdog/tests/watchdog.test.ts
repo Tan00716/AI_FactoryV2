@@ -176,3 +176,20 @@ describe('recovery discipline (§30)', () => {
     assert.equal(w.selfHealth(), 'degraded');
   });
 });
+
+describe('WorkerSignals §30 additions (additive)', () => {
+  it('accepts expectedDurationMs and progressCheckpoint via reportSignals', () => {
+    const { w } = wd();
+    w.registerWorker('w1');
+    w.reportSignals('w1', {
+      expectedDurationMs: 3_600_000,
+      progressCheckpoint: { phase: 'build', done: 12, total: 40, at: 1_000 },
+    });
+    const status = w.getStatus('w1');
+    assert.equal(status.health, 'HEALTHY');
+    // Signals merge generically — the new optional fields are stored.
+    const internal = (w as unknown as { workers: Map<string, { signals: Record<string, unknown> }> }).workers.get('w1');
+    assert.equal(internal?.signals['expectedDurationMs'], 3_600_000);
+    assert.deepEqual(internal?.signals['progressCheckpoint'], { phase: 'build', done: 12, total: 40, at: 1_000 });
+  });
+});

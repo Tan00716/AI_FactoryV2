@@ -1,1 +1,1 @@
-{"description":"Local project execution sandbox, project discovery and project scaffolding (§31–§33, §6)","main":"dist/src/index.js","name":"@ai-factory/projects","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}
+{"dependencies":{"@ai-factory/security":"0.1.0"},"description":"Local project execution sandbox, project discovery and project scaffolding (§31–§33, §6)","main":"dist/src/index.js","name":"@ai-factory/projects","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

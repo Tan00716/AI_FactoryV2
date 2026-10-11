@@ -14,11 +14,22 @@
  * for the coordinator to mount.
  */
 import type { IncomingMessage, ServerResponse } from 'http';
-import { Watchdog } from '@ai-factory/watchdog';
+import { PolicyDeniedRecovery, Watchdog } from '@ai-factory/watchdog';
 import type { RouteContext } from './context';
 
+/**
+ * §30 fail-closed recovery gate for this route. Watchdog kill/restart
+ * requests must pass a policy gate, but RouteContext carries no policy
+ * engine — so every recovery action is denied with an explicit error
+ * instead of being allowed by an always-true stub. Wire a real gate here
+ * (e.g. from @ai-factory/approvals or factory-control) when one exists.
+ */
+export function denyWatchdogRecovery(): boolean {
+  return false;
+}
+
 const watchdog = new Watchdog([], {
-  policyGate: () => true, // server wiring may inject the real policy engine
+  policyGate: denyWatchdogRecovery,
   onNotify: (m) => console.warn(`[watchdog] ${m}`),
 });
 
@@ -104,7 +115,14 @@ export async function handleWatchdogRoutes(
       ctx.audit.record('api', 'WATCHDOG_RECOVERY', 'worker', seg[1], { action: rec.action });
       ctx.json(res, 200, { recovery: rec });
     } catch (err) {
-      ctx.json(res, 400, { error: (err as Error).message });
+      if (err instanceof PolicyDeniedRecovery) {
+        ctx.json(res, 403, {
+          error:
+            'watchdog recovery (kill/restart) is disabled on this route: no policy engine is wired in — refused fail-closed per §30',
+        });
+      } else {
+        ctx.json(res, 400, { error: (err as Error).message });
+      }
     }
     return true;
   }

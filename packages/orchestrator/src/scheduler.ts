@@ -9,14 +9,15 @@
  * the priority assigned upstream — once assigned, ordering is pure.
  */
 
-export type SchedulerPriority = 'P0' | 'P1' | 'P2' | 'P3';
+export type SchedulerPriority = 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
 
-/** §93: P0 Production Incident → P1 Critical Bug → P2 Normal Task → P3 Enhancement. */
+/** §21.1: P0 Production Incident → P1 Critical Bug → P2 Normal Task → P3 Enhancement → P4 Research. */
 const PRIORITY_RANK: Record<SchedulerPriority, number> = {
   P0: 0,
   P1: 1,
   P2: 2,
   P3: 3,
+  P4: 4,
 };
 
 export interface SchedulableTask {
@@ -125,7 +126,7 @@ export class Scheduler {
    *
    * - Skips tasks already running or done.
    * - Skips tasks whose `dependsOn` ids are not all done (dependency-aware).
-   * - Orders by priority (P0 → P3), then FIFO enqueue order.
+   * - Orders by priority (P0 → P4), then FIFO enqueue order.
    * - Respects the concurrency limit: returns at most
    *   `concurrencyLimit - running.length` ids.
    *

@@ -26,6 +26,8 @@ const BINDING = {
   evidence_manifest_hash: 'sha256:manifest-77',
   policy_version: 'v2-demo',
   environment: 'prod',
+  risk_level: 'HIGH' as const,
+  reversibility_ref: '',
 };
 
 console.log('== 1. normal deploy.prod flow ==');
@@ -33,7 +35,6 @@ const a = manager.request({
   action: 'deploy.prod',
   requester: 'release-bot',
   task_id: 'task-42',
-  risk_level: 'HIGH',
   ...BINDING,
 });
 console.log('  requested →', a.status, '| required_approvers:', a.required_approvers);

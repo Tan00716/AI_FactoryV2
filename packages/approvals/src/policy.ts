@@ -18,10 +18,10 @@ export const TOOL_APPROVAL_LEVELS: Record<string, ApprovalLevel> = {
   // Never allowed by policy: not even a human can approve these here.
   'secret.write': 'BLOCKED',
   // Reversible but sensitive: AI review is enough.
-  'deploy.uat': 'AI_REVIEW',
-  'git.push': 'AI_REVIEW',
-  'filesystem.delete': 'AI_REVIEW',
-  'agent.create': 'AI_REVIEW',
+  'deploy.uat': 'AI_REVIEW_PLUS_POLICY',
+  'git.push': 'AI_REVIEW_PLUS_POLICY',
+  'filesystem.delete': 'AI_REVIEW_PLUS_POLICY',
+  'agent.create': 'AI_REVIEW_PLUS_POLICY',
   // Everyday actions: run without approval.
   'filesystem.write': 'AUTO',
   'git.commit': 'AUTO',
@@ -70,7 +70,7 @@ export function evaluateAction(
 
   return {
     level,
-    requiresApproval: level === 'AI_REVIEW' || level === 'HUMAN_APPROVAL',
+    requiresApproval: level === 'AI_REVIEW_PLUS_POLICY' || level === 'HUMAN_APPROVAL',
     reason,
   };
 }

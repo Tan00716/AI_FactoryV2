@@ -1,10 +1,11 @@
 /**
- * System Event Bus — core event types, spec §91.
+ * System Event Bus — core event types, spec §91 (v1) + §32.1 (v2 additions).
  *
  * NOTE on count: the §91 block in AI_factory.txt enumerates 29 names
- * (verified by script); the module mirrors them verbatim. The bus accepts
- * only non-empty-string types at runtime (loose validation), so new types
- * can be added here without changing bus semantics.
+ * (verified by script); the module mirrors them verbatim. §32.1 keeps the
+ * v1 vocabulary and adds 10 v2 types below. The bus accepts only
+ * non-empty-string types at runtime (loose validation), so new types can
+ * be added here without changing bus semantics.
  */
 export const EVENT_TYPES = [
   'PROJECT_CREATED',
@@ -36,6 +37,17 @@ export const EVENT_TYPES = [
   'KNOWLEDGE_UPDATED',
   'SKILL_UPDATED',
   'MCP_UPDATED',
+  // §32.1 v2 additions
+  'AUTHORIZATION',
+  'REQUIREMENT_VERSION',
+  'DELEGATION_REPORT',
+  'CONTROL_EPOCH',
+  'LEASE_FENCING',
+  'QUOTA_HANDOFF',
+  'EVIDENCE_INVALIDATION',
+  'TAKEOVER',
+  'OUTCOME',
+  'COMPLETION_INVALIDATION',
 ] as const;
 
 /** The §91 system event types. */

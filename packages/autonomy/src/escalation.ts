@@ -61,6 +61,23 @@ export interface EscalationRecord {
   /** Related task/agent/deploy ids for traceability. */
   context?: Record<string, string>;
   detectedAt: string;
+  // --- SPEC §15 escalation contract (all optional, additive) ---
+  /** 原命令：the command/request that triggered the escalation. */
+  originalCommand?: string;
+  /** 授权/政策版本：authorization/policy version in force at escalation. */
+  authPolicyVersion?: string;
+  /** Evidence 引用：evidence record ids supporting the escalation. */
+  evidenceRefs?: string[];
+  /** 影响范围：blast radius / scope affected. */
+  impactScope?: string;
+  /** 已停止动作：actions already halted pending the escalation outcome. */
+  stoppedActions?: string[];
+  /** 建议：recommended next step for the recipient. */
+  suggestion?: string;
+  /** 期限：ISO timestamp by which the escalation needs a decision. */
+  deadline?: string;
+  /** 接收方：who should handle it, e.g. 'human:alice', 'security-authority'. */
+  recipient?: string;
 }
 
 export function isHumanNeedReason(value: unknown): value is HumanNeedReason {
@@ -74,6 +91,14 @@ export interface NeedsHumanOptions {
   now?: () => number;
   detail?: string;
   context?: Record<string, string>;
+  originalCommand?: string;
+  authPolicyVersion?: string;
+  evidenceRefs?: string[];
+  impactScope?: string;
+  stoppedActions?: string[];
+  suggestion?: string;
+  deadline?: string;
+  recipient?: string;
 }
 
 /**
@@ -93,6 +118,14 @@ export function needsHuman(
     detail: opts.detail,
     context: opts.context,
     detectedAt: new Date(now()).toISOString(),
+    originalCommand: opts.originalCommand,
+    authPolicyVersion: opts.authPolicyVersion,
+    evidenceRefs: opts.evidenceRefs,
+    impactScope: opts.impactScope,
+    stoppedActions: opts.stoppedActions,
+    suggestion: opts.suggestion,
+    deadline: opts.deadline,
+    recipient: opts.recipient,
   };
 }
 

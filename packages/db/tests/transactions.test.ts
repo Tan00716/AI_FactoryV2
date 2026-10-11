@@ -19,6 +19,7 @@ import {
   type AuthorizeTaskDeps,
   type DeployDeps,
   type TransitionDeps,
+  WriterLeaseGuard,
 } from '../src/index';
 
 let seq = 0;
@@ -215,5 +216,65 @@ describe('deploy (§48.4)', () => {
     const outbox = runTxScript('deploy', deployScript(d, input), newTxContext());
     assert.ok(outbox.some((e) => e.event_type === 'EXTERNAL_OP_UNKNOWN'));
     assert.equal(reconciled, 'UNKNOWN');
+  });
+});
+
+describe('deploy fencing re-validation (§22.3)', () => {
+  function makeWithGuard() {
+    const seen = new Map<string, string>();
+    const guard = new WriterLeaseGuard();
+    let executed = false;
+    const dd: DeployDeps = {
+      ...deps,
+      registerIdempotencyKey: (k, op) => {
+        const prev = seen.get(k);
+        if (!prev) { seen.set(k, op); return 'NEW'; }
+        return prev === op ? 'SEEN_SAME' : 'SEEN_DIFFERENT';
+      },
+      acquireDeployLease: (resourceId, runId, ttlMs) =>
+        guard.acquireWriter(resourceId, runId, ttlMs).fencing_token,
+      validateDeployLease: (resourceId, token) => {
+        guard.validateWriter(resourceId, token);
+      },
+      checkApprovedDigest: (a, b) => {
+        if (a !== b) throw new Error('APPROVAL_REQUIRED: digest mismatch');
+      },
+      brokerExecute: () => { executed = true; return 'CONFIRMED_SUCCEEDED'; },
+      recordOperationResult: () => {},
+      reconcile: () => {},
+    };
+    return { deps: dd, guard, executed: () => executed };
+  }
+  const input = {
+    operationId: 'op1', idempotencyKey: 'key-1', taskId: 't1',
+    artifactDigest: 'd1', approvedDigest: 'd1', environment: 'prod',
+    resourceId: 'prod-env', runId: 'r1', ttlMs: 60_000,
+  };
+
+  it('re-validates the fencing token before brokerExecute', () => {
+    const { deps } = makeWithGuard();
+    const seen: Array<[string, number]> = [];
+    const orig = deps.validateDeployLease!;
+    deps.validateDeployLease = (r: string, t: number) => { seen.push([r, t]); orig(r, t); };
+    runTxScript('deploy', deployScript(deps, input), newTxContext());
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0][0], 'prod-env');
+    assert.equal(typeof seen[0][1], 'number');
+  });
+
+  it('a superseded owner is rejected as STALE_OWNER before the broker runs', () => {
+    const { deps, guard, executed } = makeWithGuard();
+    // Another run takes over the resource between lease acquisition and
+    // broker execution — the generation (and fencing token) advances.
+    const origValidate = deps.validateDeployLease!;
+    deps.validateDeployLease = (r, t) => {
+      guard.reassignWriter('prod-env', 'r-takeover', 60_000);
+      origValidate(r, t);
+    };
+    assert.throws(
+      () => runTxScript('deploy', deployScript(deps, input), newTxContext()),
+      /STALE_OWNER/,
+    );
+    assert.equal(executed(), false);
   });
 });

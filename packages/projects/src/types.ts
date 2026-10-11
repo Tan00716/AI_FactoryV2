@@ -51,6 +51,17 @@ export interface WorkspaceExecutorOptions {
   timeoutMs?: number;
   /** Per-stream stdout/stderr truncation limit in bytes. @default 262144 */
   maxOutputBytes?: number;
+  /**
+   * SPEC §7.5 — autonomous agent execution. When true, the constructor runs
+   * the fail-closed confinement gate: without a verified isolation backend
+   * it throws ConfinementUnavailableError. @default false (human/operator use)
+   */
+  autonomous?: boolean;
+  /**
+   * Isolation backend for the §7.5 gate. Required when autonomous is true;
+   * a missing backend fails closed (treated as unverified).
+   */
+  isolationBackend?: import('@ai-factory/security').IsolationBackend;
 }
 
 export interface ExecOptions {
