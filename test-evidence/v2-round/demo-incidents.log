@@ -1,0 +1,16 @@
+
+> ai-factory@0.1.0 demo:incidents
+> npm run build -w @ai-factory/incidents && node packages/incidents/dist/demo/incidents.demo.js
+
+
+> @ai-factory/incidents@0.1.0 build
+> tsc -p tsconfig.json
+
+1. detected: 1825d4a7-6346-42c2-87cc-11433bddf468 DETECTED
+2. auto-mitigate with pre-authorized runbook: true
+   non-preauthorized runbook auto-mitigate: false
+3. resolved with recovery evidence
+4. threshold gaming refused: true
+5. closed: CLOSED
+6. isolated recovery path required: true
+demo complete

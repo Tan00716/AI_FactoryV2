@@ -1,0 +1,45 @@
+
+> ai-factory@0.1.0 demo:knowledge
+> npm run build -w @ai-factory/knowledge && node packages/knowledge/dist/demo/knowledge.demo.js
+
+
+> @ai-factory/knowledge@0.1.0 build
+> tsc -p tsconfig.json
+
+== 1. Source rating (§44) ==
+   official_spec: score=100 verify-threshold=1
+   official_docs: score=90 verify-threshold=1
+   official_release: score=80 verify-threshold=2
+   primary_article: score=60 verify-threshold=3
+   research: score=50 verify-threshold=3
+   community: score=20 verify-threshold=8
+   → community sources need DOUBLED verification (8).
+
+== 2. Scout: candidates only, never live-object mutation ==
+   … collect ✓
+   … normalize ✓
+   … compare ✓
+   … verify ✓
+   … evaluate ✓
+   … proposal ✓
+   stages: collect:ok → normalize:ok → compare:ok → verify:ok → evaluate:ok → proposal:ok
+   budget: total=10 spent=1 exhausted=false
+   proposal candidate: scoutprop_1700000016000 [PROPOSED]
+   live employee byte-identical: true
+
+== 3. Lifecycle → ACTIVE (gated; proposal → approval → external applier) ==
+   DISCOVERED → UNVERIFIED  (actor=demo-operator)
+   UNVERIFIED → VALIDATED  (actor=demo-operator)
+   VALIDATED → EVALUATED  (actor=demo-operator)
+   EVALUATED → APPROVED  (actor=demo-operator)
+   published: proposal prop_4ab102bf-a223-407d-878a-facc4821cf31 [PENDING] — "Knowledge "Loop engineering: retry with backoff" proposed for skill loop-engineering. Awaiting external approval — no agent was modified by this publication."
+   [external] skill registry applied proposal prop_4ab102bf-a223-407d-878a-facc4821cf31 → skill loop-engineering
+   APPROVED → ACTIVE  (actor=demo-operator)
+
+== 4. Distribution license gate ==
+   refused (no license): DistributionError — Knowledge item know_f9fd260a-ef20-40dc-ac5c-ba7f625db390 is an external script with no license recorded on its source
+
+== 5. Update Feed: Activate/Defer/Reject ==
+   "OpenAI: new Codex capability" → Activate by human:cto
+   "MCP: 2026-07-28 specification update" → Defer by human:cto
+   "Agent Engineering: new long-running agent pattern" sourceAvailable=false (verified date kept: 1787234400000)

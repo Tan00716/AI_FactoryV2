@@ -1,0 +1,18 @@
+
+> ai-factory@0.1.0 demo:db-v2
+> npm run build -w @ai-factory/db && node packages/db/dist/demo/db-v2.demo.js
+
+
+> @ai-factory/db@0.1.0 build
+> tsc -p tsconfig.json
+
+== 1. cross-project authorization link ==
+  ok   mis-linked chain rejected
+== 2. budget ledger ==
+       balance after settle: 4000 (minor units)
+  ok   oversell rejected, settle idempotent
+== 3. deploy idempotency + UNKNOWN reconciliation ==
+       reconciled op-1 with result=UNKNOWN (no blind replay)
+  ok   replayed key with different payload refused; UNKNOWN reconciled
+
+db v2 demo: all checks passed

@@ -1,0 +1,736 @@
+{
+ "passed": 71,
+ "total": 73,
+ "results": [
+  {
+   "group": "health",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/health",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"ok\":true,\"ts\":\"2026-10-11T07:38:45.587Z\"}"
+  },
+  {
+   "group": "tasks",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/tasks?projectId=proj-myapp",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "[{\"id\":\"ce82fa15-d530-4104-90b5-464c52b0e7cb\",\"projectId\":\"proj-myapp\",\"parentTaskId\":null,\"title\":\"Fix payment success but order stays Pending\",\"goal\":\"Success"
+  },
+  {
+   "group": "tasks",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/tasks/00000000-0000-0000-0000-000000000000/transition",
+   "status": 404,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"Task 00000000-0000-0000-0000-000000000000 not found\"}"
+  },
+  {
+   "group": "git",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/git/status?repo=/home/hatch/workspace/ai-factory",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"branch\":\"main\",\"staged\":[],\"unstaged\":[],\"untracked\":[\"test-evidence/v2-round/\"]}"
+  },
+  {
+   "group": "git",
+   "name": "negative",
+   "method": "GET",
+   "path": "/api/git/status",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"repo query param is required\"}"
+  },
+  {
+   "group": "qa",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/qa/org",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"lead\":{\"id\":\"d420e6e6-166d-460d-bbfd-e93af0b40b3a\",\"name\":\"qa-lead\",\"displayName\":\"QA Lead\",\"jobTitle\":\"QA Lead\",\"status\":\"IDLE\",\"autonomyLevel\":3},\"specialis"
+  },
+  {
+   "group": "qa",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/qa/specialists",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"kind must be one of: Functional, API, E2E, Regression, Performance, Security, DBMigration, Smoke\"}"
+  },
+  {
+   "group": "approvals",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/approvals",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "[]"
+  },
+  {
+   "group": "approvals",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/approvals/evaluate",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"action is required\"}"
+  },
+  {
+   "group": "cicd",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/environments",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"environments\":[{\"name\":\"LOCAL\",\"runtime\":\"node:22 local process\",\"variables\":{\"NODE_ENV\":\"development\",\"PORT\":\"3000\"},\"secretsRef\":\"none (local dev)\",\"url\":\"h"
+  },
+  {
+   "group": "cicd",
+   "name": "negative",
+   "method": "GET",
+   "path": "/api/pipelines/does-not-exist",
+   "status": 404,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"pipeline does-not-exist not found\"}"
+  },
+  {
+   "group": "skills",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/skills",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"skills\":[{\"id\":\"clean-code\",\"versions\":[\"1.0.0\"],\"latest\":\"1.0.0\",\"description\":\"Write readable, maintainable code: naming, structure, small functions, no cle"
+  },
+  {
+   "group": "skills",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/skills/install",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"skill definition is required\"}"
+  },
+  {
+   "group": "memory",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/memory",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"entries\":[]}"
+  },
+  {
+   "group": "memory",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/memory",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"scope must be one of employee|project|organization|task|system\",\"code\":\"INVALID_INPUT\"}"
+  },
+  {
+   "group": "mcp",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/mcp",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"servers\":[{\"name\":\"github\",\"version\":\"1.0.0\",\"provider\":\"github\",\"transport\":\"http\",\"tools\":[\"get_file_contents\",\"create_or_update_file\"],\"trustLevel\":\"UNKNOW"
+  },
+  {
+   "group": "mcp",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/mcp/install",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"name and version are required\"}"
+  },
+  {
+   "group": "knowledge",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/knowledge",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"hits\":[]}"
+  },
+  {
+   "group": "knowledge",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/knowledge",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"title and content are required\"}"
+  },
+  {
+   "group": "evaluation",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/evaluations",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"evaluations\":[]}"
+  },
+  {
+   "group": "evaluation",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/evaluations",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"taskId and agentId are required\"}"
+  },
+  {
+   "group": "models",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/models",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"models\":[{\"provider\":\"shared\",\"model\":\"fast-classifier\",\"capability\":[\"tools\"],\"context\":\"small\",\"reasoning\":false,\"cost\":\"low\",\"latency\":\"low\",\"availability\""
+  },
+  {
+   "group": "models",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/router/route",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"taskType (string) and complexity (1-5) are required\"}"
+  },
+  {
+   "group": "events",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/events",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"events\":[],\"total\":0,\"types\":[\"PROJECT_CREATED\",\"TASK_CREATED\",\"TASK_STARTED\",\"TASK_ASSIGNED\",\"AGENT_CREATED\",\"AGENT_UPDATED\",\"AGENT_ARCHIVED\",\"RUN_STARTED\",\""
+  },
+  {
+   "group": "events",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/events/emit",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"type (non-empty string) is required\"}"
+  },
+  {
+   "group": "activity",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/activity",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"items\":[{\"id\":\"audit:c5e077e2-39d7-4d97-8f06-f0700675e9a0\",\"ts\":\"2026-10-11T07:38:38.378Z\",\"kind\":\"audit\",\"source\":\"api\",\"label\":\"api — takeover requested tak"
+  },
+  {
+   "group": "runs",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/runs",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"runs\":[]}"
+  },
+  {
+   "group": "runs",
+   "name": "negative",
+   "method": "GET",
+   "path": "/api/runs/does-not-exist",
+   "status": 404,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"run not found\"}"
+  },
+  {
+   "group": "stats",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/stats",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"generatedAt\":\"2026-10-11T07:38:45.719Z\",\"status\":{\"activeTasks\":{\"key\":\"activeTasks\",\"label\":\"活跃任务\",\"value\":6,\"source\":\"任务存储 tasks (GET /api/tasks)\",\"unit\":\"个"
+  },
+  {
+   "group": "projects",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/projects/templates",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"templates\":[{\"name\":\"nextjs-saas\",\"description\":\"Next.js SaaS starter skeleton (App Router, TypeScript)\",\"language\":\"typescript\",\"framework\":\"next\",\"packageMa"
+  },
+  {
+   "group": "projects",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/projects/exec",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"command is required\"}"
+  },
+  {
+   "group": "review",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/review/dimensions",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"dimensions\":[\"correctness\",\"architecture\",\"readability\",\"maintainability\",\"security\",\"performance\",\"testCoverage\",\"regressionRisk\",\"projectConventions\",\"depen"
+  },
+  {
+   "group": "review",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/review",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"files is required: array of {path, before?, after?}\"}"
+  },
+  {
+   "group": "releases",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/releases",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"releases\":[]}"
+  },
+  {
+   "group": "releases",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/releases",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"version is required (semver)\"}"
+  },
+  {
+   "group": "policy",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/policy/layers",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"layers\":[\"global\",\"organization\",\"project\",\"department\",\"agent\",\"task\",\"tool\"],\"globalScopeId\":\"__global__\",\"eventCount\":0}"
+  },
+  {
+   "group": "policy",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/policy/validate",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"kind must be 'project' or 'organization'\"}"
+  },
+  {
+   "group": "security",
+   "name": "positive",
+   "method": "POST",
+   "path": "/api/security/scan",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"name\":\"test-skill\",\"score\":30,\"findings\":[{\"severity\":\"MEDIUM\",\"category\":\"scripts\",\"message\":\"script[0] invokes a shell without declared shell capability\"},{"
+  },
+  {
+   "group": "security",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/security/scan",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"manifest object is required\"}"
+  },
+  {
+   "group": "recovery",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/recovery/snapshots",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"snapshots\":[]}"
+  },
+  {
+   "group": "recovery",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/recovery/snapshots/nope/restore",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"snapshot not found: nope\"}"
+  },
+  {
+   "group": "resources",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/resources/usage",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"records\":0,\"totals\":{\"timeMs\":0,\"tokens\":0,\"toolCalls\":0,\"retries\":0,\"storageBytes\":0,\"processes\":0},\"byTask\":{},\"byAgent\":{},\"window\":{\"from\":null,\"to\":null}"
+  },
+  {
+   "group": "resources",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/resources/consume",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"taskId and usage are required\"}"
+  },
+  {
+   "group": "autonomy",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/autonomy/mode",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"projectId\":\"proj-myapp\",\"mode\":\"assisted\",\"updatedBy\":\"system\",\"updatedAt\":\"2026-10-11T07:38:45.763Z\"}"
+  },
+  {
+   "group": "autonomy",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/autonomy/decide",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"action.kind is required\"}"
+  },
+  {
+   "group": "coordination",
+   "name": "positive",
+   "method": "POST",
+   "path": "/api/coordination/schedule",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"batches\":[[\"t1\"]],\"level\":{\"t1\":0}}"
+  },
+  {
+   "group": "coordination",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/coordination/locks",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"kind, key and holder are required\"}"
+  },
+  {
+   "group": "disputes",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/disputes",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"disputes\":[]}"
+  },
+  {
+   "group": "disputes",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/disputes",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"verdictA and verdictB are required\"}"
+  },
+  {
+   "group": "notifications",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/notifications",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"notifications\":[],\"unread\":0}"
+  },
+  {
+   "group": "notifications",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/notifications/nope/read",
+   "status": 404,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"notification not found\"}"
+  },
+  {
+   "group": "requirements",
+   "name": "positive",
+   "method": "POST",
+   "path": "/api/requirements",
+   "status": 201,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"requirement\":{\"id\":\"REQ-008\",\"versions\":[{\"version\":1,\"createdAt\":\"2026-10-11T07:38:45.797Z\",\"createdBy\":\"api\",\"changeKind\":\"INITIAL\",\"changeNote\":\"initial ve"
+  },
+  {
+   "group": "requirements",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/requirements",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"input.acceptanceCriteria is not iterable\"}"
+  },
+  {
+   "group": "factory",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/factory/status",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"control\":\"STOPPED\",\"health\":\"HEALTHY\",\"capacity\":\"AVAILABLE\",\"control_epoch\":0,\"pending_acks\":[],\"display\":\"STOPPED · HEALTHY · AVAILABLE\",\"updated_at\":\"2026-"
+  },
+  {
+   "group": "factory",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/factory/control",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"operation must be one of START, PAUSE_NEW_WORK, PAUSE_AI_WORK, FREEZE, RESUME, DRAIN, GRACEFUL_STOP, EMERGENCY_STOP\"}"
+  },
+  {
+   "group": "incidents",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/incidents",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"incidents\":[]}"
+  },
+  {
+   "group": "incidents",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/incidents",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"title is required\",\"name\":\"Error\"}"
+  },
+  {
+   "group": "quota",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/quota/buckets",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"buckets\":[]}"
+  },
+  {
+   "group": "quota",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/quota",
+   "status": 404,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"Not found\"}"
+  },
+  {
+   "group": "watchdog",
+   "name": "positive",
+   "method": "POST",
+   "path": "/api/watchdog/workers",
+   "status": 201,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"ok\":true}"
+  },
+  {
+   "group": "watchdog",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/watchdog/workers",
+   "status": 201,
+   "expect": "4xx",
+   "pass": false,
+   "resp": "{\"ok\":true}"
+  },
+  {
+   "group": "takeovers",
+   "name": "positive",
+   "method": "POST",
+   "path": "/api/takeovers",
+   "status": 201,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"takeover\":{\"id\":\"2e20c31f-f50a-4541-b3cd-664099551979\",\"runId\":\"run-1\",\"resourceId\":\"res-1\",\"requestedBy\":\"api\",\"requestedAt\":\"2026-10-11T07:38:45.828Z\",\"stat"
+  },
+  {
+   "group": "takeovers",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/takeovers",
+   "status": 201,
+   "expect": "4xx",
+   "pass": false,
+   "resp": "{\"takeover\":{\"id\":\"f8fc6664-f69e-4af9-9de8-63c72234667a\",\"requestedBy\":\"api\",\"requestedAt\":\"2026-10-11T07:38:45.831Z\",\"state\":\"REQUESTED\",\"fencedGeneration\":nul"
+  },
+  {
+   "group": "leases",
+   "name": "positive",
+   "method": "POST",
+   "path": "/api/leases/acquire",
+   "status": 201,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"id\":\"962e658e-1c2e-4cbc-8717-6d55a539fb12\",\"resource_id\":\"r-smoke2\",\"owner_run_id\":\"run1\",\"generation\":1,\"fencing_token\":1,\"expires_at\":\"2026-10-11T07:39:45.8"
+  },
+  {
+   "group": "leases",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/leases/acquire",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"resource_id, owner_run_id and ttlMs are required\"}"
+  },
+  {
+   "group": "tools",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/tools",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"tools\":[]}"
+  },
+  {
+   "group": "tools",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/tools",
+   "status": 404,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"Not found\"}"
+  },
+  {
+   "group": "isolation",
+   "name": "positive",
+   "method": "GET",
+   "path": "/api/isolation/backends",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"backends\":[{\"name\":\"unverified\",\"kind\":\"unverified\",\"note\":\"fail-closed default; never verifies\"},{\"name\":\"local-dev\",\"kind\":\"local-dev\",\"note\":\"best-effort c"
+  },
+  {
+   "group": "isolation",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/isolation/backends",
+   "status": 404,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"Not found\"}"
+  },
+  {
+   "group": "orchestrator",
+   "name": "positive",
+   "method": "POST",
+   "path": "/api/orchestrator/pattern",
+   "status": 200,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"pattern\":\"manager\"}"
+  },
+  {
+   "group": "orchestrator",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/orchestrator/decompose",
+   "status": 400,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"title, goal and kind (bugfix|feature|refactor|research) are required\"}"
+  },
+  {
+   "group": "progress",
+   "name": "positive",
+   "method": "POST",
+   "path": "/api/progress/plans",
+   "status": 201,
+   "expect": "2xx",
+   "pass": true,
+   "resp": "{\"plan\":{\"id\":\"wp-1791704325853\",\"version\":1,\"items\":[{\"id\":\"a\",\"weight\":100}],\"createdAt\":\"2026-10-11T07:38:45.853Z\",\"supersedes\":null,\"scopeChangeNote\":null,\""
+  },
+  {
+   "group": "progress",
+   "name": "negative",
+   "method": "POST",
+   "path": "/api/progress/compute",
+   "status": 404,
+   "expect": "4xx",
+   "pass": true,
+   "resp": "{\"error\":\"weight plan nope not found\"}"
+  }
+ ]
+}

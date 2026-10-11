@@ -1,0 +1,26 @@
+
+> ai-factory@0.1.0 demo:isolation
+> npm run build -w @ai-factory/security && node packages/security/dist/demo/confinement.demo.js
+
+
+> @ai-factory/security@0.1.0 build
+> tsc -p tsconfig.json
+
+--- 1. unverified backend → fail closed ---
+[REFUSE] unverified host: CONFINEMENT_UNAVAILABLE — no qualified isolation backend is available: backend 'unverified' cannot prove confinement (no backend — autonomous shell execution is prohibited (§7.5))
+
+--- 2. local-dev best-effort report (honest limitations) ---
+verified: false
+  check workspace-root-resolves: pass — workspace root resolves to /tmp
+  check forbidden-prefixes-outside-root: pass — no forbidden prefix lives inside the workspace root
+  check os-boundary-attested: FAIL — no OS boundary attested — autonomous shell must stay fail-closed
+  limitations:
+   - local-dev cannot prove OS-level process isolation from inside the process; agent subprocesses inherit the host user principal (§7.3)
+   - TOCTOU: path checks are check-then-use; without OS support an attacker can swap a path between validation and use — treated as a limitation, not a guarantee
+   - symlink/junction/reparse targets are resolved at check time only
+[REFUSE] local dev box: CONFINEMENT_UNAVAILABLE — no qualified isolation backend is available: backend 'local-dev' cannot prove confinement (local-dev cannot prove OS-level process isolation from inside the process; agent subprocesses inherit the host user principal (§7.3); TOCTOU: path checks are check-then-use; without OS support an attacker can swap a path between validation and use — treated as a limitation, not a guarantee; symlink/junction/reparse targets are resolved at check time only)
+
+--- 3. read-only analysis still allowed while shell is closed ---
+workspace demo-ws: backend=unverified, verified_at=null
+[ALLOW] read-only resolve inside root: /tmp/README.md
+done.

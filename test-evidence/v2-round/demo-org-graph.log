@@ -1,0 +1,17 @@
+
+> ai-factory@0.1.0 demo:org-graph
+> npm run build -w @ai-factory/squads && node packages/squads/dist/demo/org-graph.demo.js
+
+
+> @ai-factory/squads@0.1.0 build
+> tsc -p tsconfig.json
+
+manages(owner) = pm
+manages(pm)    = coder, qa
+primaryManager(coder) = pm
+delegation chain pm→coder: granted and acyclic
+coder moved to pm2; authorizations dropped: [ 'primary-manager-edge:edge-2' ]
+primaryManager(coder) = pm2
+AI rename of human owner blocked: actor AI may not modify a human's identity or superior
+
+org-graph demo: all checks passed

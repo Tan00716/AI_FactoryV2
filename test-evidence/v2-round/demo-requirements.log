@@ -1,0 +1,28 @@
+
+> ai-factory@0.1.0 demo:requirements
+> npm run build -w @ai-factory/requirements && node packages/requirements/dist/demo/requirements.demo.js
+
+
+> @ai-factory/requirements@0.1.0 build
+> tsc -p tsconfig.json
+
+created REQ-001@1, target=RELEASED_OUTCOME
+ACs: AC-001@v1, AC-002@v1
+
+REQ-001@2 created; @1 record untouched: Rollback available within 5 minutes
+
+--- impact analysis REQ-001@1 → @2 ---
+acChanged: AC-002
+affected tasks: task-7, task-8
+staleApprovals: appr-7
+suspendedPromotions: 2 (promotion held until re-validation)
+evidenceStale (must NOT be silently reused): ev-ci-1, ev-drill-1
+
+ev-ci-1 reusable after explicit check: true
+ev-drill-1 reusable without check: false
+hold released with revalidation note: human-1
+
+AC-001 refined → requirement v3, AC version now 2
+new-behavior "refinement" rejected: AC AC-001: refinement adds new product behavior — route through the Proposal/aut…
+
+demo complete.

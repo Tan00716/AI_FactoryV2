@@ -1,0 +1,34 @@
+
+> ai-factory@0.1.0 demo:coordination
+> npm run build -w @ai-factory/coordination && node packages/coordination/dist/demo/parallel-conflict.demo.js
+
+
+> @ai-factory/coordination@0.1.0 build
+> tsc -p tsconfig.json
+
+coder-a changes: src/payment/service.ts, src/payment/util.ts
+coder-b changes: src/payment/service.ts, src/ui/checkout.tsx
+
+overlap detected: true
+  - same-file: "src/payment/service.ts" vs "src/payment/service.ts"
+
+decision: serialize
+  WARN: Overlap detected between agents: 1 shared path(s). Never silently overwrite another agent's work.
+  WARN: SAME FILE: agent A "src/payment/service.ts" vs agent B "src/payment/service.ts".
+  1. Pause agent B's overlapping edits (hold the overlapping paths).
+  2. Let agent A finish its edits on the shared file(s).
+  3. Rebase: agent B replays its edits on top of A's result.
+  4. Run the test suite; only release the files when tests pass.
+
+  [audit] acquired file:src/payment/service.ts holder=coder-a
+coder-a locks service.ts: granted=true
+  [audit] rejected file:src/payment/service.ts holder=coder-b
+coder-b locks service.ts: granted=false queued=true heldBy=coder-a
+  [audit] released file:src/payment/service.ts holder=coder-a
+  [audit] acquired file:src/payment/service.ts holder=coder-b
+  [audit] auto_granted file:src/payment/service.ts holder=coder-b
+coder-a done → coder-b now holds lock: true
+
+merge without tests: allowed=false (Overlapped files require a test hook before merge — refusing to release without tests.)
+  running test suite… all green
+merge after tests: allowed=true (Test hook passed — overlapped files released.)

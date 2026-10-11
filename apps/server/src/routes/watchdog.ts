@@ -1,7 +1,7 @@
 /**
  * Watchdog routes — SPEC_V2 §30 (lives in @ai-factory/watchdog).
  *
- *  POST /api/watchdog/workers                        {workerId, scope?} register
+ *  POST /api/watchdog/workers                        {worker_id, scope?} register
  *  POST /api/watchdog/workers/:id/heartbeat          record a heartbeat
  *  POST /api/watchdog/workers/:id/signals            report worker signals
  *  POST /api/watchdog/tick                           advance the watchdog clock
@@ -35,8 +35,13 @@ export async function handleWatchdogRoutes(
 
   if (method === 'POST' && seg[0] === 'workers' && seg.length === 1) {
     const body = await ctx.readBody(req);
+    const workerId = body['worker_id'];
+    if (typeof workerId !== 'string' || !workerId) {
+      ctx.json(res, 400, { error: 'worker_id is required' });
+      return true;
+    }
     try {
-      watchdog.registerWorker(body['workerId'] as string, body['scope'] as string | undefined);
+      watchdog.registerWorker(workerId, body['scope'] as string | undefined);
       ctx.json(res, 201, { ok: true });
     } catch (err) {
       ctx.json(res, 400, { error: (err as Error).message });

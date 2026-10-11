@@ -1,0 +1,27 @@
+
+> ai-factory@0.1.0 demo:durable
+> npm run build -w @ai-factory/runtime && node packages/runtime/dist/demo/durable.demo.js
+
+
+> @ai-factory/runtime@0.1.0 build
+> tsc -p tsconfig.json
+
+--- 1. crash during a production deploy ---
+state after crash: UNKNOWN
+--- 2a. restart: target ledger shows it actually deployed ---
+verdict=already-done — target ledger shows succeeded (prod-deploy-7781); adopted, no replay
+--- 2b. restart: target silent + irreversible → no blind replay ---
+verdict=needs-manual-recovery
+guard held: BLIND_REPLAY_REFUSED — escalate to controlled recovery
+--- 3. intent persisted before execution; disk-full safe mode ---
+intent 3445300c… persisted as PENDING before the tool ran
+dangerous write refused while disk is full
+emergency log kept: [
+  'REFUSED(disk-full): deploy prod',
+  'run-7 suspended: disk full, 1 intent pending reconcile'
+]
+--- 4. run states: SUCCEEDED names its contract, never "task done" ---
+final=SUCCEEDED contract="smoke tests 8/8 green on candidate sha:candidate-9f2"
+--- 5. loop stagnation: same fingerprint 3x with no new evidence ---
+stagnation detected: Loop stagnated: same error signature 'pytest:3-failed' 3 times in a row — escala… → auto-escalate
+done.

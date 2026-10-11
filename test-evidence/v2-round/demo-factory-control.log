@@ -1,0 +1,19 @@
+
+> ai-factory@0.1.0 demo:factory-control
+> npm run build -w @ai-factory/factory-control && node packages/factory-control/dist/demo/factory-control.demo.js
+
+
+> @ai-factory/factory-control@0.1.0 build
+> tsc -p tsconfig.json
+
+after START: RUNNING · HEALTHY · AVAILABLE
+quota hit:   RUNNING · HEALTHY · QUOTA LIMITED (control axis untouched)
+--- EMERGENCY STOP ---
+  [hook] execution permissions revoked @epoch 2
+  [hook] factory-managed dev process trees terminated @epoch 2
+  [hook] in-flight external actions → UNKNOWN, queued for coordination @epoch 2
+display:   EMERGENCY_STOPPED (pending — 2 worker ACKs outstanding: worker-1, worker-2)
+1 ACK:     EMERGENCY_STOPPED (pending — 1 worker ACK outstanding: worker-2)
+all ACKs:  EMERGENCY_STOPPED · HEALTHY · QUOTA LIMITED
+prohibitions: does not shut down the system | does not delete workspaces | does not stop customer production services | does not retry UNKNOWN side effects on resume
+done.

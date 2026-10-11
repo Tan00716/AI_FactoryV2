@@ -1,0 +1,38 @@
+[
+ {
+  "id": "P1",
+  "name": "path traversal",
+  "pass": true,
+  "evidence": "5/5 rejected; ../../etc/passwd -> REJECTED SandboxViolationError; /etc/passwd -> REJECTED SandboxViolationError; /tmp/evil -> REJECTED SandboxViolationError; subdir/../../../etc/passwd -> REJECTED SandboxViolationError; a\u0000b -> REJECTED SandboxViolationError"
+ },
+ {
+  "id": "P2",
+  "name": "secret leakage (canary)",
+  "pass": true,
+  "evidence": "SecretRef String() leaks canary: false (expected false); redactSecrets hides canary: true (expected true)"
+ },
+ {
+  "id": "P3",
+  "name": "DEF-001 permission bypass (regression)",
+  "pass": true,
+  "evidence": "request(secret.write) threw ApprovalBlockedError: BLOCKED actions cannot be approved: 'secret.write' — Action 'secret.write' is BL; request(deploy.prod) created 5d1cd458-34ed-405f-90ad-1de02938553e (expected: PENDING, human required); decide by rogue-agent threw ApprovalDeciderNotAuthorizedError"
+ },
+ {
+  "id": "P4",
+  "name": "evidence tampering (SEALED)",
+  "pass": true,
+  "evidence": "update blocked=true, delete blocked=true, sha identical=true"
+ },
+ {
+  "id": "P5",
+  "name": "workflow gate bypass",
+  "pass": true,
+  "evidence": "TODO->DONE ok=false (expected false, reason=undefined); QA->PENDING_UAT_MERGE without evidence ok=false (expected false)"
+ },
+ {
+  "id": "P6",
+  "name": "replay / double decision",
+  "pass": true,
+  "evidence": "second decide() rejected=true (expected true, ApprovalNotPendingError)"
+ }
+]

@@ -1,0 +1,42 @@
+
+> ai-factory@0.1.0 demo:workflow-v2
+> npm run build -w @ai-factory/core && node packages/core/dist/demo/workflow-v2.demo.js
+
+
+> @ai-factory/core@0.1.0 build
+> tsc -p tsconfig.json
+
+registered demo-task @ REQ-001@1, stage=TODO condition=ACTIVE
+
+[1] TODO→DONE illegal jump: ok=false reason=POLICY_DENIED
+    missing: DONE requires finalize(): completion predicates + final_seal commit atomically (§20.1)
+
+[2] stale version request: ok=false reason=VERSION_CONFLICT
+
+[3] START_TASK ok=true (no gates on this edge)
+[3b] PLANNING→IN_PROGRESS without evidence: ok=false reason=MISSING_EVIDENCE
+     missing: Planning artifact (PLAN) — missing
+
+[4] legal walk with evidence:
+    → IN_PROGRESS: ok=true
+    → CODE_REVIEW: ok=true
+    → PENDING_QA: ok=true
+    → QA: ok=true
+    → PENDING_UAT_MERGE: ok=true
+    → UAT: ok=true
+    → PENDING_PROD: ok=true
+    → PROD_DEPLOYING: ok=true
+    → PROD_VERIFICATION: ok=true
+    → OUTCOME_VERIFICATION: ok=true
+
+[5] finalize: ok=true
+    stage=DONE finalSeal=1 taskVersion=17
+
+[6] rollback: releaseState=ROLLED_BACK outcomeGateValid=false
+    releaseHistory=RELEASED → ROLLED_BACK
+
+[7] invalidate: stage=IN_PROGRESS finalSeal=0 condition=REWORK
+    completionHistory=COMPLETED → COMPLETION_INVALIDATED
+    DONE milestone history kept: true
+
+demo complete: illegal jumps denied with reason codes; DONE sealed atomically.

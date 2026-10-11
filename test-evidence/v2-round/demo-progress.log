@@ -1,0 +1,20 @@
+
+> ai-factory@0.1.0 demo:progress
+> npm run build -w @ai-factory/progress && node packages/progress/dist/demo/progress.demo.js
+
+
+> @ai-factory/progress@0.1.0 build
+> tsc -p tsconfig.json
+
+progress = 100 × Σ(wᵢcᵢ) / Σwᵢ
+[1] Planning 100% + Implementation 80% → 34% (numerator=34, denominator=100, calc=progress/v2.0)
+    Planning: w=10 c=1 → 10
+    Implementation: w=30 c=0.8 → 24
+
+[2] evidence invalidated → progress 34% → 22% (honest decrease)
+    ledger: 0.8→0.4 (ev-impl superseded: rework invalidated 40% of checkpoints)
+
+[3] everything but the seal at 100% → 90% (sealFinalized=false)
+    DONE before 100% is impossible: the seal is a weighted item.
+
+demo complete.

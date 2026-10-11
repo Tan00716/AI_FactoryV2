@@ -1,0 +1,21 @@
+
+> ai-factory@0.1.0 demo:takeover
+> npm run build -w @ai-factory/takeover && node packages/takeover/dist/demo/takeover.demo.js
+
+
+> @ai-factory/takeover@0.1.0 build
+> tsc -p tsconfig.json
+
+run-ai-1 holds ws:checkout (generation=1)
+takeover requested → UI shows: TAKEOVER_PENDING
+[quiesce] run-ai-1 acked stop-at-safe-point
+[snapshot] captured for run-ai-1
+control acquired (fenced at generation=2) → UI: CONTROL_ACQUIRED
+human edit recorded with author_type=HUMAN
+--- old worker wakes up late and tries to write ---
+refused: SILENT_OVERWRITE_REFUSED — no silent overwrite
+[merge] 3-way merge of src/checkout.ts on base snap:run-ai-1@t42 (human side kept)
+[revalidate] ev-checkout-tests re-checked against human edits
+returned → state=RESUMED, merged=src/checkout.ts:merged, evidence=ev-checkout-tests:revalidated
+UI: RETURNED; AI resumes on a fresh lease, old token stays dead
+done.

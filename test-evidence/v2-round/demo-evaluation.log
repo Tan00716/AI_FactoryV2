@@ -1,0 +1,45 @@
+
+> ai-factory@0.1.0 demo:evaluation
+> npm run build -w @ai-factory/evaluation && node packages/evaluation/dist/demo/evaluation.demo.js
+
+
+> @ai-factory/evaluation@0.1.0 build
+> tsc -p tsconfig.json
+
+== 1. evaluate a simulated completed task ==
+task: task-103  agent: backend-01
+verdict: POOR  score: 0.84
+  taskSuccess: 100%
+  testPassRate: 100%
+  regressionRate: 8%
+  reviewRejectionRate: 50%
+  loopEfficiency: 50%
+  durationMs: 3600000
+  tokenUsage: 45000
+  toolErrorRate: 5%
+  falseCompletionRate: 50%
+  rollbackRate: 0%
+  humanEscalationRate: 0%
+
+== 2. agent profile (aggregated across evaluations) ==
+agent: backend-01
+  evaluations:      3
+  success rate:     100%
+  first-pass QA:    0%
+  review rejection: 33%
+  avg repair loops: 2
+  false completion:17%
+
+== 3. failure analysis → lessons → memory sink ==
+generated 2 lesson(s) from task-103:
+  [critical] "False completion claim detected" (confidence 0.8)
+  [warning] "Reviewer rejected the work" (confidence 0.7)
+memory store now holds 2 entr(y/ies)
+
+== 4. improvement proposal → governance state machine ==
+proposed: "Gate "done" claims on a green regression run" → PROPOSED
+apply before approval refused: Invalid proposal transition PROPOSED → APPLIED: proposal must be approved before it can be applied
+approved by human:cto → APPROVED
+applied → APPLIED
+agent self-approval of org rule refused: Invalid proposal transition PROPOSED → APPROVED: approver "backend-01" may not approve a critical organization-rule proposal
+critical proposal still PROPOSED — pending human decision

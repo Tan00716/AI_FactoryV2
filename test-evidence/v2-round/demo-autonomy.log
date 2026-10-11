@@ -1,0 +1,25 @@
+
+> ai-factory@0.1.0 demo:autonomy
+> npm run build -w @ai-factory/autonomy && node packages/autonomy/dist/demo/full-mode-blocked.demo.js
+
+
+> @ai-factory/autonomy@0.1.0 build
+> tsc -p tsconfig.json
+
+project 'demo-shop' autonomy mode: full / 全自动模式
+
+=== 1. decide(deploy-prod, full) ===
+outcome=auto step=proceed
+reason: full: production deploy auto-approved; independent prod-readiness verification still required / 全自动：生产部署自动通过，但仍须独立校验生产就绪清单
+requiresProdVerification=true
+approval required=false type=auto
+
+=== 2. verifyProdReadiness (security = AI assertion only) ===
+PROD BLOCKED: missing gates — security(安全通过) / 生产部署被拦下：缺失门禁 — security(安全通过)
+passed: [build, tests, rollback, healthCheck, artifact, environment]
+missing: [security]
+
+=== 3. outcome ===
+DEPLOY BLOCKED / 部署被拦下 — even in full mode, the independent checklist vetoes.
+escalated → human [critical] security-issue / 安全问题
+record: 1ecb7b07-91d4-402a-bccb-c35a8736ee3d

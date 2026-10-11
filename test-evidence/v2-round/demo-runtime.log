@@ -1,0 +1,38 @@
+
+> ai-factory@0.1.0 demo:runtime
+> npm run build -w @ai-factory/runtime && node packages/runtime/dist/demo/demo.js
+
+
+> @ai-factory/runtime@0.1.0 build
+> tsc -p tsconfig.json
+
+=== Demo 1: coder loop — failing test twice, then PASS (RETRY) ===
+outcome: completed | steps: 16 | reason: loop decision: COMPLETE
+routed model: code-coder
+
+Demo 1 trace:
+  OBSERVE    inspect: sum() returns 6 for [1,2,3], expected 5 → ok
+  UNDERSTAND off-by-one: loop starts at index 0 but adds arr[0] twice → ok
+  PLAN       modify: fix accumulator init, then re-test → ok
+  ACT        modify + test run #1 → ok
+  VERIFY     read failure → modify again → fail: test run #1: expected 5, got 6
+  OBSERVE    inspect: sum() returns 6 for [1,2,3], expected 5 → ok
+  UNDERSTAND off-by-one: loop starts at index 0 but adds arr[0] twice → ok
+  PLAN       modify: fix accumulator init, then re-test → ok
+  ACT        modify + test run #2 → ok
+  VERIFY     read failure → modify again → fail: test run #2: expected 5, got 6
+  OBSERVE    inspect: sum() returns 6 for [1,2,3], expected 5 → ok
+  UNDERSTAND off-by-one: loop starts at index 0 but adds arr[0] twice → ok
+  PLAN       modify: fix accumulator init, then re-test → ok
+  ACT        modify + test run #3 → ok
+  VERIFY     PASS: all unit tests green → ok
+  EVALUATE   acceptance criteria met → ok
+
+=== Demo 2: same error 3× → LOOP_STAGNATION → auto-escalate ===
+outcome: escalated | steps: 3
+reason: Loop stagnated: same error signature 'unit:sum-off-by-one' 3 times in a row — escalating
+
+Demo 2 trace:
+  OBSERVE    stuck: same fix, same failure → fail: test run: expected 5, got 6 (again)
+  OBSERVE    stuck: same fix, same failure → fail: test run: expected 5, got 6 (again)
+  OBSERVE    stuck: same fix, same failure → fail: test run: expected 5, got 6 (again)

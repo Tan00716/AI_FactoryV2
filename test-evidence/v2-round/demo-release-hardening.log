@@ -1,0 +1,23 @@
+
+> ai-factory@0.1.0 demo:release-hardening
+> npm run build -w @ai-factory/cicd && node packages/cicd/dist/demo/release-hardening.demo.js
+
+
+> @ai-factory/cicd@0.1.0 build
+> tsc -p tsconfig.json
+
+1. external CI verification
+   unverified PASS refused: true
+   verified result accepted: true
+2. risk floor vs LLM proposal
+   floor=HIGH level=HIGH auth=HUMAN_PLUS_SPECIALIST (expected HIGH/HUMAN_PLUS_SPECIALIST)
+3. pre-deploy gates
+   missing: ["uat"] | ok: false
+4. canary telemetry lost → HOLD
+   decision: HOLD (expected HOLD)
+5. outcome + emergency
+   outcome: WAITING_HUMAN (expected WAITING_HUMAN)
+   irreversible emergency → REQUIRE_HUMAN (expected REQUIRE_HUMAN)
+6. fake rollback forbidden
+   fake rollback refused: true
+demo complete

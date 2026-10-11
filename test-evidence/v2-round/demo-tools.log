@@ -1,0 +1,17 @@
+
+> ai-factory@0.1.0 demo:tools
+> npm run build -w @ai-factory/tools && node packages/tools/dist/demo/tools.demo.js
+
+
+> @ai-factory/tools@0.1.0 build
+> tsc -p tsconfig.json
+
+--- denied action: both paths refused ---
+[DENIED] fs.write: POLICY_DENIED: action 'filesystem.write' not granted (have: filesystem.read)
+[DENIED] python.open: POLICY_DENIED: action 'filesystem.write' not granted (have: filesystem.read)
+--- granted action: both paths allowed ---
+[SUCCEEDED] fs.write: wrote via fs.write
+[SUCCEEDED] python.open: wrote via python.open
+--- exit-code truth ---
+exit=2 outcome=FAILED note="success"
+done.

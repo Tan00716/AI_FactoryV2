@@ -1,0 +1,25 @@
+
+> ai-factory@0.1.0 demo:memory
+> npm run build -w @ai-factory/memory && node packages/memory/dist/demo/memory.demo.js
+
+
+> @ai-factory/memory@0.1.0 build
+> tsc -p tsconfig.json
+
+— 1. writes with §43.2 schema fields —
+  [project/acme] Lesson "Retry payment webhooks with idempotency keys" conf=0.85 status=ACTIVE acl=[project:acme] class=confidential
+  refs tracked for mem_585325f0-1f6e-4120-87ff-8b04e6ccef78: {"index":1,"cache":1,"backup":1,"total":3}
+— 2. §43.3 ACL-first retrieve: unauthorized requestor gets nothing —
+  beta requestor sees 0 entries (expected 0 — not hidden, never returned)
+  acme requestor (internal clearance) sees 0 entries (expected 0: entry is confidential)
+  acme requestor (confidential clearance) sees 1 entries (expected 1)
+— 3. §43.3 contradiction: old → CONTRADICTED, new → PROPOSED, resolve by authority —
+  old: status=CONTRADICTED (expected CONTRADICTED)
+  new: status=PROPOSED (expected PROPOSED)
+  authority resolution winner: human:cto (old claim) — authority beats recency
+— 4. §43.4 prohibition: raw secret write refused —
+  refused as expected: SECRET_DETECTED (store size still 3)
+— 5. §43.3 purge: project deletion cleans index/cache/backup —
+  removed=3 cleaned={"index":3,"cache":3,"backup":3} registryClean=true
+  store size=0, registry total refs=0
+done.

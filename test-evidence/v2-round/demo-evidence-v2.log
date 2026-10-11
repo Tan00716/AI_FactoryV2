@@ -1,0 +1,27 @@
+
+> ai-factory@0.1.0 demo:evidence-v2
+> npm run build -w @ai-factory/core && node packages/core/dist/demo/evidence-v2.demo.js
+
+
+> @ai-factory/core@0.1.0 build
+> tsc -p tsconfig.json
+
+--- 1. eighteen-field contract ---
+keys: 20 (= 18 contract fields; task/run and started/ended_at are split keys)
+content_hash: b967e2d0f493e125… (proves bytes, not truth)
+contract valid: true
+
+--- 2. STALE by append — original record NOT rewritten ---
+stored validity_state unchanged: true
+stored content_hash unchanged: true
+effective validity now: STALE
+re-executed lineage: [ '39032600-09e9-4d48-9cf2-6644caa7624d' ] | effective: ACTIVE
+
+--- 3. AI cannot write a Gate Verdict ---
+AI verdict rejected: GateEvaluatorForbiddenError
+deterministic evaluator verdict: PASSED
+
+--- 4. DISPUTED escalation — votes never win ---
+dispute: DISPUTED | escalated: true
+vote resolution refused: DisputeVoteForbiddenError
+resolved by independent reproduction: RESOLVED | UPHELD

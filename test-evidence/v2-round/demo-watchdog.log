@@ -1,0 +1,36 @@
+
+> ai-factory@0.1.0 demo:watchdog
+> npm run build -w @ai-factory/watchdog && node packages/watchdog/dist/demo/watchdog.demo.js
+
+
+> @ai-factory/watchdog@0.1.0 build
+> tsc -p tsconfig.json
+
+--- t=1000ms a alive, others silent ---
+  worker-a: HEALTHY (healthy-activity)
+  worker-b: HEALTHY (healthy-activity)
+  worker-c: WAITING (approval-wait)
+  worker-d: HEALTHY (healthy-activity)
+--- t=16000ms 15s silence: b/d suspected; c still WAITING (approval, not a stall) ---
+  worker-a: HEALTHY (healthy-activity)
+  worker-b: SUSPECTED_STALL (healthy-activity)
+  worker-c: WAITING (approval-wait)
+  worker-d: SUSPECTED_STALL (healthy-activity)
+--- t=70000ms b unreconnectable → STALLED/worker-lost ---
+  worker-a: HEALTHY (healthy-activity)
+  worker-b: STALLED (worker-lost)
+  worker-c: WAITING (approval-wait)
+  worker-d: SUSPECTED_STALL (healthy-activity)
+[policy] allow restart worker-b: worker-lost, host confirms dead
+recovery: restart worker-b (diagnosis=worker-lost)
+guard held: Watchdog recovery action 'refusing to kill worker-c: approva…
+--- restart storm on worker-d ---
+[policy] allow restart worker-d: storm 0
+  restart 0 ok
+[policy] allow restart worker-d: storm 1
+  restart 1 ok
+[policy] allow restart worker-d: storm 2
+  restart 2 refused: Recovery circuit open for worker-d: too many restarts — manual triage …
+notifications: [ 'circuit open for worker-d: 2 restarts in 300000ms' ]
+watchdog self-health: degraded
+done.

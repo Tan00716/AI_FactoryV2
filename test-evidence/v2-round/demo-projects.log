@@ -1,0 +1,68 @@
+
+> ai-factory@0.1.0 demo:projects
+> npm run build -w @ai-factory/projects && node packages/projects/dist/demo/projects.demo.js
+
+
+> @ai-factory/projects@0.1.0 build
+> tsc -p tsconfig.json
+
+
+=== 1. discoverProject(fixture-api) ===
+{
+  "path": "/tmp/projects-demo-8C4qZ2/fixture-api",
+  "language": "javascript",
+  "framework": "fastify",
+  "packageManager": "npm",
+  "testFramework": "vitest",
+  "git": true,
+  "ci": [],
+  "hasAgentsMd": true,
+  "skillsDir": false,
+  "mcpConfig": null
+}
+
+=== available templates ===
+[
+  "nextjs-saas",
+  "react",
+  "python-api",
+  "node-api",
+  "electron"
+]
+
+=== 2. createProject(demo-shop, template=react) ===
+{
+  "dir": "/tmp/projects-demo-8C4qZ2/demo-shop",
+  "template": "react",
+  "gitInitialized": true,
+  "fileCount": 11,
+  "sampleFiles": [
+    ".ai/policy.yaml",
+    ".ai/project.yaml",
+    ".gitignore",
+    "README.md",
+    "docs/overview.md",
+    "index.html"
+  ]
+}
+[audit] exec agent=demo-agent exit=0 cmd=ls
+
+=== 3. WorkspaceExecutor.exec("ls") ===
+{
+  "cwd": "/tmp/projects-demo-8C4qZ2/demo-shop",
+  "exitCode": 0,
+  "timedOut": false,
+  "truncated": false,
+  "durationMs": 10,
+  "stdout": [
+    "README.md",
+    "docs",
+    "index.html",
+    "package.json",
+    "src",
+    "test",
+    "vite.config.js"
+  ]
+}
+
+Demo scratch dir: /tmp/projects-demo-8C4qZ2

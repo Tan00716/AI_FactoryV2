@@ -1,0 +1,20 @@
+
+> ai-factory@0.1.0 demo:qa-v2
+> npm run build -w @ai-factory/qa && node packages/qa/dist/demo/qa-v2.demo.js
+
+
+> @ai-factory/qa@0.1.0 build
+> tsc -p tsconfig.json
+
+1. mandatory skipped test → gate BLOCKED
+   verdict: BLOCKED (expected BLOCKED)
+2. runner timeout error → FAIL
+   verdict: FAIL (expected FAIL)
+3. flake quarantine discipline
+   anonymous quarantine refused: true
+   attempts retained: 2 | quarantined: true
+4. repair stagnation
+   stagnation detected: true
+5. UAT human-judgment AC stays WAITING
+   AC result: WAITING (expected WAITING) | session: WAITING_HUMAN
+demo complete

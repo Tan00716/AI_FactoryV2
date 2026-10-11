@@ -39,10 +39,16 @@ export async function handleTakeoverRoutes(
 
   if (method === 'POST' && seg.length === 0) {
     const body = await ctx.readBody(req);
+    const runId = body['runId'];
+    const resourceId = body['resourceId'];
+    if (typeof runId !== 'string' || !runId || typeof resourceId !== 'string' || !resourceId) {
+      ctx.json(res, 400, { error: 'runId and resourceId are required' });
+      return true;
+    }
     try {
       const t = manager.requestTakeover(
-        body['runId'] as string,
-        body['resourceId'] as string,
+        runId,
+        resourceId,
         (body['requestedBy'] as string) ?? 'api',
       );
       ctx.audit.record('api', 'TAKEOVER_REQUESTED', 'takeover', t.id, {});

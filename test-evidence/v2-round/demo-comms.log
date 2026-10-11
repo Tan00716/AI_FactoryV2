@@ -1,0 +1,28 @@
+
+> ai-factory@0.1.0 demo:comms
+> npm run build -w @ai-factory/comms && node packages/comms/dist/demo/comms.demo.js
+
+
+> @ai-factory/comms@0.1.0 build
+> tsc -p tsconfig.json
+
+[assignment] msg-1 orchestrator → coder
+[artifact_ref] coder → reviewer (pr-42)
+[handoff] reviewer → qa
+[report] qa → orchestrator (verdict: pass)
+
+chain corr-1: 4 messages
+  msg-1 [assignment] orchestrator → coder
+  msg-2 [artifact_ref] coder → reviewer
+  msg-3 [handoff] reviewer → qa
+  msg-4 [report] qa → orchestrator
+
+=== trace for task task-auth-login ===
+messages: 4
+participants: coder, orchestrator, qa, reviewer
+kind counts: {"assignment":1,"artifact_ref":1,"decision":0,"report":1,"evidence":0,"approval_ref":0,"handoff":1,"event":0}
+--- messages ---
+msg-1 | corr=corr-1 | orchestrator → coder | assignment
+msg-2 | corr=corr-1 | coder → reviewer | artifact_ref
+msg-3 | corr=corr-1 | reviewer → qa | handoff
+msg-4 | corr=corr-1 | qa → orchestrator | report

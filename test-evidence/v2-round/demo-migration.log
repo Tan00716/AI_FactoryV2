@@ -1,0 +1,24 @@
+
+> ai-factory@0.1.0 demo:migration
+> npm run build -w @ai-factory/project-io && node packages/project-io/dist/demo/migration.demo.js
+
+
+> @ai-factory/project-io@0.1.0 build
+> tsc -p tsconfig.json
+
+== 1. hostile import package ==
+       4 issues: package NOT trusted
+  ok   traversal + executable + tampered hash rejected
+       dropped: mallory:admin (elevated role never inherited from a package)
+  ok   staged entities quarantined; admin never inherited
+== 2. v1 org migration ==
+       edge: coder→pm (v1.parent_agent)
+  ok   parent_agent/children → PRIMARY_REPORTS_TO; perms → ceilings
+== 3. v1 DONE migration ==
+       t1 → legacy_completion_unverified; t2 → VERIFIED (proven individually)
+  ok   old DONE → legacy_completion_unverified (no bulk upgrade)
+== 4. v1 production_approval=auto ==
+       required checks: risk_assessment, reversibility_classification, observe_definition
+  ok   auto staged pending checks, not enabled
+
+migration demo: all checks passed

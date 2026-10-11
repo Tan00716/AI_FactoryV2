@@ -1,0 +1,17 @@
+
+> ai-factory@0.1.0 demo:leases
+> npm run build -w @ai-factory/leases && node packages/leases/dist/demo/leases.demo.js
+
+
+> @ai-factory/leases@0.1.0 build
+> tsc -p tsconfig.json
+
+run-A acquired lease (generation=1, fencing_token=1)
+[WRITE] run-A: initial implementation
+--- run-B takes over (worker recovery) ---
+run-B now owns generation=2, fencing_token=2
+--- run-A finishes late and tries to write ---
+[REFUSE] run-A: STALE_OWNER — late write rejected
+--- run-B writes with the current token ---
+[WRITE] run-B: continued work
+done.

@@ -1,0 +1,17 @@
+=== SECRET SCAN (excluding node_modules, dist, .git) ===
+./packages/review/demo/review.demo.ts
+---scan done---
+=== TSC BUILD ===
+0 errors (verified via npm run build exit 0 this round)
+=== TODO/FIXME in src ===
+packages/core/src/workflow.ts:1
+packages/core/src/tasks.ts:2
+packages/core/src/engine-v2.ts:1
+packages/core/src/types.ts:1
+packages/core/src/workflow-v2.ts:3
+packages/db/src/seed.ts:2
+packages/db/src/schema.ts:1
+packages/evaluation/src/disagreement.ts:1
+packages/incidents/src/manager.ts:1
+packages/orchestrator/src/orchestrator.ts:3
+---done---

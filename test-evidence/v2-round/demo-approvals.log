@@ -1,0 +1,26 @@
+
+> ai-factory@0.1.0 demo:approvals
+> npm run build -w @ai-factory/approvals && node packages/approvals/dist/demo/approvals.demo.js
+
+
+> @ai-factory/approvals@0.1.0 build
+> tsc -p tsconfig.json
+
+== 1. normal deploy.prod flow ==
+  [audit] APPROVAL_REQUESTED f9f8a1bb… {"action":"deploy.prod","task_id":"task-42","risk_level":"HIGH","required_approvers":["human"],"requester":"release-bot","policy_evaluation":"HUMAN_APPROVAL"}
+  requested → PENDING | required_approvers: [ 'human' ]
+  [audit] APPROVAL_DECIDED f9f8a1bb… {"action":"deploy.prod","approved":true,"decided_by":"human"}
+  decided → APPROVED by human
+== 2. DEF-001 fix 1: BLOCKED action refused at request() ==
+  refused: ApprovalBlockedError - true
+== 3. DEF-001 fix 2: rogue-agent cannot self-approve ==
+  [audit] APPROVAL_REQUESTED aecb11fa… {"action":"deploy.prod","task_id":"","risk_level":"MEDIUM","required_approvers":["human"],"requester":"rogue-agent","policy_evaluation":"HUMAN_APPROVAL"}
+  rejected: ApprovalDeciderNotAuthorizedError - true
+  ticket still: PENDING
+== 4. bound-context change invalidates the approval ==
+  [audit] APPROVAL_INVALIDATED f9f8a1bb… {"action":"deploy.prod","changed":["candidate_digest"]}
+  invalidated: true | changed: [ 'candidate_digest' ]
+  status now: INVALIDATED
+  evidence payload correctly refused for INVALIDATED approval
+
+done.

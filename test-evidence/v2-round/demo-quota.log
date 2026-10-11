@@ -1,0 +1,20 @@
+
+> ai-factory@0.1.0 demo:quota
+> npm run build -w @ai-factory/quota && node packages/quota/dist/demo/quota.demo.js
+
+
+> @ai-factory/quota@0.1.0 build
+> tsc -p tsconfig.json
+
+quota display: usage unknown (provider reported no numbers; freshness=stale)
+limit event: CREDITS_EXHAUSTED
+[STRICT_PROVIDER] → WAIT_FOR_RESET: 2 affected run(s) parked: provider gave no reset time — waiting for account recovery, stated as unknown
+[ALLOW_COMPATIBLE_FALLBACK] → FALLBACK_HANDOFF: 2 affected run(s): migrate only after capability/privacy/budget/permission checks pass
+[GLOBAL_PAUSE_ON_PRIMARY_LIMIT] → PAUSE_DEV_DOMAIN: primary provider limited: dev domain paused; safety/monitoring domain continues
+--- fallback compatibility gate ---
+fallback refused: Fallback rejected: missing capabilities: vision; would expose data classes: internal; budget shortfall: need 200, have 50
+--- cross-model handoff: seal, verify, settle old run first ---
+handoff 642fa168… sealed (hash 1e4fc4276040…) and verified
+activation blocked: old run still ACTIVE — no dual writes
+old run paused → replacement run may activate on host-b
+done.

@@ -1,0 +1,24 @@
+
+> ai-factory@0.1.0 demo:delegation
+> npm run build -w @ai-factory/orchestrator && node packages/orchestrator/dist/demo/delegation.demo.js
+
+
+> @ai-factory/orchestrator@0.1.0 build
+> tsc -p tsconfig.json
+
+=== DELEGATION CHAIN (PM → Lead → Coder) ===
+demo-dlg-root: owner=human-dispatch oversight_by=human-dispatch reserved=1000 remaining-for-children=400
+demo-dlg-lead: owner=pm-01 oversight_by=pm-01 reserved=600 remaining-for-children=200
+demo-dlg-coder: owner=lead-01 oversight_by=lead-01 reserved=400 remaining-for-children=400
+depth of coder delegation: 3 (limit 5)
+
+=== REJECTED: over-reservation (400 > lead remaining 200) ===
+BUDGET_EXCEEDED: reservation 400 exceeds parent demo-dlg-lead remaining budget 200; budget is reserved from the parent, not copied from the total
+
+=== REJECTED: scope superset (adds path:/etc) ===
+SCOPE_VIOLATION: child scope must be a subset of parent scope ["project:crm","path:/workspace/crm","tool:shell.exec"]; got ["project:crm","path:/workspace/crm","path:/etc"]
+
+=== HANDOFF: lead-01 hands execution to coder-01 ===
+before: owner=lead-01, oversight_by=lead-01
+after:  owner=coder-01, oversight_by=lead-01 (supervision stays with delegator)
+scope subset helper: true

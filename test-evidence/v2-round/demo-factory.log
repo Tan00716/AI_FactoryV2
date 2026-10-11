@@ -1,0 +1,27 @@
+
+> ai-factory@0.1.0 demo:factory
+> npm run build -w @ai-factory/employee-factory && node packages/employee-factory/dist/demo/factory.demo.js
+
+
+> @ai-factory/employee-factory@0.1.0 build
+> tsc -p tsconfig.json
+
+Parent: Tech Lead (01f1b165-543f-470d-984f-ad4b8ae41fd5)
+
+[§59] proposal "Create PostgreSQL Concurrency Specialist" → AUTO-APPROVED
+      reason: ordinary role creation within policy — auto-approved (§59)
+
+[§18] created:
+  jobTitle : PostgreSQL Concurrency Specialist
+  mission  : Investigate concurrency and transaction issues.
+  skills   : PostgreSQL, MVCC, Transactions, Isolation, Locks, Deadlocks
+  tools    : SQL Sandbox, Repository, Terminal
+  model    : reasoning (HIGH)
+  parent   : Tech Lead
+
+---
+[§59] proposal "Create Production Administrator" → DENIED
+      reason: target "Production Administrator" is a privileged role — creation blocked (§59)
+[§19] governance denied creation (reason: role-not-allowed)
+
+Registry now holds 2 agents.

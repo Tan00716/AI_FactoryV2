@@ -1,0 +1,21 @@
+
+> ai-factory@0.1.0 demo:contracts
+> npm run build -w @ai-factory/api-contracts && node packages/api-contracts/dist/demo/contracts.demo.js
+
+
+> @ai-factory/api-contracts@0.1.0 build
+> tsc -p tsconfig.json
+
+== 1. valid envelope passes ==
+  ok: true
+== 2. forged actor gains nothing ==
+  shape ok (actor shape is valid): true
+  actor after server derivation: {"id":"agent-7","type":"AI"}
+  denial body example: {"code":"UNAUTHORIZED","message":"caller is not authenticated or the identity is unknown"}
+== 3. malformed envelope rejected with issues ==
+  ok: false
+  - envelope.requestId: must not be empty
+  - envelope.organizationId: must be a string
+  - envelope.payload.to: must not be empty
+
+done.

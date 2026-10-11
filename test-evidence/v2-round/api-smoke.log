@@ -1,0 +1,75 @@
+[PASS] health        positive  GET   /api/health                                          -> 200 {"ok":true,"ts":"2026-10-11T07:38:45.587Z"}
+[PASS] tasks         positive  GET   /api/tasks?projectId=proj-myapp                      -> 200 [{"id":"ce82fa15-d530-4104-90b5-464c52b0e7cb","projectId":"proj-myapp"
+[PASS] tasks         negative  POST  /api/tasks/00000000-0000-0000-0000-000000000000/transition -> 404 {"error":"Task 00000000-0000-0000-0000-000000000000 not found"}
+[PASS] git           positive  GET   /api/git/status?repo=/home/hatch/workspace/ai-factory -> 200 {"branch":"main","staged":[],"unstaged":[],"untracked":["test-evidence
+[PASS] git           negative  GET   /api/git/status                                      -> 400 {"error":"repo query param is required"}
+[PASS] qa            positive  GET   /api/qa/org                                          -> 200 {"lead":{"id":"d420e6e6-166d-460d-bbfd-e93af0b40b3a","name":"qa-lead",
+[PASS] qa            negative  POST  /api/qa/specialists                                  -> 400 {"error":"kind must be one of: Functional, API, E2E, Regression, Perfo
+[PASS] approvals     positive  GET   /api/approvals                                       -> 200 []
+[PASS] approvals     negative  POST  /api/approvals/evaluate                              -> 400 {"error":"action is required"}
+[PASS] cicd          positive  GET   /api/environments                                    -> 200 {"environments":[{"name":"LOCAL","runtime":"node:22 local process","va
+[PASS] cicd          negative  GET   /api/pipelines/does-not-exist                        -> 404 {"error":"pipeline does-not-exist not found"}
+[PASS] skills        positive  GET   /api/skills                                          -> 200 {"skills":[{"id":"clean-code","versions":["1.0.0"],"latest":"1.0.0","d
+[PASS] skills        negative  POST  /api/skills/install                                  -> 400 {"error":"skill definition is required"}
+[PASS] memory        positive  GET   /api/memory                                          -> 200 {"entries":[]}
+[PASS] memory        negative  POST  /api/memory                                          -> 400 {"error":"scope must be one of employee|project|organization|task|syst
+[PASS] mcp           positive  GET   /api/mcp                                             -> 200 {"servers":[{"name":"github","version":"1.0.0","provider":"github","tr
+[PASS] mcp           negative  POST  /api/mcp/install                                     -> 400 {"error":"name and version are required"}
+[PASS] knowledge     positive  GET   /api/knowledge                                       -> 200 {"hits":[]}
+[PASS] knowledge     negative  POST  /api/knowledge                                       -> 400 {"error":"title and content are required"}
+[PASS] evaluation    positive  GET   /api/evaluations                                     -> 200 {"evaluations":[]}
+[PASS] evaluation    negative  POST  /api/evaluations                                     -> 400 {"error":"taskId and agentId are required"}
+[PASS] models        positive  GET   /api/models                                          -> 200 {"models":[{"provider":"shared","model":"fast-classifier","capability"
+[PASS] models        negative  POST  /api/router/route                                    -> 400 {"error":"taskType (string) and complexity (1-5) are required"}
+[PASS] events        positive  GET   /api/events                                          -> 200 {"events":[],"total":0,"types":["PROJECT_CREATED","TASK_CREATED","TASK
+[PASS] events        negative  POST  /api/events/emit                                     -> 400 {"error":"type (non-empty string) is required"}
+[PASS] activity      positive  GET   /api/activity                                        -> 200 {"items":[{"id":"audit:c5e077e2-39d7-4d97-8f06-f0700675e9a0","ts":"202
+[PASS] runs          positive  GET   /api/runs                                            -> 200 {"runs":[]}
+[PASS] runs          negative  GET   /api/runs/does-not-exist                             -> 404 {"error":"run not found"}
+[PASS] stats         positive  GET   /api/stats                                           -> 200 {"generatedAt":"2026-10-11T07:38:45.719Z","status":{"activeTasks":{"ke
+[PASS] projects      positive  GET   /api/projects/templates                              -> 200 {"templates":[{"name":"nextjs-saas","description":"Next.js SaaS starte
+[PASS] projects      negative  POST  /api/projects/exec                                   -> 400 {"error":"command is required"}
+[PASS] review        positive  GET   /api/review/dimensions                               -> 200 {"dimensions":["correctness","architecture","readability","maintainabi
+[PASS] review        negative  POST  /api/review                                          -> 400 {"error":"files is required: array of {path, before?, after?}"}
+[PASS] releases      positive  GET   /api/releases                                        -> 200 {"releases":[]}
+[PASS] releases      negative  POST  /api/releases                                        -> 400 {"error":"version is required (semver)"}
+[PASS] policy        positive  GET   /api/policy/layers                                   -> 200 {"layers":["global","organization","project","department","agent","tas
+[PASS] policy        negative  POST  /api/policy/validate                                 -> 400 {"error":"kind must be 'project' or 'organization'"}
+[PASS] security      positive  POST  /api/security/scan                                   -> 200 {"name":"test-skill","score":30,"findings":[{"severity":"MEDIUM","cate
+[PASS] security      negative  POST  /api/security/scan                                   -> 400 {"error":"manifest object is required"}
+[PASS] recovery      positive  GET   /api/recovery/snapshots                              -> 200 {"snapshots":[]}
+[PASS] recovery      negative  POST  /api/recovery/snapshots/nope/restore                 -> 400 {"error":"snapshot not found: nope"}
+[PASS] resources     positive  GET   /api/resources/usage                                 -> 200 {"records":0,"totals":{"timeMs":0,"tokens":0,"toolCalls":0,"retries":0
+[PASS] resources     negative  POST  /api/resources/consume                               -> 400 {"error":"taskId and usage are required"}
+[PASS] autonomy      positive  GET   /api/autonomy/mode                                   -> 200 {"projectId":"proj-myapp","mode":"assisted","updatedBy":"system","upda
+[PASS] autonomy      negative  POST  /api/autonomy/decide                                 -> 400 {"error":"action.kind is required"}
+[PASS] coordination  positive  POST  /api/coordination/schedule                           -> 200 {"batches":[["t1"]],"level":{"t1":0}}
+[PASS] coordination  negative  POST  /api/coordination/locks                              -> 400 {"error":"kind, key and holder are required"}
+[PASS] disputes      positive  GET   /api/disputes                                        -> 200 {"disputes":[]}
+[PASS] disputes      negative  POST  /api/disputes                                        -> 400 {"error":"verdictA and verdictB are required"}
+[PASS] notifications positive  GET   /api/notifications                                   -> 200 {"notifications":[],"unread":0}
+[PASS] notifications negative  POST  /api/notifications/nope/read                         -> 404 {"error":"notification not found"}
+[PASS] requirements  positive  POST  /api/requirements                                    -> 201 {"requirement":{"id":"REQ-008","versions":[{"version":1,"createdAt":"2
+[PASS] requirements  negative  POST  /api/requirements                                    -> 400 {"error":"input.acceptanceCriteria is not iterable"}
+[PASS] factory       positive  GET   /api/factory/status                                  -> 200 {"control":"STOPPED","health":"HEALTHY","capacity":"AVAILABLE","contro
+[PASS] factory       negative  POST  /api/factory/control                                 -> 400 {"error":"operation must be one of START, PAUSE_NEW_WORK, PAUSE_AI_WOR
+[PASS] incidents     positive  GET   /api/incidents                                       -> 200 {"incidents":[]}
+[PASS] incidents     negative  POST  /api/incidents                                       -> 400 {"error":"title is required","name":"Error"}
+[PASS] quota         positive  GET   /api/quota/buckets                                   -> 200 {"buckets":[]}
+[PASS] quota         negative  POST  /api/quota                                           -> 404 {"error":"Not found"}
+[PASS] watchdog      positive  POST  /api/watchdog/workers                                -> 201 {"ok":true}
+[FAIL] watchdog      negative  POST  /api/watchdog/workers                                -> 201 {"ok":true}
+[PASS] takeovers     positive  POST  /api/takeovers                                       -> 201 {"takeover":{"id":"2e20c31f-f50a-4541-b3cd-664099551979","runId":"run-
+[FAIL] takeovers     negative  POST  /api/takeovers                                       -> 201 {"takeover":{"id":"f8fc6664-f69e-4af9-9de8-63c72234667a","requestedBy"
+[PASS] leases        positive  POST  /api/leases/acquire                                  -> 201 {"id":"962e658e-1c2e-4cbc-8717-6d55a539fb12","resource_id":"r-smoke2",
+[PASS] leases        negative  POST  /api/leases/acquire                                  -> 400 {"error":"resource_id, owner_run_id and ttlMs are required"}
+[PASS] tools         positive  GET   /api/tools                                           -> 200 {"tools":[]}
+[PASS] tools         negative  POST  /api/tools                                           -> 404 {"error":"Not found"}
+[PASS] isolation     positive  GET   /api/isolation/backends                              -> 200 {"backends":[{"name":"unverified","kind":"unverified","note":"fail-clo
+[PASS] isolation     negative  POST  /api/isolation/backends                              -> 404 {"error":"Not found"}
+[PASS] orchestrator  positive  POST  /api/orchestrator/pattern                            -> 200 {"pattern":"manager"}
+[PASS] orchestrator  negative  POST  /api/orchestrator/decompose                          -> 400 {"error":"title, goal and kind (bugfix|feature|refactor|research) are 
+[PASS] progress      positive  POST  /api/progress/plans                                  -> 201 {"plan":{"id":"wp-1791704325853","version":1,"items":[{"id":"a","weigh
+[PASS] progress      negative  POST  /api/progress/compute                                -> 404 {"error":"weight plan nope not found"}
+
+==== 71/73 checks passed ====

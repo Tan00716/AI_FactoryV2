@@ -1,0 +1,88 @@
+
+> ai-factory@0.1.0 demo:cicd
+> npm run build -w @ai-factory/cicd && node packages/cicd/dist/demo/cicd.demo.js
+
+
+> @ai-factory/cicd@0.1.0 build
+> tsc -p tsconfig.json
+
+CI/CD engine demo — spec §39 (pipeline), §40 (envs), §41 (policy), §77 (snapshot/rollback)
+
+=== Scenario 1 — pipeline to UAT, then approved PROD deploy ===
+    📝 audit: PIPELINE_CREATED
+    📝 audit: PIPELINE_STARTED
+  ▶ stage started: build
+    📝 audit: STAGE_STARTED
+    🧾 evidence[stage-artifact]: build-result.json
+    📝 audit: STAGE_SUCCEEDED
+  ✔ stage succeeded: build
+  ▶ stage started: test
+    📝 audit: STAGE_STARTED
+    🧾 evidence[stage-artifact]: test-result.json
+    📝 audit: STAGE_SUCCEEDED
+  ✔ stage succeeded: test
+  ▶ stage started: lint
+    📝 audit: STAGE_STARTED
+    🧾 evidence[stage-artifact]: lint-result.json
+    📝 audit: STAGE_SUCCEEDED
+  ✔ stage succeeded: lint
+  ▶ stage started: typecheck
+    📝 audit: STAGE_STARTED
+    🧾 evidence[stage-artifact]: typecheck-result.json
+    📝 audit: STAGE_SUCCEEDED
+  ✔ stage succeeded: typecheck
+  ▶ stage started: security
+    📝 audit: STAGE_STARTED
+    🧾 evidence[stage-artifact]: security-result.json
+    📝 audit: STAGE_SUCCEEDED
+  ✔ stage succeeded: security
+  ▶ stage started: package
+    📝 audit: STAGE_STARTED
+    🧾 evidence[stage-artifact]: package-result.json
+    📝 audit: STAGE_SUCCEEDED
+  ✔ stage succeeded: package
+  ▶ stage started: deploy
+    📝 audit: STAGE_STARTED
+    🧾 evidence[stage-artifact]: deploy-result.json
+    📝 audit: STAGE_SUCCEEDED
+  ✔ stage succeeded: deploy
+  ▶ stage started: smoke
+    📝 audit: STAGE_STARTED
+    🧾 evidence[stage-artifact]: smoke-result.json
+    📝 audit: STAGE_SUCCEEDED
+  ✔ stage succeeded: smoke
+    📝 audit: PIPELINE_SUCCEEDED
+
+pipeline 9231b60c → SUCCEEDED
+stages: build → test → lint → typecheck → security → package → deploy → smoke
+
+deploying to PROD (policy: HUMAN_APPROVAL)…
+    📝 audit: DEPLOY_SNAPSHOT_TAKEN ("PENDING")
+    🧾 evidence: deploy-snapshot
+    📝 audit: APPROVAL_REQUIRED ("AWAITING_APPROVAL")
+    🧾 evidence: approval-request
+deployment status: AWAITING_APPROVAL
+⏸  blocked on approval: [HUMAN_APPROVAL] Policy maps 'deploy.prod' → HUMAN_APPROVAL
+   → server would call ApprovalManager.request({ action: 'deploy.prod' })
+   → human APPROVED the request
+    📝 audit: DEPLOY_RESUMED ("AWAITING_APPROVAL")
+    📝 audit: DEPLOY_STARTED ("DEPLOYING")
+    📝 audit: DEPLOY_STEP_OK ("")
+    📝 audit: DEPLOY_STEP_OK ("")
+    📝 audit: DEPLOY_SUCCEEDED ("SUCCEEDED")
+    🧾 evidence: deployment
+deployment after resume → SUCCEEDED (approval: approval-demo-1)
+
+=== Scenario 2 — failed deploy → automatic rollback (spec §77) ===
+  📝 audit: DEPLOY_SNAPSHOT_TAKEN 
+  🧾 evidence: deploy-snapshot 
+  📝 audit: DEPLOY_STARTED 
+  📝 audit: DEPLOY_STEP_OK 
+  📝 audit: DEPLOY_FAILED — /healthz returned 500 — deployment unhealthy
+  📝 audit: DEPLOYMENT_ROLLED_BACK — /healthz returned 500 — deployment unhealthy
+  🧾 evidence: deployment (snapshot 432e46d3 restored)
+
+deployment → ROLLED_BACK
+snapshot 432e46d3 restored to pre-deploy state: {"version":"1.2.3"}
+
+✅ demo complete: approved PROD deploy succeeded; failed UAT deploy rolled back
