@@ -21,7 +21,12 @@ import {
   registryRows,
   route,
   type AccountStatus,
+  type ContextSize,
+  type FallbackCompatibilityChecker,
+  type ModelRef,
+  type RouteRequest,
 } from '@ai-factory/model-router';
+import { checkFallbackCompatibility } from '@ai-factory/quota';
 import { CodexAdapter, type CodexAccountStatus } from '@ai-factory/runtime';
 import type { RouteContext } from './context';
 
@@ -134,6 +139,84 @@ export function mapCodexAccountStatus(s: CodexAccountStatus): AccountStatus | nu
   };
 }
 
+const CONTEXT_LEVELS: ContextSize[] = ['small', 'medium', 'large'];
+
+/** Capability strings the TASK requires, in quota's vocabulary (§27.2). */
+function requiredCapabilities(req: RouteRequest): string[] {
+  const caps: string[] = [];
+  if (req.needsReasoning) caps.push('reasoning');
+  if (req.needsVision) caps.push('vision');
+  if (req.requiredTools.length > 0) caps.push('tools');
+  caps.push(`context:${req.contextNeeded}`);
+  return caps;
+}
+
+/**
+ * Capability strings a candidate OFFERS. Context is ordinal, so a model
+ * offers every level up to its maxContext — that is what makes quota's
+ * set-inclusion test mean "context window large enough".
+ */
+function candidateCapabilities(m: ModelRef): string[] {
+  const caps: string[] = [];
+  if (m.capabilities.reasoning) caps.push('reasoning');
+  if (m.capabilities.vision) caps.push('vision');
+  if (m.capabilities.tools) caps.push('tools');
+  for (const lvl of CONTEXT_LEVELS) {
+    caps.push(`context:${lvl}`);
+    if (lvl === m.capabilities.maxContext) break;
+  }
+  return caps;
+}
+
+/**
+ * §27.2 — the default path's fallback-compatibility checker: a thin
+ * adapter over @ai-factory/quota's checkFallbackCompatibility, injected
+ * into route() so an incompatible fallback is never picked silently
+ * (G-57). The router itself cannot import quota (it owns no quota state;
+ * the check is injected, as with the live account status above).
+ *
+ * Which dimensions carry REAL data on this path:
+ *  - capability: derived from the request vs the candidate's ModelRef;
+ *  - privacy: the task's data class is the request's privacy tier; a
+ *    candidate's allowlist follows §30's own rule — local models may see
+ *    every tier, shared-pool providers are not cleared for 'sensitive'.
+ * Which dimensions are NEUTRAL here, stated rather than faked:
+ *  - budget: neither the route request nor the catalog carries budget
+ *    figures, so needed/remaining are both 0 — the check asserts nothing
+ *    about budget instead of inventing a balance;
+ *  - permission: the ceiling is this request's own scope ('model.invoke'
+ *    plus the tools it asked for) — the fallback is bound to the
+ *    requesting task's envelope, nothing wider.
+ */
+export function buildQuotaFallbackChecker(): FallbackCompatibilityChecker {
+  return (primary, candidate, req) => {
+    const check = checkFallbackCompatibility(
+      {
+        capabilities: requiredCapabilities(req),
+        dataClasses: [req.privacy],
+        budgetNeeded: 0,
+        permissionCeiling: ['model.invoke', ...req.requiredTools],
+      },
+      {
+        providerAccountId: candidate.provider,
+        limitBucket: `${candidate.provider}:${candidate.model}`,
+        capabilities: candidateCapabilities(candidate),
+        allowedDataClasses:
+          candidate.provider === 'local'
+            ? ['public', 'internal', 'sensitive']
+            : ['public', 'internal'],
+        budgetRemaining: 0,
+      },
+    );
+    void primary;
+    return {
+      compatible:
+        check.capabilityOk && check.privacyOk && check.budgetOk && check.permissionOk,
+      reasons: check.reasons,
+    };
+  };
+}
+
 /**
  * Default live query: ask a real Codex app-server via CodexAdapter
  * (spawn mode, or CODEX_APP_SERVER_URL when set — same env conventions
@@ -238,6 +321,9 @@ export async function handleModelRouterRoutes(
                   ] as number)
                 : 0,
         },
+        // §27.2 — default path really checks fallback compatibility
+        // (quota's checkFallbackCompatibility, injected; see above).
+        fallbackChecker: buildQuotaFallbackChecker(),
       });
       return ctx.json(res, 200, decision), true;
     } catch (e) {

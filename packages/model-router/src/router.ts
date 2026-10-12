@@ -17,8 +17,14 @@
  *  3. Remaining candidates are scored deterministically (stable sort, so ties
  *     break by catalog order): task-type fit, reasoning need, complexity,
  *     latency/cost preferences.
- *  4. fallback = next-best candidate; emergency = local-private when eligible,
- *     else fast-classifier, else the last-resort candidate.
+ *  4. fallback = next-best candidate that passes the request's injected
+ *     fallback-compatibility checker (§27.2), when one is supplied:
+ *     incompatible candidates are skipped in score order, and if none is
+ *     compatible the fallback is null with the rejection count in the
+ *     reason — never an incompatible silent pick. With no checker
+ *     injected the fallback is the next-best candidate unchecked, and
+ *     the reason says so. emergency = local-private when eligible, else
+ *     fast-classifier, else the last-resort candidate.
  *
  * `reason` records every rule that fired so the decision is auditable.
  */
@@ -149,20 +155,62 @@ export function route(
   scored.sort((a, b) => b.score - a.score);
 
   const primary = scored[0].m;
-  const fallback = scored[1]?.m ?? primary;
+
+  // §27.2 — fallback selection. Fail-closed: with a checker injected, an
+  // incompatible candidate is never picked silently; candidates are tried
+  // in score order and each rejection is named. If every candidate is
+  // rejected the fallback is null (better no fallback than a fallback
+  // that cannot legally serve: wrong capabilities, wrong data class).
+  const rest = scored.slice(1);
+  let fallback: ModelRef | null;
+  if (!request.fallbackChecker) {
+    fallback = rest[0]?.m ?? primary;
+    reasons.push('fallback compatibility not checked (no checker injected)');
+  } else if (rest.length === 0) {
+    fallback = primary;
+    reasons.push('fallback=primary (no other eligible candidate to check)');
+  } else {
+    let checked = 0;
+    let rejected = 0;
+    const rejectedNotes: string[] = [];
+    let picked: ModelRef | null = null;
+    for (const s of rest) {
+      checked += 1;
+      const verdict = request.fallbackChecker(primary, s.m, request);
+      if (verdict.compatible) {
+        picked = s.m;
+        break;
+      }
+      rejected += 1;
+      rejectedNotes.push(`${s.m.model}: ${verdict.reasons.join('; ') || 'incompatible'}`);
+    }
+    if (picked) {
+      fallback = picked;
+      reasons.push(
+        rejected > 0
+          ? `fallback compatibility: skipped ${rejected} incompatible candidate(s) [${rejectedNotes.join(' | ')}] (§27.2)`
+          : 'fallback compatibility: checked, compatible (§27.2)',
+      );
+    } else {
+      fallback = null;
+      reasons.push(
+        `fallback: none compatible (checked ${checked}, rejected ${rejected}) [${rejectedNotes.join(' | ')}] (§27.2)`,
+      );
+    }
+  }
   const emergency = pickEmergency(pool);
 
   reasons.unshift(
     `primary=${primary.model} [${scored[0].why.join(', ') || 'best available'}]`,
-    `fallback=${fallback.model}`,
+    `fallback=${fallback?.model ?? 'none'}`,
     `emergency=${emergency.model}`,
   );
 
   // INV-29: surface degraded selections in ANY slot, not just primary —
   // a degraded fallback/emergency must not pass as silently healthy.
-  const degradedPicks = [primary, fallback, emergency].filter(
-    (m, i, arr) => m.availability === 'degraded' && arr.indexOf(m) === i,
-  );
+  const degradedPicks = [primary, fallback, emergency]
+    .filter((m): m is ModelRef => m !== null)
+    .filter((m, i, arr) => m.availability === 'degraded' && arr.indexOf(m) === i);
   if (degradedPicks.length > 0) {
     reasons.push(
       `availability notice: ${degradedPicks.map((m) => m.model).join(', ')} degraded (INV-29)`,

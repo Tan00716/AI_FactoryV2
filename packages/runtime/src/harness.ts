@@ -106,6 +106,7 @@ export class Harness {
   private readonly traceLog: TraceStep[] = [];
   private budgetTracker?: BudgetTracker;
   private toolRetryPolicy?: RetryPolicy;
+  private stepIntentStore?: StepIntentStore;
 
   constructor(options: HarnessOptions) {
     this.options = options;
@@ -113,11 +114,27 @@ export class Harness {
     this.allowedRoots = options.allowedRoots.map((r) => path.resolve(r));
     this.budgetTracker = options.budgetTracker;
     this.toolRetryPolicy = options.toolRetryPolicy;
+    this.stepIntentStore = options.intentStore;
   }
 
   /** The attached extended-budget tracker, if any (§25). */
   get tracker(): BudgetTracker | undefined {
     return this.budgetTracker;
+  }
+
+  /** The attached step-intent store, if any (§28.1). */
+  get intentStore(): StepIntentStore | undefined {
+    return this.stepIntentStore;
+  }
+
+  /**
+   * §28.1 (G-53) — attach the run's StepIntentStore after construction.
+   * Used by runAgent so caller-supplied harnesses join the run's intent
+   * log. No-op when a store is already attached: a store the harness was
+   * constructed with wins — same rule as attachBudgetTracker.
+   */
+  attachIntentStore(store: StepIntentStore): void {
+    if (!this.stepIntentStore) this.stepIntentStore = store;
   }
 
   /**
@@ -206,7 +223,7 @@ export class Harness {
     this.checkPermission(name);
     this.trace('HARNESS', `tool:${name}`, 'start');
     // §28.1 — persist the intent BEFORE executing the tool.
-    const intent = this.options.intentStore?.persistIntent(
+    const intent = this.stepIntentStore?.persistIntent(
       this.options.runId ?? 'unknown-run',
       name,
       args,
@@ -233,7 +250,7 @@ export class Harness {
             },
           })
         : await attempt();
-      if (intent) this.options.intentStore?.recordResult(intent.id, true, { ok: true });
+      if (intent) this.stepIntentStore?.recordResult(intent.id, true, { ok: true });
       this.collectEvidence({
         type: 'tool_result',
         title: `tool ${name} ok`,
@@ -242,7 +259,7 @@ export class Harness {
       this.trace('HARNESS', `tool:${name}`, 'ok');
       return result;
     } catch (err) {
-      if (intent) this.options.intentStore?.recordResult(intent.id, false, { ok: false });
+      if (intent) this.stepIntentStore?.recordResult(intent.id, false, { ok: false });
       const message = err instanceof Error ? err.message : String(err);
       this.audit('tool.failed', `${name}: ${message}`);
       this.trace('HARNESS', `tool:${name}`, `fail: ${message}`);

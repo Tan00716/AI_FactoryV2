@@ -135,6 +135,18 @@ export interface RunResult {
     noProgressSteps: number;
     elapsedMs: number;
   };
+  /** §28.1 (G-53) — step intents persisted by this run (runAgent's
+   *  default path always wires a StepIntentStore). Covers only intents
+   *  created during this run, read back from the harness's effective
+   *  store. The store is in-memory — DB persistence and the startup
+   *  scan are G-59, not done (see docs/KNOWN_LIMITATIONS.md). */
+  intentSummary?: {
+    count: number;
+    intentIds: string[];
+    executed: number;
+    failed: number;
+    pending: number;
+  };
 }
 
 export type { Agent, Permission, Task };

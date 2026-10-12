@@ -303,6 +303,13 @@ export class StepIntentStore {
       .filter((i) => i.status === 'PENDING' && (runId === undefined || i.runId === runId))
       .map((i) => ({ ...i }));
   }
+
+  /** All recorded intents (copies), optionally filtered by run id. */
+  listIntents(runId?: string): StepIntent[] {
+    return [...this.intents.values()]
+      .filter((i) => runId === undefined || i.runId === runId)
+      .map((i) => ({ ...i }));
+  }
 }
 
 /* ------------------------------------------------------------------ */

@@ -31,6 +31,7 @@ import {
   type ExtendedBudgets,
   type RetryPolicy,
 } from './limits';
+import { StepIntentStore } from './durable';
 
 export interface RunAgentOptions {
   agent: Agent;
@@ -56,6 +57,15 @@ export interface RunAgentOptions {
   extendedBudgets?: Partial<ExtendedBudgets>;
   /** Pre-built tracker (tests / advanced callers); wins over extendedBudgets. */
   budgetTracker?: BudgetTracker;
+  /**
+   * §28.1 (G-53) — step-intent store for this run. When omitted, runAgent
+   * creates one and attaches it to the harness, so tool-call intents are
+   * persisted BEFORE execution on the default path too (previously the
+   * store existed but no run path ever supplied one). A store the
+   * harness was constructed with wins over this option — same priority
+   * rule as budgetTracker.
+   */
+  intentStore?: StepIntentStore;
 }
 
 function buildPrompt(agent: Agent, task: Task): string {
@@ -225,6 +235,31 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
   };
   harness.attachBudgetTracker(tracker, toolRetryPolicy);
 
+  // §28.1 (G-53): ONE StepIntentStore for the whole run. Priority mirrors
+  // the BudgetTracker rule above: an explicitly passed store wins over
+  // the default, and a store the harness was constructed with wins over
+  // both (attachIntentStore is a no-op then). The summary is read back
+  // from the harness's EFFECTIVE store, so it can never diverge from
+  // what Harness.runTool actually wrote. The store is in-memory only —
+  // DB persistence + startup scan are G-59 (KNOWN_LIMITATIONS.md).
+  const intentStore: StepIntentStore =
+    options.intentStore ?? harness.intentStore ?? new StepIntentStore(clock);
+  harness.attachIntentStore(intentStore);
+  const effectiveIntentStore: StepIntentStore = harness.intentStore ?? intentStore;
+  const intentIdsBefore = new Set(effectiveIntentStore.listIntents().map((i) => i.id));
+  const intentSummary = (): RunResult['intentSummary'] => {
+    const mine = effectiveIntentStore
+      .listIntents()
+      .filter((i) => !intentIdsBefore.has(i.id));
+    return {
+      count: mine.length,
+      intentIds: mine.map((i) => i.id),
+      executed: mine.filter((i) => i.status === 'EXECUTED').length,
+      failed: mine.filter((i) => i.status === 'FAILED').length,
+      pending: mine.filter((i) => i.status === 'PENDING').length,
+    };
+  };
+
   const loop =
     options.loop ??
     new AgentLoop({
@@ -267,6 +302,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
       trace,
       reason: `loop decision: ${outcome.decision}`,
       budgetUsage: tracker.usage,
+      intentSummary: intentSummary(),
     };
   } catch (err) {
     // Recover the partial loop trace when run() threw (budget/stagnation).
@@ -277,10 +313,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
     // §25: stagnation auto-escalates instead of failing the run.
     if (err instanceof LoopStagnation) {
       pushTrace('RUNNER', 'auto-escalate', err.message);
-      return { outcome: 'escalated', steps, evidence, handoffs, trace, reason: err.message, budgetUsage: tracker.usage };
+      return { outcome: 'escalated', steps, evidence, handoffs, trace, reason: err.message, budgetUsage: tracker.usage, intentSummary: intentSummary() };
     }
     const reason = err instanceof Error ? err.message : String(err);
     pushTrace('RUNNER', 'run failed', reason);
-    return { outcome: 'failed', steps, evidence, handoffs, trace, reason, budgetUsage: tracker.usage };
+    return { outcome: 'failed', steps, evidence, handoffs, trace, reason, budgetUsage: tracker.usage, intentSummary: intentSummary() };
   }
 }

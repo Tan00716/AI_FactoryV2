@@ -34,6 +34,11 @@
 - **写回有一处有损映射**：v2 的 `OUTCOME_VERIFICATION` 阶段在 v1 状态列里没有对应值，写回为 `PROD_VERIFICATION`，精确阶段只能从 `GET /v2-state` 读到；`DONE` 只能经引擎 `finalize()`（完成谓词 + final_seal 同事务）到达，本批端点不暴露 finalize。
 - **门禁输入部分靠调用方声明**：证据与依赖就绪由服务端按 DB 实算；budget/quota/confinement 三项服务端尚无可核验的服务，靠请求显式声明，未声明按 false 处理（fail-closed，拒绝流转而不是放行）；authorization 是调用方提供的快照（本机 API 尚无认证层）。
 
+## 持久化运行状态（§28，G-53/G-59）
+
+- **Step intent 已在默认运行路径接线（G-53），但仍是内存存储**。`runAgent` 现在为每次运行创建（或接受注入）一个 `StepIntentStore` 并挂到 harness 上，工具执行前先落 intent、执行后提交结果，运行结果带 `intentSummary` 可核查。这是**接线**，不是持久化：`StepIntentStore` 是进程内 Map，进程重启后 intents 全部丢失。
+- **DB 持久化与启动扫描未做（G-59）**。intents / external ops / checkpoints 尚未落 SQLite，启动时也没有扫描未决 intent 做对账恢复的代码；`durable.ts` 的对账逻辑（reconcile）只能作用于当前进程内的数据。把内存接线说成"已持久化"是错的——目前重启即丢，无法做崩溃后对账。
+
 ## 数据与团队
 
 - **单机 SQLite**，无团队 PostgreSQL、无远程 Host、无 50+ 并发 Run 验证。

@@ -67,7 +67,38 @@ export interface RouteRequest {
    * prefer local/fallback models as this approaches/exceeds 100.
    */
   currentUsage: { usedPct: number };
+  /**
+   * §27.2 — optional fallback-compatibility gate, INJECTED by the caller.
+   * The router owns no quota/budget/data-class state (that lives in
+   * @ai-factory/quota and its callers), so — exactly like the live
+   * account-status injection in profile.ts — the check is supplied, never
+   * imported. A one-line adapter over quota's
+   * checkFallbackCompatibility(required, candidate) satisfies this type.
+   * Absent → the fallback is the next-best candidate UNCHECKED, and the
+   * decision reason says so ('fallback compatibility not checked').
+   */
+  fallbackChecker?: FallbackCompatibilityChecker;
 }
+
+/** §27.2 — verdict of an injected fallback-compatibility check. */
+export interface FallbackCompatibilityVerdict {
+  compatible: boolean;
+  /** Why the candidate was rejected; empty when compatible. */
+  reasons: string[];
+}
+
+/**
+ * §27.2 — decides whether `candidate` may serve as fallback for
+ * `primary` under `request`: capability, privacy/data-class, budget and
+ * permission compatibility (the dimensions of quota's FallbackCheck).
+ * Returning compatible=false must carry the reasons — a rejected fallback
+ * is named in the decision reason, never silently skipped.
+ */
+export type FallbackCompatibilityChecker = (
+  primary: ModelRef,
+  candidate: ModelRef,
+  request: RouteRequest,
+) => FallbackCompatibilityVerdict;
 
 /** §30 — every agent gets a primary, a fallback, and an emergency model. */
 export interface RouteDecision {
