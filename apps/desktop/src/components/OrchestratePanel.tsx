@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { authHeaders } from '../api';
+import { authHeaders, type CheckpointV2 } from '../api';
 
 /** Typed client for orchestrator + model-router + runtime endpoints. */
 export interface OrchestrateApi {
@@ -20,6 +20,10 @@ export interface OrchestrateApi {
   account(): Promise<unknown>;
   runAgent(input: { agentId: string; taskId: string }): Promise<{ id: string; status: string }>;
   runStatus(id: string): Promise<RuntimeRun>;
+  /** §28.3 — the run's captured checkpoints, first-capture order. */
+  runCheckpoints(id: string): Promise<{ runId: string; checkpoints: CheckpointV2[] }>;
+  /** §28.3 — the run's resume point; the server 404s when none captured. */
+  runCheckpointLatest(id: string): Promise<CheckpointV2>;
 }
 
 export interface DecompositionPlan {
@@ -74,6 +78,10 @@ export function createOrchestrateApi(base: string = DEFAULT_BASE): OrchestrateAp
     runAgent: (input) =>
       req(base, '/runtime/runs', { method: 'POST', body: JSON.stringify(input) }),
     runStatus: (id) => req(base, `/runtime/runs/${encodeURIComponent(id)}`),
+    runCheckpoints: (id) =>
+      req(base, `/runtime/runs/${encodeURIComponent(id)}/checkpoints`),
+    runCheckpointLatest: (id) =>
+      req(base, `/runtime/runs/${encodeURIComponent(id)}/checkpoints/latest`),
   };
 }
 
@@ -90,9 +98,35 @@ export function OrchestratePanel({
   const [plan, setPlan] = useState<DecompositionPlan | null>(null);
   const [decision, setDecision] = useState<RouteDecision | null>(null);
   const [run, setRun] = useState<RuntimeRun | null>(null);
+  const [ckpts, setCkpts] = useState<CheckpointV2[] | null>(null);
+  const [ckptLatest, setCkptLatest] = useState<CheckpointV2 | null>(null);
+  const [ckptErr, setCkptErr] = useState('');
   const [account, setAccount] = useState<unknown>(null);
   const [err, setErr] = useState('');
   const [kind, setKind] = useState<'bugfix' | 'feature' | 'refactor' | 'research'>('bugfix');
+
+  // §28.3 — whenever a run is on display, load its checkpoints. An empty
+  // list is the server's honest "nothing captured (yet)" and renders as
+  // such; the /latest 404 for a known-but-unstepped run is not an error.
+  const loadCheckpoints = useCallback(async (runId: string) => {
+    setCkptErr('');
+    try {
+      const res = await client.runCheckpoints(runId);
+      setCkpts(res.checkpoints ?? []);
+    } catch (e) {
+      setCkpts(null);
+      setCkptErr((e as Error).message);
+    }
+    try {
+      setCkptLatest(await client.runCheckpointLatest(runId));
+    } catch {
+      setCkptLatest(null);
+    }
+  }, [client]);
+
+  useEffect(() => {
+    if (run?.id) void loadCheckpoints(run.id);
+  }, [run?.id, run?.status, loadCheckpoints]);
 
   const loadAccount = useCallback(async () => {
     try {
@@ -216,6 +250,58 @@ export function OrchestratePanel({
             <span className="pill">{run.status}</span> outcome: {run.outcome ?? '—'} ·
             steps: {run.steps} {run.error && <span className="banner err">{run.error}</span>}
           </p>
+        )}
+        {run && (
+          <div>
+            <h4>
+              Checkpoints（§28.3）{' '}
+              <button onClick={() => void loadCheckpoints(run.id)}>刷新</button>
+            </h4>
+            {ckptErr && <div className="banner err">checkpoints 不可用：{ckptErr}</div>}
+            {!ckptErr && ckpts === null && <p className="muted">Loading checkpoints…</p>}
+            {!ckptErr && ckpts !== null && ckpts.length === 0 && (
+              <p className="muted">
+                该 run 尚无 checkpoint 捕获（服务端在每个已执行的 loop 步骤边界捕获一次；
+                未执行任何步骤的 run 没有捕获记录）。
+              </p>
+            )}
+            {ckptLatest && (
+              <p className="muted" style={{ fontSize: 12 }}>
+                恢复点（latest）：步位 {ckptLatest.stepPosition} · 捕获于{' '}
+                {new Date(ckptLatest.capturedAt).toLocaleString()} · workflow{' '}
+                {ckptLatest.workflowVersion} · task {ckptLatest.taskVersion} ·
+                context <code>{ckptLatest.contextManifestHash.slice(0, 12)}…</code>
+              </p>
+            )}
+            {ckpts !== null && ckpts.length > 0 && (
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>步位</th><th>捕获时间</th><th>Budget 用量</th>
+                    <th>活跃工具</th><th>待审批</th><th>恢复前置条件</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ckpts.map((c) => (
+                    <tr key={c.stepPosition}>
+                      <td>{c.stepPosition}</td>
+                      <td>{new Date(c.capturedAt).toLocaleString()}</td>
+                      <td>
+                        {Object.keys(c.budgetUsage).length === 0
+                          ? '—'
+                          : Object.entries(c.budgetUsage)
+                              .map(([k, v]) => `${k}=${v}`)
+                              .join(', ')}
+                      </td>
+                      <td>{c.activeTools.length ? c.activeTools.join(', ') : '—'}</td>
+                      <td>{c.pendingApprovals.length ? c.pendingApprovals.join(', ') : '—'}</td>
+                      <td>{c.resumePreconditions.length ? c.resumePreconditions.join('；') : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         )}
       </section>
     </div>

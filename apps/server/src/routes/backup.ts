@@ -233,6 +233,23 @@ function listBackups(): BackupManifest[] {
   return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+/** Read accessors for the retention module (§47, Batch 14) — the
+ * retention routes age/delete backup directories against the same
+ * manifests and pending-restore state this module owns. */
+export function backupDirPath(): string {
+  return svc().backupDir;
+}
+
+export function listBackupManifests(): BackupManifest[] {
+  return listBackups();
+}
+
+/** Backup id staged for restore at next boot, if any — retention must
+ * never delete the snapshot a pending restore will boot from. */
+export function stagedRestoreBackupId(): string | null {
+  return readPendingInfo(svc().dbPath)?.backupId ?? null;
+}
+
 const BACKUP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function isValidBackupId(id: unknown): id is string {

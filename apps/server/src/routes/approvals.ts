@@ -26,6 +26,11 @@ import {
   type RiskLevel,
 } from '@ai-factory/approvals';
 import type { RouteContext } from './context';
+import {
+  isTaskProjectArchived,
+  projectArchivedBody,
+  projectIdOfTask,
+} from './project-guard';
 
 const PREFIX = '/api/approvals';
 
@@ -96,6 +101,13 @@ export async function handleApprovalRoutes(
       : typeof body['requiredApprover'] === 'string'
         ? [body['requiredApprover'] as string]
         : undefined;
+    // Batch 14 — a task-bound approval request is a new fact under the
+    // task's project; an archived project refuses it. Unbound requests
+    // (no task_id) are not project-scoped and stay unguarded.
+    const boundTaskId = strField('task_id') ?? strField('taskId');
+    if (boundTaskId && isTaskProjectArchived(ctx.fdb, boundTaskId)) {
+      return ctx.json(res, 409, projectArchivedBody(projectIdOfTask(ctx.fdb, boundTaskId) as string)), true;
+    }
     try {
       const approval = manager.request({
         action,
@@ -167,6 +179,14 @@ export async function handleApprovalRoutes(
     const decisionReason =
       typeof body['decision_reason'] === 'string' ? (body['decision_reason'] as string) : undefined;
     try {
+      // Batch 14 — a decision is an adjudication fact on the bound
+      // task (and an APPROVED decision also attaches evidence to it):
+      // refused while the task's project is archived. The record stays
+      // PENDING; unarchiving makes it decidable again.
+      const existing = manager.get(id);
+      if (existing.task_id && isTaskProjectArchived(ctx.fdb, existing.task_id)) {
+        return ctx.json(res, 409, projectArchivedBody(projectIdOfTask(ctx.fdb, existing.task_id) as string)), true;
+      }
       const approval = manager.decide(id, {
         approved: body['approved'] as boolean,
         decided_by: decidedBy,
@@ -214,6 +234,11 @@ export async function handleApprovalRoutes(
     const body = await ctx.readBody(req);
     try {
       const current = manager.get(id);
+      // Batch 14 — invalidation rewrites a task-bound approval's state:
+      // a new fact under the task's project, refused while archived.
+      if (current.task_id && isTaskProjectArchived(ctx.fdb, current.task_id)) {
+        return ctx.json(res, 409, projectArchivedBody(projectIdOfTask(ctx.fdb, current.task_id) as string)), true;
+      }
       const strOrCurrent = (k: 'candidate_digest' | 'evidence_manifest_hash' | 'policy_version' | 'environment' | 'reversibility_ref'): string =>
         typeof body[k] === 'string' ? (body[k] as string) : current[k];
       const result = manager.invalidate(id, {
@@ -236,6 +261,14 @@ export async function handleApprovalRoutes(
     const body = await ctx.readBody(req);
     const by = typeof body['by'] === 'string' && body['by'] ? (body['by'] as string) : 'human';
     try {
+      // Batch 14 — cancel is a state transition on a task-bound record
+      // (PENDING → CANCELLED, with audit), not a read-only confirmation:
+      // refused while the task's project is archived, like the other
+      // approval mutations. Unarchive to withdraw the request.
+      const existing = manager.get(id);
+      if (existing.task_id && isTaskProjectArchived(ctx.fdb, existing.task_id)) {
+        return ctx.json(res, 409, projectArchivedBody(projectIdOfTask(ctx.fdb, existing.task_id) as string)), true;
+      }
       const approval = manager.cancel(id, by);
       return ctx.json(res, 200, { approval }), true;
     } catch (e) {

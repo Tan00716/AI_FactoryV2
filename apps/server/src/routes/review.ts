@@ -118,6 +118,20 @@ export async function handleReviewRoutes(
     }
 
     const taskId = body['taskId'] as string | undefined;
+    // Batch 14 — a task-bound review seals gate evidence onto the task:
+    // a new fact under the task's project, refused while archived
+    // (before the review runs, so no audit/evidence/notification side
+    // effects). A review with no taskId writes nothing project-scoped
+    // and stays unguarded. The decision is the coordinator-injected
+    // guard (ctx.archivedTaskBody, backed by routes/project-guard.ts —
+    // see context.ts for why this module does not import it directly).
+    if (typeof taskId === 'string' && taskId) {
+      const archivedBody = ctx.archivedTaskBody?.(taskId);
+      if (archivedBody) {
+        ctx.json(res, 409, archivedBody);
+        return true;
+      }
+    }
     let result;
     try {
       result = reviewWithIndependence(input, independence);

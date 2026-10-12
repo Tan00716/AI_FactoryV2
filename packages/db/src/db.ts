@@ -26,6 +26,7 @@ import { SqliteCheckpointStore } from './checkpoints';
 import { SqliteRequirementStore } from './requirements';
 import { SqliteRuntimeRunStore } from './runs';
 import { SqliteTaskV2StateStore } from './task-v2-state';
+import { SqliteRetentionStore } from './retention';
 
 const J = {
   parse<T>(s: string | null, fallback: T): T {
@@ -556,13 +557,54 @@ export class SqliteMemoryStore {
 }
 
 // --------------------------------------------------------------- database ---
+/**
+ * Project lifecycle (Batch 14) — archive is a STATUS, never a deletion:
+ * 'active' projects accept new facts; 'archived' projects are closed out
+ * (read-only history — tasks, evidence, reports all stay put and stay
+ * readable) until explicitly unarchived back to 'active'.
+ */
+export type ProjectStatus = 'active' | 'archived';
+
 export interface ProjectRow {
   id: string;
   name: string;
   description: string;
   path: string;
+  status: ProjectStatus;
+  /** ISO timestamp of the latest archive; null while active. */
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ListProjectsOptions {
+  /** Include archived projects alongside active ones. @default false */
+  includeArchived?: boolean;
+  /** Exact lifecycle filter; wins over includeArchived when set. */
+  status?: ProjectStatus;
+}
+
+/**
+ * Pre-Batch-14 databases lack the lifecycle columns. Same in-place
+ * migration as migrateEvidenceTable: only the missing columns are added.
+ * The status column carries a constant DEFAULT, so SQLite fills every
+ * existing row 'active' — pre-existing projects are active by exactly
+ * the semantics they always had, nothing is backfilled with an invented
+ * archive stamp (archived_at stays NULL).
+ */
+export function migrateProjectsTable(db: DatabaseSync): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(projects)').all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
+  if (!cols.has('status')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`);
+  }
+  if (!cols.has('archived_at')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN archived_at TEXT`);
+  }
 }
 
 export class FactoryDatabase {
@@ -608,6 +650,13 @@ export class FactoryDatabase {
    * approximately from the v1 task row.
    */
   readonly taskV2States: SqliteTaskV2StateStore;
+  /**
+   * §47 (Batch 14) — retention policies + legal holds; the store the
+   * server's retention routes evaluate against. Holds no deletion
+   * policy of its own: no policy row = keep forever, and only the
+   * explicit enforce endpoint deletes (see retention.ts docstring).
+   */
+  readonly retention: SqliteRetentionStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -615,6 +664,7 @@ export class FactoryDatabase {
     // enforce them unless this pragma is on for every connection.
     this.db.exec('PRAGMA foreign_keys = ON');
     this.db.exec(SCHEMA);
+    migrateProjectsTable(this.db);
     migrateApprovalsTable(this.db);
     migrateMemoryTable(this.db);
     migrateEvidenceTable(this.db);
@@ -631,23 +681,58 @@ export class FactoryDatabase {
     this.requirements = new SqliteRequirementStore(this.db);
     this.runs = new SqliteRuntimeRunStore(this.db);
     this.taskV2States = new SqliteTaskV2StateStore(this.db);
+    this.retention = new SqliteRetentionStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------
-  createProject(p: Omit<ProjectRow, 'created_at' | 'updated_at'>): ProjectRow {
+  createProject(
+    p: Omit<ProjectRow, 'created_at' | 'updated_at' | 'status' | 'archived_at'>,
+  ): ProjectRow {
     const now = new Date().toISOString();
     this.db.prepare(
-      'INSERT INTO projects (id, name, description, path, created_at, updated_at) VALUES (?,?,?,?,?,?)',
-    ).run(p.id, p.name, p.description, p.path, now, now);
-    return { ...p, created_at: now, updated_at: now };
+      'INSERT INTO projects (id, name, description, path, status, archived_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
+    ).run(p.id, p.name, p.description, p.path, 'active', null, now, now);
+    return { ...p, status: 'active', archived_at: null, created_at: now, updated_at: now };
   }
 
-  listProjects(): ProjectRow[] {
-    return this.db.prepare('SELECT * FROM projects ORDER BY created_at').all() as unknown as ProjectRow[];
+  /**
+   * Default listing EXCLUDES archived projects — the archive lifecycle
+   * exists so closed-out projects leave the working set. Callers opt
+   * back in explicitly (includeArchived, or an exact status filter).
+   */
+  listProjects(opts: ListProjectsOptions = {}): ProjectRow[] {
+    if (opts.status) {
+      return this.db
+        .prepare('SELECT * FROM projects WHERE status = ? ORDER BY created_at')
+        .all(opts.status) as unknown as ProjectRow[];
+    }
+    if (opts.includeArchived) {
+      return this.db.prepare('SELECT * FROM projects ORDER BY created_at').all() as unknown as ProjectRow[];
+    }
+    return this.db
+      .prepare("SELECT * FROM projects WHERE status = 'active' ORDER BY created_at")
+      .all() as unknown as ProjectRow[];
   }
 
   getProject(id: string): ProjectRow | undefined {
     return this.db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined;
+  }
+
+  /**
+   * Move a project through its lifecycle. Archiving stamps archived_at;
+   * unarchiving clears it. Returns the updated row, or undefined when no
+   * such project exists. Setting the status the project already has is
+   * a no-op write that still returns the current row (callers layer
+   * their own idempotency semantics on top).
+   */
+  setProjectStatus(id: string, status: ProjectStatus): ProjectRow | undefined {
+    const now = new Date().toISOString();
+    const archivedAt = status === 'archived' ? now : null;
+    const r = this.db
+      .prepare('UPDATE projects SET status = ?, archived_at = ?, updated_at = ? WHERE id = ?')
+      .run(status, archivedAt, now, id);
+    if (Number(r.changes) === 0) return undefined;
+    return this.getProject(id);
   }
 
   close(): void {

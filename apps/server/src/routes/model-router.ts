@@ -147,6 +147,13 @@ function requiredCapabilities(req: RouteRequest): string[] {
   if (req.needsReasoning) caps.push('reasoning');
   if (req.needsVision) caps.push('vision');
   if (req.requiredTools.length > 0) caps.push('tools');
+  // §26.1 dimensions (Batch 8): the fallback must cover the same
+  // capability requirements the router hard-filters the primary on —
+  // omitting them here made the check blind to exactly those needs.
+  if (req.needsStructuredOutput) caps.push('structured-output');
+  if (req.needsStreaming) caps.push('streaming');
+  if (req.needsCancellation) caps.push('cancellation');
+  if (req.needsResume) caps.push('resume');
   caps.push(`context:${req.contextNeeded}`);
   return caps;
 }
@@ -161,6 +168,12 @@ function candidateCapabilities(m: ModelRef): string[] {
   if (m.capabilities.reasoning) caps.push('reasoning');
   if (m.capabilities.vision) caps.push('vision');
   if (m.capabilities.tools) caps.push('tools');
+  // §26.1 dimensions (Batch 8): undeclared = not offered (the router
+  // treats them the same way — see ModelCapabilities field docs).
+  if (m.capabilities.structuredOutput) caps.push('structured-output');
+  if (m.capabilities.streaming) caps.push('streaming');
+  if (m.capabilities.cancellation) caps.push('cancellation');
+  if (m.capabilities.resume) caps.push('resume');
   for (const lvl of CONTEXT_LEVELS) {
     caps.push(`context:${lvl}`);
     if (lvl === m.capabilities.maxContext) break;
@@ -176,10 +189,17 @@ function candidateCapabilities(m: ModelRef): string[] {
  * the check is injected, as with the live account status above).
  *
  * Which dimensions carry REAL data on this path:
- *  - capability: derived from the request vs the candidate's ModelRef;
+ *  - capability: derived from the request vs the candidate's ModelRef,
+ *    including the §26.1 dimensions (structured output, streaming,
+ *    cancellation, resume) on both sides (Batch 14);
  *  - privacy: the task's data class is the request's privacy tier; a
- *    candidate's allowlist follows §30's own rule — local models may see
- *    every tier, shared-pool providers are not cleared for 'sensitive'.
+ *    candidate's allowlist follows the router's own §26.3 rule — a
+ *    declared dataClasses list governs, and only when it is undeclared
+ *    does the legacy provider rule apply (local models may see every
+ *    tier, shared-pool providers are not cleared for 'sensitive').
+ *    (Before Batch 14 this checker always used the legacy rule, so a
+ *    candidate could pass here while the router itself would exclude
+ *    it as primary — fallback stricter-or-equal is the point of §27.2.)
  * Which dimensions are NEUTRAL here, stated rather than faked:
  *  - budget: neither the route request nor the catalog carries budget
  *    figures, so needed/remaining are both 0 — the check asserts nothing
@@ -202,9 +222,11 @@ export function buildQuotaFallbackChecker(): FallbackCompatibilityChecker {
         limitBucket: `${candidate.provider}:${candidate.model}`,
         capabilities: candidateCapabilities(candidate),
         allowedDataClasses:
-          candidate.provider === 'local'
-            ? ['public', 'internal', 'sensitive']
-            : ['public', 'internal'],
+          candidate.capabilities.dataClasses !== undefined
+            ? [...candidate.capabilities.dataClasses]
+            : candidate.provider === 'local'
+              ? ['public', 'internal', 'sensitive']
+              : ['public', 'internal'],
         budgetRemaining: 0,
       },
     );
@@ -305,6 +327,13 @@ export async function handleModelRouterRoutes(
             ? b['privacy']
             : 'public',
         needsReasoning: b['needsReasoning'] === true,
+        // §26.1 capability requirements (Batch 8 fields on RouteRequest):
+        // parsed since Batch 14 — before, the HTTP path silently dropped
+        // them and the router's hard filters never saw them.
+        needsStructuredOutput: b['needsStructuredOutput'] === true,
+        needsStreaming: b['needsStreaming'] === true,
+        needsCancellation: b['needsCancellation'] === true,
+        needsResume: b['needsResume'] === true,
         contextNeeded:
           b['contextNeeded'] === 'large' || b['contextNeeded'] === 'medium'
             ? b['contextNeeded']

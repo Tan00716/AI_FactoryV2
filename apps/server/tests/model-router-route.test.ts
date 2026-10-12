@@ -107,3 +107,72 @@ describe('POST /api/router/route fallback compatibility (§27.2)', () => {
     assert.equal(ctxOk.compatible, true);
   });
 });
+
+describe('§26.1 capability dimensions on the default path (Batch 14)', () => {
+  it('checker forwards Batch 8 dimensions: a candidate lacking streaming fails a streaming need', () => {
+    const checker = buildQuotaFallbackChecker();
+    const noStreaming: ModelRef = {
+      ...A_MODEL,
+      capabilities: { ...A_MODEL.capabilities, streaming: false },
+    };
+    const v = checker(A_MODEL, noStreaming, aRequest({ needsStreaming: true }));
+    assert.equal(v.compatible, false);
+    assert.ok(v.reasons.some((r) => r.includes('missing capabilities: streaming')));
+    const withStreaming: ModelRef = {
+      ...A_MODEL,
+      capabilities: {
+        ...A_MODEL.capabilities,
+        structuredOutput: true,
+        streaming: true,
+        cancellation: true,
+        resume: true,
+      },
+    };
+    const ok = checker(
+      A_MODEL,
+      withStreaming,
+      aRequest({
+        needsStructuredOutput: true,
+        needsStreaming: true,
+        needsCancellation: true,
+        needsResume: true,
+      }),
+    );
+    assert.equal(ok.compatible, true);
+    // Undeclared dimensions count as absent, exactly as the router treats them.
+    const undeclared = checker(A_MODEL, A_MODEL, aRequest({ needsResume: true }));
+    assert.equal(undeclared.compatible, false);
+    assert.ok(undeclared.reasons.some((r) => r.includes('missing capabilities: resume')));
+  });
+
+  it('checker privacy: a declared dataClasses list governs over the legacy provider rule (§26.3)', () => {
+    const checker = buildQuotaFallbackChecker();
+    // A shared-pool candidate DECLARED cleared for sensitive passes —
+    // the router would also accept it as primary; the checker must agree.
+    const declared: ModelRef = {
+      ...A_MODEL,
+      provider: 'shared',
+      capabilities: { ...A_MODEL.capabilities, dataClasses: ['public', 'internal', 'sensitive'] },
+    };
+    assert.equal(checker(A_MODEL, declared, aRequest({ privacy: 'sensitive' })).compatible, true);
+    // …and a LOCAL candidate declared public-only is now refused for
+    // internal data, where the legacy rule alone would have cleared it.
+    const localPublicOnly: ModelRef = {
+      ...A_MODEL,
+      provider: 'local',
+      capabilities: { ...A_MODEL.capabilities, dataClasses: ['public'] },
+    };
+    const v = checker(A_MODEL, localPublicOnly, aRequest({ privacy: 'internal' }));
+    assert.equal(v.compatible, false);
+  });
+
+  it('HTTP path parses the §26.1 needs* flags (they reach the router hard filters)', async () => {
+    const d = await postRoute({ taskType: 'coding', complexity: 1, needsStreaming: true });
+    assert.equal(
+      d.primary!.model,
+      'code-coder',
+      'fast-classifier declares streaming:false and must be hard-filtered out',
+    );
+    assert.match(d.reason, /capability requirement streaming/);
+  });
+});

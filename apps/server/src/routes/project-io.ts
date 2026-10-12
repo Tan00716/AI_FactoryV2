@@ -38,6 +38,7 @@ import {
   type WorkflowExport,
 } from '@ai-factory/project-io';
 import type { RouteContext } from './context';
+import { projectArchivedBody } from './project-guard';
 
 function collectAgentIds(ctx: RouteContext, projectId: string): string[] {
   const ids = new Set<string>();
@@ -153,6 +154,16 @@ export async function handleProjectIoRoutes(
     const project = ctx.fdb.getProject(projectId);
     if (!project) {
       ctx.json(res, 404, { error: `project not found: ${projectId}` });
+      return true;
+    }
+    // Import WRITES into the project — archived projects are closed to
+    // new facts (Batch 14; export above stays readable). The refusal is
+    // audited, matching this route's rejected-import convention.
+    if (project.status === 'archived') {
+      ctx.audit.record('human', 'PROJECT_IMPORT_REJECTED', 'project', projectId, {
+        reason: 'PROJECT_ARCHIVED',
+      });
+      ctx.json(res, 409, projectArchivedBody(projectId));
       return true;
     }
     let body: Record<string, unknown>;

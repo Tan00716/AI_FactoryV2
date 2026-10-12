@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS projects (
   name TEXT NOT NULL,
   description TEXT DEFAULT '',
   path TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  archived_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -405,4 +407,35 @@ CREATE TABLE IF NOT EXISTS task_v2_state (
   completion_history TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- SPEC v2 §47 (Batch 14): retention policies + legal holds. §47 names
+-- the platform table retention_policies (§48 table list) and requires
+-- configurable retention periods and Legal Hold per data category.
+-- A MISSING policy row — or retention_days NULL/0 — means KEEP FOREVER:
+-- retention never deletes by default, and nothing is enforced until a
+-- policy exists AND an operator explicitly calls the enforce endpoint.
+-- legal_holds: an active hold (released_at NULL) exempts its scope
+-- from ALL retention deletion — scope GLOBAL covers everything, scope
+-- PROJECT covers every record resolvable to that project. Released
+-- holds stay as rows: the hold/release history is itself audit-grade
+-- bookkeeping (the endpoints also write audit records).
+-- New tables: CREATE TABLE IF NOT EXISTS covers old databases on open.
+CREATE TABLE IF NOT EXISTS retention_policies (
+  category TEXT PRIMARY KEY,
+  retention_days INTEGER,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS legal_holds (
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL,
+  project_id TEXT,
+  reason TEXT NOT NULL DEFAULT '',
+  set_by TEXT NOT NULL,
+  set_at TEXT NOT NULL,
+  released_at TEXT,
+  released_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_legal_holds_active
+  ON legal_holds (released_at);
 `;

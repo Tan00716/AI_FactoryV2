@@ -79,7 +79,48 @@ rl.on('line', (line) => {
     return;
   }
   if (msg.method === 'account/rateLimits/read') {
-    send({ id: msg.id, result: { rateLimits: { limitId: 'codex', primary: null, secondary: null } } });
+    send({
+      id: msg.id,
+      result: {
+        rateLimits: {
+          limitId: 'codex',
+          primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1890000000 },
+          secondary: null,
+          planType: 'plus',
+        },
+      },
+    });
+    return;
+  }
+
+  if (msg.method === 'thread/resume') {
+    send({
+      id: msg.id,
+      result: { thread: { id: msg.params?.threadId ?? THREAD_ID }, model: 'fake-model' },
+    });
+    return;
+  }
+
+  if (msg.method === 'turn/interrupt') {
+    send({ id: msg.id, result: {} });
+    setImmediate(() => {
+      send({
+        method: 'turn/completed',
+        params: {
+          threadId: msg.params?.threadId ?? THREAD_ID,
+          turn: {
+            id: msg.params?.turnId ?? TURN_ID,
+            status: 'interrupted',
+            items: [],
+            itemsView: 'full',
+            error: null,
+            startedAt: null,
+            completedAt: null,
+            durationMs: 1,
+          },
+        },
+      });
+    });
     return;
   }
 

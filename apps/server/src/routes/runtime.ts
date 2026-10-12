@@ -532,6 +532,18 @@ export async function handleRuntimeRoutes(
       return true;
     }
 
+    // Batch 14 — an archived project is closed to new facts: refuse the
+    // run BEFORE the record exists, so a refused run leaves no run
+    // record, no step intent and no checkpoint behind. The decision is
+    // the coordinator-injected guard (ctx.archivedTaskBody, backed by
+    // routes/project-guard.ts — see context.ts for why this module
+    // does not import it directly).
+    const archivedBody = ctx.archivedTaskBody?.(taskId);
+    if (archivedBody) {
+      ctx.json(res, 409, archivedBody);
+      return true;
+    }
+
     const id = randomUUID();
     const rec: RuntimeRunRecord = {
       id,

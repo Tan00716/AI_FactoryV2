@@ -10,6 +10,25 @@ AI Factory 的变更，内容与 git 提交历史逐项对应（提交哈希附�
 
 ## [Unreleased] — 0.1.0 开发线
 
+### 2026-10-12 · Batch 14 — 桌面呈现 / 项目归档 / Adapter 契约 / Retention
+
+- Added：桌面 UI 呈现已有服务端能力——Final Report 页签（Report）、备份/恢复
+  面板（Ops，恢复为两段确认并明示 restartRequired）、run 详情的
+  checkpoints 查看。空状态一律呈现服务端原文，不补数。
+- Added：项目归档生命周期——active ↔ archived 落库（旧库自动补列），归档
+  不删数据、只读面全开、列表默认过滤；全部产生新事实的写路径（任务/证据/
+  流转/导入/run/v2/审批/review/QA）经共享 guard 拒绝（409 PROJECT_ARCHIVED）。
+  已知未守卫：pipelines/git 执行面，见 KNOWN_LIMITATIONS。
+- Added：§26.2 Adapter 十方法契约（adapter-contract.ts）——Stub 与 Codex
+  两实现全量落地，同一契约测试电池双跑；不支持以 UNSUPPORTED 抛出、
+  答不出以 source:'none' 表达，无假成功。顺带修复服务端 router 路径四个
+  能力维度从未解析、quota checker 隐私口径与 router 相悖两处。
+- Added：Retention + Legal Hold（§47）——按类别配置保留期，默认永久保留；
+  evaluate 纯 dry-run，enforce 需显式确认字段且执行时重新评估；audit 与
+  evidence 等类别明示排除并给出条款依据；孤儿记录 fail-safe 豁免并留
+  tombstone 待办。
+- 主线复验：构建 0 错误，测试 1844/1844，全部 demo 通过。
+
 ### 2026-10-12 · Batch 13 — v2 状态落库 / Checkpoint 真实消费 / 备份恢复 / 发布备料
 
 - Added：TaskV2State 整体落库（`task_v2_state` 表）——v2 引擎镜像全字段在

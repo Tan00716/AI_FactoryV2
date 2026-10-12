@@ -116,6 +116,11 @@ import type {
 import type { RequirementManager } from '@ai-factory/requirements';
 import type { RouteContext } from './context';
 import { getRequirementManager } from './requirements';
+import {
+  isTaskProjectArchived,
+  projectArchivedBody,
+  projectIdOfTask,
+} from './project-guard';
 
 /** v1 happy-path statuses map 1:1 onto v2 stages. */
 const STAGE_BY_STATUS: Partial<Record<TaskStatus, WorkflowStage>> = {
@@ -900,6 +905,15 @@ export async function handleV2TransitionRoutes(
   }
 
   if (method === 'POST' && m[2] === 'v2-transition') {
+    // Batch 14 — archived projects are closed to new facts: refuse
+    // before the service is touched, so neither the engine mirror nor
+    // the DB row changes (GET /v2-state above stays readable). The
+    // ctx.fdb shape guard matches this module's optional-store stance:
+    // no DB in the context means no archived projects can exist.
+    if (ctx.fdb && isTaskProjectArchived(ctx.fdb, taskId)) {
+      ctx.json(res, 409, projectArchivedBody(projectIdOfTask(ctx.fdb, taskId) as string));
+      return true;
+    }
     const body = await ctx.readBody(req);
     const toRaw = body['toState'] ?? body['to'];
     if (typeof toRaw !== 'string' || !toRaw) {
@@ -936,6 +950,12 @@ export async function handleV2TransitionRoutes(
   }
 
   if (method === 'POST' && m[2] === 'v2-complete') {
+    // Batch 14 — same archive guard as v2-transition: finalize() must
+    // not commit DONE/final_seal under an archived project.
+    if (ctx.fdb && isTaskProjectArchived(ctx.fdb, taskId)) {
+      ctx.json(res, 409, projectArchivedBody(projectIdOfTask(ctx.fdb, taskId) as string));
+      return true;
+    }
     const body = await ctx.readBody(req);
     const actor =
       (typeof body['by'] === 'string' && body['by']) ||

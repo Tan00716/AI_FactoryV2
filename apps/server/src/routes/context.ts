@@ -16,6 +16,7 @@ import type {
 } from '@ai-factory/core';
 import type { FactoryDatabase } from '@ai-factory/db';
 import type { NotificationEngine } from '@ai-factory/notifications';
+import type { BackupManifest } from './backup';
 import type { EventBus } from '@ai-factory/events';
 import type { StepIntentStore } from '@ai-factory/runtime';
 
@@ -37,6 +38,35 @@ export interface RouteContext {
   stepIntentStore: StepIntentStore;
   /** In-app notification engine (spec module 30). */
   notify: NotificationEngine;
+  /**
+   * §47 (Batch 14) — backup-directory access for the retention
+   * routes: retention ages/deletes backup directories and must never
+   * delete the snapshot a pending restore will boot from, and the
+   * backup module owns that state. The coordinator injects the backup
+   * module's accessors. An embedder without the backup service omits
+   * this; the retention backups category then reports itself unwired
+   * and deletes nothing (retention never deletes blind).
+   */
+  backupAccess?: {
+    dir(): string;
+    list(): BackupManifest[];
+    stagedRestoreBackupId(): string | null;
+  };
+  /**
+   * Batch 14 — archived-project write guard, injected by the
+   * coordinator (backed by routes/project-guard.ts): returns the
+   * uniform 409 body when the task's project is archived, else null.
+   * This indirection exists for the two route modules that tests
+   * import straight from src (runtime.ts, review.ts): an extensionless
+   * VALUE import of './project-guard' does not resolve under Node's
+   * type-stripping ESM loader, while the sibling imports they already
+   * had are type-only (erased). An embedder that omits this gets no
+   * archive refusals from those two modules — the coordinator's own
+   * server always injects it.
+   */
+  archivedTaskBody?: (
+    taskId: string,
+  ) => { error: string; code: 'PROJECT_ARCHIVED'; projectId: string } | null;
   /** System Event Bus — spec §91, shared singleton created in index.ts. */
   bus: EventBus;
   json(res: ServerResponse, status: number, body: unknown): void;

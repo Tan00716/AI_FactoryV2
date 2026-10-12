@@ -5,6 +5,14 @@
  *
  *   GET  /api/health
  *   GET  /api/projects            POST /api/projects {name, description?, path?}
+ *                                 (list excludes archived projects unless
+ *                                 ?includeArchived=1 or ?status=archived)
+ *   POST /api/projects/:id/archive    {actor?}  → lifecycle active → archived
+ *   POST /api/projects/:id/unarchive  {actor?}  → archived → active
+ *                                 (both idempotent: re-applying the current
+ *                                 state returns 200 with changed:false;
+ *                                 archived projects refuse NEW facts with
+ *                                 409 PROJECT_ARCHIVED — see project-guard.ts)
  *   GET  /api/tasks?projectId=    POST /api/tasks {projectId, title, goal?, ...}
  *   GET  /api/tasks/:id
  *   POST /api/tasks/:id/transition   {to, actor?}   (v1 engine)
@@ -66,6 +74,12 @@ import { handleEvaluationRoutes } from './routes/evaluation';
 import { handleProjectsRoutes } from './routes/projects';
 import { handleFinalReportRoutes } from './routes/final-report';
 import { handleProjectIoRoutes } from './routes/project-io';
+import {
+  isProjectArchived,
+  isTaskProjectArchived,
+  projectArchivedBody,
+  projectIdOfTask,
+} from './routes/project-guard';
 import { handleReviewRoutes } from './routes/review';
 import { handleReleaseRoutes } from './routes/releases';
 import { handlePolicyRoutes } from './routes/policy';
@@ -100,10 +114,14 @@ import { handleEventRoutes } from './routes/events';
 import { handleActivityRoutes } from './routes/activity';
 import {
   applyPendingRestore,
+  backupDirPath,
   handleBackupRoutes,
   initBackupService,
+  listBackupManifests,
   resolveBackupConfig,
+  stagedRestoreBackupId,
 } from './routes/backup';
+import { handleRetentionRoutes } from './routes/retention';
 import { EventBus } from '@ai-factory/events';
 import {
   API_TOKEN_ENV,
@@ -455,7 +473,11 @@ const server = createServer(async (req, res) => {
     // requirements it currently holds (live count, read per request). The runs
     // block is the F4 counterpart: the store backing the runtime
     // routes' run registry and how many run records it currently
-    // holds (live, read per request).
+    // holds (live, read per request). The retention block is the §47
+    // (Batch 14) counterpart: how many retention policies are
+    // configured (of the managed categories) and how many legal holds
+    // are currently active — deletion itself only ever happens via
+    // POST /api/retention/enforce, never from here.
     if (method === 'GET' && path === '/api/health') {
       return json(res, 200, {
         ok: true,
@@ -484,6 +506,14 @@ const server = createServer(async (req, res) => {
           store: 'sqlite',
           stored: fdb.runs.list().length,
         },
+        retention: {
+          store: 'sqlite',
+          policiesConfigured: fdb.retention
+            .listPolicies()
+            .filter((p) => p.retentionDays !== null && p.retentionDays !== 0)
+            .length,
+          activeHolds: fdb.retention.activeHolds().length,
+        },
       });
     }
 
@@ -495,6 +525,19 @@ const server = createServer(async (req, res) => {
     // Each handler returns true when it owned the path.
     const routeCtx: RouteContext = {
       tasks, evidence, audit, agents, engine, fdb, stepIntentStore, notify, bus, json, readBody,
+      // §47 (Batch 14): retention reads/deletes backup directories and
+      // must respect a staged restore — the backup module owns both.
+      backupAccess: {
+        dir: backupDirPath,
+        list: listBackupManifests,
+        stagedRestoreBackupId,
+      },
+      // Batch 14 — the archive guard evaluator for the route modules
+      // that cannot import project-guard directly (see context.ts).
+      archivedTaskBody: (taskId: string) =>
+        isTaskProjectArchived(fdb, taskId)
+          ? projectArchivedBody(projectIdOfTask(fdb, taskId) as string)
+          : null,
     };
     if (await handleGitRoutes(req, res, url, routeCtx)) return;
     if (await handleQaRoutes(req, res, url, routeCtx)) return;
@@ -541,10 +584,24 @@ const server = createServer(async (req, res) => {
     if (await handleEventRoutes(req, res, url, routeCtx)) return;
     if (await handleActivityRoutes(req, res, url, routeCtx)) return;
     if (await handleBackupRoutes(req, res, url, routeCtx)) return;
+    if (await handleRetentionRoutes(req, res, url, routeCtx)) return;
 
     // Projects
     if (path === '/api/projects' && method === 'GET') {
-      return json(res, 200, fdb.listProjects());
+      // Archive lifecycle (Batch 14): the default listing is the working
+      // set — active projects only. Archived projects come back with
+      // ?includeArchived=1, or alone with ?status=archived.
+      const statusParam = url.searchParams.get('status');
+      if (statusParam !== null && statusParam !== 'active' && statusParam !== 'archived') {
+        return json(res, 400, { error: `status must be 'active' or 'archived', got: ${statusParam}` });
+      }
+      const includeArchived =
+        url.searchParams.get('includeArchived') === '1' ||
+        url.searchParams.get('includeArchived') === 'true';
+      return json(res, 200, fdb.listProjects({
+        status: statusParam === 'active' || statusParam === 'archived' ? statusParam : undefined,
+        includeArchived,
+      }));
     }
     if (path === '/api/projects' && method === 'POST') {
       const b = await readBody(req);
@@ -557,6 +614,29 @@ const server = createServer(async (req, res) => {
       });
       audit.record('human', 'PROJECT_CREATED', 'project', p.id, { name: p.name });
       return json(res, 201, p);
+    }
+
+    // Project lifecycle (Batch 14): POST /api/projects/:id/archive|unarchive.
+    // Idempotent — re-applying the state the project is already in returns
+    // 200 with changed:false and writes no second audit record. Archiving
+    // deletes nothing; it only closes the project to new facts (409
+    // PROJECT_ARCHIVED on guarded writes) until unarchived.
+    const projectLifecycle = path.match(/^\/api\/projects\/([^/]+)\/(archive|unarchive)$/);
+    if (method === 'POST' && projectLifecycle) {
+      const projectId = decodeURIComponent(projectLifecycle[1]);
+      const target = projectLifecycle[2] === 'archive' ? 'archived' : 'active';
+      const existing = fdb.getProject(projectId);
+      if (!existing) return json(res, 404, { error: `project not found: ${projectId}` });
+      const b = await readBody(req);
+      const actor = String(b['actor'] ?? 'human');
+      if (existing.status === target) {
+        return json(res, 200, { ...existing, changed: false });
+      }
+      const updated = fdb.setProjectStatus(projectId, target);
+      audit.record(actor, target === 'archived' ? 'PROJECT_ARCHIVED' : 'PROJECT_UNARCHIVED', 'project', projectId, {
+        name: existing.name,
+      });
+      return json(res, 200, { ...updated, changed: true });
     }
 
     // Task board (§85 simplified): tasks grouped by status column.
@@ -589,6 +669,10 @@ const server = createServer(async (req, res) => {
       if (!b['projectId'] || !b['title']) {
         return json(res, 400, { error: 'projectId and title are required' });
       }
+      // Archived projects are closed to new facts (Batch 14).
+      if (isProjectArchived(fdb, String(b['projectId']))) {
+        return json(res, 409, projectArchivedBody(String(b['projectId'])));
+      }
       const t = tasks.create({
         projectId: String(b['projectId']),
         title: String(b['title']),
@@ -612,6 +696,9 @@ const server = createServer(async (req, res) => {
         return json(res, 200, taskView(id));
       }
       if (method === 'POST' && suffix === '/transition') {
+        if (isTaskProjectArchived(fdb, id)) {
+          return json(res, 409, projectArchivedBody(projectIdOfTask(fdb, id) as string));
+        }
         const b = await readBody(req);
         const to = b['to'] as TaskStatus;
         const actor = String(b['actor'] ?? 'human');
@@ -645,6 +732,9 @@ const server = createServer(async (req, res) => {
         }
       }
       if (method === 'POST' && suffix === '/evidence') {
+        if (isTaskProjectArchived(fdb, id)) {
+          return json(res, 409, projectArchivedBody(projectIdOfTask(fdb, id) as string));
+        }
         const b = await readBody(req);
         if (!b['type'] || !b['title']) {
           return json(res, 400, { error: 'type and title are required' });
@@ -697,6 +787,9 @@ const server = createServer(async (req, res) => {
         }
       }
       if (method === 'POST' && suffix === '/subtasks') {
+        if (isTaskProjectArchived(fdb, id)) {
+          return json(res, 409, projectArchivedBody(projectIdOfTask(fdb, id) as string));
+        }
         const b = await readBody(req);
         if (!b['title']) return json(res, 400, { error: 'title is required' });
         try {
@@ -712,6 +805,9 @@ const server = createServer(async (req, res) => {
         }
       }
       if (method === 'POST' && suffix === '/dependencies') {
+        if (isTaskProjectArchived(fdb, id)) {
+          return json(res, 409, projectArchivedBody(projectIdOfTask(fdb, id) as string));
+        }
         const b = await readBody(req);
         try {
           const t = tasks.addDependency(

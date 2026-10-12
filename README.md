@@ -8,7 +8,7 @@ UI + Node.js API + SQLite 单机存储，无云、无账号体系。权威规格
 
 验证基线（2026-10-12，Batch 12 后，主线亲自复跑）：
 
-- 构建 0 错误；全量测试 **1826/1826 全绿**；46 个 demo 脚本全过（含首次运行走查 `demo:e2e`）
+- 构建 0 错误；全量测试 **1844/1844 全绿**；46 个 demo 脚本全过（含首次运行走查 `demo:e2e`）
 - Linux AppImage 已构建并无头运行验证通过（见「安装包」一节）
 - 一次由未参与开发的审计员执行的独立复核：抽查 Batch 1–10 共 21 条已关闭项，
   21 条全部证实、0 假关闭（[gap-audit/REAUDIT_BATCH_1_10.md](gap-audit/REAUDIT_BATCH_1_10.md)）
@@ -111,7 +111,7 @@ macOS 需在 Mac 上执行 `npm run dist:mac`。打包细节见
 ### 测试与演示
 
 ```bash
-npm test             # 全量单测（基线 1826 条，见文首日期）
+npm test             # 全量单测（基线 1844 条，见文首日期）
 npm run demo:e2e     # 首次运行全流程走查（真实 server × 多次重启，纯 HTTP）
 npm run demo         # 证据链演示：TODO → DONE，中间有一次门禁拒绝
 npm run demo:codex   # Codex 适配器演示（假 app-server，不需要登录）

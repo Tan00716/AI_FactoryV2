@@ -24,6 +24,8 @@ import { ChangesPanel, createChangesApi } from './components/ChangesPanel';
 import { StabilityPanel } from './components/StabilityPanel';
 import { DashboardPanel, createDashboardApi } from './components/DashboardPanel';
 import { OpsPanel } from './components/OpsPanel';
+import { FinalReportPanel } from './components/FinalReportPanel';
+import { BackupPanel } from './components/BackupPanel';
 import { ProjectPanel } from './components/ProjectPanel';
 import { ActivityPanel } from './components/ActivityPanel';
 import { EventsPanel } from './components/EventsPanel';
@@ -48,7 +50,7 @@ export default function App() {
   const [org, setOrg] = useState<OrgNode[]>([]);
   const [agentCount, setAgentCount] = useState(0);
   const [connected, setConnected] = useState(false);
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   const [bootError, setBootError] = useState('');
   const [qaTaskId, setQaTaskId] = useState<string | null>(null);
@@ -115,14 +117,22 @@ export default function App() {
         <main className="center">
           {bootError && <div className="banner err">{bootError}</div>}
           <div className="center-tabs">
-            {(['Dashboard', 'Ops', 'Board', 'Git', 'QA', 'Approvals', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models'] as const).map((t) => (
+            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models'] as const).map((t) => (
               <button key={t} className={centerTab === t ? 'active' : ''} onClick={() => setCenterTab(t)}>{t}</button>
             ))}
           </div>
           {centerTab === 'Dashboard' ? (
             <DashboardPanel api={dashboardApi} />
           ) : centerTab === 'Ops' ? (
-            <OpsPanel />
+            <>
+              <OpsPanel />
+              <BackupPanel />
+            </>
+          ) : centerTab === 'Report' ? (
+            <FinalReportPanel
+              projectId={projectId}
+              projectName={projects.find((pr) => pr.id === projectId)?.name ?? projectId}
+            />
           ) : centerTab === 'Board' ? (
             <Board
               tasks={tasks}

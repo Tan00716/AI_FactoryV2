@@ -18,6 +18,7 @@ export * from './types';
 export * from './loop';
 export * from './harness';
 export * from './adapters';
+export * from './adapter-contract';
 export * from './runner';
 export * from './run-states';
 export * from './failures';

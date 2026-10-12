@@ -38,6 +38,11 @@ import {
   SuiteRunner,
 } from '@ai-factory/qa';
 import type { RouteContext } from './context';
+import {
+  isTaskProjectArchived,
+  projectArchivedBody,
+  projectIdOfTask,
+} from './project-guard';
 
 const QA_SPECIALIST_KINDS: readonly QaSpecialistKind[] = [
   'Functional',
@@ -162,6 +167,14 @@ export async function handleQaRoutes(
     const task = ctx.tasks.get(taskId);
     if (!task) {
       ctx.json(res, 404, { error: `task ${taskId} not found` });
+      return true;
+    }
+    // Batch 14 — a QA run writes its verdict as evidence on the task:
+    // a new fact under the task's project, refused while archived
+    // (no run record is created either). ctx.fdb shape guard as in
+    // the other guarded routes: no DB, no archived projects.
+    if (ctx.fdb && isTaskProjectArchived(ctx.fdb, taskId)) {
+      ctx.json(res, 409, projectArchivedBody(projectIdOfTask(ctx.fdb, taskId) as string));
       return true;
     }
     const categories: TestCategory[] =
