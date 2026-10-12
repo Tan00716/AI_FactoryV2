@@ -21,6 +21,13 @@
  * usageNote annotated as LIVE + source. model-router cannot import the
  * runtime (the dependency runs the other way), so the live result is
  * injected, never called from here. Default behavior is unchanged.
+ *
+ * Scope note (§26.1): account profiles carry identity/plan/usage only —
+ * no capability metadata lives here, in stub or live form. The §26.1
+ * capability surface (structured output, streaming, cancellation,
+ * resume, data classes, quota bucket, supported hosts) lives on
+ * ModelRef.capabilities (types.ts) and is populated by the catalog /
+ * runtime registration, never inferred from an account profile.
  */
 import type { AccountStatus, ProviderKind } from './types';
 

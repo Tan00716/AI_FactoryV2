@@ -45,4 +45,22 @@ describe('evidence engine', () => {
     eng.seal(ev.id);
     assert.equal(eng.statusOf(ev.id), 'SEALED');
   });
+
+  it('records the requirement version it was collected against (§16/§18.2, Batch 8)', () => {
+    const eng = new EvidenceEngine();
+    const pinned = eng.create({
+      taskId: 't1', type: 'plan', title: 'p', payload: {}, createdBy: 'pm',
+      requirementVersion: 'REQ-001@1',
+    });
+    assert.equal(pinned.requirementVersion, 'REQ-001@1');
+    assert.equal(eng.get(pinned.id).requirementVersion, 'REQ-001@1');
+    // The recorded version survives sealing (it is part of the record).
+    assert.equal(eng.seal(pinned.id).requirementVersion, 'REQ-001@1');
+
+    // No requirement context → null, never an invented version.
+    const unpinned = eng.create({
+      taskId: 't1', type: 'plan', title: 'p2', payload: {}, createdBy: 'pm',
+    });
+    assert.equal(unpinned.requirementVersion, null);
+  });
 });

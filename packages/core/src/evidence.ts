@@ -57,6 +57,12 @@ export interface CreateEvidenceInput {
   title: string;
   payload: Record<string, unknown>;
   createdBy: string;
+  /**
+   * §16/§18.2 — pin ref ('REQ-001@1') of the requirement version this
+   * evidence is collected against, when the caller has a real requirement
+   * context. Omitted/null = not recorded (gates treat it as not stale).
+   */
+  requirementVersion?: string | null;
 }
 
 export class EvidenceEngine {
@@ -74,6 +80,7 @@ export class EvidenceEngine {
       createdBy: input.createdBy,
       createdAt: nowIso(),
       sealedAt: null,
+      requirementVersion: input.requirementVersion ?? null,
     };
     this.store.save(ev);
     return ev;

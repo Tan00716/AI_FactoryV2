@@ -22,11 +22,26 @@ describe('registryRows', () => {
 
   it('derives capability tags from capability flags', () => {
     const row = toRegistryRow(MODEL_CATALOG[1]); // code-coder
-    assert.deepEqual(row.capability, ['reasoning', 'tools']);
+    // §26.1 (Batch 8): the tag list now also surfaces structured-output /
+    // streaming / cancellation / resume when the entry declares them.
+    assert.deepEqual(row.capability, [
+      'reasoning',
+      'tools',
+      'structured-output',
+      'streaming',
+      'cancellation',
+      'resume',
+    ]);
     assert.equal(row.reasoning, true);
     assert.equal(row.context, 'large');
     const vision = toRegistryRow(MODEL_CATALOG[3]); // vision-capable
-    assert.deepEqual(vision.capability, ['reasoning', 'vision', 'tools']);
+    assert.deepEqual(vision.capability, [
+      'reasoning',
+      'vision',
+      'tools',
+      'streaming',
+      'cancellation',
+    ]);
   });
 
   it('keeps routing-relevant metadata intact (router uses it, not names)', () => {

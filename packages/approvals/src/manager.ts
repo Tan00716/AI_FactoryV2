@@ -16,6 +16,13 @@
  *    policy_version / environment. invalidate() marks it INVALIDATED (append,
  *    never rewriting history) when any of those change; callers must
  *    re-request. checkBinding() lets gates verify freshness before use.
+ *
+ * §23.4 Exception Grants (exceptions.ts): a legitimate Human may waive a
+ * waivable rule via a time-limited, scoped, audited grant. evaluateApprovalGate()
+ * is the consumption point: a covered failure is reported WAIVED with the
+ * original failure reason preserved — never PASS, never an approval.
+ * BLOCKED actions are non-waivable invariants: grant creation and gate use
+ * are both refused and audited.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -28,6 +35,15 @@ import {
   ApprovalStore,
 } from './types';
 import { evaluateAction } from './policy';
+import {
+  ExceptionGrant,
+  ExceptionGrantDeniedError,
+  ExceptionGrantNotFoundError,
+  ExceptionGrantStatus,
+  ExceptionGrantStore,
+  InMemoryExceptionGrantStore,
+  isHumanActor,
+} from './exceptions';
 
 export class ApprovalNotFoundError extends Error {
   constructor(id: string) {
@@ -95,6 +111,15 @@ export interface ApprovalManagerOptions {
   defaultTtlMs?: number;
   /** Policy version stamped onto new tickets. Defaults to 'v1'. */
   policyVersion?: string;
+  /** §23.4 exception-grant store. Defaults to an in-memory store. */
+  exceptionGrants?: ExceptionGrantStore;
+  /** Default TTL for exception grants. Defaults to 24h. */
+  exceptionGrantDefaultTtlMs?: number;
+  /**
+   * Hard cap on exception-grant TTL. Defaults to 7 days. A grant can never
+   * outlive this — permanent waivers do not exist (§23.4).
+   */
+  exceptionGrantMaxTtlMs?: number;
 }
 
 export interface RequestApprovalInput {
@@ -141,6 +166,67 @@ export interface InvalidationResult {
   changed: Array<keyof ApprovalBindingContext>;
 }
 
+/** §23.4 — input for granting an exception (waiver). */
+export interface GrantExceptionInput {
+  /** Action the waiver covers (exact policy action name). */
+  action: string;
+  /** Scope: limit the waiver to this task. Omit = any task. */
+  task_id?: string;
+  /** Granting identity. Must be a human actor — AI cannot self-waive. */
+  granted_by: string;
+  /** Mandatory justification, kept in the audit trail. */
+  reason: string;
+  /** TTL override; hard-capped by the manager's exception-grant max TTL. */
+  ttlMs?: number;
+  /** Risk context for the non-waivable check (BLOCKED is risk-independent). */
+  risk_level?: RiskLevel;
+}
+
+/** §23.4 — input for revoking an exception grant. */
+export interface RevokeExceptionInput {
+  /** Revoking identity. Must be a human actor. */
+  revoked_by: string;
+  reason?: string;
+}
+
+/** §23.4 — input for evaluating the approval gate for an action. */
+export interface ApprovalGateInput {
+  action: string;
+  task_id?: string;
+  risk_level?: RiskLevel;
+  /**
+   * When given, an APPROVED approval only counts towards PASS while its
+   * bound context still matches (see isUsable()).
+   */
+  binding?: ApprovalBindingContext;
+}
+
+/**
+ * §23.4 gate verdicts. WAIVED is deliberately distinct from PASS: the gate
+ * failed, and an exception grant waived the failure. (Vocabulary aligned
+ * with §39.3 GateVerdict in @ai-factory/core, which also has WAIVED.)
+ */
+export type ApprovalGateVerdict = 'PASS' | 'FAILED' | 'WAIVED' | 'BLOCKED';
+
+export interface ApprovalGateResult {
+  verdict: ApprovalGateVerdict;
+  action: string;
+  task_id: string;
+  /** Human-readable summary of the outcome. */
+  reason: string;
+  /**
+   * The original failure reason — set for FAILED and WAIVED, never erased
+   * by a waiver (§23.4: 原 Gate 保留 FAILED/WAIVED，不改为 PASS). Null on PASS.
+   */
+  failure_reason: string | null;
+  /** The usable APPROVED approval behind a PASS; otherwise null. */
+  approval_id: string | null;
+  /** The exception grant behind a WAIVED; otherwise null. */
+  grant_id: string | null;
+  /** Who granted the waiver (WAIVED only); otherwise null. */
+  granted_by: string | null;
+}
+
 /** Machine-readable payload attached to a task as 'approval' evidence. */
 export interface ApprovalEvidencePayload {
   verdict: 'APPROVED';
@@ -176,6 +262,9 @@ export class ApprovalManager {
   private readonly audit?: ApprovalAuditFn;
   private readonly defaultTtlMs: number;
   private readonly defaultPolicyVersion: string;
+  private readonly grants: ExceptionGrantStore;
+  private readonly exceptionGrantDefaultTtlMs: number;
+  private readonly exceptionGrantMaxTtlMs: number;
 
   constructor(
     private readonly store: ApprovalStore = new InMemoryApprovalStore(),
@@ -184,6 +273,9 @@ export class ApprovalManager {
     this.audit = opts.audit;
     this.defaultTtlMs = opts.defaultTtlMs ?? DAY_MS;
     this.defaultPolicyVersion = opts.policyVersion ?? 'v1';
+    this.grants = opts.exceptionGrants ?? new InMemoryExceptionGrantStore();
+    this.exceptionGrantDefaultTtlMs = opts.exceptionGrantDefaultTtlMs ?? DAY_MS;
+    this.exceptionGrantMaxTtlMs = opts.exceptionGrantMaxTtlMs ?? 7 * DAY_MS;
   }
 
   private emit(
@@ -391,5 +483,312 @@ export class ApprovalManager {
       policy_version: approval.policy_version,
       environment: approval.environment,
     };
+  }
+
+  // ─── §23.4 Exception Grants ─────────────────────────────────────────────
+
+  private denyGrant(
+    entityId: string,
+    details: Record<string, unknown>,
+    code: ExceptionGrantDeniedError['code'],
+    message: string,
+  ): never {
+    this.audit?.('EXCEPTION_GRANT_DENIED', entityId, { ...details, code });
+    throw new ExceptionGrantDeniedError(code, message);
+  }
+
+  /**
+   * Grant an exception (waiver) for a waivable action. Only a human actor
+   * may grant; a reason is mandatory; the TTL is hard-capped so no waiver
+   * is permanent; BLOCKED actions are non-waivable invariants and are
+   * refused. Every refusal is audited (EXCEPTION_GRANT_DENIED) and every
+   * grant is audited (EXCEPTION_GRANT_CREATED).
+   */
+  grantException(input: GrantExceptionInput): ExceptionGrant {
+    if (!input.action) throw new Error('action is required');
+    const taskId = input.task_id ?? '';
+    const auditDetails = {
+      action: input.action,
+      task_id: taskId,
+      granted_by: input.granted_by ?? '',
+    };
+    if (!input.granted_by || !isHumanActor(input.granted_by)) {
+      this.denyGrant(
+        input.action,
+        auditDetails,
+        'NON_HUMAN_GRANTOR',
+        `Exception grants may only be granted by a human actor; '${input.granted_by ?? ''}' is not one — an AI cannot waive its own checks`,
+      );
+    }
+    if (!input.reason || !input.reason.trim()) {
+      this.denyGrant(
+        input.action,
+        auditDetails,
+        'REASON_REQUIRED',
+        `Exception grant for '${input.action}' requires a reason`,
+      );
+    }
+    const evaluation = evaluateAction(input.action, input.risk_level ?? 'MEDIUM');
+    if (evaluation.level === 'BLOCKED') {
+      this.denyGrant(
+        input.action,
+        auditDetails,
+        'BLOCKED_ACTION',
+        `Action '${input.action}' is BLOCKED by policy — a non-waivable invariant that no exception grant can override`,
+      );
+    }
+    const ttl = input.ttlMs ?? this.exceptionGrantDefaultTtlMs;
+    if (!Number.isFinite(ttl) || ttl > this.exceptionGrantMaxTtlMs) {
+      this.denyGrant(
+        input.action,
+        auditDetails,
+        'TTL_EXCEEDS_MAX',
+        `Exception grant TTL ${ttl}ms exceeds the hard cap of ${this.exceptionGrantMaxTtlMs}ms — permanent or over-long waivers are not allowed`,
+      );
+    }
+    const grant: ExceptionGrant = {
+      id: randomUUID(),
+      action: input.action,
+      task_id: taskId,
+      granted_by: input.granted_by,
+      reason: input.reason,
+      created_at: nowIso(),
+      expires_at: new Date(Date.now() + ttl).toISOString(),
+      status: 'ACTIVE',
+      revoked_by: '',
+      revoked_at: null,
+      revocation_reason: '',
+    };
+    this.grants.save(grant);
+    this.audit?.('EXCEPTION_GRANT_CREATED', grant.id, {
+      action: grant.action,
+      task_id: grant.task_id,
+      granted_by: grant.granted_by,
+      reason: grant.reason,
+      expires_at: grant.expires_at,
+    });
+    return grant;
+  }
+
+  getException(id: string): ExceptionGrant {
+    const g = this.grants.get(id);
+    if (!g) throw new ExceptionGrantNotFoundError(id);
+    return g;
+  }
+
+  listExceptions(filter?: {
+    status?: ExceptionGrantStatus;
+    action?: string;
+    task_id?: string;
+  }): ExceptionGrant[] {
+    return this.grants.list(filter);
+  }
+
+  /**
+   * Revoke an ACTIVE grant. Only a human actor may revoke. Revoking an
+   * expired grant first records it EXPIRED; both paths are audited and a
+   * non-ACTIVE grant is refused (fail-closed).
+   */
+  revokeException(id: string, input: RevokeExceptionInput): ExceptionGrant {
+    const g = this.getException(id);
+    if (!input.revoked_by || !isHumanActor(input.revoked_by)) {
+      this.denyGrant(
+        id,
+        { action: g.action, task_id: g.task_id, revoked_by: input.revoked_by ?? '' },
+        'NON_HUMAN_GRANTOR',
+        `Exception grants may only be revoked by a human actor; '${input.revoked_by ?? ''}' is not one`,
+      );
+    }
+    if (g.status === 'ACTIVE' && this.isGrantExpired(g)) {
+      this.markGrantExpired(g);
+      this.denyGrant(
+        id,
+        { action: g.action, task_id: g.task_id, revoked_by: input.revoked_by },
+        'NOT_ACTIVE',
+        `Exception grant ${id} already EXPIRED at ${g.expires_at} — nothing to revoke`,
+      );
+    }
+    if (g.status !== 'ACTIVE') {
+      this.denyGrant(
+        id,
+        { action: g.action, task_id: g.task_id, revoked_by: input.revoked_by },
+        'NOT_ACTIVE',
+        `Exception grant ${id} is ${g.status}, not ACTIVE — cannot revoke`,
+      );
+    }
+    const revoked: ExceptionGrant = {
+      ...g,
+      status: 'REVOKED',
+      revoked_by: input.revoked_by,
+      revoked_at: nowIso(),
+      revocation_reason: input.reason ?? '',
+    };
+    this.grants.save(revoked);
+    this.audit?.('EXCEPTION_GRANT_REVOKED', revoked.id, {
+      action: revoked.action,
+      task_id: revoked.task_id,
+      granted_by: revoked.granted_by,
+      revoked_by: revoked.revoked_by,
+      reason: revoked.revocation_reason,
+    });
+    return revoked;
+  }
+
+  /** Mark every overdue ACTIVE grant EXPIRED (audited each). */
+  sweepExpiredGrants(): ExceptionGrant[] {
+    const expired: ExceptionGrant[] = [];
+    for (const g of this.grants.list({ status: 'ACTIVE' })) {
+      if (this.isGrantExpired(g)) expired.push(this.markGrantExpired(g));
+    }
+    return expired;
+  }
+
+  private isGrantExpired(g: ExceptionGrant): boolean {
+    return Date.now() >= new Date(g.expires_at).getTime();
+  }
+
+  private markGrantExpired(g: ExceptionGrant): ExceptionGrant {
+    const expired: ExceptionGrant = { ...g, status: 'EXPIRED' };
+    this.grants.save(expired);
+    this.audit?.('EXCEPTION_GRANT_EXPIRED', expired.id, {
+      action: expired.action,
+      task_id: expired.task_id,
+      granted_by: expired.granted_by,
+      expires_at: expired.expires_at,
+    });
+    return expired;
+  }
+
+  /**
+   * The live grant covering (action, task), if any. Task-specific grants
+   * win over any-task grants. An expired ACTIVE grant encountered here is
+   * marked EXPIRED (audited) and never applies — fail-closed.
+   */
+  private activeGrantFor(action: string, taskId: string): ExceptionGrant | undefined {
+    const covering = this.grants
+      .list({ status: 'ACTIVE', action })
+      .filter((g) => g.task_id === '' || g.task_id === taskId)
+      .sort((x, y) => {
+        const specX = x.task_id === taskId && taskId !== '' ? 0 : 1;
+        const specY = y.task_id === taskId && taskId !== '' ? 0 : 1;
+        return specX - specY || x.created_at.localeCompare(y.created_at);
+      });
+    for (const g of covering) {
+      if (this.isGrantExpired(g)) {
+        this.markGrantExpired(g);
+        continue;
+      }
+      return g;
+    }
+    return undefined;
+  }
+
+  /** Why the approval requirement is unmet — the original gate failure. */
+  private gateFailureReason(approvals: Approval[], action: string, taskId: string): string {
+    const latest = [...approvals].sort((x, y) =>
+      y.created_at.localeCompare(x.created_at),
+    )[0];
+    if (!latest) {
+      return `no approval exists for action '${action}' on task '${taskId}'`;
+    }
+    switch (latest.status) {
+      case 'REJECTED':
+        return `approval ${latest.approval_id} REJECTED by ${latest.decided_by}${latest.decision_reason ? `: ${latest.decision_reason}` : ''}`;
+      case 'INVALIDATED':
+        return `approval ${latest.approval_id} INVALIDATED (${latest.decision_reason})`;
+      case 'PENDING':
+        return `approval ${latest.approval_id} is still PENDING`;
+      case 'EXPIRED':
+        return `approval ${latest.approval_id} EXPIRED`;
+      case 'CANCELLED':
+        return `approval ${latest.approval_id} CANCELLED`;
+      case 'APPROVED':
+        return `approval ${latest.approval_id} is APPROVED but its bound context no longer matches`;
+    }
+  }
+
+  /**
+   * §23.4 gate evaluation for an action: the consumption point for
+   * exception grants.
+   *
+   *  - BLOCKED action → BLOCKED (non-waivable; audited). Grants never apply.
+   *  - AUTO action → PASS (no approval requirement to fail).
+   *  - usable APPROVED approval → PASS, with the approval id.
+   *  - otherwise the gate FAILED; if a live exception grant covers the
+   *    action/scope, the verdict is WAIVED — the original failure_reason is
+   *    preserved verbatim and the waiver is audited (APPROVAL_GATE_WAIVED).
+   *    WAIVED is never PASS and never produces an approval.
+   */
+  evaluateApprovalGate(input: ApprovalGateInput): ApprovalGateResult {
+    const taskId = input.task_id ?? '';
+    const evaluation = evaluateAction(input.action, input.risk_level ?? 'MEDIUM');
+    const base = {
+      action: input.action,
+      task_id: taskId,
+      approval_id: null,
+      grant_id: null,
+      granted_by: null,
+    };
+    if (evaluation.level === 'BLOCKED') {
+      this.audit?.('APPROVAL_GATE_BLOCKED', input.action, {
+        action: input.action,
+        task_id: taskId,
+        failure_reason: evaluation.reason,
+      });
+      return {
+        ...base,
+        verdict: 'BLOCKED',
+        failure_reason: evaluation.reason,
+        reason: evaluation.reason,
+      };
+    }
+    if (!evaluation.requiresApproval) {
+      return {
+        ...base,
+        verdict: 'PASS',
+        failure_reason: null,
+        reason: evaluation.reason,
+      };
+    }
+    const approvals = this.store
+      .listByTask(taskId)
+      .filter((a) => a.action === input.action);
+    const usable = approvals.find(
+      (a) =>
+        a.status === 'APPROVED' &&
+        (!input.binding || this.isUsable(a, input.binding)),
+    );
+    if (usable) {
+      return {
+        ...base,
+        verdict: 'PASS',
+        approval_id: usable.approval_id,
+        failure_reason: null,
+        reason: `usable APPROVED approval ${usable.approval_id}`,
+      };
+    }
+    const failureReason = this.gateFailureReason(approvals, input.action, taskId);
+    const grant = this.activeGrantFor(input.action, taskId);
+    if (grant) {
+      this.audit?.('APPROVAL_GATE_WAIVED', grant.id, {
+        action: input.action,
+        task_id: taskId,
+        grant_id: grant.id,
+        granted_by: grant.granted_by,
+        grant_reason: grant.reason,
+        failure_reason: failureReason,
+      });
+      return {
+        ...base,
+        verdict: 'WAIVED',
+        grant_id: grant.id,
+        granted_by: grant.granted_by,
+        failure_reason: failureReason,
+        reason:
+          `gate FAILED (${failureReason}) but WAIVED by exception grant ${grant.id} ` +
+          `granted by ${grant.granted_by}: ${grant.reason}`,
+      };
+    }
+    return { ...base, verdict: 'FAILED', failure_reason: failureReason, reason: failureReason };
   }
 }

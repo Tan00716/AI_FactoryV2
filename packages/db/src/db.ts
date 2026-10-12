@@ -102,6 +102,24 @@ export class SqliteTaskStore implements TaskStore {
 }
 
 // -------------------------------------------------------------- evidence ---
+/**
+ * §16/§18.2 (Batch 8) column. Existing local DBs are migrated in place:
+ * only the missing column is added (see migrateApprovalsTable). Pre-Batch-8
+ * rows read back with requirementVersion null — never recorded, never
+ * backfilled with an invented version.
+ */
+export function migrateEvidenceTable(db: DatabaseSync): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(evidence)').all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
+  if (!cols.has('requirement_version')) {
+    db.exec(`ALTER TABLE evidence ADD COLUMN requirement_version TEXT`);
+  }
+}
+
 function rowToEvidence(r: Record<string, unknown>): Evidence {
   const s = (k: string) => r[k] as string;
   return {
@@ -114,6 +132,7 @@ function rowToEvidence(r: Record<string, unknown>): Evidence {
     createdBy: s('created_by'),
     createdAt: s('created_at'),
     sealedAt: (r['sealed_at'] as string) ?? null,
+    requirementVersion: (r['requirement_version'] as string) ?? null,
   };
 }
 
@@ -121,11 +140,12 @@ export class SqliteEvidenceStore implements EvidenceStore {
   constructor(private db: DatabaseSync) {}
   save(ev: Evidence): void {
     this.db.prepare(
-      `INSERT INTO evidence (id, task_id, type, title, payload, status, created_by, created_at, sealed_at)
-       VALUES (?,?,?,?,?,?,?,?,?)
+      `INSERT INTO evidence (id, task_id, type, title, payload, status, created_by, created_at, sealed_at, requirement_version)
+       VALUES (?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET title=excluded.title, payload=excluded.payload,
-        status=excluded.status, sealed_at=excluded.sealed_at`,
-    ).run(ev.id, ev.taskId, ev.type, ev.title, J.stringify(ev.payload), ev.status, ev.createdBy, ev.createdAt, ev.sealedAt);
+        status=excluded.status, sealed_at=excluded.sealed_at,
+        requirement_version=excluded.requirement_version`,
+    ).run(ev.id, ev.taskId, ev.type, ev.title, J.stringify(ev.payload), ev.status, ev.createdBy, ev.createdAt, ev.sealedAt, ev.requirementVersion ?? null);
   }
   get(id: string): Evidence | undefined {
     const r = this.db.prepare('SELECT * FROM evidence WHERE id = ?').get(id) as
@@ -510,6 +530,7 @@ export class FactoryDatabase {
     this.db.exec(SCHEMA);
     migrateApprovalsTable(this.db);
     migrateMemoryTable(this.db);
+    migrateEvidenceTable(this.db);
     this.tasks = new SqliteTaskStore(this.db);
     this.evidence = new SqliteEvidenceStore(this.db);
     this.agents = new SqliteAgentStore(this.db);

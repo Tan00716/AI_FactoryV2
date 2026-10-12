@@ -67,6 +67,15 @@ export interface Evidence {
   createdBy: string;
   createdAt: string;
   sealedAt: string | null;
+  /**
+   * §16/§18.2 — the requirement version this evidence was collected
+   * against, as a pin ref ('REQ-001@1'), recorded at registration time
+   * when a real requirement context exists. null/absent means "never
+   * recorded" (evidence predating version tracking, or collected with no
+   * requirement context): gates treat unrecorded evidence as not stale —
+   * a version is never invented for it after the fact.
+   */
+  requirementVersion?: string | null;
 }
 
 /** §8 — Task object (prototype subset of the full field list). */
@@ -208,7 +217,7 @@ export interface Agent {
   updatedAt: string;
 }
 
-/** §70 — immutable audit record. */
+/** §70 — immutable audit record. §32 adds reason/result + hash-chain fields. */
 export interface AuditRecord {
   id: string;
   ts: string;
@@ -217,6 +226,28 @@ export interface AuditRecord {
   entityType: string;
   entityId: string;
   details: Record<string, unknown>;
+  /**
+   * §32 — why the action was taken (caller-supplied justification).
+   * Optional: records written before §32 chaining, and callers that pass no
+   * reason, simply lack it. Never part of the caller's `details` bag.
+   */
+  reason?: string;
+  /**
+   * §32 — outcome of the action (e.g. 'ALLOWED' / 'DENIED' / 'SUCCEEDED'),
+   * caller-supplied via AuditLog.record's opts. Optional like `reason`.
+   */
+  result?: string;
+  /**
+   * §32 — sha256 over the canonical record content + `prevHash`, computed by
+   * AuditLog at append time; callers can never supply it. Absent on legacy
+   * records written before hash chaining existed (see verifyAuditChain).
+   */
+  summaryHash?: string;
+  /**
+   * §32 — `summaryHash` of the previous chained record, or the genesis
+   * constant for the first chained record. Absent on legacy records.
+   */
+  prevHash?: string;
 }
 
 export function nowIso(): string {

@@ -38,12 +38,18 @@
  *   POST /api/requirements/:id/compatibility writes declarations to — for
  *   evidence the manager explicitly declares compatible with the task's
  *   pinned version (canReuseEvidence). Assembled from real declarations
- *   only, never inferred. Caveat, stated plainly: this route still passes
- *   evidenceReqVersions: {} (the server does not track the version each
- *   evidence row was collected against), so the version-mismatch branch
- *   this set feeds cannot fire through this route yet — the data is wired
- *   now, honestly latent, and takes effect the moment per-evidence
- *   requirement versions are tracked.
+ *   only, never inferred.
+ * - EVIDENCE VERSIONS (§16/§18.2, Batch 8): GateContext.evidenceReqVersions
+ *   is assembled from the version recorded on each evidence row at
+ *   registration time (POST /api/tasks/:id/evidence accepts an explicit
+ *   requirementId + requirementVersion, validated against the manager, and
+ *   persists the pin ref 'REQ-001@1' on the row). The engine's
+ *   version-mismatch STALE branch therefore fires over HTTP for real:
+ *   evidence collected against REQ@1 blocks promotion once the task pins
+ *   REQ@2, unless a §16 compatibility declaration exempts it. Evidence
+ *   with no recorded version (registered without a requirement context,
+ *   or predating Batch 8) is absent from the map and treated as not
+ *   stale — no version is ever invented for it.
  *
  * The v1 endpoint POST /api/tasks/:id/transition is unchanged, and the
  * desktop Board still uses it — see docs/KNOWN_LIMITATIONS.md for why the
@@ -260,6 +266,13 @@ export class V2TransitionService {
       evidence,
       requirementVersion,
     );
+    // §16/§18.2 (Batch 8): per-evidence requirement versions from the
+    // recorded rows (see header). Unrecorded evidence stays absent from
+    // the map — the engine treats absent entries as "not stale".
+    const evidenceReqVersions: Record<string, string> = {};
+    for (const e of evidence) {
+      if (e.requirementVersion) evidenceReqVersions[e.id] = e.requirementVersion;
+    }
     return {
       taskId: task.id,
       taskVersion: this.engine.get(task.id).taskVersion,
@@ -277,9 +290,9 @@ export class V2TransitionService {
           ? body['implementerId']
           : task.currentAgentId,
       evidence,
-      // The server does not yet track per-evidence requirement versions or
-      // a staleness set; the engine treats absent entries as "not stale".
-      evidenceReqVersions: {},
+      evidenceReqVersions,
+      // The server has no independent staleness set; staleness is judged
+      // purely from the recorded per-evidence versions above.
       staleEvidenceIds: [],
       // §16 explicit compatibility (see compatibleEvidenceIds() below):
       // undefined unless the requirements manager declares task evidence

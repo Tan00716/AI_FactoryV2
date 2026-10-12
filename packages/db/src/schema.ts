@@ -98,7 +98,11 @@ CREATE TABLE IF NOT EXISTS evidence (
   status TEXT DEFAULT 'DRAFT',
   created_by TEXT DEFAULT '',
   created_at TEXT NOT NULL,
-  sealed_at TEXT
+  sealed_at TEXT,
+  -- §16/§18.2 (Batch 8): requirement pin ref ('REQ-001@1') the evidence
+  -- was collected against; NULL = never recorded. Older databases gain
+  -- this column via migrateEvidenceTable in db.ts.
+  requirement_version TEXT
 );
 
 CREATE TABLE IF NOT EXISTS approvals (

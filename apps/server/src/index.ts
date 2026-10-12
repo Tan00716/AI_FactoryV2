@@ -10,7 +10,11 @@
  *   POST /api/tasks/:id/transition   {to, actor?}   (v1 engine)
  *   POST /api/tasks/:id/v2-transition {toState|to, by|actor, ...}  (v2 engine, §18.2)
  *   GET  /api/tasks/:id/v2-state     (v2 three-state view, §18/§19)
- *   POST /api/tasks/:id/evidence     {type, title, payload?, createdBy?}
+ *   POST /api/tasks/:id/evidence     {type, title, payload?, createdBy?,
+ *                                     requirementId?, requirementVersion?}
+ *                                     (§16/§18.2: the pair records the
+ *                                     requirement version the evidence was
+ *                                     collected against; validated to exist)
  *   POST /api/tasks/:id/subtasks     {title, ...}
  *   POST /api/tasks/:id/dependencies {kind, taskId}
  *   GET  /api/agents              POST /api/agents {...}
@@ -63,7 +67,7 @@ import { handleRecoveryRoutes } from './routes/recovery';
 import { handleResourceRoutes } from './routes/resources';
 import { handleAutonomyRoutes } from './routes/autonomy';
 import { handleCoordinationRoutes } from './routes/coordination';
-import { handleRequirementRoutes } from './routes/requirements';
+import { getRequirementManager, handleRequirementRoutes } from './routes/requirements';
 import { handleProgressRoutes } from './routes/progress';
 import { handleIsolationRoutes } from './routes/isolation';
 import { handleToolRoutes } from './routes/tools';
@@ -329,6 +333,35 @@ const server = createServer(async (req, res) => {
         if (!b['type'] || !b['title']) {
           return json(res, 400, { error: 'type and title are required' });
         }
+        // §16/§18.2 (Batch 8) — optional requirement context. When the
+        // caller supplies requirementId + requirementVersion, the version
+        // is persisted on the evidence row as the pin ref it was collected
+        // against, and the v2 gate later judges staleness against it. The
+        // pair must be supplied together and the version must exist in the
+        // shared RequirementManager — a context claim that does not check
+        // out is a 400, never silently dropped and never recorded as-is.
+        // No context supplied → recorded as null (not tracked, not stale).
+        let requirementPin: string | null = null;
+        if (b['requirementId'] !== undefined || b['requirementVersion'] !== undefined) {
+          const reqId = b['requirementId'];
+          const reqVer = b['requirementVersion'];
+          if (
+            typeof reqId !== 'string' || !reqId ||
+            typeof reqVer !== 'number' || !Number.isInteger(reqVer) || reqVer < 1
+          ) {
+            return json(res, 400, {
+              error: 'requirementId (string) and requirementVersion (positive integer) must be supplied together',
+            });
+          }
+          try {
+            getRequirementManager().getVersion(reqId, reqVer);
+          } catch (e) {
+            return json(res, 400, {
+              error: `unknown requirement version ${reqId}@${reqVer}: ${(e as Error).message}`,
+            });
+          }
+          requirementPin = `${reqId}@${reqVer}`;
+        }
         try {
           const ev = evidence.create({
             taskId: id,
@@ -336,9 +369,11 @@ const server = createServer(async (req, res) => {
             title: String(b['title']),
             payload: (b['payload'] as Record<string, unknown>) ?? {},
             createdBy: String(b['createdBy'] ?? 'human'),
+            requirementVersion: requirementPin,
           });
           audit.record(String(b['createdBy'] ?? 'human'), 'EVIDENCE_ATTACHED', 'evidence', ev.id, {
             taskId: id, type: ev.type,
+            ...(requirementPin ? { requirementVersion: requirementPin } : {}),
           });
           return json(res, 201, ev);
         } catch (e) {

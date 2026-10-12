@@ -2,9 +2,15 @@
  * Deterministic model routing — spec §30, honoring §29 (shared ChatGPT plan pool).
  *
  * Rules, applied in order:
- *  1. Hard constraints filter the catalog: privacy=sensitive → local models
- *     only; needsVision → vision-capable only; requiredTools → tool-capable
- *     only; contextNeeded → models with a large enough context window;
+ *  1. Hard constraints filter the catalog: the request's data class
+ *     (privacy) → only models cleared for that class (§26.1/§26.3: a
+ *     model's declared dataClasses govern; undeclared → legacy rule,
+ *     local models only for sensitive); needsVision → vision-capable
+ *     only; requiredTools → tool-capable only; the §26.1 capability
+ *     requirements (needsStructuredOutput / needsStreaming /
+ *     needsCancellation / needsResume) → candidates declaring the
+ *     capability only, with each exclusion named in the reason;
+ *     contextNeeded → models with a large enough context window;
  *     availability=offline → never eligible (INV-29); availability=degraded
  *     stays eligible but is deprioritized and named in the reason. When nothing survives,
  *     route() returns unavailable=true with an explicit report instead of
@@ -29,7 +35,14 @@
  * `reason` records every rule that fired so the decision is auditable.
  */
 import { CONTEXT_RANK, MODEL_CATALOG, POOL_EXHAUSTED_PCT } from './catalog';
-import type { ContextSize, ModelRef, RouteDecision, RouteRequest, TaskType } from './types';
+import type {
+  ContextSize,
+  DataClass,
+  ModelRef,
+  RouteDecision,
+  RouteRequest,
+  TaskType,
+} from './types';
 
 /** Natural best-fit model per task type (§30 examples). */
 const TASK_FIT: Record<TaskType, string> = {
@@ -42,13 +55,92 @@ const TASK_FIT: Record<TaskType, string> = {
   research: 'reasoning-architect',
 };
 
+/**
+ * §26.1/§26.3 — is `m` cleared to see data of class `dc`? A declared
+ * dataClasses list governs (§26.3: routing checks privacy before
+ * optimizing, and nothing may cross a data classification). Undeclared →
+ * the legacy §30 provider rule: local models are cleared for every tier,
+ * shared-pool providers are not cleared for 'sensitive'.
+ */
+export function clearedForDataClass(m: ModelRef, dc: DataClass): boolean {
+  if (m.capabilities.dataClasses !== undefined) {
+    return m.capabilities.dataClasses.includes(dc);
+  }
+  return m.provider === 'local' || dc !== 'sensitive';
+}
+
+interface CapabilityRequirement {
+  /** Human-readable name used in decision reasons. */
+  label: string;
+  /** Does the request demand this capability? */
+  active: (req: RouteRequest) => boolean;
+  /** Does the model declare it? Undeclared §26.1 fields count as absent. */
+  has: (m: ModelRef) => boolean;
+}
+
+/** §26.1 capability requirements a request can impose as hard filters. */
+const CAPABILITY_REQUIREMENTS: readonly CapabilityRequirement[] = [
+  { label: 'vision', active: (r) => r.needsVision, has: (m) => m.capabilities.vision },
+  {
+    label: 'tools',
+    active: (r) => r.requiredTools.length > 0,
+    has: (m) => m.capabilities.tools,
+  },
+  {
+    label: 'structured output',
+    active: (r) => r.needsStructuredOutput === true,
+    has: (m) => m.capabilities.structuredOutput === true,
+  },
+  {
+    label: 'streaming',
+    active: (r) => r.needsStreaming === true,
+    has: (m) => m.capabilities.streaming === true,
+  },
+  {
+    label: 'cancellation',
+    active: (r) => r.needsCancellation === true,
+    has: (m) => m.capabilities.cancellation === true,
+  },
+  {
+    label: 'resume/session',
+    active: (r) => r.needsResume === true,
+    has: (m) => m.capabilities.resume === true,
+  },
+];
+
+/** Labels of the capability requirements `req` imposes that `m` fails. */
+export function capabilityGaps(m: ModelRef, req: RouteRequest): string[] {
+  return CAPABILITY_REQUIREMENTS.filter((c) => c.active(req) && !c.has(m)).map((c) => c.label);
+}
+
+/**
+ * Reason notes naming each ACTIVE §26.1 capability requirement and how
+ * many catalog models it excluded — an exclusion that is not named is a
+ * silent degradation (INV-29 spirit).
+ */
+function capabilityRequirementNotes(
+  catalog: readonly ModelRef[],
+  req: RouteRequest,
+): string[] {
+  const notes: string[] = [];
+  for (const c of CAPABILITY_REQUIREMENTS) {
+    if (!c.active(req)) continue;
+    const lacking = catalog.filter((m) => !c.has(m)).length;
+    if (lacking > 0) {
+      notes.push(
+        `capability requirement ${c.label} (§26.1): ${lacking} of ${catalog.length} catalog models lack it and were excluded`,
+      );
+    }
+  }
+  return notes;
+}
+
 function satisfiesHardConstraints(m: ModelRef, req: RouteRequest): boolean {
   // INV-29: an offline model is never eligible — not as primary, not as a
   // silent fallback. Unavailability is reported explicitly by route().
   if (m.availability === 'offline') return false;
-  if (req.privacy === 'sensitive' && m.provider !== 'local') return false;
-  if (req.needsVision && !m.capabilities.vision) return false;
-  if (req.requiredTools.length > 0 && !m.capabilities.tools) return false;
+  if (!clearedForDataClass(m, req.privacy)) return false;
+  if (capabilityGaps(m, req).length > 0) return false;
   if (CONTEXT_RANK[m.capabilities.maxContext] < CONTEXT_RANK[req.contextNeeded]) return false;
   return true;
 }
@@ -111,6 +203,7 @@ export function route(
   const reasons: string[] = [];
   const poolExhausted = request.currentUsage.usedPct >= POOL_EXHAUSTED_PCT;
 
+  const capNotes = capabilityRequirementNotes(catalog, request);
   const eligible = catalog.filter((m) => satisfiesHardConstraints(m, request));
   // INV-29: no silent degradation. When nothing is eligible (e.g. every
   // candidate is offline), report unavailability explicitly instead of
@@ -121,14 +214,16 @@ export function route(
       catalog.length > 0 && offlineCount === catalog.length
         ? `all ${catalog.length} catalog models are offline`
         : `no model satisfied all hard constraints (${offlineCount} of ${catalog.length} offline)`;
+    const capSuffix = capNotes.length > 0 ? `; ${capNotes.join('; ')}` : '';
     return {
       primary: null,
       fallback: null,
       emergency: null,
       unavailable: true,
-      reason: `INV-29: no model available — ${why}; refusing to silently degrade`,
+      reason: `INV-29: no model available — ${why}${capSuffix}; refusing to silently degrade`,
     };
   }
+  reasons.push(...capNotes);
   const pool = eligible;
 
   // §29: the shared 5h pool is one pool across ALL agents. When exhausted,

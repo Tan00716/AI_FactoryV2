@@ -6,12 +6,56 @@
 /** Relative context-window bucket; ordering is small < medium < large. */
 export type ContextSize = 'small' | 'medium' | 'large';
 
-/** What a model can do — the routing-relevant capability surface. */
+/**
+ * Data classification tiers, most → least sensitive (§26.1 允许数据分类 /
+ * Privacy; §26.3: routing checks capability + privacy before optimizing,
+ * and a fallback must never cross a data classification). Same vocabulary
+ * as RouteRequest.privacy.
+ */
+export type DataClass = 'public' | 'internal' | 'sensitive';
+
+/** What a model can do — the routing-relevant capability surface (§26.1). */
 export interface ModelCapabilities {
+  /** §26.1 Reasoning 设置. A boolean on purpose: the spec forbids treating
+   *  provider reasoning strings/levels as cross-provider equivalents. */
   reasoning: boolean;
+  /** §26.1 Vision. */
   vision: boolean;
+  /** §26.1 工具调用 (tool calling). */
   tools: boolean;
+  /** §26.1 Context (window bucket, not a token count). */
   maxContext: ContextSize;
+  /**
+   * §26.1 结构化输出 (structured output). Optional at the type level so
+   * ModelRef literals elsewhere in the repo keep compiling; an undeclared
+   * field is treated conservatively by the router as NOT capable.
+   */
+  structuredOutput?: boolean;
+  /** §26.1 Streaming. Undeclared → treated as not capable. */
+  streaming?: boolean;
+  /** §26.1 Cancellation (an in-flight turn can be cancelled). Undeclared → not capable. */
+  cancellation?: boolean;
+  /** §26.1 Resume/Session (a session can be resumed/continued). Undeclared → not capable. */
+  resume?: boolean;
+  /**
+   * §26.1 允许数据分类 / Privacy — the data classes this model is cleared
+   * to see. Undeclared → the router falls back to the legacy provider rule
+   * (local models cleared for every tier; shared-pool providers not
+   * cleared for 'sensitive'), matching the §30 behavior that predates
+   * this field.
+   */
+  dataClasses?: readonly DataClass[];
+  /**
+   * §26.1 Quota Bucket — the limit bucket this model draws from
+   * (cf. §27.1: quota is recorded per Provider Account / Workspace /
+   * Limit Bucket). Undeclared → unknown; never invent a bucket.
+   */
+  quotaBucket?: string;
+  /**
+   * §26.1 Supported Host — deployment hosts the model can run on
+   * (e.g. 'local', 'shared-pool'). Undeclared → unknown (empty in views).
+   */
+  supportedHosts?: readonly string[];
 }
 
 /**
@@ -57,10 +101,23 @@ export interface RouteRequest {
   latencyPref: 'low' | 'high';
   /** 'low' = prefer cheap; 'high' = cost is not a concern. */
   costPref: 'low' | 'high';
-  privacy: 'public' | 'internal' | 'sensitive';
+  privacy: DataClass;
   needsReasoning: boolean;
   contextNeeded: ContextSize;
   needsVision: boolean;
+  /**
+   * §26.1 — optional capability requirements. Absent/false = not
+   * required (pre-§26.1 request shapes behave exactly as before). When
+   * set, candidates lacking the capability are hard-filtered and the
+   * exclusion is named in the decision reason.
+   */
+  needsStructuredOutput?: boolean;
+  /** §26.1 — the primary must be able to stream its output. */
+  needsStreaming?: boolean;
+  /** §26.1 — the primary's in-flight turns must be cancellable. */
+  needsCancellation?: boolean;
+  /** §26.1 — the primary must support resume/session continuation. */
+  needsResume?: boolean;
   /**
    * §29 — current usage of the shared ChatGPT plan pool as a percentage.
    * The pool is SHARED across agents (single 5h window), so the router must
@@ -91,6 +148,10 @@ export interface FallbackCompatibilityVerdict {
  * §27.2 — decides whether `candidate` may serve as fallback for
  * `primary` under `request`: capability, privacy/data-class, budget and
  * permission compatibility (the dimensions of quota's FallbackCheck).
+ * The capability dimension is read off the candidate's full ModelRef,
+ * which since Batch 8 carries the complete §26.1 metadata (structured
+ * output, streaming, cancellation, resume, data classes, quota bucket,
+ * supported hosts) — checker implementations may consult all of it.
  * Returning compatible=false must carry the reasons — a rejected fallback
  * is named in the decision reason, never silently skipped.
  */

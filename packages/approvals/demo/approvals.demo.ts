@@ -4,7 +4,8 @@
  * Shows: (1) a normal deploy.prod approval flow, (2) request() refusing a
  * BLOCKED action (secret.write) — DEF-001 fix 1, (3) decide() rejecting a
  * rogue-agent self-approval — DEF-001 fix 2, (4) invalidation when the bound
- * context changes after approval.
+ * context changes after approval, (5) a §23.4 exception grant turning a gate
+ * failure into WAIVED (never PASS), with BLOCKED actions non-waivable.
  *
  * Run: node packages/approvals/dist/demo/approvals.demo.js
  */
@@ -12,6 +13,7 @@ import {
   ApprovalBlockedError,
   ApprovalDeciderNotAuthorizedError,
   ApprovalManager,
+  ExceptionGrantDeniedError,
   InMemoryApprovalStore,
 } from '../src/index';
 
@@ -76,5 +78,38 @@ try {
 } catch {
   console.log('  evidence payload correctly refused for INVALIDATED approval');
 }
+
+console.log('== 5. §23.4 exception grant: gate failure becomes WAIVED, never PASS ==');
+const gateBefore = manager.evaluateApprovalGate({ action: 'deploy.prod', task_id: 'task-99' });
+console.log('  gate before grant:', gateBefore.verdict, '|', gateBefore.failure_reason);
+const grant = manager.grantException({
+  action: 'deploy.prod',
+  task_id: 'task-99',
+  granted_by: 'human:cto',
+  reason: 'hotfix window — canary already green in UAT',
+  ttlMs: 30 * 60 * 1000,
+});
+console.log('  grant created:', grant.id.slice(0, 8) + '…', '| expires:', grant.expires_at);
+const gateAfter = manager.evaluateApprovalGate({ action: 'deploy.prod', task_id: 'task-99' });
+console.log('  gate after grant:', gateAfter.verdict, '| failure kept:', gateAfter.failure_reason);
+try {
+  manager.grantException({
+    action: 'secret.write',
+    granted_by: 'human:cto',
+    reason: 'trying to waive a non-waivable invariant',
+  });
+  console.log('  !! BLOCKED action granted — bug');
+} catch (e) {
+  console.log(
+    '  BLOCKED action grant refused:',
+    (e as Error).name,
+    '-',
+    e instanceof ExceptionGrantDeniedError,
+  );
+}
+console.log(
+  '  gate for secret.write:',
+  manager.evaluateApprovalGate({ action: 'secret.write', task_id: 'task-99' }).verdict,
+);
 
 console.log('\ndone.');

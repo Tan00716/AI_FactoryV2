@@ -27,6 +27,15 @@ export const TOOL_APPROVAL_LEVELS: Record<string, ApprovalLevel> = {
   'git.commit': 'AUTO',
 };
 
+/**
+ * §23.4 non-waivable set: actions policy marks BLOCKED. These are invariants,
+ * not rules — no approval and no Exception Grant can ever allow them
+ * (see exceptions.ts). Derived from the map above so the two never drift.
+ */
+export const BLOCKED_ACTIONS: readonly string[] = Object.keys(
+  TOOL_APPROVAL_LEVELS,
+).filter((a) => TOOL_APPROVAL_LEVELS[a] === 'BLOCKED');
+
 export interface ActionEvaluation {
   level: ApprovalLevel;
   requiresApproval: boolean;
