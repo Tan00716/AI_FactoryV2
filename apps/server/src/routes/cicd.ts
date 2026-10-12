@@ -18,9 +18,10 @@
  * @ai-factory/approvals, so the Approvals panel is the human gate (§41 Mode A).
  *
  * The coordinator wires this in: handleCicdRoutes(req, res, url, ctx).
- * PROTOTYPE NOTE: pipelines/deployments/snapshots are in-memory (lost on
- * restart); stage handlers, deployFn and smokeFn are simulated. Real projects
- * would inject their own handlers into PipelineRunner/DeploymentService.
+ * PROTOTYPE NOTE: pipelines/deployments/snapshots/parked deployment jobs
+ * are in-memory (lost on restart); stage handlers, deployFn and smokeFn
+ * are simulated. Real projects would inject their own handlers into
+ * PipelineRunner/DeploymentService.
  *
  * Archived-project write guard (Batch 15, shared decision in
  * routes/project-guard.ts): every POST here binds to a task — at
@@ -50,6 +51,7 @@ import {
   getEnvironment,
   rollback,
   type Deployment,
+  type DeploymentJobRegistry,
   type EnvironmentName,
   type Pipeline,
 } from '@ai-factory/cicd';
@@ -88,6 +90,22 @@ interface PipelineRecord {
 const pipelines = new Map<string, PipelineRecord>();
 const deployments = new Map<string, { pipelineId: string; deployment: Deployment }>();
 const snapshotStore = new SnapshotStore();
+
+/**
+ * Parked deployment jobs, shared by every DeploymentService this module
+ * constructs (Batch 16 fix). Handlers build a fresh service per request,
+ * but a job parked by POST /deploy must still be there when POST
+ * /approve — a different request, a different service instance — calls
+ * resume(): with a per-instance registry the approve always threw
+ * DeploymentNotFoundError and the deployment stayed AWAITING_APPROVAL
+ * forever. The registry therefore lives at module level, alongside
+ * `pipelines` / `deployments` / `snapshotStore`, and is injected into
+ * each instance. It is in-memory like the rest of that state: a server
+ * restart loses pipelines, deployments, snapshots and parked jobs
+ * together, and an approve after a restart fails explicitly (404
+ * pipeline not found above) instead of silently dropping the deploy.
+ */
+const deploymentJobs: DeploymentJobRegistry = new Map();
 
 /**
  * Read-only snapshot of all deployments for cross-module aggregation
@@ -252,6 +270,7 @@ export async function handleCicdRoutes(
     if (archivedRefusal(ctx, res, taskId)) return true;
     const env = getEnvironment(body['environment']);
     const service = new DeploymentService({
+      jobs: deploymentJobs,
       evidence: (type, payload) => {
         const evidenceType = toEvidenceType(type);
         if (!evidenceType) return;
@@ -362,6 +381,7 @@ export async function handleCicdRoutes(
       return ctx.json(res, 409, { error: `approval is ${approval.status}, not APPROVED` }), true;
     }
     const service = new DeploymentService({
+      jobs: deploymentJobs,
       audit: (action, details) =>
         ctx.audit.record(actor, action, 'deployment', parked.id, details),
     });

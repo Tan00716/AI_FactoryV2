@@ -7,11 +7,34 @@ export {
   type GitStatus,
   type BranchInfo,
   type MergeResult,
+  type MergePreview,
   type CommitOptions,
   type LogEntry,
   type MutatingOptions,
   type GitAuditHook,
 } from './git';
+export {
+  GitBroker,
+  GitBrokerDeniedError,
+  defaultGitBrokerPolicy,
+  GIT_ACTIONS,
+  type GitAction,
+  type GitBrokerContext,
+  type GitBrokerDecision,
+  type GitBrokerPolicy,
+  type GitBrokerAuditHook,
+  type GitBrokerOptions,
+} from './broker';
+export {
+  MergeQueue,
+  type MergeQueueEntry,
+  type MergeQueueEntryStatus,
+  type MergeQueueCheck,
+  type MergeCandidateVerification,
+  type MergeCandidateVerifier,
+  type MergeQueueHooks,
+  type MergeQueueOptions,
+} from './mergeQueue';
 export {
   taskBranchName,
   ensureTaskBranch,

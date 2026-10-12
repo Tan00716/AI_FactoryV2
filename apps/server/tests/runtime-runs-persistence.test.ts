@@ -166,10 +166,26 @@ describe('runtime run records across restarts (F4)', () => {
         assert.deepEqual(got.body, before);
 
         const listAfter = await call(world2, 'GET', '/api/runtime/runs');
-        assert.deepEqual(
-          (listAfter.body as { runs: RuntimeRunRecord[] }).runs,
-          [before],
-        );
+        // Batch 16 extended the list rows additively: each row is the
+        // record plus the Observatory join (live / checkpointCount /
+        // projectId / projectName / manifest summary — values pinned
+        // by runtime-runs-list.test.ts). F4's claim is about the
+        // RECORD's durability, so the comparison projects the row
+        // back to the record fields; the single-run GET above keeps
+        // the bare record shape and is compared whole.
+        const listRows = (
+          listAfter.body as { runs: Array<Record<string, unknown>> }
+        ).runs;
+        assert.equal(listRows.length, 1);
+        const {
+          live: _live,
+          checkpointCount: _checkpointCount,
+          projectId: _projectId,
+          projectName: _projectName,
+          manifest: _manifest,
+          ...recordFields
+        } = listRows[0];
+        assert.deepEqual([recordFields], [before]);
 
         // The accessor the Activity aggregation (§67–§68) reads.
         assert.deepEqual(getRuntimeRun(runId), before);

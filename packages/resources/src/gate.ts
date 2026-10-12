@@ -4,8 +4,16 @@
  * acquire() returns a promise that resolves with a release() function once
  * the agent holds a slot. When the gate is full, waiters queue FIFO; a
  * higher-priority task (§93: P0 production incident … P4 research) jumps
- * ahead in the queue — it never preempts an already-running agent, it only
- * reorders the waiting line.
+ * ahead in the queue — the gate itself only reorders the waiting line.
+ *
+ * §21.2 preemption note (G-33): SPEC_V2 §21.2 requires that a P0 may
+ * preempt development resources AT A SAFE POINT. That decision lives in
+ * the Scheduler (packages/orchestrator), which issues a preemption
+ * directive; the runner stops the preempted agent at its safe point and
+ * calls this gate's release(). The gate never forcibly evicts a holder —
+ * it cannot know where safe points are — so the earlier blanket claim
+ * that preemption "never" happens was wrong at the system level and has
+ * been removed: preemption happens, one layer up, never mid-transaction.
  *
  * Pair with BudgetTracker.recordAgents() to also enforce the per-task
  * maxConcurrentAgents budget dimension.

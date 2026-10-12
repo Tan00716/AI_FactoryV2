@@ -26,7 +26,7 @@ import type { Permission } from '@ai-factory/core';
 import type { RouteContext } from './context';
 
 const VALID_KINDS = new Set(['bugfix', 'feature', 'refactor', 'research']);
-const VALID_PRIORITIES = new Set(['P0', 'P1', 'P2', 'P3']);
+const VALID_PRIORITIES = new Set(['P0', 'P1', 'P2', 'P3', 'P4']);
 
 export async function handleOrchestratorRoutes(
   req: IncomingMessage,
@@ -89,7 +89,7 @@ export async function handleOrchestratorRoutes(
       const r = it as Record<string, unknown>;
       scheduler.enqueue({
         id: r['id'] as string,
-        priority: r['priority'] as 'P0' | 'P1' | 'P2' | 'P3',
+        priority: r['priority'] as 'P0' | 'P1' | 'P2' | 'P3' | 'P4',
         dependsOn: Array.isArray(r['dependsOn'])
           ? (r['dependsOn'] as string[])
           : [],

@@ -160,7 +160,7 @@ export interface ResumeInput {
   approvalId: string;
 }
 
-interface StoredJob {
+export interface StoredJob {
   deployment: Deployment;
   environment: Environment;
   snapshot: Snapshot;
@@ -171,16 +171,35 @@ interface StoredJob {
   audit: AuditFn;
 }
 
+/**
+ * Registry of parked/in-flight deployment jobs, keyed by deployment id.
+ *
+ * A job is more than the Deployment record: it carries the deploy/smoke
+ * functions and the evidence/audit callbacks captured at deploy time, so
+ * it can never be reconstructed from persisted data alone. Callers that
+ * construct a fresh DeploymentService per unit of work (the HTTP routes
+ * build one per request) MUST inject one shared registry — otherwise a
+ * deployment parked by deploy() lives in that instance's private map
+ * and resume() on any other instance throws DeploymentNotFoundError.
+ * Standalone users keep the default: one private registry per instance.
+ * The registry is in-memory either way; sharing it fixes cross-request
+ * resume within a process, not survival across a process restart.
+ */
+export type DeploymentJobRegistry = Map<string, StoredJob>;
+
 function noop(): void {
   // intentional
 }
 
 export class DeploymentService {
-  private readonly jobs = new Map<string, StoredJob>();
+  private readonly jobs: DeploymentJobRegistry;
   private readonly evidence: EvidenceFn;
   private readonly audit: AuditFn;
 
-  constructor(opts: { evidence?: EvidenceFn; audit?: AuditFn } = {}) {
+  constructor(
+    opts: { evidence?: EvidenceFn; audit?: AuditFn; jobs?: DeploymentJobRegistry } = {},
+  ) {
+    this.jobs = opts.jobs ?? new Map();
     this.evidence = opts.evidence ?? noop;
     this.audit = opts.audit ?? noop;
   }

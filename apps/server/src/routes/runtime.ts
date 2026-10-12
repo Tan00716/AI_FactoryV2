@@ -3,7 +3,10 @@
  *
  *  POST /api/runtime/runs        {agentId, taskId, script?, routeRequest?}
  *                               → executes an agent loop with the StubAdapter
- *  GET  /api/runtime/runs        list runs
+ *  GET  /api/runtime/runs        list runs — each record joined server-side
+ *                               with its manifest's key columns, the live
+ *                               checkpoint count, the process-live flag and
+ *                               the resolved project (Batch 16, below)
  *  GET  /api/runtime/runs/:id    one run
  *  GET  /api/runtime/runs/:id/checkpoints         the run's §28.3 checkpoints
  *  GET  /api/runtime/runs/:id/checkpoints/latest  the resume point
@@ -1151,6 +1154,80 @@ function slim(r: RuntimeRunRecord) {
   return r;
 }
 
+/**
+ * Observatory list row (Batch 16) — the run record plus the joins a
+ * global runs view needs, computed HERE so clients never fan out
+ * N+1 per-run fetches to assemble a list:
+ *
+ *  - `live` — the run is executing in THIS process right now
+ *    (liveRunIds). Together with the record's status this is what
+ *    distinguishes a genuinely running loop (RUNNING + live) from an
+ *    interrupted leftover (RUNNING + not live: the process that ran
+ *    it is gone; the record is served as-is, never reaped).
+ *  - `checkpointCount` — the checkpoint log's CURRENT count for the
+ *    run. Read live, not from the manifest: a manifest's checkpoints
+ *    block is a finalization snapshot and stays null while the run
+ *    is still going.
+ *  - `projectId` / `projectName` — the run's project: the manifest's
+ *    creation-time snapshot first (it is the run's own record of
+ *    where it ran); for a pre-manifest legacy run, resolved from the
+ *    task's current record. Null when neither resolves (the task is
+ *    gone and no manifest exists) — reported as null, never guessed.
+ *  - `manifest` — the manifest's KEY COLUMNS only (model + source,
+ *    terminal accounting, intent buckets, evidence count, budget
+ *    usage), or null for a legacy run: an honest absence, the same
+ *    stance as the manifest endpoint's 404. The full manifest (grant,
+ *    budget limits, context hash, intent ids) stays on
+ *    GET /:id/manifest — the list does not duplicate it.
+ *
+ * The single-run GET keeps the bare record shape (`slim`): existing
+ * consumers pin it field-for-field, and the detail surfaces (run,
+ * manifest, checkpoints) already exist per run.
+ */
+function listRow(ctx: RouteContext, r: RuntimeRunRecord) {
+  const m = manifestStore.get(r.id);
+  let projectId: string | null = m?.projectId ?? null;
+  if (projectId === null) {
+    try {
+      projectId = ctx.tasks.get(r.taskId).projectId;
+    } catch {
+      projectId = null;
+    }
+  }
+  let projectName: string | null = null;
+  if (projectId !== null) {
+    try {
+      projectName = ctx.fdb?.getProject(projectId)?.name ?? null;
+    } catch {
+      projectName = null;
+    }
+  }
+  return {
+    ...r,
+    live: liveRunIds.has(r.id),
+    checkpointCount: checkpointLog.list(r.id).length,
+    projectId,
+    projectName,
+    manifest: m
+      ? {
+          status: m.status,
+          outcome: m.outcome,
+          finishedAt: m.finishedAt,
+          error: m.error,
+          steps: m.steps,
+          driverKind: m.driver.kind,
+          adapter: m.driver.adapter,
+          model: m.model,
+          modelSource: m.modelSource,
+          budgetUsage: m.budgetUsage,
+          intentsTotal: m.intents?.total ?? null,
+          intentsByStatus: m.intents?.byStatus ?? null,
+          evidenceCount: m.evidence?.count ?? null,
+        }
+      : null,
+  };
+}
+
 export async function handleRuntimeRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1162,7 +1239,7 @@ export async function handleRuntimeRoutes(
   if (!path.startsWith('/api/runtime/')) return false;
 
   if (method === 'GET' && path === '/api/runtime/runs') {
-    return ctx.json(res, 200, { runs: runStore.list().map(slim) }), true;
+    return ctx.json(res, 200, { runs: runStore.list().map((r) => listRow(ctx, r)) }), true;
   }
 
   const one = path.match(/^\/api\/runtime\/runs\/([^/]+)$/);

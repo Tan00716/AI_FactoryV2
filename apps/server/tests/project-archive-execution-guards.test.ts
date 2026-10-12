@@ -22,15 +22,15 @@
  * operations (POST /api/git/branch, /checkout — no task binding):
  * they keep working while the project is archived.
  *
- * Known pre-existing defect this file does NOT fix (out of scope,
- * Batch 15 only wires the guard): /pipelines/:id/approve can never
- * complete a resume even for an ACTIVE project — each cicd handler
- * constructs a fresh DeploymentService, and the parked job lives in
- * the instance the /deploy request created. So while active, approve
- * answers 409 WITHOUT the PROJECT_ARCHIVED code (guard passes
- * through; the resume itself fails downstream). The guard probes
- * below assert exactly that distinction instead of pretending the
- * resume works.
+ * History: when this file was written (Batch 15), /pipelines/:id/
+ * approve could never complete a resume even for an ACTIVE project —
+ * each cicd handler constructed a fresh DeploymentService, and the
+ * parked job lived in the instance the /deploy request created — so
+ * the active-phase probes could only pin "not a PROJECT_ARCHIVED
+ * refusal". Batch 16 fixed that defect (parked jobs live in a
+ * module-level registry shared by every service instance), and the
+ * probes below now assert the real thing: approve while active
+ * resumes the parked deployment to SUCCEEDED.
  *
  * Real compiled server, one boot over a temp DB, plus a real temp
  * git repository for the git surface. The workspace must be built
@@ -275,23 +275,47 @@ describe('project archive guard — pipelines & git execution surfaces (Batch 15
       });
       assert.equal(decision.status, 200);
 
-      // Approve while ACTIVE: the archive guard must NOT fire. The
-      // resume itself hits the pre-existing per-instance jobs defect
-      // (see header), so we pin "not a PROJECT_ARCHIVED refusal" and
-      // the deployment remaining parked — not a 200.
+      // Approve while ACTIVE: the archive guard must NOT fire, and
+      // since Batch 16 the resume itself completes — the parked PROD
+      // deployment runs to SUCCEEDED. (Batch 15 could only pin "not a
+      // PROJECT_ARCHIVED refusal" here; the assertion was upgraded
+      // when the per-instance jobs defect was fixed, see header.)
       const approveActive = await api(port, 'POST', `/api/pipelines/${pipelineId}/approve`, {
         approvalId,
       });
-      assert.notEqual(approveActive.body['code'], 'PROJECT_ARCHIVED');
+      assert.equal(approveActive.status, 200);
+      assert.equal(
+        (approveActive.body['deployment'] as Record<string, unknown>)['status'],
+        'SUCCEEDED',
+      );
       const depsActive = await pipelineDeployments(pipelineId);
       assert.equal(
         depsActive.find((d) => d['environment'] === 'PROD')?.['status'],
-        'AWAITING_APPROVAL',
+        'SUCCEEDED',
       );
 
+      // Park a SECOND PROD deployment so the archived phase has a
+      // live parked deployment to probe approve/rollback against.
+      const depProd2 = await api(port, 'POST', `/api/pipelines/${pipelineId}/deploy`, {
+        environment: 'PROD',
+        taskId: tid,
+        actor: 'deploy-bot',
+      });
+      assert.equal(depProd2.status, 200);
+      assert.ok(depProd2.body['pendingApproval']);
+      const prod2Id = (depProd2.body['deployment'] as Record<string, unknown>)['id'] as unknown as string;
+      const approval2 = depProd2.body['approval'] as unknown as Record<string, unknown>;
+      const approvalId2 = approval2['approval_id'] as string;
+      assert.equal(await deploymentCount(), 3);
+      const decision2 = await api(port, 'POST', `/api/approvals/${approvalId2}/decision`, {
+        approved: true,
+        decided_by: 'human',
+      });
+      assert.equal(decision2.status, 200);
+
       // Evidence baseline for the archived phase, taken only now:
-      // the approval DECISION above auto-attaches an `approval`
-      // evidence record to the task, so any earlier total is stale.
+      // the approval DECISIONs above auto-attach `approval` evidence
+      // records to the task, so any earlier total is stale.
       const evPhase1 = await evidenceTotal();
 
       // --------------------------------------------- phase 2: archived
@@ -350,16 +374,16 @@ describe('project archive guard — pipelines & git execution surfaces (Batch 15
         taskId: tid,
       });
       assertArchivedRefusal(depArchived, pid);
-      assert.equal(await deploymentCount(), 2, 'no deployment was created');
+      assert.equal(await deploymentCount(), 3, 'no deployment was created');
       assert.equal(await evidenceTotal(), evPhase1);
 
       const approveArchived = await api(port, 'POST', `/api/pipelines/${pipelineId}/approve`, {
-        approvalId,
+        approvalId: approvalId2,
       });
       assertArchivedRefusal(approveArchived, pid);
       const depsArchived = await pipelineDeployments(pipelineId);
       assert.equal(
-        depsArchived.find((d) => d['environment'] === 'PROD')?.['status'],
+        depsArchived.find((d) => d['id'] === prod2Id)?.['status'],
         'AWAITING_APPROVAL',
         'parked deployment was not resumed',
       );
@@ -407,12 +431,16 @@ describe('project archive guard — pipelines & git execution surfaces (Batch 15
       const run2 = await api(port, 'POST', `/api/pipelines/${pl2.body['id'] as unknown as string}/run`, {});
       assert.equal(run2.status, 200);
 
-      // Guard lifted on approve (still not PROJECT_ARCHIVED; the
-      // downstream resume defect is pre-existing, see header).
+      // Guard lifted on approve: the second parked PROD deployment
+      // (approved ticket from phase 1) resumes and completes.
       const approveAfter = await api(port, 'POST', `/api/pipelines/${pipelineId}/approve`, {
-        approvalId,
+        approvalId: approvalId2,
       });
-      assert.notEqual(approveAfter.body['code'], 'PROJECT_ARCHIVED');
+      assert.equal(approveAfter.status, 200);
+      assert.equal(
+        (approveAfter.body['deployment'] as Record<string, unknown>)['status'],
+        'SUCCEEDED',
+      );
 
       const rollback = await api(port, 'POST', `/api/pipelines/${pipelineId}/rollback`, {});
       assert.equal(rollback.status, 200);

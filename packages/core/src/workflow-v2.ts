@@ -56,18 +56,32 @@ export const WORKFLOW_STAGES: ReadonlyArray<WorkflowStage> = [
   'DONE',
 ];
 
-/** SPEC_V2 §18.3 — condition is an independent field, not a stage. */
+/** SPEC_V2 §18.3 — condition is an independent field, not a stage.
+ *  BUDGET_BLOCK / RESOURCE_BLOCK come from §21.4: when a task exceeds its
+ *  budget or its resource capacity, the affected task enters the matching
+ *  block condition instead of the overrun surfacing only as a thrown error
+ *  (G-36). Which of the two applies to a given budget dimension is decided
+ *  by the budget layer (see @ai-factory/resources
+ *  blockConditionForDimension). */
 export type TaskConditionValue =
   | 'ACTIVE'
   | 'WAITING'
   | 'BLOCKED'
   | 'PAUSED'
   | 'QUOTA_LIMITED'
+  | 'BUDGET_BLOCK'
+  | 'RESOURCE_BLOCK'
   | 'REWORK'
   | 'ESCALATED'
   | 'FAILED'
   | 'CANCELLED'
   | 'REJECTED';
+
+/** §21.4 block conditions: the task is stopped by budget/resource limits. */
+export const BLOCK_CONDITIONS: ReadonlyArray<TaskConditionValue> = [
+  'BUDGET_BLOCK',
+  'RESOURCE_BLOCK',
+];
 
 /**
  * Failure-class condition values (G-21). v1 spelled these per stage

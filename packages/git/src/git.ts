@@ -25,12 +25,20 @@ export class GitError extends Error {
   readonly stderr: string;
   /** Exit code from the git process, when known. */
   readonly code: number | undefined;
+  /**
+   * Raw stdout from the git process (may be empty). Some commands report
+   * their result on stdout even when they exit non-zero — notably
+   * `git merge-tree --write-tree`, whose exit 1 means "conflicts" and
+   * whose stdout carries the tree OID and the conflicted file list.
+   */
+  readonly stdout: string;
 
-  constructor(message: string, stderr = '', code?: number) {
+  constructor(message: string, stderr = '', code?: number, stdout = '') {
     super(message);
     this.name = 'GitError';
     this.stderr = stderr;
     this.code = code;
+    this.stdout = stdout;
   }
 }
 
@@ -50,6 +58,16 @@ export interface GitStatus {
 export interface BranchInfo {
   current: string;
   all: string[];
+}
+
+/** Result of a non-destructive merge preview (see GitRepo.mergePreview). */
+export interface MergePreview {
+  /** True when the merge would complete with no conflicts. */
+  clean: boolean;
+  /** OID of the would-be result tree (null when git did not report one). */
+  treeOid: string | null;
+  /** Files that would be left unmerged (empty when clean). */
+  conflicts: string[];
 }
 
 export interface MergeResult {
@@ -122,7 +140,7 @@ export class GitRepo {
       };
       const stderr = (e.stderr ?? '').trim();
       const message = `git ${args.join(' ')} failed: ${stderr || e.message || 'unknown error'}`;
-      const gitError = new GitError(message, stderr, e.code);
+      const gitError = new GitError(message, stderr, e.code, e.stdout ?? '');
       if (opts.allowFailure) throw gitError;
       throw gitError;
     }
@@ -213,6 +231,17 @@ export class GitRepo {
     return (await this.run(['rev-parse', ref])).trim();
   }
 
+  /** Public ref resolution (branch/tag/sha → commit sha), for callers
+   *  that record §36 SHAs without performing an operation themselves. */
+  async resolveRef(ref: string): Promise<string> {
+    return this.revParse(ref);
+  }
+
+  /** Raw `git diff from to` text (both refs, no working tree involved). */
+  async diffBetween(from: string, to: string): Promise<string> {
+    return this.run(['diff', from, to]);
+  }
+
   /** sha256 hex of the `git diff from to` text; null when not computable. */
   private async diffHash(from: string, to: string): Promise<string | null> {
     try {
@@ -254,6 +283,40 @@ export class GitRepo {
         artifactDigest: null,
       },
     };
+  }
+
+  /**
+   * §36 — non-destructive merge preview: what WOULD happen if `source`
+   * were merged into `target`, computed by `git merge-tree --write-tree`
+   * without touching the working tree, the index, or any branch.
+   * `treeOid` is the would-be result tree (the merge candidate's content
+   * identity); on conflict it is the tree git would produce with conflict
+   * markers, `clean` is false and `conflicts` names the unmerged files.
+   * Exit 1 from merge-tree means "conflicts", not an operational failure;
+   * any other failure throws GitError.
+   */
+  async mergePreview(target: string, source: string): Promise<MergePreview> {
+    let out: string;
+    let code = 0;
+    try {
+      out = await this.run(['merge-tree', '--write-tree', '--name-only', target, source]);
+    } catch (err) {
+      if (!(err instanceof GitError) || err.code !== 1) throw err;
+      out = err.stdout;
+      code = 1;
+    }
+    const lines = out.split('\n');
+    const treeOid = (lines[0] ?? '').trim() || null;
+    const conflicts: string[] = [];
+    if (code === 1) {
+      // With --name-only the conflicted file names follow the tree OID,
+      // one per line, up to a blank line; informational messages come after.
+      for (const line of lines.slice(1)) {
+        if (line.trim() === '') break;
+        conflicts.push(line.trim());
+      }
+    }
+    return { clean: code === 0, treeOid, conflicts };
   }
 
   /** §34 — rebase the current branch onto `branch`. */

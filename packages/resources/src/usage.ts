@@ -24,6 +24,9 @@ export interface KindTotals {
   retries: number;
   storageBytes: number;
   processes: number;
+  moneyMinor: number;
+  cpuMs: number;
+  memoryBytes: number;
 }
 
 export interface GroupSummary {
@@ -48,6 +51,9 @@ const zeroTotals = (): KindTotals => ({
   retries: 0,
   storageBytes: 0,
   processes: 0,
+  moneyMinor: 0,
+  cpuMs: 0,
+  memoryBytes: 0,
 });
 
 const newGroup = (): GroupSummary => ({ total: 0, kinds: zeroTotals() });

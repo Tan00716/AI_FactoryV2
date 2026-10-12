@@ -34,7 +34,8 @@
  *   - the task-bound git surface (routes/git.ts, Batch 15):
  *     POST /api/git/commit (when taskId is given — refused before
  *     the commit itself), /api/git/task-branch, /api/git/pr and
- *     /api/git/pr/:id/merge.
+ *     /api/git/pr/:id/merge; Batch 16 adds /api/git/merge-queue
+ *     (refused before the queue entry exists).
  *
  * Deliberately NOT guarded: the pure repository operations in
  * routes/git.ts (POST /api/git/branch, /checkout, /push) — they take

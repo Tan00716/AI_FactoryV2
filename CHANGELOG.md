@@ -10,6 +10,27 @@ AI Factory 的变更，内容与 git 提交历史逐项对应（提交哈希附�
 
 ## [Unreleased] — 0.1.0 开发线
 
+### 2026-10-12 · Batch 16 — 审批 resume 修复 / Git Broker+合并队列 / §21 调度 / Observatory
+
+- Fixed：pipelines approve 的 resume 此前永远找不到 parked 部署
+  （DeploymentService 每请求新建）——parked job 改存可注入的共享注册表，
+  跨请求 approve 真正完成部署；重启后 parked 不可恢复但失败明确（404），
+  已写入 KNOWN_LIMITATIONS。
+- Added：Git Broker（§36）按动作分级管控（策略未允许即拒绝、决策进
+  审计、push/merge/remote 默认必须绑定 task），服务端 git 写路由改经
+  Broker；Merge Queue 串行处理 PR、合并前组装候选并验证（缺省冲突
+  检测），失败出队不阻塞队列。队列状态进程内，与 PrStore 一致。
+- Added：§21 调度硬约束（G-30…G-36 全数落地）：九项前门禁结构化判定、
+  enqueue 权力拒绝、多因子确定性排序（本地口径已标注）、aging、P0
+  安全点抢占指令与迁移保护、预留槽、策略优化器 + 带解释的人工 override
+  拒绝、预算货币/CPU/RAM 维度与原子 reserve→charge→settle/release、
+  超限映射 BUDGET_BLOCK/RESOURCE_BLOCK 任务条件。服务端优先级校验
+  同步对齐 P0–P4。
+- Added：Observatory 桌面页签——全局 run 列表（服务端 join manifest
+  摘要与 live 标记，中断遗留如实标注）、全量 manifest 展开、检查点
+  查看复用、从检查点恢复入口（逐项 checks 结果如实呈现）。
+- 主线复验：构建 0 错误，测试 1931/1931，全部 demo 通过。
+
 ### 2026-10-12 · Batch 15 — 守卫补齐 / RBAC / Checkpoint 恢复 / Run Manifest
 
 - Fixed+Added：归档守卫补齐 pipelines/git 执行面（commit 在发生之前拒绝、

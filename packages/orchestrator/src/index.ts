@@ -11,6 +11,7 @@
  */
 export * from './auto-decomposition';
 export * from './scheduler';
+export * from './optimizer';
 export * from './selection';
 export * from './orchestrator';
 export * from './patterns';

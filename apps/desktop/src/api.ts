@@ -299,6 +299,100 @@ export interface CheckpointV2 {
   capturedAt: number;
 }
 
+/** §24–27 run 记录（GET /api/runtime/runs/:id 的形状）。 */
+export interface RuntimeRunRecord {
+  id: string; agentId: string; taskId: string;
+  status: 'RUNNING' | 'COMPLETED' | 'ESCALATED' | 'FAILED';
+  outcome: string | null; steps: number;
+  evidence: unknown[]; handoffs: string[]; trace: unknown[];
+  createdAt: string; finishedAt: string | null; error: string | null;
+}
+/** Batch 15 Run Manifest 全量（GET /api/runtime/runs/:id/manifest）。
+ *  完成块在 run 终结前为 null；stub 路径下 model 是适配器名并以
+ *  modelSource 标注来源，不冒充真实模型名。 */
+export interface RunManifest {
+  runId: string; agentId: string; taskId: string; projectId: string;
+  createdAt: string;
+  driver: { kind: 'script' | 'default-script'; adapter: string; routeRequestProvided: boolean };
+  grantedTools: string[];
+  budgetLimits: {
+    loop: { maxSteps: number; timeMs: number; maxRetries: number };
+    extended: Record<string, number>;
+  };
+  contextManifestHash: string;
+  status: string; outcome: string | null;
+  finishedAt: string | null; error: string | null; steps: number | null;
+  model: string | null; modelSource: 'model-router' | 'adapter' | null;
+  budgetUsage: {
+    modelCalls: number; toolCalls: number; repairLoops: number;
+    noProgressSteps: number; elapsedMs: number;
+  } | null;
+  intents: {
+    total: number; ids: string[];
+    byStatus: { PENDING: number; EXECUTED: number; FAILED: number; DENIED: number };
+  } | null;
+  evidence: { count: number; byType: Record<string, number> } | null;
+  checkpoints: { count: number; firstStep: number | null; lastStep: number | null } | null;
+}
+/** Batch 16 列表行里的 manifest 关键列（服务端 join；全量 manifest 不
+ *  在列表里重复，经 runManifest 单独取）。无 manifest 的遗留 run 为 null。 */
+export interface RunManifestSummary {
+  status: string; outcome: string | null;
+  finishedAt: string | null; error: string | null; steps: number | null;
+  driverKind: string; adapter: string;
+  model: string | null; modelSource: 'model-router' | 'adapter' | null;
+  budgetUsage: RunManifest['budgetUsage'];
+  intentsTotal: number | null;
+  intentsByStatus: { PENDING: number; EXECUTED: number; FAILED: number; DENIED: number } | null;
+  evidenceCount: number | null;
+}
+/** Batch 16 Observatory 列表行（GET /api/runtime/runs）：run 记录 +
+ *  服务端 join 的 live（本进程是否正在执行）、checkpointCount（日志
+ *  实时计数）、projectId/projectName（不可解析时 null）与 manifest 摘要。 */
+export interface RuntimeRunListItem extends RuntimeRunRecord {
+  live: boolean;
+  checkpointCount: number;
+  projectId: string | null;
+  projectName: string | null;
+  manifest: RunManifestSummary | null;
+}
+/** §28.4 resume 的逐项重校验结果（服务端原样：ok + detail 说明）。 */
+export interface ResumeCheck {
+  ok: boolean; detail: string; [k: string]: unknown;
+}
+/** POST /api/runtime/runs/:id/resume 的响应（成功 202 / 拒绝 404|409 皆
+ *  同一形状族）：成功带新 run 的 id 与 resumedFrom；拒绝带 error/reason
+ *  与逐项 checks。服务端从不复活原 run。 */
+export interface ResumeRunResponse {
+  id?: string;
+  status?: string;
+  resumedFrom?: { runId: string; stepPosition: number; capturedAt: number };
+  resumeOf?: { runId: string; stepPosition: number };
+  checks?: Record<string, ResumeCheck>;
+  budgetBaseline?: Record<string, number>;
+  note?: string;
+  error?: string;
+  reason?: string;
+  runId?: string;
+}
+
+/** 与 req 同样处理 token、但不因 HTTP 状态抛错的版本：resume 的拒绝
+ *  响应体（逐项 checks）是调用方必须原样呈现的内容，不是异常。 */
+async function reqWithStatus<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<{ status: number; body: T }> {
+  const res = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      ...(init?.headers ?? {}),
+    },
+  });
+  return { status: res.status, body: (await res.json()) as T };
+}
+
 /** Batch 15 RBAC 身份（GET /api/auth/whoami）：调用方自己的角色与服务端
  *  认证模式，响应里永不含 token。mode 'open' = 本地单机模式（未配任何
  *  令牌，有效角色 admin）；拉取失败（旧服务端/未连通）由调用方如实显示
@@ -399,4 +493,18 @@ export const api = {
   /** §28.3 某 run 的恢复点（最高步位 checkpoint）；无捕获时服务端 404。 */
   runCheckpointLatest: (runId: string) =>
     req<CheckpointV2>(`/runtime/runs/${encodeURIComponent(runId)}/checkpoints/latest`),
+  /** Batch 16 Observatory：全部 run 的列表行（服务端已 join manifest
+   *  关键列 / checkpoint 实时计数 / live 标记 / 项目，不逐行再拉）。 */
+  runs: () => req<{ runs: RuntimeRunListItem[] }>('/runtime/runs'),
+  /** Batch 15 某 run 的全量 manifest；遗留 run 无 manifest → 服务端
+   *  404 'run manifest not found'，经 req 以错误抛出、原文呈现。 */
+  runManifest: (runId: string) =>
+    req<RunManifest>(`/runtime/runs/${encodeURIComponent(runId)}/manifest`),
+  /** §28.4 从检查点恢复：创建一个新的恢复 run（原 run 不复活）。
+   *  拒绝不是异常——返回状态码 + 响应体，逐项 checks 由调用方原样呈现。 */
+  resumeRun: (runId: string) =>
+    reqWithStatus<ResumeRunResponse>(
+      `/runtime/runs/${encodeURIComponent(runId)}/resume`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
 };

@@ -17,7 +17,7 @@
 
 import { BudgetTracker } from './tracker';
 import { UsageRecorder, SummarizeFilter } from './usage';
-import { UsageRecordKind } from './types';
+import { USAGE_RECORD_KINDS, UsageRecordKind } from './types';
 
 export interface ResourceHttpRequest {
   params: Record<string, string>;
@@ -39,14 +39,7 @@ export interface ResourceRouteDeps {
   usage: UsageRecorder;
 }
 
-const USAGE_KINDS: readonly string[] = [
-  'timeMs',
-  'tokens',
-  'toolCalls',
-  'retries',
-  'storageBytes',
-  'processes',
-];
+const USAGE_KINDS: readonly string[] = USAGE_RECORD_KINDS;
 
 function ok(body: unknown): ResourceHttpResponse {
   return { status: 200, body };
@@ -95,6 +88,10 @@ export function registerResourceRoutes(router: ResourceRouter, deps: ResourceRou
       budget: tracker.getBudget(taskId),
       used: tracker.usage(taskId),
       remaining: tracker.check(taskId),
+      /** §21.4/§27.1: measurements whose amount is unknown, counted
+       *  separately — never folded into `used`. */
+      unknown: tracker.unknownUsage(taskId),
+      reservations: tracker.listReservations(taskId),
       pendingIncreases: tracker.pendingIncreases(taskId),
     });
   });

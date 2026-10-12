@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { authHeaders, type CheckpointV2 } from '../api';
+import { RunCheckpointsSection } from './RunCheckpointsView';
 
 /** Typed client for orchestrator + model-router + runtime endpoints. */
 export interface OrchestrateApi {
@@ -252,56 +253,12 @@ export function OrchestratePanel({
           </p>
         )}
         {run && (
-          <div>
-            <h4>
-              Checkpoints（§28.3）{' '}
-              <button onClick={() => void loadCheckpoints(run.id)}>刷新</button>
-            </h4>
-            {ckptErr && <div className="banner err">checkpoints 不可用：{ckptErr}</div>}
-            {!ckptErr && ckpts === null && <p className="muted">Loading checkpoints…</p>}
-            {!ckptErr && ckpts !== null && ckpts.length === 0 && (
-              <p className="muted">
-                该 run 尚无 checkpoint 捕获（服务端在每个已执行的 loop 步骤边界捕获一次；
-                未执行任何步骤的 run 没有捕获记录）。
-              </p>
-            )}
-            {ckptLatest && (
-              <p className="muted" style={{ fontSize: 12 }}>
-                恢复点（latest）：步位 {ckptLatest.stepPosition} · 捕获于{' '}
-                {new Date(ckptLatest.capturedAt).toLocaleString()} · workflow{' '}
-                {ckptLatest.workflowVersion} · task {ckptLatest.taskVersion} ·
-                context <code>{ckptLatest.contextManifestHash.slice(0, 12)}…</code>
-              </p>
-            )}
-            {ckpts !== null && ckpts.length > 0 && (
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>步位</th><th>捕获时间</th><th>Budget 用量</th>
-                    <th>活跃工具</th><th>待审批</th><th>恢复前置条件</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ckpts.map((c) => (
-                    <tr key={c.stepPosition}>
-                      <td>{c.stepPosition}</td>
-                      <td>{new Date(c.capturedAt).toLocaleString()}</td>
-                      <td>
-                        {Object.keys(c.budgetUsage).length === 0
-                          ? '—'
-                          : Object.entries(c.budgetUsage)
-                              .map(([k, v]) => `${k}=${v}`)
-                              .join(', ')}
-                      </td>
-                      <td>{c.activeTools.length ? c.activeTools.join(', ') : '—'}</td>
-                      <td>{c.pendingApprovals.length ? c.pendingApprovals.join(', ') : '—'}</td>
-                      <td>{c.resumePreconditions.length ? c.resumePreconditions.join('；') : '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <RunCheckpointsSection
+            checkpoints={ckpts}
+            latest={ckptLatest}
+            error={ckptErr}
+            onRefresh={() => void loadCheckpoints(run.id)}
+          />
         )}
       </section>
     </div>

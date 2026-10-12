@@ -5,10 +5,13 @@
  * exposing the aggregates to the Dashboard.
  */
 export * from './types';
-export { BudgetExceededError, BudgetTracker } from './tracker';
+export { BudgetExceededError, BudgetTracker, blockConditionForDimension } from './tracker';
 export type {
+  BudgetBlockCondition,
   BudgetExceededEvent,
   BudgetIncreaseRequest,
+  BudgetReservation,
+  BudgetReservationStatus,
   BudgetTrackerOptions,
   OnExceedHook,
 } from './tracker';
