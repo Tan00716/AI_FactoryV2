@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { authHeaders } from '../api';
 
 /** P3 — spec §61–63, §71–80, §96–97: security, recovery, resources, autonomy, coordination, disputes. */
 const BASE = 'http://localhost:3100/api';
@@ -6,7 +7,7 @@ const BASE = 'http://localhost:3100/api';
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(init?.headers ?? {}) },
   });
   const body = (await res.json()) as T;
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);

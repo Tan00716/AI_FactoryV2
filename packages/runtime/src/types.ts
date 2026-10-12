@@ -138,8 +138,10 @@ export interface RunResult {
   /** §28.1 (G-53) — step intents persisted by this run (runAgent's
    *  default path always wires a StepIntentStore). Covers only intents
    *  created during this run, read back from the harness's effective
-   *  store. The store is in-memory — DB persistence and the startup
-   *  scan are G-59, not done (see docs/KNOWN_LIMITATIONS.md). */
+   *  store. The default store is in-memory; the server injects the
+   *  SQLite-backed SqliteStepIntentStore (packages/db, G-59), which
+   *  persists intents and feeds the startup scan (see
+   *  docs/KNOWN_LIMITATIONS.md). */
   intentSummary?: {
     count: number;
     intentIds: string[];

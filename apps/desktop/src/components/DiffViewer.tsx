@@ -5,6 +5,7 @@
  * GET /api/changes/:id/file?repo=&file= and shows the side-by-side diff.
  */
 import { useEffect, useRef, useState } from 'react';
+import { authHeaders } from '../api';
 import monaco, { languageOf } from '../monacoSetup';
 
 const API_BASE = 'http://localhost:3100/api';
@@ -42,7 +43,7 @@ export function DiffViewer({
     (async () => {
       try {
         const q = `/changes/${encodeURIComponent(changeId)}/file?file=${encodeURIComponent(file)}${repo ? `&repo=${encodeURIComponent(repo)}` : ''}`;
-        const res = await fetch(`${API_BASE}${q}`);
+        const res = await fetch(`${API_BASE}${q}`, { headers: { ...authHeaders() } });
         if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`);
         const body = (await res.json()) as { before: string; after: string };
         if (disposed) return;

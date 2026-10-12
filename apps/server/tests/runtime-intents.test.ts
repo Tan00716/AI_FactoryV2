@@ -14,13 +14,15 @@
  *
  * Why test 2 configures toolPermissions instead of going through the
  * route's own toolset: the route's toy tools (echo/add) are not in the
- * harness's DEFAULT_TOOL_PERMISSIONS and the route passes no
- * toolPermissions override, so the fail-closed gate denies them before
- * any intent is persisted (checkPermission precedes persistIntent in
- * Harness.runTool). That is pre-existing route behavior — the gate
- * working as designed — not something this wiring changes. Test 2 uses
- * the harness's supported override, exactly as runtime's own harness
- * tests do, with the same store object index.ts injects.
+ * harness's DEFAULT_TOOL_PERMISSIONS, so the fail-closed gate denies
+ * them before any intent is persisted (checkPermission precedes
+ * persistIntent in Harness.runTool) unless the operator allowlists them
+ * via FACTORY_RUNTIME_TOOLS (Batch 10-2 — see
+ * runtime-tools-allowlist.test.ts). With the env unset — as in this
+ * file — the denial is the route's behavior: the gate working as
+ * designed, not something this wiring changes. Test 2 uses the
+ * harness's supported override directly, exactly as runtime's own
+ * harness tests do, with the same store object index.ts injects.
  *
  * Imports the route from src (like watchdog-routes.test.ts); the route
  * module's value imports are package names + builtins only, which

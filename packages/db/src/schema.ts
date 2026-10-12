@@ -231,4 +231,30 @@ CREATE TABLE IF NOT EXISTS step_intents (
 );
 CREATE INDEX IF NOT EXISTS idx_step_intents_run ON step_intents (run_id);
 CREATE INDEX IF NOT EXISTS idx_step_intents_status ON step_intents (status);
+
+-- SPEC v2 §28.2 (G-59): external operation ledger — PREPARED →
+-- DISPATCHED → CONFIRMED_SUCCEEDED | CONFIRMED_FAILED | UNKNOWN.
+-- Timestamps are epoch milliseconds (the runtime ExternalOperation
+-- shape), not ISO text. Optional lifecycle fields stay NULL until the
+-- state machine sets them; read-back keeps unset fields ABSENT.
+-- Rows a dead process left non-terminal are the startup reconcile's
+-- input (§28.2): classified at boot, never blindly replayed.
+-- New table: CREATE TABLE IF NOT EXISTS covers old databases on open.
+CREATE TABLE IF NOT EXISTS external_operations (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  logical_action TEXT NOT NULL,
+  candidate_digest TEXT NOT NULL,
+  environment TEXT NOT NULL,
+  state TEXT NOT NULL,
+  reversible INTEGER NOT NULL DEFAULT 0,
+  prepared_at INTEGER NOT NULL,
+  dispatched_at INTEGER,
+  confirmed_at INTEGER,
+  ledger_ref TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_external_operations_state
+  ON external_operations (state);
 `;

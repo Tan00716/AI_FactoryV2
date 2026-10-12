@@ -20,6 +20,7 @@ import type { Approval, ApprovalStore } from '@ai-factory/approvals';
 import type { CrossProjectReusable, MemoryEntry } from '@ai-factory/memory';
 import { SCHEMA } from './schema';
 import { SqliteStepIntentStore } from './step-intents';
+import { SqliteOperationStore } from './operations';
 
 const J = {
   parse<T>(s: string | null, fallback: T): T {
@@ -569,6 +570,12 @@ export class FactoryDatabase {
   readonly memory: SqliteMemoryStore;
   /** §28.1 (G-59) — durable step intents; runtime's StepIntentStore on SQLite. */
   readonly stepIntents: SqliteStepIntentStore;
+  /**
+   * §28.2 (G-59) — durable external-operation records; the OperationStore
+   * a runtime OperationLedger is constructed over, so operations survive
+   * restarts and the startup reconcile has something to read.
+   */
+  readonly operations: SqliteOperationStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -587,6 +594,7 @@ export class FactoryDatabase {
     this.approvals = new SqliteApprovalStore(this.db);
     this.memory = new SqliteMemoryStore(this.db);
     this.stepIntents = new SqliteStepIntentStore(this.db);
+    this.operations = new SqliteOperationStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------

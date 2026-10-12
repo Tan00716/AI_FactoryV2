@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { authHeaders } from '../api';
 
 /** Typed client for the QA endpoints (mirrors the req pattern in api.ts). */
 export interface QaAgent {
@@ -64,7 +65,7 @@ const DEFAULT_BASE = 'http://localhost:3100/api';
 async function req<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(init?.headers ?? {}) },
   });
   const body = (await res.json()) as T;
   if (!res.ok) {

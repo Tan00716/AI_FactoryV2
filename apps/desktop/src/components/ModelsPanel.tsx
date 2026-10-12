@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { authHeaders } from '../api';
 
 /**
  * Model Registry — spec §90.
@@ -26,7 +27,7 @@ export interface ModelsApi {
 export function createModelsApi(base = 'http://localhost:3100/api'): ModelsApi {
   async function req<T>(path: string): Promise<T> {
     const res = await fetch(`${base}${path}`, {
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
     });
     const body = (await res.json()) as T;
     if (!res.ok) {

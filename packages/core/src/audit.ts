@@ -12,10 +12,13 @@
  * time as sha256 over the canonical record content (see auditHashInput).
  * Callers can never supply either hash. verifyAuditChain() re-derives the
  * chain and detects tampering with any chained record's content or order.
- * Records written before chaining existed (no hash fields — e.g. rows
- * reloaded from the SQLite store, which persists only the §70 columns) are
- * "legacy": they are skipped by the chain, reported via `legacyCount`, and
- * never by themselves mark the chain broken.
+ * The SQLite store persists reason/result/summary_hash/prev_hash alongside
+ * the §70 columns, so records written through it reload with their chain
+ * links intact and the chain verifies across restarts. Records written
+ * before chaining existed (no hash fields — e.g. rows in an older SQLite
+ * database whose hash columns are NULL) are "legacy": they are skipped by
+ * the chain, reported via `legacyCount`, and never by themselves mark the
+ * chain broken.
  */
 
 import { createHash, randomUUID } from 'crypto';

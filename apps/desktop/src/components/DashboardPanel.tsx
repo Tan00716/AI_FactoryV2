@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { authHeaders } from '../api';
 
 /** Mirrors the Stat / DashboardStats shapes from @ai-factory/dashboard. */
 export interface DashboardStat {
@@ -40,7 +41,7 @@ const DEFAULT_BASE = 'http://localhost:3100/api';
 
 async function req<T>(base: string, path: string): Promise<T> {
   const res = await fetch(`${base}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
   });
   const body = (await res.json()) as T;
   if (!res.ok) {

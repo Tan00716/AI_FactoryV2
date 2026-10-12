@@ -40,7 +40,8 @@ import {
 } from '@ai-factory/core';
 import { FactoryDatabase, seedIfEmpty } from '@ai-factory/db';
 import { NotificationEngine } from '@ai-factory/notifications';
-import type { StepIntentStore } from '@ai-factory/runtime';
+import { OperationLedger } from '@ai-factory/runtime';
+import type { StepIntentStore, TargetLedgerQuery } from '@ai-factory/runtime';
 import type { RouteContext } from './routes/context';
 import { handleGitRoutes } from './routes/git';
 import { handleQaRoutes } from './routes/qa';
@@ -49,7 +50,12 @@ import { handleCicdRoutes } from './routes/cicd';
 import { handleSkillsRoutes } from './routes/skills';
 import { handleMemoryRoutes } from './routes/memory';
 import { handleModelRouterRoutes } from './routes/model-router';
-import { handleRuntimeRoutes } from './routes/runtime';
+import {
+  RUNTIME_TOOLS_ENV,
+  handleRuntimeRoutes,
+  resolveRuntimeToolAllowlist,
+  runtimeToolsStartupError,
+} from './routes/runtime';
 import { handleOrchestratorRoutes } from './routes/orchestrator';
 import { handleWorkforceRoutes } from './routes/workforce';
 import { handleMcpRoutes } from './routes/mcp';
@@ -109,6 +115,17 @@ if (authStartupError) {
   process.exit(1);
 }
 
+// Runtime tool allowlist (FACTORY_RUNTIME_TOOLS; see routes/runtime):
+// an entry naming an unregistered tool is an operator typo — refuse to
+// start (fail-closed, before the DB is opened) instead of silently
+// granting a different tool set than the operator configured.
+const runtimeToolsError = runtimeToolsStartupError();
+if (runtimeToolsError) {
+  console.error(runtimeToolsError);
+  process.exit(1);
+}
+const RUNTIME_TOOL_ALLOWLIST = resolveRuntimeToolAllowlist();
+
 function ensureDir(dbPath: string): void {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 }
@@ -159,6 +176,85 @@ if (interruptedAtStartup.length > 0) {
 const startupIntentScan = {
   at: nowIso(),
   interruptedCount: interruptedAtStartup.length,
+};
+
+/**
+ * §28.2 (G-59) — the external-operation ledger is durable too: the
+ * coordinator constructs it over the SQLite OperationStore from the
+ * FactoryDatabase, so operations a previous process prepared or
+ * dispatched survive the restart instead of vanishing with its memory.
+ * An embedder without a database constructs OperationLedger with no
+ * store and gets the in-memory default — wiring only, no durability.
+ * (No route consumes the ledger yet; it lives at coordinator level
+ * alongside the startup passes below, like the intent scan.)
+ */
+const operationLedger = new OperationLedger({ store: fdb.operations });
+
+/**
+ * Startup reconcile (§28.2): every non-terminal operation in the DB
+ * predates this process — it was left PREPARED / DISPATCHED / UNKNOWN
+ * by a process that died. Each one runs through the ledger's existing
+ * reconcile() before anything else can touch it.
+ *
+ * The target query honestly cannot answer at boot: this server holds
+ * no live handle to the target systems (deploy targets, PR hosts), so
+ * the query reports "not found" for every key. Under §28.2 that yields
+ * exactly the safe dispositions — reversible ⇒ safe-to-retry (the retry
+ * reuses the same idempotency key), irreversible ⇒
+ * needs-manual-recovery — and with an unanswering target reconcile()
+ * adopts nothing and mutates no state (adoption requires a target
+ * answer). So this pass CLASSIFIES and reports; disposition beyond
+ * that (querying a real target ledger, controlled recovery) is an
+ * upper-layer decision, and blind replay never happens here.
+ */
+const UNANSWERABLE_TARGET: TargetLedgerQuery = {
+  findByIdempotencyKey: () => undefined,
+};
+const opReconcileResults = operationLedger
+  .listOperations()
+  .filter((op) => op.state !== 'CONFIRMED_SUCCEEDED' && op.state !== 'CONFIRMED_FAILED')
+  .map((op) => ({ op, result: operationLedger.reconcile(op.id, UNANSWERABLE_TARGET) }));
+const opReconcileCounts = {
+  total: opReconcileResults.length,
+  safeToRetry: opReconcileResults.filter((r) => r.result.action === 'safe-to-retry').length,
+  needsManualRecovery: opReconcileResults.filter(
+    (r) => r.result.action === 'needs-manual-recovery',
+  ).length,
+};
+audit.record(
+  'system',
+  'STARTUP_OPERATION_RECONCILE',
+  'external_operation',
+  'startup-reconcile',
+  {
+    ...opReconcileCounts,
+    target: 'unavailable-at-boot',
+    safeToRetryIds: opReconcileResults
+      .filter((r) => r.result.action === 'safe-to-retry')
+      .map((r) => r.op.id),
+    needsManualRecoveryIds: opReconcileResults
+      .filter((r) => r.result.action === 'needs-manual-recovery')
+      .map((r) => r.op.id),
+  },
+  {
+    result:
+      opReconcileCounts.needsManualRecovery > 0
+        ? 'MANUAL_RECOVERY_REQUIRED'
+        : opReconcileCounts.total > 0
+          ? 'CLASSIFIED'
+          : 'NONE',
+  },
+);
+if (opReconcileCounts.needsManualRecovery > 0) {
+  console.warn(
+    `[ai-factory] startup reconcile: ${opReconcileCounts.needsManualRecovery} external operation(s) need manual recovery (audit: STARTUP_OPERATION_RECONCILE)`,
+  );
+}
+const startupOperationScan = {
+  at: nowIso(),
+  unresolvedCount: opReconcileCounts.total,
+  safeToRetryCount: opReconcileCounts.safeToRetry,
+  needsManualRecoveryCount: opReconcileCounts.needsManualRecovery,
 };
 
 const agents = new AgentRegistry(fdb.agents);
@@ -238,6 +334,10 @@ const server = createServer(async (req, res) => {
     // step intents a previous process left uncommitted when this process
     // booted, and when the scan ran. Live intent state is in the audit
     // record STARTUP_INTERRUPTED_INTENTS and the step_intents table.
+    // The operations block is the §28.2 counterpart: how many external
+    // operations were left non-terminal at boot and how the startup
+    // reconcile classified them (audit: STARTUP_OPERATION_RECONCILE,
+    // table: external_operations).
     if (method === 'GET' && path === '/api/health') {
       return json(res, 200, {
         ok: true,
@@ -246,6 +346,13 @@ const server = createServer(async (req, res) => {
           store: 'sqlite',
           startupScanAt: startupIntentScan.at,
           interruptedAtStartup: startupIntentScan.interruptedCount,
+        },
+        operations: {
+          store: 'sqlite',
+          startupReconcileAt: startupOperationScan.at,
+          unresolvedAtStartup: startupOperationScan.unresolvedCount,
+          safeToRetryAtStartup: startupOperationScan.safeToRetryCount,
+          needsManualRecoveryAtStartup: startupOperationScan.needsManualRecoveryCount,
         },
       });
     }
@@ -543,6 +650,12 @@ server.listen(PORT, HOST, () => {
       `[ai-factory] WARNING: API authentication disabled — ${API_TOKEN_ENV} is not set, ` +
         'so any local process can call this API. Acceptable on the loopback desktop ' +
         'bind only; the server refuses non-loopback binds in this state.',
+    );
+  }
+  if (RUNTIME_TOOL_ALLOWLIST.length > 0) {
+    console.log(
+      `[ai-factory] Runtime tools granted to HTTP runs (${RUNTIME_TOOLS_ENV}): ` +
+        RUNTIME_TOOL_ALLOWLIST.join(', '),
     );
   }
 });

@@ -240,8 +240,11 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
   // the default, and a store the harness was constructed with wins over
   // both (attachIntentStore is a no-op then). The summary is read back
   // from the harness's EFFECTIVE store, so it can never diverge from
-  // what Harness.runTool actually wrote. The store is in-memory only —
-  // DB persistence + startup scan are G-59 (KNOWN_LIMITATIONS.md).
+  // what Harness.runTool actually wrote. The default store created here
+  // is the in-memory StepIntentStore; the server injects the SQLite-backed
+  // SqliteStepIntentStore (packages/db, G-59), so on the server path
+  // intents persist across restarts and the startup scan reports
+  // interrupted ones (see docs/KNOWN_LIMITATIONS.md).
   const intentStore: StepIntentStore =
     options.intentStore ?? harness.intentStore ?? new StepIntentStore(clock);
   harness.attachIntentStore(intentStore);

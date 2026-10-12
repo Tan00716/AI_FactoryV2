@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { authHeaders } from '../api';
 
 /**
  * Activity center — spec §67 (Agent Activity) + §68 (Run / Trace System).
@@ -62,7 +63,7 @@ export interface ActivityApi {
 export function createActivityApi(base = 'http://localhost:3100/api'): ActivityApi {
   async function req<T>(path: string): Promise<T> {
     const res = await fetch(`${base}${path}`, {
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
     });
     const body = (await res.json()) as T;
     if (!res.ok) {

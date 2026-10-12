@@ -89,8 +89,67 @@ export interface ReconcileResult {
   detail: string;
 }
 
+/**
+ * Storage seam for the operation ledger (§28.2, G-59).
+ *
+ * The state machine (transition rules, reconcile verdicts) lives in
+ * OperationLedger and reads/writes ONLY through this interface, in the
+ * exact access pattern the machine uses: point lookups by id and by
+ * idempotency key, whole-record writes after each transition, and a
+ * full listing for startup reconciliation. Implementations must hand
+ * back records the caller may freely mutate (copies, or freshly read
+ * rows): the ledger mutates the record it fetched and then put()s it
+ * back, so a store that returns live internal references would let a
+ * failed transition leak a half-mutated record.
+ */
+export interface OperationStore {
+  getById(id: string): ExternalOperation | undefined;
+  getByIdempotencyKey(key: string): ExternalOperation | undefined;
+  /** Insert a new operation, or replace the stored record with this id. */
+  put(op: ExternalOperation): void;
+  /** Every stored operation, in insertion order. */
+  list(): ExternalOperation[];
+}
+
+/**
+ * Default OperationStore: the original in-process Maps. Nothing here
+ * survives a restart — it exists so embedders without a database keep
+ * the pre-G-59 behavior, and so the ledger's default path is byte-for-
+ * byte the old implementation's semantics (copies out, copies in).
+ */
+export class InMemoryOperationStore implements OperationStore {
+  private readonly ops = new Map<string, ExternalOperation>();
+  private readonly byKey = new Map<string, string>();
+
+  getById(id: string): ExternalOperation | undefined {
+    const op = this.ops.get(id);
+    return op ? { ...op } : undefined;
+  }
+
+  getByIdempotencyKey(key: string): ExternalOperation | undefined {
+    const id = this.byKey.get(key);
+    return id === undefined ? undefined : this.getById(id);
+  }
+
+  put(op: ExternalOperation): void {
+    this.ops.set(op.id, { ...op });
+    this.byKey.set(op.idempotencyKey, op.id);
+  }
+
+  list(): ExternalOperation[] {
+    return [...this.ops.values()].map((op) => ({ ...op }));
+  }
+}
+
 export interface OperationLedgerOptions {
   now?: () => number;
+  /**
+   * Backing store for operation records. Defaults to a fresh
+   * InMemoryOperationStore (pre-G-59 behavior: nothing survives a
+   * restart). Durable deployments inject a persistent implementation
+   * (see SqliteOperationStore in @ai-factory/db).
+   */
+  store?: OperationStore;
 }
 
 /**
@@ -99,12 +158,12 @@ export interface OperationLedgerOptions {
  * and UNKNOWN + irreversible ⇒ controlled/manual recovery, never auto-retry.
  */
 export class OperationLedger {
-  private readonly ops = new Map<string, ExternalOperation>();
-  private readonly byKey = new Map<string, string>();
+  private readonly store: OperationStore;
   private readonly now: () => number;
 
   constructor(opts: OperationLedgerOptions = {}) {
     this.now = opts.now ?? Date.now;
+    this.store = opts.store ?? new InMemoryOperationStore();
   }
 
   /** Idempotency key binds logical action + candidate digest + environment. */
@@ -123,11 +182,8 @@ export class OperationLedger {
       input.candidateDigest,
       input.environment,
     );
-    const existingId = this.byKey.get(key);
-    if (existingId) {
-      const existing = this.ops.get(existingId);
-      if (existing) return { ...existing };
-    }
+    const existing = this.store.getByIdempotencyKey(key);
+    if (existing) return { ...existing };
     const op: ExternalOperation = {
       id: randomUUID(),
       idempotencyKey: key,
@@ -139,8 +195,7 @@ export class OperationLedger {
       preparedAt: this.now(),
       attempts: 0,
     };
-    this.ops.set(op.id, op);
-    this.byKey.set(key, op.id);
+    this.store.put(op);
     return { ...op };
   }
 
@@ -155,6 +210,7 @@ export class OperationLedger {
     op.state = 'DISPATCHED';
     op.dispatchedAt = this.now();
     op.attempts += 1;
+    this.store.put(op);
     return { ...op };
   }
 
@@ -169,6 +225,7 @@ export class OperationLedger {
     op.state = ok ? 'CONFIRMED_SUCCEEDED' : 'CONFIRMED_FAILED';
     op.confirmedAt = this.now();
     if (ledgerRef !== undefined) op.ledgerRef = ledgerRef;
+    this.store.put(op);
     return { ...op };
   }
 
@@ -177,12 +234,26 @@ export class OperationLedger {
     const op = this.require(id);
     op.state = 'UNKNOWN';
     op.lastError = reason;
+    this.store.put(op);
     return { ...op };
   }
 
   get(id: string): ExternalOperation | undefined {
-    const op = this.ops.get(id);
+    const op = this.store.getById(id);
     return op ? { ...op } : undefined;
+  }
+
+  /**
+   * Every operation in the ledger (copies), optionally filtered to one
+   * state. This is the startup-reconcile input: after a restart the
+   * caller lists what a previous process left behind and runs each
+   * non-terminal operation through reconcile().
+   */
+  listOperations(state?: ExternalOpState): ExternalOperation[] {
+    return this.store
+      .list()
+      .filter((op) => state === undefined || op.state === state)
+      .map((op) => ({ ...op }));
   }
 
   /**
@@ -242,7 +313,7 @@ export class OperationLedger {
   }
 
   private require(id: string): ExternalOperation {
-    const op = this.ops.get(id);
+    const op = this.store.getById(id);
     if (!op) throw new FactoryError('OP_NOT_FOUND', `External operation ${id} not found`);
     return op;
   }

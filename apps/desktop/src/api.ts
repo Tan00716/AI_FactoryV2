@@ -16,13 +16,25 @@ function apiToken(): string | null {
   }
 }
 
-async function req<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * Authorization header for the operator API token, or an empty object when
+ * no token is stored. Shared by the panel-local `req` copies (GitPanel,
+ * QaPanel, TerminalPanel, …) so every request to the local server carries
+ * the token once FACTORY_API_TOKEN is enabled server-side. Spread it into a
+ * headers literal — with no token it contributes nothing, so token-less
+ * behavior is unchanged.
+ */
+export function authHeaders(): Record<string, string> {
   const token = apiToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...authHeaders(),
       ...(init?.headers ?? {}),
     },
   });

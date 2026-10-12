@@ -9,6 +9,7 @@
  * Diff views for the Change Review UI (§66) live in DiffViewer.tsx.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { authHeaders } from '../api';
 import monaco, { languageOf } from '../monacoSetup';
 
 const API_BASE = 'http://localhost:3100/api';
@@ -66,7 +67,7 @@ export function EditorPanel() {
   const loadDir = useCallback(async (dir: string) => {
     setDirs((d) => ({ ...d, [dir]: d[dir] ?? { entries: [], expanded: true } }));
     try {
-      const res = await fetch(`${API_BASE}/files?root=${encodeURIComponent(dir)}`);
+      const res = await fetch(`${API_BASE}/files?root=${encodeURIComponent(dir)}`, { headers: { ...authHeaders() } });
       if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`);
       const body = (await res.json()) as { entries: Entry[] };
       setDirs((d) => ({ ...d, [dir]: { entries: body.entries, expanded: true } }));
@@ -95,7 +96,7 @@ export function EditorPanel() {
     setErr(null);
     setStatus(`Opening ${path}…`);
     try {
-      const res = await fetch(`${API_BASE}/file?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`${API_BASE}/file?path=${encodeURIComponent(path)}`, { headers: { ...authHeaders() } });
       if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`);
       const body = (await res.json()) as { content: string };
       const old = editor.getModel();
@@ -119,7 +120,7 @@ export function EditorPanel() {
     try {
       const res = await fetch(`${API_BASE}/file`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ path: openPath, content: editor.getValue() }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`);

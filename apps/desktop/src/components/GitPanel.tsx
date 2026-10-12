@@ -4,6 +4,7 @@
  * The coordinator drops this into App.tsx; it is not mounted yet.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { authHeaders } from '../api';
 
 // ------------------------------------------------------------- API ----
 
@@ -79,7 +80,7 @@ export function createGitApi(base: string): GitApi {
   async function req<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await fetch(`${base}${path}`, {
       ...init,
-      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(init?.headers ?? {}) },
     });
     const body = (await res.json()) as T;
     if (!res.ok) {

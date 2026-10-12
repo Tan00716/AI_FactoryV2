@@ -7,6 +7,7 @@
  * the cwd that is sent with every request.
  */
 import { useEffect, useRef } from 'react';
+import { authHeaders } from '../api';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
@@ -83,7 +84,7 @@ export function TerminalPanel() {
         try {
           const res = await fetch(`${API_BASE}/exec`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify({ command, cwd: cwdRef.current }),
           });
           const body = (await res.json()) as {
