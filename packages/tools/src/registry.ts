@@ -4,7 +4,43 @@
  * Versioned tool metadata. Lookup pins an exact version; unpinned lookup
  * resolves the latest registered version and records which one was used.
  */
-import type { ToolMetadata } from './types';
+import { isToolCategory, type ToolCategory, type ToolMetadata } from './types';
+
+/**
+ * Category inference for definitions registered WITHOUT an explicit
+ * category (everything written before the §33 taxonomy landed). The
+ * rule is mechanical and documented: the FIRST capability's logical
+ * action prefix decides ('filesystem.*' → Filesystem, 'git.*' and
+ * 'github.*' → Git, …); anything unrecognized is 'Custom'. Inference
+ * only ever fills a gap at register() time — an explicit category is
+ * never overridden.
+ */
+const CAPABILITY_PREFIX_CATEGORIES: ReadonlyArray<readonly [string, ToolCategory]> = [
+  ['filesystem.', 'Filesystem'],
+  ['shell.', 'Shell'],
+  ['git.', 'Git'],
+  ['github.', 'Git'],
+  ['package.', 'Package Manager'],
+  ['pkg.', 'Package Manager'],
+  ['test.', 'Test/Build Runner'],
+  ['build.', 'Test/Build Runner'],
+  ['browser.', 'Browser'],
+  ['database.', 'Database'],
+  ['db.', 'Database'],
+  ['ci.', 'CI'],
+  ['deploy.', 'Deploy'],
+  ['mcp.', 'MCP'],
+];
+
+export function inferToolCategory(meta: Pick<ToolMetadata, 'capabilities'>): ToolCategory {
+  const first = meta.capabilities?.[0];
+  if (typeof first === 'string') {
+    for (const [prefix, category] of CAPABILITY_PREFIX_CATEGORIES) {
+      if (first.startsWith(prefix)) return category;
+    }
+  }
+  return 'Custom';
+}
 
 export class ToolNotFoundError extends Error {
   readonly code = 'TOOL_NOT_FOUND';
@@ -27,13 +63,25 @@ export class ToolRegistry {
 
   register(meta: ToolMetadata): void {
     if (!meta.id || !meta.version) throw new Error('tool id and version are required');
+    if (meta.category !== undefined && !isToolCategory(meta.category)) {
+      throw new Error(
+        `tool ${meta.id}@${meta.version}: invalid category ${JSON.stringify(meta.category)}`,
+      );
+    }
     let versions = this.tools.get(meta.id);
     if (!versions) {
       versions = new Map();
       this.tools.set(meta.id, versions);
     }
     if (versions.has(meta.version)) throw new DuplicateToolVersionError(meta.id, meta.version);
-    versions.set(meta.version, { ...meta });
+    // Normalization: every stored definition carries a category
+    // (explicit, else inferred from its capabilities) and an honest
+    // implementation status (undeclared ⇒ 'definition-only').
+    versions.set(meta.version, {
+      ...meta,
+      category: meta.category ?? inferToolCategory(meta),
+      implementationStatus: meta.implementationStatus ?? 'definition-only',
+    });
   }
 
   /** Exact-version lookup; throws ToolNotFoundError. */
@@ -63,6 +111,11 @@ export class ToolRegistry {
       out.push({ ...latest });
     }
     return out;
+  }
+
+  /** Latest version of every registered tool in one §33 category. */
+  listByCategory(category: ToolCategory): ToolMetadata[] {
+    return this.list().filter((meta) => meta.category === category);
   }
 
   setHealth(id: string, version: string, health: ToolMetadata['health']): void {

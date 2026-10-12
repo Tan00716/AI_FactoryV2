@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   constraints TEXT DEFAULT '[]',
   workspace TEXT DEFAULT '',
   creator TEXT DEFAULT 'human',
+  authorization_status TEXT NOT NULL DEFAULT 'AUTHORIZED',
   status TEXT DEFAULT 'TODO',
   current_agent_id TEXT REFERENCES agents(id),
   assigned_agents TEXT DEFAULT '[]',

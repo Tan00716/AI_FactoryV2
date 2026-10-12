@@ -58,6 +58,14 @@ function summarize(name: string, version: string) {
     approvalPolicy: server?.approvalPolicy ?? 'BLOCKED',
     installStatus: install?.status ?? 'REGISTERED',
     enabled: manager.isEnabled(name, version),
+    // §34.2/§34.4 — negotiated protocol state + latest graded health,
+    // when the package layer has recorded them (null = never negotiated
+    // / never health-checked, not an implicit "fine").
+    negotiatedVersion: server?.negotiatedVersion ?? null,
+    extensionSet: server?.extensionSet ?? null,
+    health: server?.health
+      ? { overall: server.health.overall, checkedAt: server.health.checkedAt, failureClass: server.health.failureClass ?? null }
+      : null,
   };
 }
 

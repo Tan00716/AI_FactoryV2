@@ -1581,6 +1581,27 @@ export async function handleRuntimeRoutes(
       return true;
     }
 
+    // §17.2 (Batch 17) — creation is not execution authorization: only
+    // an AUTHORIZED task may start a run. The task is already in hand,
+    // so no injected guard is needed. Tasks persisted before the
+    // authorization axis existed carry no value and read as AUTHORIZED
+    // (core's effectiveAuthorizationStatus rule, inlined here because
+    // this module is imported from src by tests) — only tasks
+    // explicitly held in DRAFT / WAITING_HUMAN_DISPATCH / REVOKED /
+    // EXPIRED refuse, with the observed state in the body.
+    const authorizationStatus = task.authorizationStatus ?? 'AUTHORIZED';
+    if (authorizationStatus !== 'AUTHORIZED') {
+      ctx.json(res, 403, {
+        error:
+          `task is not authorized for execution (authorization_status: ${authorizationStatus}); ` +
+          'a Human Dispatch is required first (§17.2)',
+        code: 'TASK_NOT_AUTHORIZED',
+        taskId,
+        authorizationStatus,
+      });
+      return true;
+    }
+
     // The driver, resolved once, synchronously: the caller's script
     // when the POST carried one, else the route's default script.
     // The manifest snapshot below names which of the two drove the

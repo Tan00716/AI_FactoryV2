@@ -5,6 +5,58 @@
 /** Side-effect classification (SPEC v2 §33). */
 export type SideEffectClass = 'none' | 'read' | 'write' | 'network' | 'external';
 
+/**
+ * Tool categories — SPEC v2 §33, names verbatim and in spec order:
+ * "覆盖 Filesystem、Shell、Git、Package Manager、Test/Build Runner、
+ * Browser、Database、CI、Deploy、MCP 和 Custom Tools".
+ */
+export type ToolCategory =
+  | 'Filesystem'
+  | 'Shell'
+  | 'Git'
+  | 'Package Manager'
+  | 'Test/Build Runner'
+  | 'Browser'
+  | 'Database'
+  | 'CI'
+  | 'Deploy'
+  | 'MCP'
+  | 'Custom';
+
+export const TOOL_CATEGORIES: readonly ToolCategory[] = [
+  'Filesystem',
+  'Shell',
+  'Git',
+  'Package Manager',
+  'Test/Build Runner',
+  'Browser',
+  'Database',
+  'CI',
+  'Deploy',
+  'MCP',
+  'Custom',
+];
+
+export function isToolCategory(value: unknown): value is ToolCategory {
+  return typeof value === 'string' && (TOOL_CATEGORIES as readonly string[]).includes(value);
+}
+
+/**
+ * Whether a definition is backed by a real implementation somewhere in
+ * the factory, or is a taxonomy/definition placeholder only.
+ *
+ *  - 'implemented':     a real implementation of this tool's actions
+ *                       exists in the factory codebase (the builtin
+ *                       catalog names the surface in its notes).
+ *  - 'definition-only': the definition fixes the §33 metadata shape and
+ *                       category, but NO implementation ships — nothing
+ *                       in the factory can execute this tool today.
+ *
+ * The registry defaults a missing status to 'definition-only': a
+ * definition must never claim an implementation nobody declared.
+ */
+export type ToolImplementationStatus = 'implemented' | 'definition-only';
+
 /** Tool approval policy (SPEC v2 §23.4 tool approval levels). */
 export type ToolApprovalPolicy = 'AUTO' | 'AI_REVIEW_PLUS_POLICY' | 'HUMAN_APPROVAL' | 'BLOCKED';
 
@@ -29,6 +81,19 @@ export interface ToolMetadata {
   id: string;
   version: string;
   source: string;
+  /**
+   * §33 category. Optional at the type level so definitions written
+   * before the taxonomy keep compiling; ToolRegistry.register()
+   * normalizes a missing category via inferToolCategory(), so every
+   * STORED definition carries one.
+   */
+  category?: ToolCategory;
+  /**
+   * Whether a real implementation backs this definition (see
+   * ToolImplementationStatus). The registry defaults a missing status
+   * to 'definition-only' when storing.
+   */
+  implementationStatus?: ToolImplementationStatus;
   inputSchema: ToolSchema;
   outputSchema: ToolSchema;
   /** Logical actions this tool can perform, e.g. 'filesystem.write'. */

@@ -27,6 +27,7 @@ import { SqliteRequirementStore } from './requirements';
 import { SqliteRuntimeRunStore } from './runs';
 import { SqliteRunManifestStore } from './run-manifests';
 import { SqliteTaskV2StateStore } from './task-v2-state';
+import { SqliteOutboxStore } from './outbox';
 import { SqliteRetentionStore } from './retention';
 
 const J = {
@@ -59,6 +60,10 @@ function rowToTask(r: Record<string, unknown>): Task {
     constraints: J.parse<string[]>(r['constraints'] as string, []),
     workspace: s('workspace'),
     creator: s('creator'),
+    // §17.2 (Batch 17) — pre-existing rows in a not-yet-migrated DB read
+    // AUTHORIZED, the behaviour they always had; migrateTasksTable adds
+    // the column with that same default at open (see below).
+    authorizationStatus: (r['authorization_status'] as Task['authorizationStatus']) ?? 'AUTHORIZED',
     status: s('status') as Task['status'],
     currentAgentId: (r['current_agent_id'] as string) ?? null,
     assignedAgentIds: J.parse<string[]>(r['assigned_agents'] as string, []),
@@ -77,21 +82,23 @@ export class SqliteTaskStore implements TaskStore {
     this.db.prepare(
       `INSERT INTO tasks (id, project_id, parent_task_id, title, goal, description,
         priority, severity, acceptance_criteria, constraints, workspace, creator,
-        status, current_agent_id, assigned_agents, subtask_ids, dependencies,
-        risk, created_at, updated_at, completed_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        authorization_status, status, current_agent_id, assigned_agents, subtask_ids,
+        dependencies, risk, created_at, updated_at, completed_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET
         parent_task_id=excluded.parent_task_id, title=excluded.title, goal=excluded.goal,
         description=excluded.description, priority=excluded.priority, severity=excluded.severity,
         acceptance_criteria=excluded.acceptance_criteria, constraints=excluded.constraints,
-        workspace=excluded.workspace, creator=excluded.creator, status=excluded.status,
+        workspace=excluded.workspace, creator=excluded.creator,
+        authorization_status=excluded.authorization_status, status=excluded.status,
         current_agent_id=excluded.current_agent_id, assigned_agents=excluded.assigned_agents,
         subtask_ids=excluded.subtask_ids, dependencies=excluded.dependencies,
         risk=excluded.risk, updated_at=excluded.updated_at, completed_at=excluded.completed_at`,
     ).run(
       t.id, t.projectId, t.parentTaskId, t.title, t.goal, t.description,
       t.priority, t.severity, J.stringify(t.acceptanceCriteria), J.stringify(t.constraints),
-      t.workspace, t.creator, t.status, t.currentAgentId, J.stringify(t.assignedAgentIds),
+      t.workspace, t.creator, t.authorizationStatus ?? 'AUTHORIZED', t.status, t.currentAgentId,
+      J.stringify(t.assignedAgentIds),
       J.stringify(t.subtaskIds), J.stringify(t.dependencies), t.risk,
       t.createdAt, t.updatedAt, t.completedAt,
     );
@@ -608,6 +615,30 @@ export function migrateProjectsTable(db: DatabaseSync): void {
   }
 }
 
+/**
+ * §17.2 (Batch 17) column. Pre-Batch-17 databases lack
+ * tasks.authorization_status. Same in-place migration as
+ * migrateProjectsTable: the column is added with the constant DEFAULT
+ * 'AUTHORIZED', so SQLite fills every existing row AUTHORIZED — the
+ * behaviour those tasks always had (nothing gated on authorization
+ * before the axis existed). No row is rewritten to a waiting state by
+ * a schema upgrade; only tasks created afterwards can start as
+ * DRAFT / WAITING_HUMAN_DISPATCH, by explicit caller choice.
+ */
+export function migrateTasksTable(db: DatabaseSync): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
+  if (!cols.has('authorization_status')) {
+    db.exec(
+      `ALTER TABLE tasks ADD COLUMN authorization_status TEXT NOT NULL DEFAULT 'AUTHORIZED'`,
+    );
+  }
+}
+
 export class FactoryDatabase {
   readonly db: DatabaseSync;
   readonly tasks: SqliteTaskStore;
@@ -666,6 +697,14 @@ export class FactoryDatabase {
    * explicit enforce endpoint deletes (see retention.ts docstring).
    */
   readonly retention: SqliteRetentionStore;
+  /**
+   * §18.2 (G-17) / §48.4 (Batch 17) — durable workflow outbox; the
+   * OutboxSink the server wires into WorkflowEngineV2, so every
+   * committed v2 stage change appends its event to outbox_events in
+   * the same step and undispatched events survive restarts until a
+   * consumer drains them (drain stamps dispatched_at, never deletes).
+   */
+  readonly outbox: SqliteOutboxStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -674,6 +713,7 @@ export class FactoryDatabase {
     this.db.exec('PRAGMA foreign_keys = ON');
     this.db.exec(SCHEMA);
     migrateProjectsTable(this.db);
+    migrateTasksTable(this.db);
     migrateApprovalsTable(this.db);
     migrateMemoryTable(this.db);
     migrateEvidenceTable(this.db);
@@ -691,6 +731,7 @@ export class FactoryDatabase {
     this.runs = new SqliteRuntimeRunStore(this.db);
     this.runManifests = new SqliteRunManifestStore(this.db);
     this.taskV2States = new SqliteTaskV2StateStore(this.db);
+    this.outbox = new SqliteOutboxStore(this.db);
     this.retention = new SqliteRetentionStore(this.db);
   }
 

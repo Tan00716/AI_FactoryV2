@@ -25,11 +25,12 @@
  * release-state strings, the §18.3 condition record, the §19 milestone
  * map, three history arrays, two flags, two counters, an optional
  * requirement pin. There are NO live handles to exclude. (The engine's
- * OTHER process state — the idempotency result cache, the G-17 outbox
- * queue, the G-21 failure-event log — is not part of TaskV2State and
- * deliberately stays process-local: the outbox is a drain-once
- * consumption channel and the audit log is the durable record those
- * events were already written to.) Composite fields are JSON text,
+ * OTHER process state is not part of TaskV2State and is not persisted
+ * here: the idempotency result cache and the G-21 failure-event log
+ * stay process-local, their facts already written to the durable audit
+ * log; the G-17 outbox queue has its OWN durable store since Batch 17
+ * — see outbox.ts — wired into the engine as a sink, not via this
+ * store.) Composite fields are JSON text,
  * lossless for these shapes, and JSON round-trips make every read a
  * fresh deep copy — so both implementations honour the copy contract
  * (callers can never mutate stored state through a fetched state, and

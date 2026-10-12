@@ -53,6 +53,12 @@ export class McpManager {
     this.assessments.set(McpManager.key(name, version), record);
     server.trustLevel = assessment.trustLevel;
     server.approvalPolicy = assessment.approvalPolicy;
+    this.registry.appendHistory(name, version, {
+      kind: 'TRUST_ASSESSED',
+      actor: assessment.assessedBy,
+      detail: `${assessment.trustLevel}/${assessment.approvalPolicy}`,
+      at: record.assessedAt,
+    });
     return record;
   }
 
@@ -69,19 +75,25 @@ export class McpManager {
     if (!server) {
       return { ok: false, status: 'BLOCKED', reason: `install denied: ${name}@${version} is not registered (unknown MCP = BLOCK)` };
     }
+    // One clock read per request: the request event, the outcome event
+    // and (on AUTO) installedAt all share it.
+    const now = this.clock.now();
+    this.registry.appendHistory(name, version, { kind: 'INSTALL_REQUESTED', at: now });
     switch (server.approvalPolicy) {
       case 'BLOCKED':
+        this.registry.appendHistory(name, version, { kind: 'INSTALL_BLOCKED', detail: `policy BLOCKED (trust ${server.trustLevel})`, at: now });
         return {
           ok: false,
           status: 'BLOCKED',
           reason: `install denied: ${name}@${version} has approval policy BLOCKED (trust ${server.trustLevel})`,
         };
       case 'AUTO':
-        this.markInstalled(name, version);
+        this.markInstalled(name, version, undefined, now);
         return { ok: true, status: 'INSTALLED' };
       case 'AI_REVIEW':
       case 'HUMAN_APPROVAL':
         this.installs.set(McpManager.key(name, version), this.record(name, version, 'PENDING_REVIEW'));
+        this.registry.appendHistory(name, version, { kind: 'INSTALL_PENDING', detail: server.approvalPolicy, at: now });
         return {
           ok: false,
           status: 'PENDING_REVIEW',
@@ -98,14 +110,23 @@ export class McpManager {
     }
     if (!decision.approved) {
       rec.status = 'BLOCKED';
+      this.registry.appendHistory(name, version, {
+        kind: 'INSTALL_BLOCKED',
+        actor: decision.reviewer,
+        detail: decision.reason ?? 'denied by review',
+      });
       return { ok: false, status: 'BLOCKED', reason: `install denied by review${decision.reason ? `: ${decision.reason}` : ''}` };
     }
-    this.markInstalled(name, version);
+    this.markInstalled(name, version, decision.reviewer);
     return { ok: true, status: 'INSTALLED' };
   }
 
   uninstall(name: string, version: string): boolean {
-    return this.installs.delete(McpManager.key(name, version));
+    const existed = this.installs.delete(McpManager.key(name, version));
+    // History lives on the registration record, so it survives the
+    // uninstall — the UNINSTALLED entry is appended, never substituted.
+    if (existed) this.registry.appendHistory(name, version, { kind: 'UNINSTALLED' });
+    return existed;
   }
 
   getInstall(name: string, version: string): InstallRecord | undefined {
@@ -127,6 +148,10 @@ export class McpManager {
       throw new Error(`mcp: cannot ${enabled ? 'enable' : 'disable'} — ${name}@${version} is not installed`);
     }
     rec.scopeEnabled[scope ? scopeKey(scope) : '*'] = enabled;
+    this.registry.appendHistory(name, version, {
+      kind: enabled ? 'ENABLED' : 'DISABLED',
+      detail: scope ? scopeKey(scope) : '*',
+    });
   }
 
   isEnabled(name: string, version: string, scopes: ScopeRef[] = []): boolean {
@@ -156,13 +181,15 @@ export class McpManager {
     return { name, version, status, scopeEnabled: {} };
   }
 
-  private markInstalled(name: string, version: string): void {
+  private markInstalled(name: string, version: string, actor?: string, at?: number): void {
     const k = McpManager.key(name, version);
     const prev = this.installs.get(k);
+    const ts = at ?? this.clock.now();
     this.installs.set(k, {
       ...this.record(name, version, 'INSTALLED'),
       scopeEnabled: prev?.scopeEnabled ?? {},
-      installedAt: this.clock.now(),
+      installedAt: ts,
     });
+    this.registry.appendHistory(name, version, { kind: 'INSTALLED', actor, at: ts });
   }
 }

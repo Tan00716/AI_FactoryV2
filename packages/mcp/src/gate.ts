@@ -6,13 +6,16 @@
  *   1. the server is registered,
  *   2. a suitable version is installed,
  *   3. the install is enabled (globally and for every supplied scope),
- *   4. the tool exists on the server, and
- *   5. every permission the tool requires is held (server or caller granted).
+ *   4. the tool exists on the server,
+ *   5. every permission the tool requires is held (server or caller granted), and
+ *   6. the server's §34.3 runtime policy admits the call (OAuth
+ *      audience/scope and declared payload size, when presented).
  *
  * Authorized calls are logged with the exact version used.
  */
 import { McpManager } from './security';
 import { McpRegistry } from './registry';
+import { checkResourceSize, evaluateOAuth } from './runtimePolicy';
 import { ToolCallContext, ToolCallVerdict } from './types';
 
 export interface GateOptions {
@@ -74,6 +77,22 @@ export class ToolCallGate {
         allowed: false,
         reason: `denied: tool '${ctx.tool}' requires missing permissions: ${missing.join(', ')}`,
       };
+    }
+
+    // 6. §34.3 runtime policy — the checks decidable before the call:
+    // OAuth audience/scope of the presented token, and the declared
+    // payload size against the resource limit. Absent inputs are not
+    // checked (the transport remains responsible for them at runtime).
+    const policy = server.runtimePolicy;
+    if (policy) {
+      if (ctx.oauthToken !== undefined) {
+        const oauth = evaluateOAuth(policy, ctx.oauthToken);
+        if (!oauth.allowed) return { allowed: false, reason: `denied: ${oauth.reason}` };
+      }
+      if (ctx.resourceBytes !== undefined) {
+        const size = checkResourceSize(policy, ctx.resourceBytes);
+        if (!size.allowed) return { allowed: false, reason: `denied: ${size.reason}` };
+      }
     }
 
     // authorized — log which version was actually used

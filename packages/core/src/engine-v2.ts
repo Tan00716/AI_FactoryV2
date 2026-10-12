@@ -75,6 +75,14 @@ export interface EngineV2Deps {
    * leases released. Throwing aborts nothing — the failure is audit-logged.
    */
   releaseLeases?: (taskId: string) => number;
+  /**
+   * §18.2 durable outbox sink (optional, Batch 17). When wired, every
+   * committed-transition event is synchronously appended to the sink
+   * and the pending queue is restored from it at construction, so the
+   * outbox survives restarts. Absent = the outbox is process-local,
+   * exactly the pre-Batch-17 behavior.
+   */
+  outboxSink?: OutboxSink;
 }
 
 /** Snapshot the completion predicates are evaluated against (§20.1). */
@@ -164,6 +172,41 @@ export interface OutboxEvent {
 }
 
 /**
+ * A committed outbox event as held by an OutboxSink: the event plus the
+ * durable id the sink assigned at append time. The id is what drain
+ * acknowledges — events are never matched on content (two identical
+ * stage changes can share a timestamp under an injected clock).
+ */
+export interface StoredOutboxEvent extends OutboxEvent {
+  id: string;
+}
+
+/**
+ * Durable outbox sink (optional engine dep, Batch 17) — the persistence
+ * seam behind the §18.2 outbox. The engine keeps its in-process queue
+ * as the working set; a wired sink makes that queue durable:
+ *
+ * - append() is called synchronously at commit time, once per committed
+ *   stage change, and returns the stored record (with its id).
+ * - listPending() returns every not-yet-dispatched event, oldest first;
+ *   the engine restores its queue from it at construction, so events a
+ *   previous process committed but nobody drained are pending again.
+ * - markDispatched(ids) is the drain acknowledgement. It CONFIRMS, it
+ *   does not delete: the stored record stays, stamped as dispatched, so
+ *   "this event existed and was consumed" never vanishes without a
+ *   trace. Only undispatched events are ever listed as pending.
+ *
+ * One engine per sink at a time: two live engines restoring the same
+ * pending set would double-deliver (the server's single engine
+ * singleton is the supported wiring).
+ */
+export interface OutboxSink {
+  append(event: OutboxEvent): StoredOutboxEvent;
+  listPending(taskId?: string): StoredOutboxEvent[];
+  markDispatched(ids: string[]): StoredOutboxEvent[];
+}
+
+/**
  * Failure event (G-21) — recorded whenever a task's condition is set to a
  * failure-class value (FAILURE_CONDITIONS), with the context the bare
  * condition field alone would lose: which stage failed, what the condition
@@ -210,12 +253,29 @@ export class WorkflowEngineV2 {
   private states = new Map<string, TaskV2State>();
   /** idempotencyKey -> last result (duplicate events are deduped, §18.2). */
   private seen = new Map<string, TransitionCheckV2>();
-  /** Committed-transition events awaiting downstream consumption (G-17). */
-  private outbox: OutboxEvent[] = [];
+  /**
+   * Committed-transition events awaiting downstream consumption (G-17).
+   * Each entry carries the sink-assigned durable id when an OutboxSink
+   * is wired (undefined for process-local entries, including events
+   * whose sink append failed — see emitOutbox).
+   */
+  private outbox: Array<{ id?: string; event: OutboxEvent }> = [];
   /** Failure-class condition events, with context (G-21). */
   private failureEvents: FailureEvent[] = [];
 
-  constructor(private deps: EngineV2Deps) {}
+  constructor(private deps: EngineV2Deps) {
+    // §18.2 (Batch 17): with a durable sink wired, restore the pending
+    // queue from it — events an earlier process committed but nobody
+    // drained are pending again, in commit order. Already-dispatched
+    // (drained) events are NOT restored: drain is the acknowledgement.
+    // No sink: the queue starts empty, the pre-Batch-17 behavior.
+    if (deps.outboxSink) {
+      this.outbox = deps.outboxSink.listPending().map((stored) => {
+        const { id, ...event } = stored;
+        return { id, event };
+      });
+    }
+  }
 
   private iso(): string {
     return new Date(this.deps.now ? this.deps.now() : Date.now()).toISOString();
@@ -285,27 +345,74 @@ export class WorkflowEngineV2 {
   }
 
   /**
+   * The single outbox write path (G-17): every committed stage change
+   * goes through here — requestTransitionV2 after its commit, finalize
+   * after its commit. Denials and idempotency-cache hits return before
+   * reaching this, so they emit nothing (§18.2: the outbox records what
+   * COMMITTED, in the same step as the state update).
+   *
+   * With a sink wired (Batch 17) the event is synchronously appended to
+   * durable storage and the queue entry carries the sink's id, so drain
+   * can acknowledge exactly that stored record. A sink failure does NOT
+   * un-commit the transition — the state change and its audit record
+   * already happened (the same stance as evidence sealing, F3, and
+   * checkpoint capture): the event stays in this process's queue and
+   * the durability gap is audit-logged as OUTBOX_PERSIST_FAILED, never
+   * silent.
+   */
+  private emitOutbox(event: OutboxEvent): void {
+    let id: string | undefined;
+    if (this.deps.outboxSink) {
+      try {
+        id = this.deps.outboxSink.append(event).id;
+      } catch (e) {
+        this.deps.audit.record('system', 'OUTBOX_PERSIST_FAILED', 'task', event.taskId, {
+          from: event.from,
+          to: event.to,
+          intent: event.intent,
+          error: (e as Error).message,
+        });
+      }
+    }
+    this.outbox.push({ id, event });
+  }
+
+  /**
    * §18.2 outbox (G-17) — pending committed-transition events, oldest first.
    * Returns copies: mutating a returned event does not touch the queue.
    */
   listOutbox(taskId?: string): OutboxEvent[] {
     return this.outbox
-      .filter((e) => taskId === undefined || e.taskId === taskId)
-      .map((e) => ({ ...e }));
+      .filter((x) => taskId === undefined || x.event.taskId === taskId)
+      .map((x) => ({ ...x.event }));
   }
 
   /**
    * Take pending outbox events (all, or only one task's) and remove them
-   * from the queue. Drained events are gone — consumers acknowledge by
-   * draining. Unlike the audit log, nothing here is retained.
+   * from the queue. Drained events are gone from the queue — consumers
+   * acknowledge by draining.
+   *
+   * With a sink wired, drain acknowledges in the sink FIRST
+   * (markDispatched stamps the stored records; they are confirmed, not
+   * deleted) and only then removes the entries locally. If the
+   * acknowledgement throws, nothing is removed anywhere — the events
+   * stay pending in both places and a later drain retries them
+   * (at-least-once delivery, never a silent drop). Without a sink the
+   * semantics are the original ones: drained events are simply gone.
    */
   drainOutbox(taskId?: string): OutboxEvent[] {
-    const taken = this.listOutbox(taskId);
+    const taken = this.outbox.filter(
+      (x) => taskId === undefined || x.event.taskId === taskId,
+    );
+    if (this.deps.outboxSink) {
+      const ids = taken.flatMap((x) => (x.id === undefined ? [] : [x.id]));
+      if (ids.length > 0) this.deps.outboxSink.markDispatched(ids);
+    }
     this.outbox =
       taskId === undefined
         ? []
-        : this.outbox.filter((e) => e.taskId !== taskId);
-    return taken;
+        : this.outbox.filter((x) => x.event.taskId !== taskId);
+    return taken.map((x) => ({ ...x.event }));
   }
 
   /** Failure-class condition events (G-21), oldest first. Returns copies. */
@@ -406,7 +513,7 @@ export class WorkflowEngineV2 {
     // G-17: the transition committed — emit exactly one outbox event.
     // (Denials returned above and deduped repeats returned from the
     // idempotency cache, so neither reaches this line.)
-    this.outbox.push({
+    this.emitOutbox({
       taskId, from: check.from, to: check.to, by: actor,
       at: this.iso(), intent: check.intent,
     });
@@ -569,7 +676,7 @@ export class WorkflowEngineV2 {
     });
     // G-17: finalize is a committed stage change too (OUTCOME_VERIFICATION
     // → DONE, guarded above), so it emits an outbox event like any other.
-    this.outbox.push({
+    this.emitOutbox({
       taskId, from: s.stage, to: 'DONE', by: actor,
       at: this.iso(), intent: 'REQUEST_COMPLETE',
     });

@@ -6,6 +6,7 @@ export * from './requirements';
 export * from './runs';
 export * from './run-manifests';
 export * from './task-v2-state';
+export * from './outbox';
 export * from './retention';
 export * from './seed';
 export * from './schema';

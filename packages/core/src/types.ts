@@ -78,6 +78,31 @@ export interface Evidence {
   requirementVersion?: string | null;
 }
 
+/**
+ * §17.2 — the task-level authorization axis: creation is NOT execution
+ * authorization. It is a field of its own (§17.1 lists
+ * `authorization_status` beside `workflow_state`), independent of the
+ * v1 `status` and of the v2 workflow stage: a task can sit in TODO
+ * while unauthorized, and an AUTHORIZED task keeps its authorization
+ * as its workflow state moves.
+ *
+ * Lifecycle (§17.2, verbatim flow): a task starts as `DRAFT` (or is
+ * created directly into `WAITING_HUMAN_DISPATCH`, e.g. an AI-filed
+ * ticket), submission moves `DRAFT → WAITING_HUMAN_DISPATCH`, and a
+ * Human Dispatch moves `WAITING_HUMAN_DISPATCH → AUTHORIZED`. The
+ * spec's `authorization_status` enumeration is
+ * WAITING_HUMAN_DISPATCH / AUTHORIZED / REVOKED / EXPIRED; DRAFT is
+ * the flow's pre-submission state. A human creating a task manually
+ * may dispatch it at creation (§17.2), which is why `create()` still
+ * defaults to AUTHORIZED — see TaskManager.
+ */
+export type TaskAuthorizationStatus =
+  | 'DRAFT'
+  | 'WAITING_HUMAN_DISPATCH'
+  | 'AUTHORIZED'
+  | 'REVOKED'
+  | 'EXPIRED';
+
 /** §8 — Task object (prototype subset of the full field list). */
 export interface Task {
   id: string;
@@ -92,6 +117,14 @@ export interface Task {
   constraints: string[];
   workspace: string;
   creator: string;
+  /**
+   * §17.2 — authorization axis (see TaskAuthorizationStatus). Optional
+   * on the type for compatibility: tasks persisted before this field
+   * existed (and literals built by older callers) carry no value and
+   * are read as 'AUTHORIZED' — exactly the behaviour they always had.
+   * TaskManager.create() and the SQLite store always write a value.
+   */
+  authorizationStatus?: TaskAuthorizationStatus;
   status: TaskStatus;
   currentAgentId: string | null;
   assignedAgentIds: string[];

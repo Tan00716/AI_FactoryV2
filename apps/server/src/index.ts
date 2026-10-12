@@ -25,6 +25,13 @@
  *                                     collected against; validated to exist)
  *   POST /api/tasks/:id/subtasks     {title, ...}
  *   POST /api/tasks/:id/dependencies {kind, taskId}
+ *   POST /api/tasks/:id/request-dispatch    (§17.2: DRAFT → WAITING_HUMAN_DISPATCH)
+ *   POST /api/tasks/:id/dispatch            {actor?, assigneeAgentId?, via?, policyRuleId?}
+ *                                           (§17.2 Human Dispatch → AUTHORIZED;
+ *                                            via=POLICY requires policyRuleId)
+ *   POST /api/tasks/:id/reject-dispatch     {actor?, reason?} (→ DRAFT)
+ *   POST /api/tasks/:id/revoke-authorization {actor?, reason?} (→ REVOKED)
+ *   POST /api/tasks/:id/expire-authorization {actor?, reason?} (→ EXPIRED)
  *   GET  /api/agents              POST /api/agents {...}
  *   GET  /api/org
  *   GET  /api/board?projectId=
@@ -40,11 +47,14 @@ import {
   AuditLog,
   EvidenceEngine,
   Task,
+  TaskAuthorizationError,
   TaskManager,
   TaskStatus,
   WorkflowEngine,
   allowedNextStates,
+  effectiveAuthorizationStatus,
   nowIso,
+  type InitialTaskAuthorizationStatus,
 } from '@ai-factory/core';
 import { FactoryDatabase, seedIfEmpty } from '@ai-factory/db';
 import { NotificationEngine } from '@ai-factory/notifications';
@@ -525,7 +535,12 @@ const server = createServer(async (req, res) => {
     // (Batch 14) counterpart: how many retention policies are
     // configured (of the managed categories) and how many legal holds
     // are currently active — deletion itself only ever happens via
-    // POST /api/retention/enforce, never from here.
+    // POST /api/retention/enforce, never from here. The outbox block
+    // is the §18.2 (Batch 17) counterpart: how many committed v2
+    // transition/finalize events are stored in outbox_events and still
+    // undispatched (pending consumer acknowledgement), live per
+    // request — drain only ever happens via the engine's in-process
+    // consumers, never from here.
     if (method === 'GET' && path === '/api/health') {
       return json(res, 200, {
         ok: true,
@@ -561,6 +576,10 @@ const server = createServer(async (req, res) => {
             .filter((p) => p.retentionDays !== null && p.retentionDays !== 0)
             .length,
           activeHolds: fdb.retention.activeHolds().length,
+        },
+        outbox: {
+          store: 'sqlite',
+          pending: fdb.outbox.countPending(),
         },
       });
     }
@@ -721,6 +740,22 @@ const server = createServer(async (req, res) => {
       if (isProjectArchived(fdb, String(b['projectId']))) {
         return json(res, 409, projectArchivedBody(String(b['projectId'])));
       }
+      // §17.2 (Batch 17) — creation is not execution authorization. The
+      // caller may file the task as DRAFT (unsubmitted) or
+      // WAITING_HUMAN_DISPATCH (a TODO awaiting a Human Dispatch, the
+      // AI-discovered-problem path). Absent the field the task is
+      // AUTHORIZED — the human-create-and-dispatch case §17.2 allows,
+      // and the behaviour every pre-existing caller relied on.
+      const INITIAL_AUTHORIZATIONS: readonly string[] = ['DRAFT', 'WAITING_HUMAN_DISPATCH', 'AUTHORIZED'];
+      if (
+        b['authorizationStatus'] !== undefined &&
+        !INITIAL_AUTHORIZATIONS.includes(b['authorizationStatus'] as string)
+      ) {
+        return json(res, 400, {
+          error: 'authorizationStatus must be DRAFT | WAITING_HUMAN_DISPATCH | AUTHORIZED',
+        });
+      }
+      const initialAuthorization = b['authorizationStatus'] as InitialTaskAuthorizationStatus | undefined;
       const t = tasks.create({
         projectId: String(b['projectId']),
         title: String(b['title']),
@@ -730,8 +765,19 @@ const server = createServer(async (req, res) => {
         acceptanceCriteria: Array.isArray(b['acceptanceCriteria']) ? (b['acceptanceCriteria'] as string[]) : [],
         constraints: Array.isArray(b['constraints']) ? (b['constraints'] as string[]) : [],
         creator: 'human',
+        authorizationStatus: initialAuthorization,
       });
       audit.record('human', 'TASK_CREATED', 'task', t.id, { title: t.title });
+      // §17.2 — a task created straight into AUTHORIZED at the caller's
+      // explicit request is the create-and-dispatch case, and the spec
+      // wants the dispatch itself on the audit record. (No field = the
+      // legacy default; nothing extra is recorded.)
+      if (initialAuthorization === 'AUTHORIZED') {
+        audit.record('human', 'TASK_DISPATCHED', 'task', t.id, {
+          to: 'AUTHORIZED',
+          via: 'CREATE',
+        });
+      }
       bus.emit('TASK_CREATED', { taskId: t.id, title: t.title, projectId: t.projectId }, 'tasks');
       return json(res, 201, taskView(t.id));
     }
@@ -776,6 +822,97 @@ const server = createServer(async (req, res) => {
           }
           return json(res, 200, { ...r, task: taskView(id) });
         } catch (e) {
+          return json(res, 404, { error: (e as Error).message });
+        }
+      }
+      // §17.2 (Batch 17) — Human Dispatch flow. Each action validates
+      // the authorization state machine in TaskManager (illegal moves
+      // → 409 with the observed state), writes exactly one audit event,
+      // and — like every task-scoped write — refuses archived projects.
+      if (
+        method === 'POST' &&
+        (suffix === '/request-dispatch' ||
+          suffix === '/dispatch' ||
+          suffix === '/reject-dispatch' ||
+          suffix === '/revoke-authorization' ||
+          suffix === '/expire-authorization')
+      ) {
+        if (isTaskProjectArchived(fdb, id)) {
+          return json(res, 409, projectArchivedBody(projectIdOfTask(fdb, id) as string));
+        }
+        const b = await readBody(req);
+        // §17.2 — an operational pre-authorization (via=POLICY) records
+        // its triggering policy and Rule ID and must not masquerade as
+        // a human click: it requires the Rule ID, and its default audit
+        // actor is 'policy', not 'human'.
+        const via = b['via'] === 'POLICY' ? 'POLICY' : 'HUMAN';
+        const actor = String(b['actor'] ?? (via === 'POLICY' ? 'policy' : 'human'));
+        const reason = typeof b['reason'] === 'string' && b['reason'] ? b['reason'] : undefined;
+        try {
+          const from = effectiveAuthorizationStatus(tasks.get(id));
+          if (suffix === '/request-dispatch') {
+            const t = tasks.requestDispatch(id);
+            audit.record(actor, 'TASK_DISPATCH_REQUESTED', 'task', id, {
+              from,
+              to: t.authorizationStatus,
+            });
+            return json(res, 200, { from, to: t.authorizationStatus, task: taskView(id) });
+          }
+          if (suffix === '/dispatch') {
+            const policyRuleId =
+              typeof b['policyRuleId'] === 'string' && b['policyRuleId'] ? b['policyRuleId'] : undefined;
+            if (via === 'POLICY' && !policyRuleId) {
+              return json(res, 400, {
+                error: 'policyRuleId is required when via is POLICY (§17.2: a pre-authorization records its triggering policy and Rule ID)',
+              });
+            }
+            const assigneeAgentId =
+              typeof b['assigneeAgentId'] === 'string' && b['assigneeAgentId']
+                ? b['assigneeAgentId']
+                : undefined;
+            const t = tasks.dispatch(id, { assigneeAgentId });
+            audit.record(actor, 'TASK_DISPATCHED', 'task', id, {
+              from,
+              to: t.authorizationStatus,
+              via,
+              ...(policyRuleId ? { policyRuleId } : {}),
+              ...(assigneeAgentId ? { assigneeAgentId } : {}),
+            });
+            return json(res, 200, { from, to: t.authorizationStatus, task: taskView(id) });
+          }
+          if (suffix === '/reject-dispatch') {
+            const t = tasks.rejectDispatch(id);
+            audit.record(actor, 'TASK_DISPATCH_REJECTED', 'task', id, {
+              from,
+              to: t.authorizationStatus,
+              ...(reason ? { reason } : {}),
+            });
+            return json(res, 200, { from, to: t.authorizationStatus, task: taskView(id) });
+          }
+          if (suffix === '/revoke-authorization') {
+            const t = tasks.revokeAuthorization(id);
+            audit.record(actor, 'TASK_AUTHORIZATION_REVOKED', 'task', id, {
+              from,
+              to: t.authorizationStatus,
+              ...(reason ? { reason } : {}),
+            });
+            return json(res, 200, { from, to: t.authorizationStatus, task: taskView(id) });
+          }
+          const t = tasks.expireAuthorization(id);
+          audit.record(actor, 'TASK_AUTHORIZATION_EXPIRED', 'task', id, {
+            from,
+            to: t.authorizationStatus,
+            ...(reason ? { reason } : {}),
+          });
+          return json(res, 200, { from, to: t.authorizationStatus, task: taskView(id) });
+        } catch (e) {
+          if (e instanceof TaskAuthorizationError) {
+            return json(res, 409, {
+              error: e.message,
+              code: 'TASK_AUTHORIZATION_STATE',
+              authorizationStatus: e.from,
+            });
+          }
           return json(res, 404, { error: (e as Error).message });
         }
       }

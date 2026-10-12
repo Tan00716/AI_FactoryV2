@@ -10,6 +10,24 @@ AI Factory 的变更，内容与 git 提交历史逐项对应（提交哈希附�
 
 ## [Unreleased] — 0.1.0 开发线
 
+### 2026-10-12 · Batch 17 — Human Dispatch / Outbox 落库 / MCP 补齐 / 工具分类
+
+- Added：§17.2 Human Dispatch——Task 独立的 authorization_status 轴
+  （DRAFT/WAITING_HUMAN_DISPATCH/AUTHORIZED/REVOKED/EXPIRED，落库），
+  五个派发端点全程审计；run 发起面对非 AUTHORIZED 任务 403 且零记录。
+  存量与新建默认 AUTHORIZED（兼容决定，文档在案）；POLICY 预授权记录
+  via 与 Rule ID、不冒充人工。
+- Added：Outbox 落库（§18.2）——outbox_events 表自始存在却无写入者，
+  现经引擎 OutboxSink 接缝写入；drain 是 dispatched_at 确认戳记、
+  从不删行；GET /api/tasks/:id/outbox 拉取面 + health pending 计数。
+- Added：§34 MCP 补齐——真实握手保存协商版本/扩展集（工具集漂移只标
+  stale 不覆写）、元数据全字段 + 追加式安装/激活历史、四级健康（执行级
+  无探针如实 unknown）、熔断 + bounded retry（未知副作用不重试）+ 同
+  授权替代建议、运行时策略（stdio 环境过滤真实执行、gate 执行前拒绝）。
+- Added：§33 工具分类——11 类一等枚举 + 注册表分类归一化/查询 + 全字段
+  校验器 + 16 条内置定义（8 已实现 / 8 仅定义，逐条在案）。
+- 主线复验：构建 0 错误，测试 1999/1999，全部 demo 通过。
+
 ### 2026-10-12 · Batch 16 — 审批 resume 修复 / Git Broker+合并队列 / §21 调度 / Observatory
 
 - Fixed：pipelines approve 的 resume 此前永远找不到 parked 部署

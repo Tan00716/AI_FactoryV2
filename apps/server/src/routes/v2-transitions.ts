@@ -8,6 +8,7 @@
  *   POST /api/tasks/:id/v2-transition  { toState|to, by|actor, ...gate inputs }
  *   POST /api/tasks/:id/v2-complete    { by|actor, ...attestations }
  *   GET  /api/tasks/:id/v2-state
+ *   GET  /api/tasks/:id/outbox         (pending §18.2 events, Batch 17)
  *
  * Design (deliberately narrow, no fake wiring):
  * - The service holds ONE WorkflowEngineV2 instance and keeps an in-memory
@@ -29,9 +30,15 @@
  *   milestones, histories, outcome-gate validity, taskVersion and the
  *   §20.1 final seal (the Batch 12 F1 residual: a re-seeded mirror used
  *   to report finalSeal 0 for a DONE task). What is NOT persisted: the
- *   engine's idempotency result cache, G-17 outbox queue and G-21
- *   failure-event log — none of them is part of TaskV2State; the audit
- *   log (already durable) is their record. Hydration restores engine-
+ *   engine's idempotency result cache and G-21 failure-event log —
+ *   neither is part of TaskV2State; the audit log (already durable) is
+ *   their record. The G-17 outbox queue is not TaskV2State either, but
+ *   since Batch 17 it has its own durable store: when
+ *   FactoryDatabase.outbox is wired, the engine appends every committed
+ *   event to the §48.4 outbox_events table and restores the
+ *   undispatched ones at construction (drain confirms via
+ *   dispatched_at, never deletes), and GET /api/tasks/:id/outbox
+ *   serves the pending queue. Hydration restores engine-
  *   produced state through the engine's getMutable() accessor: it
  *   replays no transition and bypasses no gate — every stored state was
  *   reached via the engine's own gated mutators in an earlier process.
@@ -107,6 +114,8 @@ import type {
   Evidence,
   GateContext,
   LifecycleMilestone,
+  OutboxEvent,
+  OutboxSink,
   Task,
   TaskConditionValue,
   TaskStatus,
@@ -215,6 +224,17 @@ export interface V2TransitionDeps {
     get(taskId: string): TaskV2State | undefined;
     put(state: TaskV2State): void;
   };
+  /**
+   * Durable outbox sink (optional, Batch 17). When present, it is handed
+   * to the engine as its OutboxSink: every committed transition/finalize
+   * appends its §18.2 event to the outbox_events table in the same
+   * step, and the engine's pending queue is restored from the table at
+   * construction — undispatched events survive restarts until drained.
+   * Absent = the outbox stays process-local (the pre-Batch-17
+   * behavior). The concrete store is db's SqliteOutboxStore, wired in
+   * getV2TransitionService behind the same shape guard as v2States.
+   */
+  outbox?: OutboxSink;
 }
 
 export interface V2StateView {
@@ -322,6 +342,11 @@ export class V2TransitionService {
     this.deps = deps;
     this.engine = new WorkflowEngineV2({
       audit: deps.audit,
+      // §18.2 (Batch 17): the durable outbox sink, when wired — the
+      // engine appends every committed event to outbox_events and
+      // restores the undispatched ones into its queue right here, so
+      // a restart loses no committed-but-undrained event.
+      outboxSink: deps.outbox,
       // §42 (F3): the engine names the evidence each successful gate
       // consumed; seal those records in the store so a judged record
       // can no longer be edited after the fact (EvidenceEngine.update /
@@ -448,6 +473,21 @@ export class V2TransitionService {
       dbStatus: task.status,
       updatedAt: s.updatedAt,
     };
+  }
+
+  /**
+   * §18.2 outbox read surface (Batch 17): this task's pending
+   * committed-transition events, oldest first — the engine's queue,
+   * which (with the durable sink wired) was restored from
+   * outbox_events at construction, so the answer is the same before
+   * and after a restart until somebody drains. Read-only: draining
+   * stays the in-process consumer's acknowledgement, exactly the
+   * engine's drainOutbox contract. Throws for an unknown task (via
+   * ensureSeeded), like stateView.
+   */
+  outboxView(taskId: string): { taskId: string; events: OutboxEvent[] } {
+    this.ensureSeeded(taskId);
+    return { taskId, events: this.engine.listOutbox(taskId) };
   }
 
   /** Assemble the GateContext from DB facts + explicit caller attestations. */
@@ -871,6 +911,16 @@ export function getV2TransitionService(ctx: RouteContext): V2TransitionService {
         typeof ctx.fdb.taskV2States?.put === 'function'
           ? ctx.fdb.taskV2States
           : undefined,
+      // Batch 17: the durable outbox store (outbox_events table). Same
+      // shape-guard pattern: a context without the SQLite store keeps
+      // the process-local outbox queue.
+      outbox:
+        ctx.fdb &&
+        typeof ctx.fdb.outbox?.append === 'function' &&
+        typeof ctx.fdb.outbox?.listPending === 'function' &&
+        typeof ctx.fdb.outbox?.markDispatched === 'function'
+          ? ctx.fdb.outbox
+          : undefined,
     });
   }
   return shared;
@@ -881,7 +931,7 @@ export function createV2TransitionService(deps: V2TransitionDeps): V2TransitionS
   return new V2TransitionService(deps);
 }
 
-const TASK_V2_RE = /^\/api\/tasks\/([^/]+)\/(v2-transition|v2-state|v2-complete)$/;
+const TASK_V2_RE = /^\/api\/tasks\/([^/]+)\/(v2-transition|v2-state|v2-complete|outbox)$/;
 
 export async function handleV2TransitionRoutes(
   req: IncomingMessage,
@@ -898,6 +948,20 @@ export async function handleV2TransitionRoutes(
   if (method === 'GET' && m[2] === 'v2-state') {
     try {
       ctx.json(res, 200, service.stateView(taskId));
+    } catch (e) {
+      ctx.json(res, 404, { error: (e as Error).message });
+    }
+    return true;
+  }
+
+  if (method === 'GET' && m[2] === 'outbox') {
+    // §18.2 (Batch 17) — the task's pending outbox events for
+    // downstream consumers to pull. Read-only like every GET here
+    // (archived projects included): it reports committed facts and
+    // drains nothing — acknowledgement stays with the in-process
+    // consumer via engine.drainOutbox.
+    try {
+      ctx.json(res, 200, service.outboxView(taskId));
     } catch (e) {
       ctx.json(res, 404, { error: (e as Error).message });
     }
