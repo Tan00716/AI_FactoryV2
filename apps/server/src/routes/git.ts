@@ -2,6 +2,25 @@
  * Git routes — spec §34.
  * Exported as `handleGitRoutes`; the coordinator wires it into
  * apps/server/src/index.ts (this file is intentionally not imported there yet).
+ *
+ * Archived-project write guard (Batch 15, shared decision in
+ * routes/project-guard.ts): the POSTs that create task-scoped facts
+ * refuse with 409 PROJECT_ARCHIVED while the task's project is
+ * archived, before any side effect —
+ *   - POST /api/git/commit (when taskId is given: it hangs
+ *     code-change evidence on the task — refused BEFORE the commit
+ *     itself, so the repo is untouched too);
+ *   - POST /api/git/task-branch (creates the task's branch);
+ *   - POST /api/git/pr (creates a PR record bound to the task);
+ *   - POST /api/git/pr/:id/merge (hangs merge evidence on the task —
+ *     refused before checkout/merge).
+ * Deliberately NOT guarded (pure repository operations with no task
+ * binding and no task-scoped facts): POST /api/git/branch,
+ * /api/git/checkout, /api/git/push, and every GET. This module is
+ * only loaded through the compiled server, so — like qa.ts and
+ * approvals.ts — it imports project-guard directly; the ctx-injected
+ * archivedTaskBody indirection is only needed by the two modules
+ * tests import straight from src (runtime.ts, review.ts).
  */
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
@@ -17,6 +36,11 @@ import {
   PrStore,
 } from '@ai-factory/git';
 import type { RouteContext } from './context';
+import {
+  isTaskProjectArchived,
+  projectArchivedBody,
+  projectIdOfTask,
+} from './project-guard';
 
 /** In-memory PR records for the prototype (module-level, per spec task 9). */
 const prs = new PrStore();
@@ -116,6 +140,16 @@ export async function handleGitRoutes(
         return ctx.json(res, 400, { error: 'repo and message are required' }), true;
       const actor = str(b['actor']) ?? 'human';
       const taskId = str(b['taskId']);
+      // Batch 15 — with a taskId this commit hangs evidence on the
+      // task: refused while its project is archived, BEFORE the
+      // commit happens (zero side effects, repo included). Without a
+      // taskId it is a pure repository operation and stays unguarded.
+      if (taskId && isTaskProjectArchived(ctx.fdb, taskId)) {
+        return (
+          ctx.json(res, 409, projectArchivedBody(projectIdOfTask(ctx.fdb, taskId) as string)),
+          true
+        );
+      }
       const g = new GitRepo(repo);
       const sha = await g.commit(message, { audit: auditHook(actor) });
       ctx.audit.record(actor, 'GIT_COMMIT', 'git', repo, { sha, message, taskId: taskId ?? null });
@@ -142,6 +176,14 @@ export async function handleGitRoutes(
       if (!repo || !taskId || !title)
         return ctx.json(res, 400, { error: 'repo, taskId and title are required' }), true;
       const actor = str(b['actor']) ?? 'human';
+      // Batch 15 — a task branch is a task-scoped fact: refused while
+      // the task's project is archived, before the branch is created.
+      if (isTaskProjectArchived(ctx.fdb, taskId)) {
+        return (
+          ctx.json(res, 409, projectArchivedBody(projectIdOfTask(ctx.fdb, taskId) as string)),
+          true
+        );
+      }
       const g = new GitRepo(repo);
       const base = str(b['base']);
       const branch = await ensureTaskBranch(g, taskId, title, base ?? 'main', {
@@ -165,6 +207,14 @@ export async function handleGitRoutes(
       }
       const actor = str(b['actor']) ?? 'human';
       const repo = str(b['repo']) ?? '';
+      // Batch 15 — the PR record is bound to the task: refused while
+      // its project is archived, before the record exists.
+      if (isTaskProjectArchived(ctx.fdb, taskId)) {
+        return (
+          ctx.json(res, 409, projectArchivedBody(projectIdOfTask(ctx.fdb, taskId) as string)),
+          true
+        );
+      }
       const pr = prs.create({
         taskId,
         sourceBranch,
@@ -196,6 +246,15 @@ export async function handleGitRoutes(
         pr = prs.get(prMergeMatch[1]);
       } catch (e) {
         return ctx.json(res, 404, { error: (e as Error).message }), true;
+      }
+      // Batch 15 — a merge hangs merge evidence on the PR's task:
+      // refused while its project is archived, before checkout/merge
+      // touch the repo (the PR stays unmerged).
+      if (pr.taskId && isTaskProjectArchived(ctx.fdb, pr.taskId)) {
+        return (
+          ctx.json(res, 409, projectArchivedBody(projectIdOfTask(ctx.fdb, pr.taskId) as string)),
+          true
+        );
       }
       const g = new GitRepo(repo);
       await g.checkout(pr.targetBranch, { audit: auditHook(actor) });

@@ -21,7 +21,17 @@
  *      project data).
  *   3. §47: "未知引用阻止清理" — a record whose project cannot be
  *      resolved (run/task row gone) is NEVER deleted; it is counted
- *      as unknown-ref-exempt so the operator sees it.
+ *      as unknown-ref-exempt so the operator sees it. Resolution has
+ *      two paths (Batch 15): the live chain run → task → project, and
+ *      the retention tombstone — when enforcement deletes a run row,
+ *      deleteRuntimeRuns first records run_id → project_id in
+ *      retention_tombstones, so the run's leftover intents/checkpoints
+ *      keep resolving to that project (and keep honoring its holds
+ *      and policies) instead of becoming permanent orphans. A record
+ *      with NEITHER path — a true orphan — stays exempt forever.
+ *      Tombstones hold only the id pair and the deletion time (no
+ *      record content) and never expire on their own: expiring one
+ *      would recreate the orphan problem it exists to solve.
  *   4. Live state is never a candidate: RUNNING runs and PENDING step
  *      intents (a dead process's unreconciled intents are the startup
  *      scan's input, §28.3) are structurally excluded by the queries.
@@ -72,6 +82,20 @@ export interface LegalHold {
   setAt: string;
   releasedAt: string | null;
   releasedBy: string | null;
+}
+
+/**
+ * Deletion-time memory of a run's project (Batch 15). Written only
+ * when retention enforcement actually deletes a runtime_runs row;
+ * consulted by evaluation when the live run → task chain is gone.
+ */
+export interface RetentionTombstone {
+  runId: string;
+  projectId: string;
+  /** ISO timestamp of the deletion that created this tombstone. */
+  deletedAt: string;
+  /** Why the row was deleted; currently always 'retention'. */
+  reason: string;
 }
 
 export interface CategoryEvaluation {
@@ -201,6 +225,54 @@ export class SqliteRetentionStore {
     return r !== undefined;
   }
 
+  // ----------------------------------------------------------- tombstones --
+
+  getRunTombstone(runId: string): RetentionTombstone | undefined {
+    const r = this.db
+      .prepare('SELECT * FROM retention_tombstones WHERE run_id = ?')
+      .get(runId) as Record<string, unknown> | undefined;
+    if (!r) return undefined;
+    return {
+      runId: r['run_id'] as string,
+      projectId: r['project_id'] as string,
+      deletedAt: r['deleted_at'] as string,
+      reason: r['reason'] as string,
+    };
+  }
+
+  listRunTombstones(): RetentionTombstone[] {
+    return (
+      this.db
+        .prepare('SELECT * FROM retention_tombstones ORDER BY deleted_at, run_id')
+        .all() as Record<string, unknown>[]
+    ).map((r) => ({
+      runId: r['run_id'] as string,
+      projectId: r['project_id'] as string,
+      deletedAt: r['deleted_at'] as string,
+      reason: r['reason'] as string,
+    }));
+  }
+
+  /**
+   * Record (first writer wins) that `runId` belonged to `projectId`
+   * at deletion time. Called by deleteRuntimeRuns only, and only for
+   * rows that actually disappeared with a resolvable project.
+   */
+  recordRunTombstone(
+    runId: string,
+    projectId: string,
+    deletedAtIso: string,
+    reason = 'retention',
+  ): void {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO retention_tombstones
+           (run_id, project_id, deleted_at, reason)
+         VALUES (?,?,?,?)`,
+      )
+      .run(runId, projectId, deletedAtIso, reason);
+  }
+
   // ---------------------------------------------------------- evaluation --
 
   /**
@@ -267,12 +339,18 @@ export class SqliteRetentionStore {
         // Terminal intents only: PENDING rows are a dead process's
         // unreconciled intents — the startup scan's input (§28.3) —
         // never swept away by retention.
+        // Project resolution: live chain run → task first; when the
+        // run row is gone, the retention tombstone (Batch 15) still
+        // maps the run to its project. Neither → project_id NULL →
+        // unknown-ref-exempt in evaluateCategory.
         rows = this.db
           .prepare(
-            `SELECT si.id AS id, t.project_id AS project_id
+            `SELECT si.id AS id,
+                    COALESCE(t.project_id, tb.project_id) AS project_id
              FROM step_intents si
              LEFT JOIN runtime_runs rr ON rr.id = si.run_id
              LEFT JOIN tasks t ON t.id = rr.task_id
+             LEFT JOIN retention_tombstones tb ON tb.run_id = si.run_id
              WHERE si.status != 'PENDING'
                AND si.persisted_at < ?`,
           )
@@ -284,10 +362,11 @@ export class SqliteRetentionStore {
           this.db
             .prepare(
               `SELECT c.run_id AS run_id, c.step_position AS pos,
-                      t.project_id AS project_id
+                      COALESCE(t.project_id, tb.project_id) AS project_id
                FROM checkpoints c
                LEFT JOIN runtime_runs rr ON rr.id = c.run_id
                LEFT JOIN tasks t ON t.id = rr.task_id
+               LEFT JOIN retention_tombstones tb ON tb.run_id = c.run_id
                WHERE c.captured_at < ?`,
             )
             .all(cutoffMs) as {
@@ -306,8 +385,49 @@ export class SqliteRetentionStore {
 
   // ------------------------------------------------------------ deletion --
 
+  /**
+   * Delete run rows (retention enforcement only — the server's
+   * enforce route is the sole caller). Before the rows disappear,
+   * each one's project is resolved through its task and remembered
+   * as a tombstone, so the run's leftover intents/checkpoints keep a
+   * project resolution path in later evaluations (Batch 15). A row
+   * whose project cannot be resolved even now gets NO tombstone —
+   * there is no mapping to remember — and its leftovers stay
+   * unknown-ref-exempt, exactly as §47 demands.
+   */
   deleteRuntimeRuns(ids: string[]): number {
-    return this.deleteByIds('runtime_runs', 'id', ids);
+    if (ids.length === 0) return 0;
+    const resolved = new Map<string, string>();
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const part = ids.slice(i, i + CHUNK);
+      const placeholders = part.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(
+          `SELECT rr.id AS id, t.project_id AS project_id
+           FROM runtime_runs rr
+           LEFT JOIN tasks t ON t.id = rr.task_id
+           WHERE rr.id IN (${placeholders})`,
+        )
+        .all(...part) as { id: string; project_id: string | null }[];
+      for (const r of rows) {
+        if (r.project_id !== null) resolved.set(r.id, r.project_id);
+      }
+    }
+    const n = this.deleteByIds('runtime_runs', 'id', ids);
+    if (n > 0 && resolved.size > 0) {
+      const deletedAt = new Date().toISOString();
+      const stillThere = this.db.prepare(
+        'SELECT id FROM runtime_runs WHERE id = ?',
+      );
+      for (const [runId, projectId] of resolved) {
+        // Tombstone only rows that actually disappeared.
+        if (stillThere.get(runId) === undefined) {
+          this.recordRunTombstone(runId, projectId, deletedAt);
+        }
+      }
+    }
+    return n;
   }
 
   deleteStepIntents(ids: string[]): number {

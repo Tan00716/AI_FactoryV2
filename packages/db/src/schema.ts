@@ -371,6 +371,47 @@ CREATE TABLE IF NOT EXISTS runtime_runs (
   error TEXT
 );
 
+-- Run manifests (Batch 15): the accountability record of one HTTP
+-- run — one row per run, written at creation with the identity /
+-- driver / grant / budget-limit snapshot and the context-manifest
+-- hash (assembled exactly as the §28.3 checkpoint capture assembles
+-- it), then replaced once at the run's terminal/error write with
+-- the completion accounting (outcome, effective model, budget
+-- usage, step intents bucketed by status, evidence count/types,
+-- checkpoint step range). A run a dead process left mid-flight
+-- keeps its creation snapshot: status RUNNING, completion columns
+-- NULL — never retroactively finalized. Runs created before this
+-- table existed have NO row: their manifest query answers 404
+-- rather than fabricating a backfill. Composite blocks (driver,
+-- granted tools, budget limits/usage, intents, evidence,
+-- checkpoints) are JSON text — lossless for these plain shapes,
+-- and NULL until finalization where the block is a completion
+-- fact. created_at / finished_at keep the run record's ISO-string
+-- shape (TEXT, not epoch).
+-- New table: CREATE TABLE IF NOT EXISTS covers old databases on open.
+CREATE TABLE IF NOT EXISTS run_manifests (
+  run_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  driver TEXT NOT NULL,
+  granted_tools TEXT NOT NULL,
+  budget_limits TEXT NOT NULL,
+  context_manifest_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  outcome TEXT,
+  finished_at TEXT,
+  error TEXT,
+  steps INTEGER,
+  model TEXT,
+  model_source TEXT,
+  budget_usage TEXT,
+  intents TEXT,
+  evidence TEXT,
+  checkpoints TEXT
+);
+
 -- SPEC v2 §18/§19/§20.1 (Batch 13): task v2 engine state — the
 -- WorkflowEngineV2 mirror (core's TaskV2State) itself. Until now the
 -- mirror lived only in the server process: on restart the v2 service
@@ -438,4 +479,18 @@ CREATE TABLE IF NOT EXISTS legal_holds (
 );
 CREATE INDEX IF NOT EXISTS idx_legal_holds_active
   ON legal_holds (released_at);
+-- Retention tombstones (Batch 15): when retention enforcement deletes
+-- a runtime_runs row, the run → project resolution its leftover step
+-- intents / checkpoints relied on disappears with it, and §47 would
+-- exempt them forever as unknown references. The tombstone is the
+-- deletion-time memory of that mapping: run_id → project_id, plus
+-- when and why. It stores NO record content (no payloads, no args),
+-- is written ONLY by the retention deletion path, and never expires
+-- on its own — expiry would recreate the orphan problem it solves.
+CREATE TABLE IF NOT EXISTS retention_tombstones (
+  run_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  deleted_at TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT 'retention'
+);
 `;

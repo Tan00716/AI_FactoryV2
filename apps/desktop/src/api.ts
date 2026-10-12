@@ -299,8 +299,25 @@ export interface CheckpointV2 {
   capturedAt: number;
 }
 
+/** Batch 15 RBAC 身份（GET /api/auth/whoami）：调用方自己的角色与服务端
+ *  认证模式，响应里永不含 token。mode 'open' = 本地单机模式（未配任何
+ *  令牌，有效角色 admin）；拉取失败（旧服务端/未连通）由调用方如实显示
+ *  「角色未知」，不猜测。 */
+export interface ApiIdentity {
+  role: 'viewer' | 'operator' | 'admin';
+  mode: 'open' | 'single' | 'rbac';
+  authRequired: boolean;
+}
+
+export function identityLabel(w: ApiIdentity): string {
+  if (w.mode === 'open') return '本地模式（无令牌）';
+  return `角色：${w.role}`;
+}
+
 export const api = {
   health: () => req<{ ok: boolean }>('/health'),
+  /** 当前 API 身份（角色展示用）；失败时 req 抛错，调用方显示未知。 */
+  whoami: () => req<ApiIdentity>('/auth/whoami'),
   projects: () => req<Project[]>('/projects'),
   board: (projectId: string) =>
     req<{ projectId: string; columns: Record<string, BoardCard[]> }>(

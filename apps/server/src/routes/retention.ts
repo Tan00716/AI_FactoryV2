@@ -25,6 +25,11 @@
  *    exempt unconditionally.
  *  - §47: "未知引用阻止清理" — records whose project cannot be
  *    resolved are never deleted, only counted (unknownRefExempt).
+ *    Resolution includes the retention tombstone (Batch 15): when
+ *    enforce deletes a run row, the db store first records its
+ *    run → project mapping, so the run's leftover intents/checkpoints
+ *    keep resolving (and keep honoring that project's holds) instead
+ *    of becoming permanent orphans; true orphans stay exempt.
  *  - Live state is never eligible: RUNNING runs and PENDING step
  *    intents (a dead process's unreconciled intents, §28.3) are
  *    excluded by the candidate queries themselves.

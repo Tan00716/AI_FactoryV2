@@ -8,7 +8,7 @@ UI + Node.js API + SQLite 单机存储，无云、无账号体系。权威规格
 
 验证基线（2026-10-12，Batch 12 后，主线亲自复跑）：
 
-- 构建 0 错误；全量测试 **1844/1844 全绿**；46 个 demo 脚本全过（含首次运行走查 `demo:e2e`）
+- 构建 0 错误；全量测试 **1853/1853 全绿**；46 个 demo 脚本全过（含首次运行走查 `demo:e2e`）
 - Linux AppImage 已构建并无头运行验证通过（见「安装包」一节）
 - 一次由未参与开发的审计员执行的独立复核：抽查 Batch 1–10 共 21 条已关闭项，
   21 条全部证实、0 假关闭（[gap-audit/REAUDIT_BATCH_1_10.md](gap-audit/REAUDIT_BATCH_1_10.md)）
@@ -125,6 +125,7 @@ npm run demo:codex   # Codex 适配器演示（假 app-server，不需要登录�
 | 变量 | 作用 |
 |---|---|
 | `FACTORY_API_TOKEN` | 设置后，除健康端点外所有 `/api/*` 请求须带 `Authorization: Bearer <token>`；未授权返回统一 401 并写 AUTH_DENIED 审计。绑定非 loopback 地址且未设置此变量时，服务**拒绝启动**。桌面端把 token 存在 localStorage 并自动注入请求头。 |
+| `FACTORY_API_TOKENS` | 可选多角色令牌：`FACTORY_API_TOKENS="viewer:只读令牌,operator:操作令牌,admin:管理令牌"`。viewer 只能 GET；operator 可做任务/证据/流转/run/审批等日常写操作；backup/restore、保留策略与 legal hold 等高危面仅 admin。角色不足返回 403 并记 RBAC_DENIED 审计；`GET /api/auth/whoami` 可查当前令牌的角色。不设此变量时，`FACTORY_API_TOKEN` 即 admin 全权，行为不变。 |
 | `FACTORY_RUNTIME_TOOLS` | HTTP 发起 run 时允许执行的工具白名单（逗号分隔，如 `echo,add`）。**未设置 = 全部工具拒绝**（fail-closed）；名单含未注册工具名时启动期 FATAL、请求期 500 并写审计。每次 run 写 RUNTIME_RUN_STARTED 审计（含 grantedTools）。 |
 
 ## 架构速览

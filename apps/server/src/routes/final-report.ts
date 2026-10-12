@@ -34,7 +34,7 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { computeAuthorizedOutcomeCompletionRate } from '@ai-factory/dashboard';
 import { TERMINAL_STATES } from '@ai-factory/core';
-import type { FactoryDatabase } from '@ai-factory/db';
+import type { FactoryDatabase, RunManifestBudgetUsage } from '@ai-factory/db';
 import type { RouteContext } from './context';
 
 // ------------------------------------------------------------------ types --
@@ -81,6 +81,37 @@ export interface FinalReportWaiverItem {
   grantedBy: string;
   failureReason: string;
   ts: string;
+}
+
+export interface FinalReportRunItem {
+  runId: string;
+  taskId: string;
+  agentId: string;
+  status: string;
+  outcome: string | null;
+  steps: number;
+  createdAt: string;
+  finishedAt: string | null;
+  /**
+   * The run's Batch 15 accountability manifest, summarized; null =
+   * the run predates the manifest wiring (listed from its run
+   * record only — counted, never backfilled with invented facts).
+   */
+  manifest: {
+    projectId: string;
+    driverKind: string;
+    adapter: string;
+    model: string | null;
+    modelSource: string | null;
+    grantedTools: string[];
+    contextManifestHash: string;
+    budgetUsage: RunManifestBudgetUsage | null;
+    intentsTotal: number | null;
+    intentsByStatus: { PENDING: number; EXECUTED: number; FAILED: number; DENIED: number } | null;
+    evidenceCount: number | null;
+    checkpointCount: number | null;
+    checkpointRange: { firstStep: number | null; lastStep: number | null } | null;
+  } | null;
 }
 
 export type SectionStatus = 'ok' | 'no-data';
@@ -152,6 +183,17 @@ export interface FinalReport {
       };
       /** §20 weight plans are runtime memory, not persisted per project. */
       planBased: { available: false; note: string };
+    };
+    runs: {
+      available: boolean;
+      note?: string;
+      total: number;
+      byStatus: Record<string, number>;
+      /** Runs carrying a Batch 15 accountability manifest. */
+      withManifest: number;
+      /** Runs predating the manifest wiring — listed, never backfilled. */
+      withoutManifest: number;
+      items: FinalReportRunItem[];
     };
     auditSummary: {
       available: boolean;
@@ -315,6 +357,47 @@ export function generateFinalReport(
       };
     });
 
+  // ---- runs + manifests (Batch 15) -----------------------------------------
+  // The project's tasks' HTTP runs (runtime_runs), each joined with its
+  // accountability manifest (run_manifests) when one exists. A run
+  // without a manifest predates the Batch 15 wiring: it is listed from
+  // its run record with manifest: null — counted in withoutManifest,
+  // never backfilled with reconstructed facts.
+  const runRows = fdb.runs.list().filter((r) => taskIds.has(r.taskId));
+  const runItems: FinalReportRunItem[] = runRows.map((r) => {
+    const m = fdb.runManifests.get(r.id);
+    return {
+      runId: r.id,
+      taskId: r.taskId,
+      agentId: r.agentId,
+      status: r.status,
+      outcome: r.outcome,
+      steps: r.steps,
+      createdAt: r.createdAt,
+      finishedAt: r.finishedAt,
+      manifest: m
+        ? {
+            projectId: m.projectId,
+            driverKind: m.driver.kind,
+            adapter: m.driver.adapter,
+            model: m.model,
+            modelSource: m.modelSource,
+            grantedTools: m.grantedTools,
+            contextManifestHash: m.contextManifestHash,
+            budgetUsage: m.budgetUsage,
+            intentsTotal: m.intents?.total ?? null,
+            intentsByStatus: m.intents?.byStatus ?? null,
+            evidenceCount: m.evidence?.count ?? null,
+            checkpointCount: m.checkpoints?.count ?? null,
+            checkpointRange: m.checkpoints
+              ? { firstStep: m.checkpoints.firstStep, lastStep: m.checkpoints.lastStep }
+              : null,
+          }
+        : null,
+    };
+  });
+  const runsWithManifest = runItems.filter((r) => r.manifest !== null).length;
+
   // ---- progress + AOCR -----------------------------------------------------
   // Same documented mapping as the dashboard route (routes/dashboard.ts):
   // authorized := task has an approval record with decision 'APPROVED';
@@ -344,6 +427,7 @@ export function generateFinalReport(
     approvals: approvalItems.length > 0 ? 'ok' : 'no-data',
     waivers: waiverItems.length > 0 ? 'ok' : 'no-data',
     progress: taskItems.length > 0 ? 'ok' : 'no-data',
+    runs: runItems.length > 0 ? 'ok' : 'no-data',
     audit: scopedAudit.length > 0 ? 'ok' : 'no-data',
     openItems: openItemsTotal > 0 ? 'ok' : 'no-data',
   };
@@ -353,6 +437,7 @@ export function generateFinalReport(
   for (const t of taskItems) stamps.push(t.updatedAt);
   for (const e of evidenceItems) stamps.push(e.createdAt);
   for (const a of approvalItems) stamps.push(a.decidedAt ?? a.createdAt);
+  for (const r of runItems) stamps.push(r.finishedAt ?? r.createdAt);
   for (const r of scopedAudit) stamps.push(r.ts);
   const dataThrough = stamps.sort().at(-1) ?? null;
 
@@ -397,6 +482,8 @@ export function generateFinalReport(
       approvalsPending: pendingItems.length,
       approvalsWaived: waiverItems.length,
       aocrPercent: aocr.ratePercent,
+      runsTotal: runItems.length,
+      runsWithManifest,
       auditEvents: scopedAudit.length,
       openItems: openItemsTotal,
     },
@@ -474,6 +561,17 @@ export function generateFinalReport(
           available: false,
           note: `${NO_DATA}：§20 权重进度计划为路由运行时内存状态，未按项目落库，无法从 DB 汇编`,
         },
+      },
+      runs: {
+        available: runItems.length > 0,
+        ...(runItems.length === 0
+          ? { note: `${NO_DATA}：该项目的任务暂无运行记录` }
+          : {}),
+        total: runItems.length,
+        byStatus: countBy(runItems, (r) => r.status),
+        withManifest: runsWithManifest,
+        withoutManifest: runItems.length - runsWithManifest,
+        items: runItems,
       },
       auditSummary: {
         available: scopedAudit.length > 0,
@@ -668,6 +766,29 @@ export function renderFinalReportMarkdown(report: FinalReport): string {
     for (const r of x.auditSummary.recent) {
       lines.push(
         `| ${cell(r.ts)} | ${cell(r.actor)} | ${cell(r.action)} | ${cell(`${r.entityType}:${r.entityId}`)} |`,
+      );
+    }
+  }
+  lines.push('');
+  lines.push('## 运行记录（Runs）');
+  lines.push('');
+  if (!x.runs.available) {
+    lines.push(noDataLine(x.runs.note));
+  } else {
+    lines.push(
+      `共 ${x.runs.total} 次运行：带运行清单（manifest）${x.runs.withManifest} 次，` +
+        `清单接线前的遗留运行 ${x.runs.withoutManifest} 次（仅有运行记录，清单不回填）。`,
+    );
+    lines.push('');
+    lines.push('| Run | 任务 | 状态 | 模型 | 授权工具 | Intents（总数/被拒） | 证据 | Checkpoints |');
+    lines.push('| --- | --- | --- | --- | --- | --- | --- | --- |');
+    for (const r of x.runs.items) {
+      const m = r.manifest;
+      lines.push(
+        `| ${cell(r.runId)} | ${cell(r.taskId)} | ${cell(r.status)} | ${cell(m?.model)} | ` +
+          `${cell(m && m.grantedTools.length > 0 ? m.grantedTools.join(', ') : null)} | ` +
+          `${cell(m?.intentsTotal == null ? null : `${m.intentsTotal}/${m.intentsByStatus?.DENIED ?? 0}`)} | ` +
+          `${cell(m?.evidenceCount)} | ${cell(m?.checkpointCount)} |`,
       );
     }
   }

@@ -24,7 +24,22 @@
  *   - POST /api/review when a taskId is supplied (routes/review.ts) —
  *     it seals gate evidence onto the task;
  *   - POST /api/qa/runs (routes/qa.ts) — it writes qa_result evidence
- *     onto the task.
+ *     onto the task;
+ *   - the pipeline execution surface (routes/cicd.ts, Batch 15):
+ *     POST /api/pipelines (when taskId is given), /:id/run,
+ *     /:id/deploy, /:id/approve and /:id/rollback — each resolves its
+ *     task from the body, the pipeline record, or the deploy's
+ *     approval ticket, and refuses before any evidence/deployment
+ *     side effect;
+ *   - the task-bound git surface (routes/git.ts, Batch 15):
+ *     POST /api/git/commit (when taskId is given — refused before
+ *     the commit itself), /api/git/task-branch, /api/git/pr and
+ *     /api/git/pr/:id/merge.
+ *
+ * Deliberately NOT guarded: the pure repository operations in
+ * routes/git.ts (POST /api/git/branch, /checkout, /push) — they take
+ * no task binding and create no task-scoped facts — and every GET:
+ * reads of an archived project stay open by design.
  *
  * Access pattern: most routes import these helpers directly.
  * runtime.ts and review.ts instead receive the decision through

@@ -25,6 +25,7 @@ import { SqliteOperationStore } from './operations';
 import { SqliteCheckpointStore } from './checkpoints';
 import { SqliteRequirementStore } from './requirements';
 import { SqliteRuntimeRunStore } from './runs';
+import { SqliteRunManifestStore } from './run-manifests';
 import { SqliteTaskV2StateStore } from './task-v2-state';
 import { SqliteRetentionStore } from './retention';
 
@@ -642,6 +643,14 @@ export class FactoryDatabase {
    */
   readonly runs: SqliteRuntimeRunStore;
   /**
+   * Run manifests (Batch 15) — the RunManifestStore the server's
+   * runtime route writes each run's accountability record to:
+   * creation snapshot (identity, driver, grant, budget limits,
+   * context hash) plus completion accounting at the terminal write.
+   * Runs from before this wiring have no row and answer 404.
+   */
+  readonly runManifests: SqliteRunManifestStore;
+  /**
    * §18/§19/§20.1 (Batch 13) — durable v2 engine state; the
    * TaskV2StateStore the server's V2TransitionService persists its
    * WorkflowEngineV2 mirror to after every committed mutation and
@@ -680,6 +689,7 @@ export class FactoryDatabase {
     this.checkpoints = new SqliteCheckpointStore(this.db);
     this.requirements = new SqliteRequirementStore(this.db);
     this.runs = new SqliteRuntimeRunStore(this.db);
+    this.runManifests = new SqliteRunManifestStore(this.db);
     this.taskV2States = new SqliteTaskV2StateStore(this.db);
     this.retention = new SqliteRetentionStore(this.db);
   }

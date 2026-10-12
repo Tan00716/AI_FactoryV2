@@ -64,6 +64,7 @@ import {
   resolveRuntimeToolAllowlist,
   runtimeToolsStartupError,
   setRuntimeCheckpointLog,
+  setRuntimeManifestStore,
   setRuntimeRunStore,
 } from './routes/runtime';
 import { handleOrchestratorRoutes } from './routes/orchestrator';
@@ -125,9 +126,14 @@ import { handleRetentionRoutes } from './routes/retention';
 import { EventBus } from '@ai-factory/events';
 import {
   API_TOKEN_ENV,
+  API_TOKENS_ENV,
+  WHOAMI_PATH,
+  authMode,
   enforceApiAuth,
+  requestRole,
+  resolveApiAuthConfig,
   resolveApiToken,
-  startupAuthError,
+  startupRbacError,
 } from './auth';
 
 const PORT = Number(process.env.PORT ?? 3100);
@@ -135,11 +141,24 @@ const PORT = Number(process.env.PORT ?? 3100);
 // only for an explicitly planned deployment (AI_FACTORY_HOST).
 const HOST = process.env.AI_FACTORY_HOST ?? '127.0.0.1';
 const DB_PATH = process.env.DB_PATH ?? './data/factory.db';
-// Single-operator API token (sellable checklist B; see ./auth). Unset =
-// open local mode on loopback; a non-loopback bind without a token is a
-// fatal startup error — fail-closed before any side effect (no DB open).
+// API authentication (sellable checklist B + Batch 15 RBAC; see ./auth).
+// FACTORY_API_TOKEN is the legacy single token (an admin credential);
+// FACTORY_API_TOKENS adds role tokens ("viewer:…,operator:…,admin:…").
+// Neither set = open local mode on loopback; a non-loopback bind without
+// any credential is a fatal startup error, and a malformed
+// FACTORY_API_TOKENS value is fatal too — both fail-closed before any
+// side effect (no DB open). Error text never echoes a token value.
 const API_TOKEN = resolveApiToken();
-const authStartupError = startupAuthError(HOST, API_TOKEN);
+const authResolution = resolveApiAuthConfig();
+if (authResolution.errors.length > 0) {
+  for (const e of authResolution.errors) {
+    console.error(`[ai-factory] refusing to start: invalid ${API_TOKENS_ENV}: ${e}`);
+  }
+  process.exit(1);
+}
+const AUTH_CONFIG = authResolution.config;
+const AUTH_MODE = authMode(AUTH_CONFIG);
+const authStartupError = startupRbacError(HOST, AUTH_CONFIG);
 if (authStartupError) {
   console.error(authStartupError);
   process.exit(1);
@@ -299,6 +318,18 @@ initRequirementManager(fdb.requirements);
 setRuntimeRunStore(fdb.runs);
 
 /**
+ * Run manifests (Batch 15) — the runtime route's manifest store is
+ * installed over the SQLite RunManifestStore, so each run's
+ * accountability record (creation snapshot + completion accounting)
+ * survives restarts alongside the run record it answers for. The
+ * route module keeps an in-memory default for standalone use; this
+ * install is the coordinator's one wiring act, done before the
+ * server takes traffic. Runs created before this wiring have no
+ * manifest row — their manifest query answers an honest 404.
+ */
+setRuntimeManifestStore(fdb.runManifests);
+
+/**
  * Checkpoints (§28.3, Batch 13) — the runtime route's checkpoint log
  * is installed over the coordinator's CheckpointLog above (the one
  * /api/health counts), so run-path captures land in SQLite and
@@ -449,12 +480,29 @@ const server = createServer(async (req, res) => {
     const path = url.pathname;
     const method = req.method ?? 'GET';
 
-    // API token gate (checklist B): the single pre-dispatch point. When
-    // FACTORY_API_TOKEN is configured, everything under /api except
-    // GET /api/health requires the Bearer token; denials are audited
-    // (AUTH_DENIED) inside enforceApiAuth. OPTIONS preflight above stays
-    // open — it carries no credentials and grants nothing.
-    if (!enforceApiAuth(req, res, { token: API_TOKEN, audit, json })) return;
+    // API token gate (checklist B + Batch 15 RBAC): the single
+    // pre-dispatch point. Everything under /api except GET /api/health
+    // requires a Bearer credential when any is configured; the matched
+    // credential fixes the caller's role (viewer/operator/admin) and
+    // role-gated surfaces (backup/restore, retention, policy) answer
+    // 403. Denials are audited (AUTH_DENIED / RBAC_DENIED) inside
+    // enforceApiAuth. OPTIONS preflight above stays open — it carries
+    // no credentials and grants nothing.
+    if (!enforceApiAuth(req, res, { token: API_TOKEN, roleTokens: AUTH_CONFIG.roleTokens, audit, json })) return;
+
+    // Whoami (Batch 15): the caller's own role + the auth mode, for
+    // clients (the desktop top bar) to display. Past the gate, so a
+    // configured deployment only answers authenticated callers; the
+    // body carries role/mode only — never any token.
+    if (method === 'GET' && path === WHOAMI_PATH) {
+      const identity = requestRole(req, AUTH_CONFIG);
+      if (identity.role === null) return json(res, 401, { error: 'Unauthorized' });
+      return json(res, 200, {
+        role: identity.role,
+        mode: identity.mode,
+        authRequired: identity.authRequired,
+      });
+    }
 
     // Health — includes the §28.3 startup scan summary (G-59): how many
     // step intents a previous process left uncommitted when this process
@@ -870,13 +918,20 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[ai-factory] API listening on http://${HOST}:${PORT} (db: ${DB_PATH})`);
-  if (API_TOKEN) {
+  if (AUTH_MODE === 'rbac') {
+    const roleNames = [...new Set(AUTH_CONFIG.roleTokens.map((t) => t.role))].join(', ');
+    console.log(
+      `[ai-factory] API authentication enabled with role tokens (${API_TOKENS_ENV} is set): ` +
+        `${AUTH_CONFIG.roleTokens.length} token(s) for role(s): ${roleNames}` +
+        (API_TOKEN ? `; ${API_TOKEN_ENV} also set (admin)` : ''),
+    );
+  } else if (API_TOKEN) {
     console.log(`[ai-factory] API authentication enabled (${API_TOKEN_ENV} is set)`);
   } else {
     console.warn(
-      `[ai-factory] WARNING: API authentication disabled — ${API_TOKEN_ENV} is not set, ` +
-        'so any local process can call this API. Acceptable on the loopback desktop ' +
-        'bind only; the server refuses non-loopback binds in this state.',
+      `[ai-factory] WARNING: API authentication disabled — neither ${API_TOKEN_ENV} nor ` +
+        `${API_TOKENS_ENV} is set, so any local process can call this API. Acceptable on ` +
+        'the loopback desktop bind only; the server refuses non-loopback binds in this state.',
     );
   }
   if (RUNTIME_TOOL_ALLOWLIST.length > 0) {

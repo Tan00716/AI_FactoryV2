@@ -21,6 +21,25 @@
  * PROTOTYPE NOTE: pipelines/deployments/snapshots are in-memory (lost on
  * restart); stage handlers, deployFn and smokeFn are simulated. Real projects
  * would inject their own handlers into PipelineRunner/DeploymentService.
+ *
+ * Archived-project write guard (Batch 15, shared decision in
+ * routes/project-guard.ts): every POST here binds to a task — at
+ * creation, via the pipeline record, or via the deploy's approval
+ * ticket — and hangs evidence or deployment facts on it, so all five
+ * refuse with 409 PROJECT_ARCHIVED while the task's project is
+ * archived, before any side effect:
+ *   POST /api/pipelines            (when taskId is given)
+ *   POST /api/pipelines/:id/run    (record.taskId)
+ *   POST /api/pipelines/:id/deploy (body taskId ?? record.taskId)
+ *   POST /api/pipelines/:id/approve (record.taskId, else the approval
+ *                                   ticket's task_id — the ticket is
+ *                                   fetched before any resume happens)
+ *   POST /api/pipelines/:id/rollback (record.taskId)
+ * A pipeline with no resolvable task cannot be tied to a project and
+ * stays unguarded, exactly like unknown tasks in project-guard.ts.
+ * GETs are reads and stay open. Like qa.ts, this module imports
+ * project-guard directly (it is only loaded through the compiled
+ * server, never straight from src by tests).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
@@ -37,6 +56,26 @@ import {
 import { ApprovalManager } from '@ai-factory/approvals';
 import type { EvidenceType } from '@ai-factory/core';
 import type { RouteContext } from './context';
+import {
+  isTaskProjectArchived,
+  projectArchivedBody,
+  projectIdOfTask,
+} from './project-guard';
+
+/** The uniform archived-project refusal for a task-bound pipeline write. */
+function archivedRefusal(
+  ctx: RouteContext,
+  res: ServerResponse,
+  taskId: string,
+): boolean {
+  if (!isTaskProjectArchived(ctx.fdb, taskId)) return false;
+  ctx.json(
+    res,
+    409,
+    projectArchivedBody(projectIdOfTask(ctx.fdb, taskId) as string),
+  );
+  return true;
+}
 
 const PREFIX = '/api/pipelines';
 
@@ -120,6 +159,10 @@ export async function handleCicdRoutes(
     const env: EnvironmentName = isEnv(environment) ? environment : 'DEV';
     const commitSha = typeof body['commitSha'] === 'string' ? body['commitSha'] : 'HEAD';
     const taskId = typeof body['taskId'] === 'string' ? body['taskId'] : null;
+    // Batch 15 — a pipeline created for a task is a task-scoped
+    // record: refused while the task's project is archived, before
+    // the record exists. No taskId → no project → unguarded.
+    if (taskId && archivedRefusal(ctx, res, taskId)) return true;
     const runner = new PipelineRunner();
     const pipeline = runner.createPipeline(env, commitSha);
     pipelines.set(pipeline.id, { pipeline, taskId, deployments: [] });
@@ -158,6 +201,9 @@ export async function handleCicdRoutes(
   if (method === 'POST' && rest === '/run') {
     const body = await ctx.readBody(req);
     const actor = typeof body['actor'] === 'string' ? body['actor'] : 'human';
+    // Batch 15 — a run hangs stage evidence on the pipeline's task:
+    // refused while archived, before any stage executes.
+    if (record.taskId && archivedRefusal(ctx, res, record.taskId)) return true;
     const runner = new PipelineRunner({
       evidence: (type, payload) => {
         if (!record.taskId) return;
@@ -200,6 +246,10 @@ export async function handleCicdRoutes(
     if (!taskId) {
       return ctx.json(res, 400, { error: 'taskId is required (deployments attach evidence + approvals to a task)' }), true;
     }
+    // Batch 15 — a deploy hangs deployment/smoke evidence (and, when
+    // parked, an approval ticket) on the task: refused while its
+    // project is archived, before the deployment starts.
+    if (archivedRefusal(ctx, res, taskId)) return true;
     const env = getEnvironment(body['environment']);
     const service = new DeploymentService({
       evidence: (type, payload) => {
@@ -286,6 +336,12 @@ export async function handleCicdRoutes(
     if (typeof approvalId !== 'string' || !approvalId) {
       return ctx.json(res, 400, { error: 'approvalId is required' }), true;
     }
+    // Batch 15 — resuming a parked deploy completes a deployment
+    // bound to a task: refused while that task's project is archived.
+    // The binding is the pipeline record's task, or — for pipelines
+    // created without one — the approval ticket's own task_id (the
+    // ticket is fetched read-only below, before any resume).
+    if (record.taskId && archivedRefusal(ctx, res, record.taskId)) return true;
     const parked = record.deployments.find((d) => d.status === 'AWAITING_APPROVAL');
     if (!parked) {
       return ctx.json(res, 409, { error: 'no deployment awaiting approval for this pipeline' }), true;
@@ -294,6 +350,13 @@ export async function handleCicdRoutes(
     const approval = manager.get(approvalId);
     if (!approval) {
       return ctx.json(res, 404, { error: `approval ${approvalId} not found` }), true;
+    }
+    if (
+      approval.task_id &&
+      approval.task_id !== record.taskId &&
+      archivedRefusal(ctx, res, approval.task_id)
+    ) {
+      return true;
     }
     if (approval.status !== 'APPROVED') {
       return ctx.json(res, 409, { error: `approval is ${approval.status}, not APPROVED` }), true;
@@ -315,6 +378,10 @@ export async function handleCicdRoutes(
   if (method === 'POST' && rest === '/rollback') {
     const body = await ctx.readBody(req);
     const actor = typeof body['actor'] === 'string' ? body['actor'] : 'human';
+    // Batch 15 — a rollback rewrites the deployment state of the
+    // pipeline's task: refused while its project is archived, before
+    // any snapshot is restored.
+    if (record.taskId && archivedRefusal(ctx, res, record.taskId)) return true;
     const latest = [...record.deployments].reverse().find((d) => d.snapshotId);
     if (!latest || !latest.snapshotId) {
       return ctx.json(res, 409, { error: 'no deployment with a snapshot to roll back' }), true;

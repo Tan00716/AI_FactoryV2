@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, BoardCard, OrgNode, Project, TaskSummary } from './api';
+import { api, identityLabel, BoardCard, OrgNode, Project, TaskSummary } from './api';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { Board } from './components/Board';
@@ -50,6 +50,9 @@ export default function App() {
   const [org, setOrg] = useState<OrgNode[]>([]);
   const [agentCount, setAgentCount] = useState(0);
   const [connected, setConnected] = useState(false);
+  /** Batch 15: API identity label for the top bar (role / local mode /
+   *  unknown when whoami cannot be fetched — displayed as-is, never guessed). */
+  const [apiIdentityLabel, setApiIdentityLabel] = useState('');
   const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   const [bootError, setBootError] = useState('');
@@ -82,6 +85,11 @@ export default function App() {
     try {
       await api.health();
       setConnected(true);
+      // Identity is display-only: a failed whoami (older server, bad
+      // token) must not break the refresh — it just shows as unknown.
+      api.whoami()
+        .then((w) => setApiIdentityLabel(identityLabel(w)))
+        .catch(() => setApiIdentityLabel('角色未知'));
       const [ps, board, tree, agents, taskList] = await Promise.all([
         api.projects(), api.board(projectId), api.org(), api.agents(), api.tasks(projectId),
       ]);
@@ -109,6 +117,7 @@ export default function App() {
         onProject={setProjectId}
         agentCount={agentCount}
         connected={connected}
+        identityLabel={apiIdentityLabel || undefined}
         notificationsBase={API_BASE}
         onOpenProjectSettings={() => setCenterTab('Project')}
       />

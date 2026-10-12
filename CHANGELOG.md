@@ -10,6 +10,25 @@ AI Factory 的变更，内容与 git 提交历史逐项对应（提交哈希附�
 
 ## [Unreleased] — 0.1.0 开发线
 
+### 2026-10-12 · Batch 15 — 守卫补齐 / RBAC / Checkpoint 恢复 / Run Manifest
+
+- Fixed+Added：归档守卫补齐 pipelines/git 执行面（commit 在发生之前拒绝、
+  纯仓库操作明确不守卫）；retention tombstone 映射使被删 run 的残留
+  intents/checkpoints 继续按原项目解析，不再成永久孤儿。顺带记录既有
+  缺陷：pipelines approve 的 resume 因服务实例-per-请求而不可达
+  （KNOWN_LIMITATIONS 在案，待修）。
+- Added：服务端 RBAC——viewer/operator/admin 三档（FACTORY_API_TOKENS），
+  高危面（backup/restore/retention/policy/自治等级）仅 admin；不配置时
+  单 token 即 admin、行为与从前逐字一致。whoami 端点 + 桌面顶栏角色徽标。
+- Added：Checkpoint 恢复流程——POST /api/runtime/runs/:id/resume 按 §28.4
+  逐项重校验，全过才生成新的恢复 run（预算基线与步位承接 checkpoint，
+  linkage 落证据与审计）；明确不是内存现场热迁移。
+- Added：Run Manifest——每次 run 的问责清单落库（身份/驱动/授权/预算/
+  上下文哈希创建快照 + 终局/模型来源/用量/intent 分桶/证据计数补全），
+  GET 查询面与 Final Report 运行记录段；遗留 run 无 manifest 返回 404，
+  不回填编造。
+- 主线复验：构建 0 错误，测试 1853/1853，全部 demo 通过。
+
 ### 2026-10-12 · Batch 14 — 桌面呈现 / 项目归档 / Adapter 契约 / Retention
 
 - Added：桌面 UI 呈现已有服务端能力——Final Report 页签（Report）、备份/恢复

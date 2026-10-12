@@ -4,7 +4,7 @@ import { NotificationsBell } from './NotificationsBell';
 /** §3 top bar: product name, active project, agent count, run status, notification bell (§30). */
 export function TopBar({
   projects, projectId, onProject, agentCount, connected, notificationsBase,
-  onOpenProjectSettings,
+  onOpenProjectSettings, identityLabel,
 }: {
   projects: Project[];
   projectId: string;
@@ -15,6 +15,8 @@ export function TopBar({
   notificationsBase?: string;
   /** Jump to the Project settings tab (import/export); button hidden when omitted. */
   onOpenProjectSettings?: () => void;
+  /** Batch 15: current API identity label (role / local mode); hidden when omitted. */
+  identityLabel?: string;
 }) {
   return (
     <header className="topbar">
@@ -32,6 +34,9 @@ export function TopBar({
           <button className="bell-btn" title="项目设置（导入 / 导出）" onClick={onOpenProjectSettings}>⚙️</button>
         )}
         <span className="agent-count">{agentCount} Agents</span>
+        {identityLabel && (
+          <span className="agent-count" title="当前 API 身份（GET /api/auth/whoami）">{identityLabel}</span>
+        )}
       </div>
       {notificationsBase && <NotificationsBell base={notificationsBase} />}
       <div className={`run-status ${connected ? 'on' : 'off'}`}>
