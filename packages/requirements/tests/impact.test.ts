@@ -41,7 +41,9 @@ function seeded(): { m: RequirementManager; id: string } {
     approvalIds: ['appr-1'],
     releaseIds: ['rel-1'],
   });
-  // v2: AC-002 description changed, AC-003 added
+  // v2: AC-002 description changed, AC-003 added — a HUMAN-authorized
+  // scope change (Batch 4 §16 G-02: AC-meaning changes via newVersion
+  // require the recorded HUMAN authorization at the data layer).
   m.newVersion(r.id, 'SCOPE_CHANGE', 'add AC-003, clarify AC-002', 'human-1', (d) => {
     d.acceptanceCriteria.find((a) => a.id === 'AC-002')!.description = 'X is fast (<100ms p95)';
     d.acceptanceCriteria.push({
@@ -49,6 +51,8 @@ function seeded(): { m: RequirementManager; id: string } {
       verificationType: 'MANUAL_VERIFICATION', verifiedBy: 'HUMAN_OWNER',
       expectedEvidence: 'a11y checklist signed', applicableEnvironments: ['uat'],
     });
+  }, {
+    humanAuthorization: { authorizedBy: 'human-1', isHuman: true, reason: 'approved scope change' },
   });
   return { m, id: r.id };
 }

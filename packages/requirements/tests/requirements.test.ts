@@ -55,17 +55,30 @@ describe('create', () => {
     );
   });
 
-  it('VERIFIED_DELIVERY without recorded N/A authorization is rejected', () => {
+  it('VERIFIED_DELIVERY without eligible category + HUMAN authorization is rejected (§16 G-03)', () => {
     const m = mgr();
+    // No category, no HUMAN authorization: rejected at create() itself.
     assert.throws(
       () => m.create(baseInput({ completionTarget: 'VERIFIED_DELIVERY' })),
-      /releaseNaAuthorization/,
+      /VERIFIED_DELIVERY/,
+    );
+    // A recorded free-text basis alone is NOT an authorization anymore.
+    assert.throws(
+      () => m.create(baseInput({
+        completionTarget: 'VERIFIED_DELIVERY',
+        projectCategory: 'DOCUMENTATION',
+        releaseNaAuthorization: { authorizedBy: 'human-1', reason: 'docs only', at: '2026-10-10T00:00:00Z' },
+      })),
+      /HUMAN authorization/,
     );
     const r = m.create(baseInput({
       completionTarget: 'VERIFIED_DELIVERY',
+      projectCategory: 'DOCUMENTATION',
+      completionTargetAuthorization: { authorizedBy: 'human-1', isHuman: true, reason: 'docs only' },
       releaseNaAuthorization: { authorizedBy: 'human-1', reason: 'docs only', at: '2026-10-10T00:00:00Z' },
     }));
     assert.equal(r.versions[0].completionTarget, 'VERIFIED_DELIVERY');
+    assert.equal(r.versions[0].projectCategory, 'DOCUMENTATION');
   });
 });
 

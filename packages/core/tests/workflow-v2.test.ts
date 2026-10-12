@@ -469,3 +469,227 @@ describe('cancelTask (B-G-22)', () => {
     assert.throws(() => e.cancelTask('nope', 'human:alice', 'x'), /Unknown task/);
   });
 });
+
+describe('Batch 4 · G-16 lease gate predicate', () => {
+  const submitCtx = (over: Partial<GateContext> = {}) =>
+    baseCtx({ evidence: [ev('ev-cc', 'code_change')], ...over });
+
+  it('IN_PROGRESS→CODE_REVIEW without a lease attestation is denied (fail-closed)', () => {
+    const r = checkTransitionV2('IN_PROGRESS', 'CODE_REVIEW', submitCtx());
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+      assert.equal(r.reasonCode, 'STALE_OWNER');
+      assert.ok(r.missing.some((m) => m.includes('[lease-valid]')));
+    }
+  });
+
+  it('IN_PROGRESS→CODE_REVIEW with leaseValid=false is denied', () => {
+    const r = checkTransitionV2('IN_PROGRESS', 'CODE_REVIEW', submitCtx({ leaseValid: false }));
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.reasonCode, 'STALE_OWNER');
+  });
+
+  it('IN_PROGRESS→CODE_REVIEW with leaseValid=true passes', () => {
+    const r = checkTransitionV2(
+      'IN_PROGRESS', 'CODE_REVIEW',
+      submitCtx({ leaseValid: true, leaseId: 'lease-1' }),
+    );
+    assert.equal(r.ok, true);
+  });
+
+  it('PROD_DEPLOYING→PROD_VERIFICATION is lease-gated too', () => {
+    const prodCtx = (over: Partial<GateContext> = {}) =>
+      baseCtx({ evidence: [ev('ev-dep', 'deployment')], ...over });
+    const denied = checkTransitionV2('PROD_DEPLOYING', 'PROD_VERIFICATION', prodCtx());
+    assert.equal(denied.ok, false);
+    if (!denied.ok) assert.equal(denied.reasonCode, 'STALE_OWNER');
+    const ok = checkTransitionV2(
+      'PROD_DEPLOYING', 'PROD_VERIFICATION', prodCtx({ leaseValid: true }),
+    );
+    assert.equal(ok.ok, true);
+  });
+
+  it('edges without a lease entry condition do not require leaseValid', () => {
+    // TODO→PLANNING has no lease in its entry conditions: unchanged behavior.
+    const r = checkTransitionV2('TODO', 'PLANNING', baseCtx());
+    assert.equal(r.ok, true);
+  });
+
+  it('the lease predicate is attached exactly to the lease-mentioning edges', () => {
+    const hasLease = (from: WorkflowStage, to: WorkflowStage) =>
+      (DEFAULT_TRANSITIONS_V2[from] ?? [])
+        .find((e) => e.to === to)
+        ?.gatePredicates.some((p) => p.id === 'lease-valid');
+    assert.equal(hasLease('IN_PROGRESS', 'CODE_REVIEW'), true);
+    assert.equal(hasLease('PROD_DEPLOYING', 'PROD_VERIFICATION'), true);
+    assert.equal(hasLease('TODO', 'PLANNING'), false);
+    assert.equal(hasLease('PLANNING', 'IN_PROGRESS'), false);
+    assert.equal(hasLease('QA', 'PENDING_UAT_MERGE'), false);
+    assert.equal(hasLease('PROD_VERIFICATION', 'OUTCOME_VERIFICATION'), false);
+  });
+});
+
+describe('Batch 4 · G-17 transition outbox', () => {
+  it('a committed transition appends exactly one outbox event', () => {
+    const e = engine();
+    e.register('t-1', { requirementRef: 'REQ-001@1' });
+    const r = e.requestTransitionV2('t-1', 'PLANNING', 'agent-1', baseCtx());
+    assert.equal(r.ok, true);
+    const out = e.listOutbox();
+    assert.equal(out.length, 1);
+    assert.deepEqual(out[0], {
+      taskId: 't-1',
+      from: 'TODO',
+      to: 'PLANNING',
+      by: 'agent-1',
+      at: '2023-11-14T22:13:20.000Z', // fixed clock 1700000000000
+      intent: 'START_TASK',
+    });
+  });
+
+  it('denied transitions emit nothing', () => {
+    const e = engine();
+    e.register('t-1', { requirementRef: 'REQ-001@1' });
+    const r = e.requestTransitionV2('t-1', 'DONE', 'agent-1', baseCtx());
+    assert.equal(r.ok, false);
+    assert.equal(e.listOutbox().length, 0);
+  });
+
+  it('an idempotency-deduped repeat does not emit a second event', () => {
+    const e = engine();
+    e.register('t-1', { requirementRef: 'REQ-001@1' });
+    const ctx = baseCtx({ idempotencyKey: 'evt-ob-1' });
+    e.requestTransitionV2('t-1', 'PLANNING', 'agent-1', ctx);
+    e.requestTransitionV2('t-1', 'PLANNING', 'agent-1', ctx);
+    assert.equal(e.listOutbox().length, 1);
+  });
+
+  it('listOutbox filters by task and returns copies', () => {
+    const e = engine();
+    e.register('t-1', { requirementRef: 'REQ-001@1' });
+    e.register('t-2', { requirementRef: 'REQ-001@1' });
+    e.requestTransitionV2('t-1', 'PLANNING', 'agent-1', baseCtx());
+    e.requestTransitionV2('t-2', 'PLANNING', 'agent-9', baseCtx({ taskId: 't-2', actor: 'agent-9' }));
+    assert.equal(e.listOutbox().length, 2);
+    const only1 = e.listOutbox('t-1');
+    assert.equal(only1.length, 1);
+    assert.equal(only1[0].taskId, 't-1');
+    // Returned events are copies: mutating one cannot corrupt the queue.
+    only1[0].to = 'DONE';
+    assert.equal(e.listOutbox('t-1')[0].to, 'PLANNING');
+  });
+
+  it('drainOutbox returns and clears; a second drain is empty', () => {
+    const e = engine();
+    e.register('t-1', { requirementRef: 'REQ-001@1' });
+    e.requestTransitionV2('t-1', 'PLANNING', 'agent-1', baseCtx());
+    const drained = e.drainOutbox();
+    assert.equal(drained.length, 1);
+    assert.equal(drained[0].to, 'PLANNING');
+    assert.equal(e.listOutbox().length, 0);
+    assert.equal(e.drainOutbox().length, 0);
+  });
+
+  it('drainOutbox(taskId) drains only that task', () => {
+    const e = engine();
+    e.register('t-1', { requirementRef: 'REQ-001@1' });
+    e.register('t-2', { requirementRef: 'REQ-001@1' });
+    e.requestTransitionV2('t-1', 'PLANNING', 'agent-1', baseCtx());
+    e.requestTransitionV2('t-2', 'PLANNING', 'agent-1', baseCtx({ taskId: 't-2' }));
+    const drained = e.drainOutbox('t-1');
+    assert.equal(drained.length, 1);
+    assert.equal(e.listOutbox().length, 1);
+    assert.equal(e.listOutbox()[0].taskId, 't-2');
+  });
+
+  const finalizeSnapshot = {
+    applicableAcs: [{ id: 'AC-001', verified: true }],
+    gatesValid: true,
+    milestonesValid: true,
+    pendingBlocks: [] as string[],
+    authorizationsComplete: true,
+    releaseApplicable: true,
+    releaseNaAuthorized: false,
+  };
+
+  it('finalize() emits a DONE outbox event; a denied finalize emits none', () => {
+    const e = engine();
+    e.register('t-1', { requirementRef: 'REQ-001@1' });
+    e.getMutable('t-1').stage = 'OUTCOME_VERIFICATION';
+    const denied = e.finalize('t-1', 'agent-1', {
+      ...finalizeSnapshot,
+      applicableAcs: [{ id: 'AC-001', verified: false }],
+    });
+    assert.equal(denied.ok, false);
+    assert.equal(e.listOutbox().length, 0);
+    const ok = e.finalize('t-1', 'agent-1', finalizeSnapshot);
+    assert.equal(ok.ok, true);
+    const out = e.listOutbox();
+    assert.equal(out.length, 1);
+    assert.equal(out[0].from, 'OUTCOME_VERIFICATION');
+    assert.equal(out[0].to, 'DONE');
+    assert.equal(out[0].intent, 'REQUEST_COMPLETE');
+    assert.equal(out[0].by, 'agent-1');
+  });
+});
+
+describe('Batch 4 · G-21 failure events', () => {
+  it('setCondition to FAILED records a failure event with full context', () => {
+    const e = engine();
+    e.register('t-1');
+    e.getMutable('t-1').stage = 'QA';
+    e.setCondition('t-1', 'FAILED', 'qa verdict FAIL on candidate', 'qa-bot');
+    const evs = e.listFailureEvents();
+    assert.equal(evs.length, 1);
+    assert.deepEqual(evs[0], {
+      taskId: 't-1',
+      condition: 'FAILED',
+      previousCondition: 'ACTIVE',
+      stage: 'QA',
+      reason: 'qa verdict FAIL on candidate',
+      by: 'qa-bot',
+      at: '2023-11-14T22:13:20.000Z',
+    });
+  });
+
+  it('non-failure conditions record no failure event', () => {
+    const e = engine();
+    e.register('t-1');
+    e.setCondition('t-1', 'BLOCKED', 'waiting', 'agent-1');
+    e.setCondition('t-1', 'REWORK', 'changes requested', 'agent-1');
+    e.setCondition('t-1', 'ACTIVE', 'resumed', 'agent-1');
+    assert.equal(e.listFailureEvents().length, 0);
+  });
+
+  it('re-setting FAILED records a new event with previousCondition FAILED', () => {
+    const e = engine();
+    e.register('t-1');
+    e.setCondition('t-1', 'FAILED', 'first failure', 'qa-bot');
+    e.setCondition('t-1', 'FAILED', 'failed again after retry', 'qa-bot');
+    const evs = e.listFailureEvents('t-1');
+    assert.equal(evs.length, 2);
+    assert.equal(evs[1].previousCondition, 'FAILED');
+    assert.equal(evs[1].reason, 'failed again after retry');
+  });
+
+  it('listFailureEvents filters by task; unknown task yields []', () => {
+    const e = engine();
+    e.register('t-1');
+    e.register('t-2');
+    e.setCondition('t-2', 'FAILED', 'boom', 'agent-1');
+    assert.equal(e.listFailureEvents('t-1').length, 0);
+    assert.equal(e.listFailureEvents('t-2').length, 1);
+    assert.equal(e.listFailureEvents('nope').length, 0);
+    // Copies: mutating a returned event cannot corrupt the log.
+    const evs = e.listFailureEvents('t-2');
+    evs[0].reason = 'tampered';
+    assert.equal(e.listFailureEvents('t-2')[0].reason, 'boom');
+  });
+
+  it('cancelTask / invalidateCompletion do not create failure events', () => {
+    const e = engine();
+    e.register('t-1');
+    e.cancelTask('t-1', 'human-1', 'dropped');
+    assert.equal(e.listFailureEvents().length, 0);
+  });
+});

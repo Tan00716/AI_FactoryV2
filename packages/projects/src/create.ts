@@ -6,7 +6,7 @@
  * The final state is a real working repository.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { getTemplate } from './templates';
 import type {
@@ -14,6 +14,33 @@ import type {
   CreatedProject,
   ProjectTemplateName,
 } from './types';
+
+/**
+ * Thrown when createProject targets a directory that already exists and
+ * is non-empty (spec §6.3: a non-empty directory must not be
+ * overwritten). Pass `force: true` in CreateProjectOptions to opt in.
+ */
+export class DirectoryNotEmptyError extends Error {
+  /** Absolute path of the non-empty target directory. */
+  readonly dir: string;
+
+  constructor(dir: string) {
+    super(
+      `refusing to create project in non-empty directory: ${dir} ` +
+        '(spec §6.3 — pass force: true to write into it anyway)',
+    );
+    this.name = 'DirectoryNotEmptyError';
+    this.dir = dir;
+  }
+}
+
+function isNonEmptyDir(dir: string): boolean {
+  try {
+    return existsSync(dir) && readdirSync(dir).length > 0;
+  } catch {
+    return false;
+  }
+}
 
 function validateName(name: string): void {
   if (!name || typeof name !== 'string' || !name.trim()) {
@@ -100,6 +127,9 @@ function docsOverview(name: string): string {
  * Create a new project on disk and return a summary. Steps (§33):
  * create directory → git init → template skeleton → README → docs →
  * .ai/project.yaml + .ai/policy.yaml.
+ *
+ * Throws DirectoryNotEmptyError when the resolved target directory
+ * already exists and is non-empty, unless `opts.force` is true (§6.3).
  */
 export function createProject(opts: CreateProjectOptions): CreatedProject {
   validateName(opts.name);
@@ -110,6 +140,11 @@ export function createProject(opts: CreateProjectOptions): CreatedProject {
     existsSync(base) && base.split(/[\\/]/).pop() !== opts.name
       ? join(base, opts.name)
       : base;
+
+  // §6.3: never overwrite a non-empty directory unless explicitly forced.
+  if (!opts.force && isNonEmptyDir(dir)) {
+    throw new DirectoryNotEmptyError(dir);
+  }
 
   mkdirSync(dir, { recursive: true });
 

@@ -28,8 +28,11 @@ function seeded(): { m: RequirementManager; id: string } {
     createdBy: 'human-1',
   });
   m.linkEntities(r.id, 1, { taskIds: ['task-1', 'task-2'] });
+  // HUMAN-authorized AC-meaning change (Batch 4 §16 G-02 data-layer gate).
   m.newVersion(r.id, 'SCOPE_CHANGE', 'clarify AC-001', 'human-1', (d) => {
     d.acceptanceCriteria[0].description = 'X works reliably';
+  }, {
+    humanAuthorization: { authorizedBy: 'human-1', isHuman: true, reason: 'approved scope change' },
   });
   return { m, id: r.id };
 }
@@ -116,6 +119,8 @@ describe('PromotionHold gate (§16 G-05)', () => {
     m.linkEntities(id, 2, { taskIds: ['task-1'] });
     m.newVersion(id, 'SCOPE_CHANGE', 'clarify again', 'human-1', (d) => {
       d.acceptanceCriteria[0].description = 'X works reliably and fast';
+    }, {
+      humanAuthorization: { authorizedBy: 'human-1', isHuman: true, reason: 'approved scope change' },
     });
     m.analyzeImpact(id, 2, 3, 'ai-pm-1');
     assert.equal(m.activeHolds('task-1').length, 2);

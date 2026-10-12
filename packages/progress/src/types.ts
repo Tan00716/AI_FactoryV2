@@ -60,6 +60,14 @@ export interface CompletionEntry {
   itemId: string;
   /** cᵢ ∈ [0,1]; or derived from checkpoints when provided. */
   c: number;
+  /**
+   * §20 (G-25) — evidence backing this completion. REQUIRED whenever the
+   * effective cᵢ > 0 (declared or checkpoint-derived): cᵢ may only come
+   * from discrete checkpoints against valid Evidence, never from elapsed
+   * time, file counts or token counts. computeProgress() throws
+   * InvalidCompletionError when cᵢ > 0 has a null/empty evidenceRef.
+   * cᵢ = 0 (not started) needs no evidence.
+   */
   evidenceRef: string | null;
   checkpoints?: Checkpoint[];
 }
@@ -78,7 +86,18 @@ export interface ProgressReport {
   planId: string;
   planVersion: number;
   calculationVersion: string;
-  /** 100 × Σ(wᵢcᵢ) / Σwᵢ, rounded to 2 decimals for display. */
+  /**
+   * §20.4 (G-29) — the gate the work currently sits at, shown on every
+   * ticket next to % + calculation_version + updated_at. Supplied by the
+   * caller via computeProgress opts (the engine does not invent gates);
+   * null when the caller did not provide one.
+   */
+  currentGate: string | null;
+  /**
+   * 100 × Σ(wᵢcᵢ) / Σwᵢ, rounded to 2 decimals for display.
+   * §20 (G-26): capped at 99.99 when the plan has no seal item — without
+   * a weighted final seal, 100% is unreachable by definition.
+   */
   percent: number;
   numerator: number;
   denominator: number;

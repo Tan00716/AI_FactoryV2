@@ -12,6 +12,39 @@ export type CompletionTarget =
   | 'VERIFIED_DELIVERY'
   | 'RELEASED_OUTCOME';
 
+/**
+ * Project category (§16). VERIFIED_DELIVERY — release marked
+ * NOT_APPLICABLE — is only legitimate for documentation, research,
+ * dev-tool, or not-yet-in-production projects. A default software
+ * product change ('PRODUCTION_SOFTWARE') must use RELEASED_OUTCOME.
+ */
+export type ProjectCategory =
+  | 'DOCUMENTATION'
+  | 'RESEARCH'
+  | 'DEV_TOOL'
+  | 'NO_PRODUCTION_ENVIRONMENT'
+  | 'PRODUCTION_SOFTWARE';
+
+/** The only project categories eligible for VERIFIED_DELIVERY (§16). */
+export const VERIFIED_DELIVERY_PROJECT_CATEGORIES: readonly ProjectCategory[] = [
+  'DOCUMENTATION',
+  'RESEARCH',
+  'DEV_TOOL',
+  'NO_PRODUCTION_ENVIRONMENT',
+];
+
+/**
+ * A recorded authorization by an identifiable actor. `isHuman` is the
+ * §16 trust signal: HUMAN-only decisions (moving completion_target,
+ * changing AC business meaning, declaring VERIFIED_DELIVERY) check it
+ * at the data layer, not just in convenience wrappers.
+ */
+export interface HumanAuthorization {
+  authorizedBy: string;
+  isHuman: boolean;
+  reason: string;
+}
+
 export type VerificationType =
   | 'AUTOMATED_TEST'
   | 'HUMAN_REVIEW'
@@ -58,6 +91,8 @@ export interface RequirementVersion {
   changeNote: string;
   businessGoal: string;
   rationale: string;
+  /** Project category, declared at create() and carried across versions. */
+  projectCategory?: ProjectCategory;
   acceptanceCriteria: AcceptanceCriterion[];
   exclusions: string[];
   constraints: string[];
@@ -90,6 +125,19 @@ export interface CreateRequirementInput {
   id?: string;
   businessGoal: string;
   rationale?: string;
+  /**
+   * Project category. Required when completionTarget is
+   * VERIFIED_DELIVERY, and must be one of
+   * VERIFIED_DELIVERY_PROJECT_CATEGORIES (§16).
+   */
+  projectCategory?: ProjectCategory;
+  /**
+   * Recorded HUMAN authorization for declaring VERIFIED_DELIVERY at
+   * create() time (§16 G-03). Required (with isHuman=true) whenever
+   * completionTarget is VERIFIED_DELIVERY; its reason doubles as the
+   * release-N/A basis when releaseNaAuthorization is not given.
+   */
+  completionTargetAuthorization?: HumanAuthorization;
   acceptanceCriteria: Array<Omit<AcceptanceCriterion, 'version'>>;
   exclusions?: string[];
   constraints?: string[];

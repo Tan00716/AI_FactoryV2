@@ -15,11 +15,13 @@ import { ReasonCode } from './reason-codes';
 import {
   ActorAuthorization,
   ConditionRecord,
+  FAILURE_CONDITIONS,
   GateContext,
   INTENT_TARGETS,
   LifecycleMilestone,
   MilestoneStatus,
   ReleaseState,
+  TaskConditionValue,
   TransitionCheckV2,
   WorkflowStage,
   checkTransitionV2,
@@ -142,6 +144,42 @@ export type FinalizeResult =
       missing: string[];
     };
 
+/**
+ * §18.2 outbox event (G-17) — one entry per COMMITTED stage change.
+ *
+ * The outbox is a downstream CONSUMPTION channel, distinct from the audit
+ * log: audit is the engine's append-only accountability record and is never
+ * drained; outbox entries exist so integrators (webhooks, sync, reporting)
+ * can pull what changed and acknowledge it via drainOutbox(). Denied and
+ * idempotency-deduped requests commit nothing, so they emit nothing.
+ */
+export interface OutboxEvent {
+  taskId: string;
+  from: WorkflowStage;
+  to: WorkflowStage;
+  by: string;
+  at: string;
+  /** Intent that drove the change (finalize() records 'REQUEST_COMPLETE'). */
+  intent: string;
+}
+
+/**
+ * Failure event (G-21) — recorded whenever a task's condition is set to a
+ * failure-class value (FAILURE_CONDITIONS), with the context the bare
+ * condition field alone would lose: which stage failed, what the condition
+ * was before, why, and who reported it.
+ */
+export interface FailureEvent {
+  taskId: string;
+  condition: TaskConditionValue;
+  previousCondition: TaskConditionValue;
+  /** Stage at the moment of failure (QA vs UAT vs PROD failure context). */
+  stage: WorkflowStage;
+  reason: string;
+  by: string;
+  at: string;
+}
+
 const AUTHORIZED: ActorAuthorization = { status: 'AUTHORIZED', expiresAt: null };
 
 /** Recursively freeze an object graph. Used by get() (§18.2 read barrier). */
@@ -172,6 +210,10 @@ export class WorkflowEngineV2 {
   private states = new Map<string, TaskV2State>();
   /** idempotencyKey -> last result (duplicate events are deduped, §18.2). */
   private seen = new Map<string, TransitionCheckV2>();
+  /** Committed-transition events awaiting downstream consumption (G-17). */
+  private outbox: OutboxEvent[] = [];
+  /** Failure-class condition events, with context (G-21). */
+  private failureEvents: FailureEvent[] = [];
 
   constructor(private deps: EngineV2Deps) {}
 
@@ -242,6 +284,58 @@ export class WorkflowEngineV2 {
     return deepFreeze(structuredClone(this.getMutable(taskId)));
   }
 
+  /**
+   * §18.2 outbox (G-17) — pending committed-transition events, oldest first.
+   * Returns copies: mutating a returned event does not touch the queue.
+   */
+  listOutbox(taskId?: string): OutboxEvent[] {
+    return this.outbox
+      .filter((e) => taskId === undefined || e.taskId === taskId)
+      .map((e) => ({ ...e }));
+  }
+
+  /**
+   * Take pending outbox events (all, or only one task's) and remove them
+   * from the queue. Drained events are gone — consumers acknowledge by
+   * draining. Unlike the audit log, nothing here is retained.
+   */
+  drainOutbox(taskId?: string): OutboxEvent[] {
+    const taken = this.listOutbox(taskId);
+    this.outbox =
+      taskId === undefined
+        ? []
+        : this.outbox.filter((e) => e.taskId !== taskId);
+    return taken;
+  }
+
+  /** Failure-class condition events (G-21), oldest first. Returns copies. */
+  listFailureEvents(taskId?: string): FailureEvent[] {
+    return this.failureEvents
+      .filter((e) => taskId === undefined || e.taskId === taskId)
+      .map((e) => ({ ...e }));
+  }
+
+  /**
+   * The single failure-recording path (G-21): every writer that moves a
+   * condition to a failure-class value goes through here. Today setCondition
+   * is the only such writer (register starts ACTIVE; cancelTask writes
+   * CANCELLED and invalidateCompletion writes REWORK directly, neither of
+   * which is failure-class).
+   */
+  private recordFailure(
+    taskId: string,
+    condition: TaskConditionValue,
+    previousCondition: TaskConditionValue,
+    stage: WorkflowStage,
+    reason: string,
+    by: string,
+  ): void {
+    if (!FAILURE_CONDITIONS.includes(condition)) return;
+    this.failureEvents.push({
+      taskId, condition, previousCondition, stage, reason, by, at: this.iso(),
+    });
+  }
+
   private mutate(taskId: string, fn: (s: TaskV2State) => void): TaskV2State {
     const s = this.getMutable(taskId);
     fn(s);
@@ -309,6 +403,13 @@ export class WorkflowEngineV2 {
       intent: check.intent,
       taskVersion: this.get(taskId).taskVersion,
     });
+    // G-17: the transition committed — emit exactly one outbox event.
+    // (Denials returned above and deduped repeats returned from the
+    // idempotency cache, so neither reaches this line.)
+    this.outbox.push({
+      taskId, from: check.from, to: check.to, by: actor,
+      at: this.iso(), intent: check.intent,
+    });
 
     if (ctx.idempotencyKey !== undefined) this.seen.set(ctx.idempotencyKey, check);
     return check;
@@ -369,6 +470,7 @@ export class WorkflowEngineV2 {
     actor: string,
     opts?: { resumeState?: WorkflowStage | null; blockedOn?: string[] },
   ): TaskV2State {
+    const before = this.get(taskId);
     const s = this.mutate(taskId, (st) => {
       st.condition = {
         condition,
@@ -382,6 +484,11 @@ export class WorkflowEngineV2 {
     this.deps.audit.record(actor, 'TASK_CONDITION_SET', 'task', taskId, {
       condition, reason,
     });
+    // G-21: failure-class conditions also land in the failure-event log,
+    // with the previous condition and the stage that failed as context.
+    this.recordFailure(
+      taskId, condition, before.condition.condition, before.stage, reason, actor,
+    );
     return s;
   }
 
@@ -459,6 +566,12 @@ export class WorkflowEngineV2 {
       finalSeal: 1,
       taskVersion: this.get(taskId).taskVersion,
       predicates: STANDARD_COMPLETION_PREDICATES.map((p) => p.id),
+    });
+    // G-17: finalize is a committed stage change too (OUTCOME_VERIFICATION
+    // → DONE, guarded above), so it emits an outbox event like any other.
+    this.outbox.push({
+      taskId, from: s.stage, to: 'DONE', by: actor,
+      at: this.iso(), intent: 'REQUEST_COMPLETE',
     });
     return { ok: true, taskId, finalSeal: 1, taskVersion: this.get(taskId).taskVersion };
   }

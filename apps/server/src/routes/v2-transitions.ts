@@ -259,6 +259,11 @@ export class V2TransitionService {
       budgetOk: body['budgetOk'] === true,
       quotaOk: body['quotaOk'] === true,
       confinementOk: body['confinementOk'] === true,
+      // §18.2 (G-16): lease gate — same fail-closed declaration pattern;
+      // IN_PROGRESS→CODE_REVIEW and PROD_DEPLOYING→PROD_VERIFICATION
+      // require leaseValid === true or the engine denies with STALE_OWNER.
+      leaseValid: body['leaseValid'] === true,
+      leaseId: typeof body['leaseId'] === 'string' ? body['leaseId'] : undefined,
       dependenciesReady,
       expectedTaskVersion:
         typeof body['expectedTaskVersion'] === 'number'

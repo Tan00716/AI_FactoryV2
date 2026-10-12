@@ -3,11 +3,18 @@
  */
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createProject,
+  DirectoryNotEmptyError,
   discoverProject,
   getTemplate,
   listTemplates,
@@ -108,11 +115,59 @@ describe('createProject', () => {
     );
   });
 
-  it('does not overwrite an existing README.md', () => {
+  // §6.3 supersedes the old "re-run is a no-op" behavior: writing into a
+  // non-empty directory is refused unless force is explicit.
+  it('refuses to re-create into the same non-empty directory (§6.3)', () => {
     const target = join(dir, 'keep');
     const created = createProject({ name: 'keep', dir: target });
+    assert.throws(
+      () => createProject({ name: 'keep', dir: target }),
+      (err: unknown) => {
+        assert.ok(err instanceof DirectoryNotEmptyError);
+        assert.equal((err as DirectoryNotEmptyError).dir, created.dir);
+        assert.match((err as Error).message, /non-empty directory/);
+        assert.ok((err as Error).message.includes(created.dir));
+        return true;
+      },
+    );
+  });
+
+  it('refuses a pre-existing non-empty directory and writes nothing', () => {
+    const busy = join(dir, 'busy');
+    mkdirSync(busy, { recursive: true });
+    writeFileSync(join(busy, 'mine.txt'), 'do not touch\n', 'utf8');
+    assert.throws(
+      () => createProject({ name: 'busy', template: 'node-api', dir }),
+      DirectoryNotEmptyError,
+    );
+    assert.equal(readFileSync(join(busy, 'mine.txt'), 'utf8'), 'do not touch\n');
+    assert.equal(existsSync(join(busy, 'README.md')), false);
+    assert.equal(existsSync(join(busy, 'src', 'index.js')), false);
+  });
+
+  it('force: true writes into a non-empty directory, keeping foreign files', () => {
+    const busy = join(dir, 'forced');
+    mkdirSync(busy, { recursive: true });
+    writeFileSync(join(busy, 'mine.txt'), 'still mine\n', 'utf8');
+    const created = createProject({ name: 'forced', template: 'node-api', dir, force: true });
+    assert.equal(readFileSync(join(busy, 'mine.txt'), 'utf8'), 'still mine\n');
+    assert.ok(existsSync(join(created.dir, 'src', 'index.js')));
+    assert.ok(existsSync(join(created.dir, 'README.md')));
+  });
+
+  it('with force, re-running does not overwrite an existing README.md', () => {
+    const target = join(dir, 'keep2');
+    const created = createProject({ name: 'keep2', dir: target });
     writeFileSync(join(created.dir, 'README.md'), '# custom\n', 'utf8');
-    createProject({ name: 'keep', dir: target });
+    createProject({ name: 'keep2', dir: target, force: true });
     assert.equal(readFileSync(join(created.dir, 'README.md'), 'utf8'), '# custom\n');
+  });
+
+  it('creates into an existing but empty directory without force', () => {
+    const empty = join(dir, 'empty-proj');
+    mkdirSync(empty, { recursive: true });
+    const created = createProject({ name: 'empty-proj', template: 'node-api', dir });
+    assert.equal(created.dir, empty);
+    assert.ok(existsSync(join(empty, 'src', 'index.js')));
   });
 });

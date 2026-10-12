@@ -85,6 +85,51 @@ export interface ExecResult {
   durationMs: number;
 }
 
+/**
+ * How firmly a discovered fact is established (spec §6.2).
+ *
+ * 'detected'  — the configuration was found on disk, nothing more.
+ * 'verified' — the command/config was actually executed and succeeded.
+ *
+ * Discovery is read-only (§6.2: executing project scripts needs an
+ * authorized task with EXECUTE capability), so `discoverProject` only
+ * ever produces 'detected'. 'verified' is reserved for a future
+ * execution-backed verification path — it must never be inferred from
+ * the mere presence of configuration.
+ */
+export type DetectionStatus = 'detected' | 'verified';
+
+/** A command discovered in project configuration (spec §6.2). */
+export interface DetectedCommand {
+  /** Command role, e.g. 'test' | 'build' | 'dev' | 'start' | 'lint'. */
+  kind: string;
+  /** The literal command line that would run. */
+  command: string;
+  /** Where it was found, e.g. 'package.json scripts.test'. */
+  source: string;
+  /** 'detected' until a real run succeeds — never guessed (§6.2). */
+  status: DetectionStatus;
+}
+
+/** Diagnostic codes recorded during discovery (spec §6.2). */
+export type ProjectDiagnosticCode =
+  | 'MULTIPLE_LOCKFILES'
+  | 'MISSING_MANIFEST'
+  | 'NO_TEST_COMMAND'
+  | 'UNKNOWN_COMMAND';
+
+/**
+ * A non-fatal discovery finding (spec §6.2). Diagnostics are how the
+ * profile says "something is off" instead of guessing a PASS.
+ */
+export interface ProjectDiagnostic {
+  code: ProjectDiagnosticCode;
+  /** Human-readable explanation, naming the concrete evidence. */
+  message: string;
+  /** Project-relative path the finding is about, when applicable. */
+  path?: string;
+}
+
 /** Result of `discoverProject` (spec §32). */
 export interface ProjectProfile {
   /** Absolute path that was analyzed. */
@@ -107,6 +152,17 @@ export interface ProjectProfile {
   skillsDir: boolean;
   /** MCP config file found (.ai/mcp/*.json, mcp.json, .mcp.json). */
   mcpConfig: string | null;
+  /**
+   * Commands found in project configuration (spec §6.2). Every entry is
+   * status 'detected' — discovery never executes anything.
+   */
+  commands: DetectedCommand[];
+  /**
+   * Discovery diagnostics (spec §6.2): multiple lockfiles, a missing
+   * manifest, an unrecognized command, or no test command are recorded
+   * here instead of being silently papered over.
+   */
+  diagnostics: ProjectDiagnostic[];
 }
 
 export type ProjectTemplateName =
@@ -133,6 +189,12 @@ export interface CreateProjectOptions {
   template?: ProjectTemplateName;
   /** Target parent dir or full path; defaults to the current working dir. */
   dir?: string;
+  /**
+   * Allow writing into a target directory that already exists and is
+   * non-empty (spec §6.3 forbids overwriting a non-empty directory).
+   * @default false — a non-empty target throws DirectoryNotEmptyError.
+   */
+  force?: boolean;
 }
 
 export interface CreatedProject {

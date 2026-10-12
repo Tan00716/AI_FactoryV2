@@ -8,6 +8,16 @@
  *   rejected and must go through the Proposal flow (§17.3).
  * - completion_target changes require a recorded HUMAN authorization —
  *   the AI may not move the endpoint to reach Done faster.
+ * - These rules are enforced AT THE DATA LAYER (create()/newVersion()
+ *   themselves), not only in convenience wrappers: calling newVersion()
+ *   directly with a mutate that moves completion_target or changes AC
+ *   business meaning (add/remove an AC, edit an AC's semantic fields)
+ *   is rejected without a recorded HUMAN authorization, and create()
+ *   rejects VERIFIED_DELIVERY unless the project category is eligible
+ *   (§16: documentation / research / dev tool / no production env) AND
+ *   a HUMAN authorized the declaration. The convenience methods
+ *   (changeCompletionTarget, proposeAcRefinement) route through the
+ *   same checks — there is no side door around them.
  * - analyzeImpact() computes affected Plan/Task/Code/Test/Evidence/Approval/
  *   Release, suspends affected promotions, marks old approvals STALE, and
  *   requires EXPLICIT compatibility checks before old evidence is reused
@@ -21,11 +31,14 @@ import {
   CreateRequirementInput,
   EntityLinks,
   EvidenceCompatibility,
+  HumanAuthorization,
   ImpactAnalysis,
+  ProjectCategory,
   PromotionHold,
   Requirement,
   RequirementChangeKind,
   RequirementVersion,
+  VERIFIED_DELIVERY_PROJECT_CATEGORIES,
 } from './types';
 
 export class RequirementError extends Error {}
@@ -35,6 +48,20 @@ export class RequirementNotFoundError extends RequirementError {
 export class AcRefinementRejectedError extends RequirementError {}
 export class CompletionTargetChangeRejectedError extends RequirementError {}
 export class EvidenceReuseDeniedError extends RequirementError {}
+
+/**
+ * Thrown at the data layer when a version mutation changes AC business
+ * meaning (adds/removes an AC or edits an AC's semantic fields) without
+ * a recorded HUMAN authorization (§16 G-02). Clarifications belong in
+ * proposeAcRefinement(); meaning changes belong to a human.
+ */
+export class AcMeaningChangeRejectedError extends RequirementError {}
+
+/**
+ * Thrown when VERIFIED_DELIVERY is declared for an ineligible project
+ * category or without a recorded HUMAN authorization (§16 G-03).
+ */
+export class VerifiedDeliveryRejectedError extends RequirementError {}
 
 /**
  * Thrown by assertPromotionAllowed() when a task still has an active
@@ -71,6 +98,61 @@ export interface AcRefinementPatch {
 
 export interface ManagerOptions {
   now?: () => number;
+}
+
+export interface NewVersionOptions {
+  /**
+   * Recorded HUMAN authorization (§16). REQUIRED at the data layer
+   * whenever the mutation (a) changes completion_target, or (b) changes
+   * AC business meaning — adds/removes an AC or edits an existing AC's
+   * semantic fields. Without it such mutations are rejected no matter
+   * which changeKind the caller claims.
+   */
+  humanAuthorization?: HumanAuthorization;
+}
+
+/** AC fields that carry business meaning (everything except `version`). */
+const AC_SEMANTIC_FIELDS = [
+  'description',
+  'verificationType',
+  'verifiedBy',
+  'expectedEvidence',
+  'applicableEnvironments',
+] as const;
+
+function acSemanticValue(ac: AcceptanceCriterion, field: (typeof AC_SEMANTIC_FIELDS)[number]): string {
+  const v = ac[field];
+  // Environment lists compare order-insensitively: reordering is not a
+  // meaning change, adding/removing an environment is.
+  return Array.isArray(v) ? [...v].sort().join('') : String(v);
+}
+
+interface AcMeaningDiff {
+  added: string[];
+  removed: string[];
+  changed: string[];
+}
+
+/** Diff AC business meaning between two versions (AC `version` bumps alone are not meaning changes). */
+function diffAcMeaning(prev: RequirementVersion, next: RequirementVersion): AcMeaningDiff {
+  const prevById = new Map(prev.acceptanceCriteria.map((a) => [a.id, a]));
+  const nextById = new Map(next.acceptanceCriteria.map((a) => [a.id, a]));
+  const added = [...nextById.keys()].filter((id) => !prevById.has(id));
+  const removed = [...prevById.keys()].filter((id) => !nextById.has(id));
+  const changed = [...nextById.keys()].filter((id) => {
+    const a = prevById.get(id);
+    const b = nextById.get(id)!;
+    return a !== undefined && AC_SEMANTIC_FIELDS.some((f) => acSemanticValue(a, f) !== acSemanticValue(b, f));
+  });
+  return { added, removed, changed };
+}
+
+function describeAcDiff(diff: AcMeaningDiff): string {
+  const parts: string[] = [];
+  if (diff.added.length > 0) parts.push(`added AC(s): ${diff.added.join(', ')}`);
+  if (diff.removed.length > 0) parts.push(`removed AC(s): ${diff.removed.join(', ')}`);
+  if (diff.changed.length > 0) parts.push(`changed AC meaning: ${diff.changed.join(', ')}`);
+  return parts.join('; ');
 }
 
 function freshLinks(): EntityLinks {
@@ -110,7 +192,37 @@ export class RequirementManager {
     }
 
     const target: CompletionTarget = input.completionTarget ?? 'RELEASED_OUTCOME';
-    if (target === 'VERIFIED_DELIVERY' && !input.releaseNaAuthorization) {
+
+    // §16 G-03 — VERIFIED_DELIVERY is enforced HERE, at create(), not by
+    // caller convention: the project category must be eligible
+    // (documentation / research / dev tool / no production environment)
+    // AND a HUMAN must have authorized declaring release NOT_APPLICABLE.
+    // Merely recording a free-text basis is not an authorization.
+    let releaseNaAuthorization: RequirementVersion['releaseNaAuthorization'] =
+      input.releaseNaAuthorization ?? null;
+    if (target === 'VERIFIED_DELIVERY') {
+      const category = input.projectCategory;
+      if (!category || !VERIFIED_DELIVERY_PROJECT_CATEGORIES.includes(category)) {
+        throw new VerifiedDeliveryRejectedError(
+          `VERIFIED_DELIVERY requires an eligible projectCategory (one of ` +
+            `${VERIFIED_DELIVERY_PROJECT_CATEGORIES.join(', ')} — documentation, research, ` +
+            `dev tool, or no production environment per §16); got ${category ?? '<none declared>'}`,
+        );
+      }
+      const auth = input.completionTargetAuthorization;
+      if (!auth || !auth.isHuman) {
+        throw new VerifiedDeliveryRejectedError(
+          'VERIFIED_DELIVERY requires a recorded HUMAN authorization ' +
+            '(completionTargetAuthorization with isHuman=true) — an AI may not declare release NOT_APPLICABLE',
+        );
+      }
+      releaseNaAuthorization = releaseNaAuthorization ?? {
+        authorizedBy: auth.authorizedBy,
+        reason: auth.reason,
+        at: this.iso(),
+      };
+    }
+    if (target === 'VERIFIED_DELIVERY' && !releaseNaAuthorization) {
       throw new RequirementError(
         'VERIFIED_DELIVERY requires releaseNaAuthorization: release is NOT_APPLICABLE only with a recorded basis',
       );
@@ -125,6 +237,7 @@ export class RequirementManager {
       changeNote: 'initial version',
       businessGoal: input.businessGoal,
       rationale: input.rationale ?? '',
+      projectCategory: input.projectCategory,
       acceptanceCriteria: input.acceptanceCriteria.map((a) => ({ ...a, version: 1 })),
       exclusions: input.exclusions ?? [],
       constraints: input.constraints ?? [],
@@ -134,7 +247,7 @@ export class RequirementManager {
       budget: input.budget ?? null,
       riskAuthorization: input.riskAuthorization ?? null,
       outcomeMeasurement: input.outcomeMeasurement ?? '',
-      releaseNaAuthorization: input.releaseNaAuthorization ?? null,
+      releaseNaAuthorization,
     };
     const req: Requirement = { id, versions: [v1], status: 'ACTIVE', createdAt: now };
     this.requirements.set(id, req);
@@ -164,6 +277,25 @@ export class RequirementManager {
   /**
    * Append a new immutable version. `mutate` receives a deep copy of the
    * latest version and returns the modified draft (version/by/at are set here).
+   *
+   * DATA-LAYER GATES (§16 G-01/G-02) — enforced here, for every caller,
+   * whatever changeKind is claimed:
+   *  1. A mutation that changes completion_target requires changeKind
+   *     TARGET_CHANGE *and* a recorded HUMAN authorization
+   *     (opts.humanAuthorization with isHuman=true). Previously any
+   *     caller could pass TARGET_CHANGE and move the endpoint directly,
+   *     bypassing changeCompletionTarget()'s HUMAN check.
+   *  2. A mutation that changes AC business meaning — the AC diff adds
+   *     or removes an AC, or edits an existing AC's semantic fields
+   *     (description / verificationType / verifiedBy / expectedEvidence /
+   *     applicableEnvironments) — likewise requires a recorded HUMAN
+   *     authorization. Previously an arbitrary mutate could add
+   *     new-behavior ACs, bypassing proposeAcRefinement()'s
+   *     addsNewBehavior rejection.
+   * Mutations touching neither (goal text, exclusions, budget, …) are
+   * not gated. proposeAcRefinement() does NOT come through here: it is
+   * the one sanctioned non-human clarification path and appends via
+   * appendVersion() directly (see its comment).
    */
   newVersion(
     id: string,
@@ -171,16 +303,80 @@ export class RequirementManager {
     changeNote: string,
     createdBy: string,
     mutate: (draft: RequirementVersion) => void,
+    opts: NewVersionOptions = {},
   ): RequirementVersion {
-    const req = this.get(id);
     const prev = this.latest(id);
     const draft: RequirementVersion = JSON.parse(JSON.stringify(prev)) as RequirementVersion;
     mutate(draft);
-    if (draft.completionTarget !== prev.completionTarget && changeKind !== 'TARGET_CHANGE') {
-      throw new RequirementError(
-        'completion_target changed without TARGET_CHANGE — use changeCompletionTarget() with human authorization',
-      );
+
+    // Gate 1 — completion_target (§16 G-01): same HUMAN check as
+    // changeCompletionTarget(), applied to the raw mutation.
+    if (draft.completionTarget !== prev.completionTarget) {
+      if (changeKind !== 'TARGET_CHANGE') {
+        throw new RequirementError(
+          'completion_target changed without TARGET_CHANGE — use changeCompletionTarget() with human authorization',
+        );
+      }
+      const auth = opts.humanAuthorization;
+      if (!auth || !auth.isHuman) {
+        throw new CompletionTargetChangeRejectedError(
+          'completion_target change requires a recorded HUMAN authorization — ' +
+            'AI may not move the endpoint; pass NewVersionOptions.humanAuthorization (isHuman=true) or use changeCompletionTarget()',
+        );
+      }
+      if (draft.completionTarget === 'VERIFIED_DELIVERY') {
+        // Same eligibility rule as create() (§16 G-03), applied whenever
+        // the project category is known.
+        const category = draft.projectCategory;
+        if (category && !VERIFIED_DELIVERY_PROJECT_CATEGORIES.includes(category)) {
+          throw new VerifiedDeliveryRejectedError(
+            `VERIFIED_DELIVERY is not eligible for projectCategory ${category} (§16: ` +
+              `documentation, research, dev tool, or no production environment only)`,
+          );
+        }
+        if (!draft.releaseNaAuthorization) {
+          draft.releaseNaAuthorization = {
+            authorizedBy: auth.authorizedBy,
+            reason: auth.reason,
+            at: this.iso(),
+          };
+        }
+      }
     }
+
+    // Gate 2 — AC business meaning (§16 G-02): decidable by diffing the
+    // AC set before/after the mutation.
+    const acDiff = diffAcMeaning(prev, draft);
+    if (acDiff.added.length > 0 || acDiff.removed.length > 0 || acDiff.changed.length > 0) {
+      if (!opts.humanAuthorization || !opts.humanAuthorization.isHuman) {
+        throw new AcMeaningChangeRejectedError(
+          `version mutation changes AC business meaning (${describeAcDiff(acDiff)}) without a ` +
+            'recorded HUMAN authorization — clarifications must go through proposeAcRefinement() ' +
+            'with addsNewBehavior=false; meaning changes require a HUMAN authorization ' +
+            '(NewVersionOptions.humanAuthorization) or the Proposal flow (§17.3)',
+        );
+      }
+    }
+
+    return this.appendVersion(id, draft, changeKind, changeNote, createdBy);
+  }
+
+  /**
+   * Raw append of an already-gated draft. Callers: newVersion() (after
+   * its data-layer gates) and proposeAcRefinement() (structurally
+   * bounded: one existing AC, clarification fields only — it cannot add
+   * or remove ACs, and addsNewBehavior is rejected before this point).
+   * Nothing else may append a version.
+   */
+  private appendVersion(
+    id: string,
+    draft: RequirementVersion,
+    changeKind: RequirementChangeKind,
+    changeNote: string,
+    createdBy: string,
+  ): RequirementVersion {
+    const req = this.get(id);
+    const prev = this.latest(id);
     const next: RequirementVersion = {
       ...draft,
       version: prev.version + 1,
@@ -210,14 +406,24 @@ export class RequirementManager {
         `AC ${acId}: refinement adds new product behavior — route through the Proposal/authorization flow (§17.3), not AC refinement`,
       );
     }
-    return this.newVersion(id, 'AC_REFINEMENT', `AC ${acId} refined`, by, (draft) => {
-      const ac = draft.acceptanceCriteria.find((a) => a.id === acId);
-      if (!ac) throw new RequirementError(`AC ${acId} not found in ${id}`);
-      if (patch.description !== undefined) ac.description = patch.description;
-      if (patch.expectedEvidence !== undefined) ac.expectedEvidence = patch.expectedEvidence;
-      if (patch.verificationType !== undefined) ac.verificationType = patch.verificationType;
-      ac.version += 1;
-    });
+    // This method appends via appendVersion(), NOT the public
+    // newVersion(): it is the one sanctioned non-human path that may
+    // touch an AC's description, and it is structurally bounded — it
+    // can only patch description / expectedEvidence / verificationType
+    // of ONE existing AC (no adds, no removals, no other fields), with
+    // addsNewBehavior rejected above. Raw newVersion() callers get no
+    // such trust: the data layer cannot distinguish a "clarification"
+    // from a meaning change in free text, so their AC edits require a
+    // recorded HUMAN authorization (newVersion gate 2, §16 G-02).
+    const prev = this.latest(id);
+    const draft: RequirementVersion = JSON.parse(JSON.stringify(prev)) as RequirementVersion;
+    const ac = draft.acceptanceCriteria.find((a) => a.id === acId);
+    if (!ac) throw new RequirementError(`AC ${acId} not found in ${id}`);
+    if (patch.description !== undefined) ac.description = patch.description;
+    if (patch.expectedEvidence !== undefined) ac.expectedEvidence = patch.expectedEvidence;
+    if (patch.verificationType !== undefined) ac.verificationType = patch.verificationType;
+    ac.version += 1;
+    return this.appendVersion(id, draft, 'AC_REFINEMENT', `AC ${acId} refined`, by);
   }
 
   /**
@@ -227,7 +433,7 @@ export class RequirementManager {
   changeCompletionTarget(
     id: string,
     target: CompletionTarget,
-    auth: { authorizedBy: string; isHuman: boolean; reason: string },
+    auth: HumanAuthorization,
     by: string,
   ): RequirementVersion {
     if (!auth.isHuman) {
@@ -235,6 +441,9 @@ export class RequirementManager {
         'completion_target change requires a recorded HUMAN authorization — AI may not move the endpoint',
       );
     }
+    // Delegates to newVersion() with the same authorization, so the
+    // convenience path and the raw path pass through ONE data-layer
+    // gate (§16 G-01) — including the VERIFIED_DELIVERY category check.
     return this.newVersion(id, 'TARGET_CHANGE', `target → ${target}: ${auth.reason}`, by, (draft) => {
       draft.completionTarget = target;
       if (target === 'VERIFIED_DELIVERY') {
@@ -244,7 +453,7 @@ export class RequirementManager {
           at: this.iso(),
         };
       }
-    });
+    }, { humanAuthorization: auth });
   }
 
   /** Record which entities are bound to a requirement version. */

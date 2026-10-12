@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {
   CompletionEntry,
   CompletionLedger,
+  InvalidCompletionError,
   applyInvalidation,
   computeProgress,
   defaultWeightPlan,
@@ -16,7 +17,12 @@ import {
 const NOW = 1700000000000;
 const now = () => NOW;
 
-function entry(itemId: string, c: number, evidenceRef: string | null = null): CompletionEntry {
+// §20 (G-25) test-data correction: the default evidenceRef used to be
+// null, so many c > 0 fixtures were evidence-free — exactly what the
+// spec forbids (cᵢ must come from checkpoints against valid Evidence).
+// The helper now defaults to a synthetic evidence ref; tests that need
+// an evidence-free entry pass null/'' explicitly.
+function entry(itemId: string, c: number, evidenceRef: string | null = `ev-${itemId}`): CompletionEntry {
   return { itemId, c, evidenceRef };
 }
 
@@ -101,6 +107,85 @@ describe('computeProgress (§20.1)', () => {
     const r = computeProgress(plan, [entry('qa-ci-security', 1), entry('extra-qa', 1)], { now });
     assert.equal(r.denominator, 100); // not 120
     assert.equal(r.percent, 20);
+  });
+});
+
+describe('§20 hardening (G-25 evidence / G-26 seal cap / G-29 currentGate)', () => {
+  it('G-25: c > 0 without evidence is rejected, naming the item', () => {
+    const plan = defaultWeightPlan(now);
+    assert.throws(
+      () => computeProgress(plan, [{ itemId: 'planning', c: 0.5, evidenceRef: null }], { now }),
+      (err: unknown) => err instanceof InvalidCompletionError && /planning/.test((err as Error).message),
+    );
+    assert.throws(
+      () => computeProgress(plan, [{ itemId: 'planning', c: 1, evidenceRef: '' }], { now }),
+      /requires valid evidence/,
+    );
+    assert.throws(
+      () => computeProgress(plan, [{ itemId: 'planning', c: 1, evidenceRef: '   ' }], { now }),
+      InvalidCompletionError,
+    );
+  });
+
+  it('G-25: c = 0 without evidence is legal (not started)', () => {
+    const plan = defaultWeightPlan(now);
+    const r = computeProgress(plan, [{ itemId: 'planning', c: 0, evidenceRef: null }], { now });
+    assert.equal(r.percent, 0);
+  });
+
+  it('G-25: checkpoint-derived c > 0 without evidence is rejected; derived 0 is legal', () => {
+    const plan = defaultWeightPlan(now);
+    assert.throws(
+      () => computeProgress(plan, [{
+        itemId: 'implementation', c: 0, evidenceRef: null,
+        checkpoints: [{ id: 'cp-1', met: true, weight: 1 }],
+      }], { now }),
+      InvalidCompletionError,
+    );
+    const r = computeProgress(plan, [{
+      itemId: 'implementation', c: 0, evidenceRef: null,
+      checkpoints: [{ id: 'cp-1', met: false, weight: 1 }],
+    }], { now });
+    assert.equal(r.percent, 0);
+  });
+
+  it('G-26: a plan with no seal item is capped at 99.99, raw sums kept, blocker explains', () => {
+    const plan = defaultWeightPlan(now);
+    plan.items = plan.items.filter((i) => i.kind !== 'seal');
+    const r = computeProgress(plan, plan.items.map((i) => entry(i.id, 1)), { now });
+    assert.equal(r.numerator, 90);
+    assert.equal(r.denominator, 90);
+    assert.equal(r.percent, 99.99);
+    assert.ok(r.blockers.some((b) => b.includes('plan has no seal item: progress cannot reach 100%')));
+  });
+
+  it('G-26: caller blockers are preserved ahead of the seal note', () => {
+    const plan = defaultWeightPlan(now);
+    const noSeal = { ...plan, items: plan.items.filter((i) => i.kind !== 'seal') };
+    const r = computeProgress(noSeal, noSeal.items.map((i) => entry(i.id, 1)), {
+      now, blockers: ['waiting on QA'],
+    });
+    assert.equal(r.blockers[0], 'waiting on QA');
+    assert.equal(r.blockers.length, 2);
+    assert.equal(r.percent, 99.99);
+  });
+
+  it('G-26: with a seal item, percent stays < 100 until the seal finalizes (no cap note)', () => {
+    const plan = defaultWeightPlan(now);
+    const almost = plan.items.filter((i) => i.kind !== 'seal').map((i) => entry(i.id, 1));
+    const r = computeProgress(plan, almost, { now });
+    assert.equal(r.percent, 90); // seal weight (10) still in the denominator
+    assert.equal(r.sealFinalized, false);
+    assert.ok(!r.blockers.some((b) => b.includes('no seal item')));
+    const sealed = computeProgress(plan, [...almost, entry('seal', 1)], { now });
+    assert.equal(sealed.percent, 100);
+    assert.equal(sealed.sealFinalized, true);
+  });
+
+  it('G-29: currentGate passes through from opts and defaults to null', () => {
+    const plan = defaultWeightPlan(now);
+    assert.equal(computeProgress(plan, [], { now, currentGate: 'gate:qa' }).currentGate, 'gate:qa');
+    assert.equal(computeProgress(plan, [], { now }).currentGate, null);
   });
 });
 

@@ -69,6 +69,14 @@ export type TaskConditionValue =
   | 'CANCELLED'
   | 'REJECTED';
 
+/**
+ * Failure-class condition values (G-21). v1 spelled these per stage
+ * (QA_FAILED / UAT_FAILED / PROD_FAILED); v2 collapses them into the single
+ * FAILED condition — the stage at failure time preserves where it failed.
+ * ROLLBACK is a release state (§19), not a condition, so it is not here.
+ */
+export const FAILURE_CONDITIONS: ReadonlyArray<TaskConditionValue> = ['FAILED'];
+
 export interface ConditionRecord {
   condition: TaskConditionValue;
   reason: string;
@@ -125,6 +133,15 @@ export interface GateContext {
   quotaOk: boolean;
   confinementOk: boolean;
   dependenciesReady: boolean;
+  /**
+   * Workspace lease attestation (§18.2 "workspace lease valid" entry
+   * condition; G-16). Optional at the type level so existing context
+   * builders keep compiling, but the lease gate predicate is fail-closed:
+   * undefined (not attested) fails exactly like false.
+   */
+  leaseValid?: boolean;
+  /** Id of the lease backing `leaseValid`, when the caller tracks one. */
+  leaseId?: string;
   /** Optimistic concurrency: reject when the request was built on an old version. */
   expectedTaskVersion?: number;
 }
@@ -238,6 +255,20 @@ const P_DEPS_READY: GatePredicate = {
   check: (c) => c.dependenciesReady,
 };
 
+/**
+ * §18.2 lease gate (G-16): edges whose entry conditions require a valid
+ * workspace/deployment lease check the attested leaseValid flag. Fail-closed:
+ * only an explicit true passes — false or absent attestation denies with
+ * STALE_OWNER (an invalid lease means the writer's ownership claim, and its
+ * fencing token, may have moved on).
+ */
+const P_LEASE_VALID: GatePredicate = {
+  id: 'lease-valid',
+  description: 'Workspace lease is valid (leaseValid attested true; absent attestation fails closed)',
+  reasonCode: 'STALE_OWNER',
+  check: (c) => c.leaseValid === true,
+};
+
 const P_CANDIDATE_FIXED: GatePredicate = {
   id: 'candidate-fixed',
   description: 'Candidate revision is fixed (digest pinned)',
@@ -298,7 +329,7 @@ export const DEFAULT_TRANSITIONS_V2: Record<WorkflowStage, TransitionDefV2[]> = 
       intent: 'SUBMIT_FOR_REVIEW', to: 'CODE_REVIEW',
       entryConditions: ['Delegation and workspace lease valid', 'Candidate revision fixed'],
       requiredEvidence: [R('code_change', 'Code change artifact (commit/PR)')],
-      gatePredicates: [...BASE, P_CANDIDATE_FIXED, P_CONFINEMENT],
+      gatePredicates: [...BASE, P_CANDIDATE_FIXED, P_CONFINEMENT, P_LEASE_VALID],
       failureConditions: ['REWORK', 'BLOCKED'],
       note: 'Implementation submitted',
     },
@@ -385,7 +416,7 @@ export const DEFAULT_TRANSITIONS_V2: Record<WorkflowStage, TransitionDefV2[]> = 
       intent: 'REQUEST_PROD', to: 'PROD_VERIFICATION',
       entryConditions: ['Deployment lease, capability, approval object and environment valid'],
       requiredEvidence: [R('deployment', 'Deployment artifact')],
-      gatePredicates: [...BASE],
+      gatePredicates: [...BASE, P_LEASE_VALID],
       failureConditions: ['FAILED'],
       note: 'Deployed',
     },

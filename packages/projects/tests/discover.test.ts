@@ -128,3 +128,107 @@ describe('discoverProject', () => {
     assert.deepEqual(p.ci, ['jenkins']);
   });
 });
+
+describe('discoverProject diagnostics (§6.2)', () => {
+  const codes = (p: ReturnType<typeof discoverProject>): string[] =>
+    p.diagnostics.map((d) => d.code);
+
+  it('records MULTIPLE_LOCKFILES, lists all of them, and still picks deterministically', () => {
+    write('package.json', JSON.stringify({ name: 'x' }));
+    write('package-lock.json', '{}');
+    write('yarn.lock', '');
+    const p = discoverProject(dir);
+    // detectPackageManager precedence is unchanged: yarn wins over npm.
+    assert.equal(p.packageManager, 'yarn');
+    const diag = p.diagnostics.find((d) => d.code === 'MULTIPLE_LOCKFILES');
+    assert.ok(diag, 'expected a MULTIPLE_LOCKFILES diagnostic');
+    assert.match(diag.message, /package-lock\.json/);
+    assert.match(diag.message, /yarn\.lock/);
+    assert.equal(diag.path, 'yarn.lock');
+  });
+
+  it('does not flag a single lockfile', () => {
+    write('package.json', JSON.stringify({ name: 'x' }));
+    write('package-lock.json', '{}');
+    const p = discoverProject(dir);
+    assert.ok(!codes(p).includes('MULTIPLE_LOCKFILES'));
+  });
+
+  it('records MISSING_MANIFEST and NO_TEST_COMMAND for an empty directory', () => {
+    const p = discoverProject(dir);
+    assert.ok(codes(p).includes('MISSING_MANIFEST'));
+    assert.ok(codes(p).includes('NO_TEST_COMMAND'));
+    assert.deepEqual(p.commands, []);
+  });
+
+  it('records NO_TEST_COMMAND for a node project with no test script, dep or files', () => {
+    write('package.json', JSON.stringify({ dependencies: { express: '^4.0.0' } }));
+    const p = discoverProject(dir);
+    assert.equal(p.testFramework, null);
+    assert.ok(codes(p).includes('NO_TEST_COMMAND'));
+    assert.ok(!codes(p).includes('MISSING_MANIFEST'));
+    assert.ok(!p.commands.some((c) => c.kind === 'test'));
+  });
+
+  it('records UNKNOWN_COMMAND when scripts.test invokes no recognized runner', () => {
+    write('package.json', JSON.stringify({ scripts: { test: 'make test' } }));
+    const p = discoverProject(dir);
+    assert.ok(codes(p).includes('UNKNOWN_COMMAND'));
+    // UNKNOWN_COMMAND covers the gap; NO_TEST_COMMAND must not double-report.
+    assert.ok(!codes(p).includes('NO_TEST_COMMAND'));
+    assert.ok(!p.commands.some((c) => c.kind === 'test'));
+    const diag = p.diagnostics.find((d) => d.code === 'UNKNOWN_COMMAND');
+    assert.match(diag!.message, /make test/);
+  });
+
+  it('exposes detected commands, all status detected — never verified', () => {
+    write('package.json', JSON.stringify({
+      scripts: { test: 'jest', build: 'tsc -p .' },
+      devDependencies: { jest: '^29.0.0' },
+    }));
+    write('tsconfig.json', '{}');
+    const p = discoverProject(dir);
+    const test = p.commands.find((c) => c.kind === 'test');
+    assert.ok(test);
+    assert.equal(test.command, 'jest');
+    assert.equal(test.source, 'package.json scripts.test');
+    const build = p.commands.find((c) => c.kind === 'build');
+    assert.ok(build);
+    assert.equal(build.command, 'tsc -p .');
+    assert.ok(p.commands.length > 0);
+    assert.ok(p.commands.every((c) => c.status === 'detected'));
+    assert.deepEqual(p.diagnostics, []);
+  });
+
+  it('detects the test command from a framework dependency when no script exists', () => {
+    write('package.json', JSON.stringify({ devDependencies: { vitest: '^2.0.0' } }));
+    const p = discoverProject(dir);
+    const test = p.commands.find((c) => c.kind === 'test');
+    assert.ok(test);
+    assert.equal(test.command, 'vitest');
+    assert.equal(test.status, 'detected');
+    assert.ok(!codes(p).includes('NO_TEST_COMMAND'));
+  });
+
+  it('flags python projects with no test markers instead of guessing a PASS', () => {
+    write('requirements.txt', 'django==5.0\n');
+    const p = discoverProject(dir);
+    // Compat: the stdlib fallback in testFramework is unchanged…
+    assert.equal(p.testFramework, 'unittest');
+    // …but the diagnostic is honest that nothing was actually detected.
+    const diag = p.diagnostics.find((d) => d.code === 'NO_TEST_COMMAND');
+    assert.ok(diag);
+    assert.match(diag.message, /unittest/);
+    assert.ok(!p.commands.some((c) => c.kind === 'test'));
+  });
+
+  it('detects a go test command with no diagnostics', () => {
+    write('go.mod', 'module example.com/x\n');
+    const p = discoverProject(dir);
+    const test = p.commands.find((c) => c.kind === 'test');
+    assert.ok(test);
+    assert.equal(test.command, 'go test ./...');
+    assert.equal(test.status, 'detected');
+    assert.deepEqual(p.diagnostics, []);
+  });
+});

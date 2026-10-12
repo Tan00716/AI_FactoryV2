@@ -1,10 +1,14 @@
 /**
  * Requirement routes — SPEC_V2 §16 (lives in @ai-factory/requirements).
  *
- *  POST /api/requirements                        create requirement
+ *  POST /api/requirements                        create requirement (VERIFIED_DELIVERY also
+ *                                                  requires projectCategory + HUMAN
+ *                                                  completionTargetAuthorization, §16 G-03)
  *  GET  /api/requirements/:id                     latest version
  *  GET  /api/requirements/:id/versions/:v        immutable version read
- *  POST /api/requirements/:id/versions           {changeKind, changeNote, patch} → new version
+ *  POST /api/requirements/:id/versions           {changeKind, changeNote, patch, humanAuthorization?}
+ *                                                  → new version (target/AC-meaning patches need
+ *                                                  the HUMAN authorization, §16 G-01/G-02)
  *  POST /api/requirements/:id/links               {version, taskIds?, planIds?, codeRefs?,
  *                                                  testIds?, evidenceIds?, approvalIds?,
  *                                                  releaseIds?} → updated EntityLinks
@@ -40,6 +44,11 @@ export async function handleRequirementRoutes(
         id: body['id'] as string | undefined,
         businessGoal: body['businessGoal'] as string,
         rationale: body['rationale'] as string | undefined,
+        // §16 G-03 (Batch 4): VERIFIED_DELIVERY declarations must carry
+        // an eligible projectCategory + a HUMAN completionTargetAuthorization;
+        // the manager rejects the create (400) when they are missing.
+        projectCategory: body['projectCategory'] as never,
+        completionTargetAuthorization: body['completionTargetAuthorization'] as never,
         acceptanceCriteria: body['acceptanceCriteria'] as never,
         exclusions: body['exclusions'] as string[] | undefined,
         constraints: body['constraints'] as string[] | undefined,
@@ -136,6 +145,10 @@ export async function handleRequirementRoutes(
         (draft) => {
           Object.assign(draft, body['patch'] ?? {});
         },
+        // §16 G-01/G-02 (Batch 4): patches that move completion_target
+        // or change AC meaning are rejected by the manager unless the
+        // request carries a recorded HUMAN authorization — fail-closed.
+        { humanAuthorization: body['humanAuthorization'] as never },
       );
       ctx.json(res, 201, { version: v });
     } catch (err) {

@@ -47,10 +47,15 @@ function main(): void {
     evidenceIds: ['ev-ci-1', 'ev-drill-1'], approvalIds: ['appr-7'], releaseIds: [],
   });
 
-  // v2: clarify AC-002 (a real business-meaning change would be rejected elsewhere)
+  // v2: a HUMAN-authorized scope change edits AC-002's meaning. Since
+  // Batch 4 (§16 G-02) the data layer requires the recorded HUMAN
+  // authorization for AC-meaning changes — an AI caller doing the same
+  // mutation without it would be rejected.
   m.newVersion('REQ-001', 'SCOPE_CHANGE', 'AC-002: drill must cover DB rollback', 'human-1', (d) => {
     d.acceptanceCriteria.find((a) => a.id === 'AC-002')!.description =
       'Rollback incl. DB available within 5 minutes';
+  }, {
+    humanAuthorization: { authorizedBy: 'human-1', isHuman: true, reason: 'owner-approved scope change' },
   });
   console.log('\nREQ-001@2 created; @1 record untouched:',
     m.getVersion('REQ-001', 1).acceptanceCriteria[1].description);

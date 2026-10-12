@@ -7,7 +7,8 @@
  *  - executor  WorkspaceExecutor: whitelisted, timeout-killed, cwd-pinned [§6, §31]
  *              command execution with audit events
  *  - discover  discoverProject(): language/framework/pm/test/CI/Git/     [§32]
- *              AGENTS.md/skills/MCP detection → ProjectProfile
+ *              AGENTS.md/skills/MCP detection → ProjectProfile, with
+ *              detected commands + §6.2 diagnostics (never a guessed PASS)
  *  - templates runnable-minimal skeletons (nextjs-saas, react,           [§33]
  *              python-api, node-api, electron)
  *  - create    createProject(): directory + git init + skeleton +        [§33, §103]

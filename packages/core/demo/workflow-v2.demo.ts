@@ -47,6 +47,9 @@ function ctx(taskId: string, taskVersion: number, evidence: Evidence[] = []): Ga
     evidenceReqVersions: Object.fromEntries(evidence.map((e) => [e.id, 'REQ-001@1'])),
     staleEvidenceIds: [],
     budgetOk: true, quotaOk: true, confinementOk: true, dependenciesReady: true,
+    // G-16: the lease-gated edges (→CODE_REVIEW, →PROD_VERIFICATION) are
+    // fail-closed — the caller must attest a valid workspace lease.
+    leaseValid: true, leaseId: 'lease-demo-1',
   };
 }
 

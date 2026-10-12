@@ -9,7 +9,11 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { ProjectProfile } from './types';
+import type {
+  DetectedCommand,
+  ProjectDiagnostic,
+  ProjectProfile,
+} from './types';
 
 const MAX_SCAN_DEPTH = 2;
 
@@ -282,6 +286,194 @@ function detectMcpConfig(dir: string): string | null {
 }
 
 /**
+ * Lockfiles recognized across ecosystems. Order within an ecosystem
+ * mirrors the precedence `detectPackageManager` uses, so "the winner"
+ * named in a MULTIPLE_LOCKFILES diagnostic is the one detection
+ * actually picked.
+ */
+const LOCKFILES: ReadonlyArray<{ file: string; manager: string }> = [
+  { file: 'pnpm-lock.yaml', manager: 'pnpm' },
+  { file: 'yarn.lock', manager: 'yarn' },
+  { file: 'bun.lockb', manager: 'bun' },
+  { file: 'bun.lock', manager: 'bun' },
+  { file: 'package-lock.json', manager: 'npm' },
+  { file: 'poetry.lock', manager: 'poetry' },
+  { file: 'Pipfile.lock', manager: 'pipenv' },
+  { file: 'composer.lock', manager: 'composer' },
+  { file: 'Cargo.lock', manager: 'cargo' },
+  { file: 'Gemfile.lock', manager: 'bundler' },
+];
+
+/** package.json script names treated as well-known command roles. */
+const SCRIPT_KINDS = ['test', 'build', 'dev', 'start', 'lint'] as const;
+
+/** Runners a `scripts.test` body is recognized as invoking. */
+const KNOWN_TEST_RUNNER =
+  /\b(vitest|jest|mocha|ava|tap|playwright|cypress)\b|node\s+(--test\b|\S+\s+--test\b)/;
+
+/**
+ * Commands declared in project configuration (spec §6.2). Everything
+ * found here is status 'detected': discovery is read-only and never
+ * runs anything, so nothing here may be reported as 'verified'.
+ *
+ * Returns the commands plus the body of a `scripts.test` whose runner
+ * could not be identified (for an UNKNOWN_COMMAND diagnostic) — such a
+ * script is NOT listed as a test command, because we cannot say what
+ * it would run.
+ */
+function detectCommands(
+  dir: string,
+  language: string | null,
+  packageManager: string | null,
+  testFramework: string | null,
+): { commands: DetectedCommand[]; unknownTestScript: string | null } {
+  const commands: DetectedCommand[] = [];
+  let unknownTestScript: string | null = null;
+
+  if (language === 'javascript' || language === 'typescript') {
+    const pkg = readJson(dir, 'package.json');
+    const scripts =
+      pkg && typeof pkg['scripts'] === 'object' && pkg['scripts'] !== null
+        ? (pkg['scripts'] as Record<string, unknown>)
+        : {};
+    let testFromScript = false;
+    for (const kind of SCRIPT_KINDS) {
+      const raw = scripts[kind];
+      if (typeof raw !== 'string' || !raw.trim()) continue;
+      if (kind === 'test' && !KNOWN_TEST_RUNNER.test(raw)) {
+        // A test script exists but we cannot tell what it runs.
+        unknownTestScript = raw;
+        continue;
+      }
+      if (kind === 'test') testFromScript = true;
+      commands.push({
+        kind,
+        command: raw,
+        source: `package.json scripts.${kind}`,
+        status: 'detected',
+      });
+    }
+    // Test framework declared as a dependency but no (recognized) test
+    // script: the framework binary itself is the detected command.
+    if (!testFromScript && testFramework && testFramework !== 'node:test') {
+      commands.push({
+        kind: 'test',
+        command: testFramework,
+        source: 'package.json dependencies',
+        status: 'detected',
+      });
+    }
+    if (!testFromScript && testFramework === 'node:test') {
+      commands.push({
+        kind: 'test',
+        command: 'node --test',
+        source: 'detected *.test.* files',
+        status: 'detected',
+      });
+    }
+  }
+
+  if (language === 'python' && testFramework === 'pytest') {
+    const marker = exists(dir, 'pytest.ini')
+      ? 'pytest.ini'
+      : exists(dir, 'tox.ini')
+        ? 'tox.ini'
+        : isDir(dir, 'tests')
+          ? 'tests/'
+          : 'pyproject.toml';
+    commands.push({ kind: 'test', command: 'pytest', source: marker, status: 'detected' });
+  }
+  if (language === 'go') {
+    commands.push({
+      kind: 'test',
+      command: 'go test ./...',
+      source: 'go.mod',
+      status: 'detected',
+    });
+  }
+  if (language === 'rust') {
+    commands.push({
+      kind: 'test',
+      command: 'cargo test',
+      source: 'Cargo.toml',
+      status: 'detected',
+    });
+  }
+  if (language === 'java' && testFramework === 'junit') {
+    commands.push({
+      kind: 'test',
+      command: packageManager === 'gradle' ? './gradlew test' : 'mvn test',
+      source: packageManager === 'gradle' ? 'build.gradle' : 'pom.xml',
+      status: 'detected',
+    });
+  }
+
+  return { commands, unknownTestScript };
+}
+
+/**
+ * Discovery diagnostics (spec §6.2): ambiguous or missing configuration
+ * is recorded here — never silently resolved into a guessed PASS.
+ */
+function buildDiagnostics(
+  dir: string,
+  language: string | null,
+  packageManager: string | null,
+  testFramework: string | null,
+  commands: DetectedCommand[],
+  unknownTestScript: string | null,
+): ProjectDiagnostic[] {
+  const diagnostics: ProjectDiagnostic[] = [];
+
+  const presentLockfiles = LOCKFILES.filter((l) => exists(dir, l.file));
+  if (presentLockfiles.length >= 2) {
+    const winner = presentLockfiles.find((l) => l.manager === packageManager);
+    diagnostics.push({
+      code: 'MULTIPLE_LOCKFILES',
+      message:
+        `multiple lockfiles found: ${presentLockfiles.map((l) => l.file).join(', ')}; ` +
+        `package manager '${packageManager ?? 'unknown'}' was picked by deterministic precedence — ` +
+        'the other lockfile(s) may be stale',
+      ...(winner ? { path: winner.file } : {}),
+    });
+  }
+
+  if (language === null) {
+    diagnostics.push({
+      code: 'MISSING_MANIFEST',
+      message:
+        'no dependency manifest found (package.json, pyproject.toml, requirements.txt, ' +
+        'go.mod, Cargo.toml, pom.xml, build.gradle, composer.json, Gemfile) at the project ' +
+        'root or depth 1 — dependencies cannot be determined',
+    });
+  }
+
+  if (unknownTestScript !== null) {
+    diagnostics.push({
+      code: 'UNKNOWN_COMMAND',
+      message:
+        `package.json scripts.test ("${unknownTestScript}") does not invoke a recognized ` +
+        'test runner, so no test command could be identified from it',
+      path: 'package.json',
+    });
+  }
+
+  const hasTestCommand = commands.some((c) => c.kind === 'test');
+  if (!hasTestCommand && unknownTestScript === null) {
+    diagnostics.push({
+      code: 'NO_TEST_COMMAND',
+      message:
+        language === 'python' && testFramework === 'unittest'
+          ? 'no test command detected in project configuration; testFramework only falls ' +
+            'back to the Python stdlib unittest default, which is not a detected test command'
+          : 'no test command detected in project configuration',
+    });
+  }
+
+  return diagnostics;
+}
+
+/**
  * Analyze `dir` and build a ProjectProfile (spec §32).
  * Throws when `dir` does not exist or is not a directory.
  */
@@ -296,16 +488,35 @@ export function discoverProject(dir: string): ProjectProfile {
   if (!st.isDirectory()) throw new Error(`not a directory: ${abs}`);
 
   const language = detectLanguage(abs);
+  const framework = detectFramework(abs, language);
+  const packageManager = detectPackageManager(abs, language);
+  const testFramework = detectTestFramework(abs, language);
+  const { commands, unknownTestScript } = detectCommands(
+    abs,
+    language,
+    packageManager,
+    testFramework,
+  );
+  const diagnostics = buildDiagnostics(
+    abs,
+    language,
+    packageManager,
+    testFramework,
+    commands,
+    unknownTestScript,
+  );
   return {
     path: abs,
     language,
-    framework: detectFramework(abs, language),
-    packageManager: detectPackageManager(abs, language),
-    testFramework: detectTestFramework(abs, language),
+    framework,
+    packageManager,
+    testFramework,
     git: isDir(abs, '.git'),
     ci: detectCi(abs),
     hasAgentsMd: exists(abs, 'AGENTS.md'),
     skillsDir: isDir(abs, 'skills'),
     mcpConfig: detectMcpConfig(abs),
+    commands,
+    diagnostics,
   };
 }

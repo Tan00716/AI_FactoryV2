@@ -38,11 +38,26 @@ function round2(n: number): number {
 /**
  * §20.1 — compute progress = 100 × Σ(wᵢcᵢ) / Σwᵢ over leaf items only.
  * Deterministic: same plan + same completions → same report, always.
+ *
+ * §20 hardening:
+ * - (G-25) Any counted item whose effective cᵢ > 0 — declared directly
+ *   or derived from checkpoints — MUST carry a non-empty evidenceRef;
+ *   otherwise InvalidCompletionError. cᵢ may only come from discrete
+ *   checkpoints against valid Evidence, never from elapsed time, file
+ *   counts or token counts, and an evidence-free positive cᵢ is exactly
+ *   how such derivations would sneak in. cᵢ = 0 needs no evidence.
+ * - (G-26) A plan with no kind:'seal' item among the counted items can
+ *   never show 100%: percent is capped at 99.99 (numerator/denominator
+ *   stay raw) and a blocker explains why. With a seal item, its weight
+ *   in the denominator already keeps percent < 100 until it finalizes.
+ * - (G-29) opts.currentGate is passed through to the report (§20.4:
+ *   every ticket shows % + current_gate + calculation_version +
+ *   updated_at); the engine never invents a gate, default is null.
  */
 export function computeProgress(
   plan: WeightPlan,
   completions: Map<string, CompletionEntry> | CompletionEntry[],
-  opts: { blockers?: string[]; now?: () => number } = {},
+  opts: { blockers?: string[]; now?: () => number; currentGate?: string } = {},
 ): ProgressReport {
   const entries = Array.isArray(completions)
     ? new Map(completions.map((e) => [e.itemId, e]))
@@ -93,6 +108,17 @@ export function computeProgress(
     if (!(c >= 0 && c <= 1)) {
       throw new InvalidCompletionError(`Item ${item.id}: c must be in [0,1], got ${c}`);
     }
+    // §20 (G-25): positive completion — declared or checkpoint-derived —
+    // is only legal against valid Evidence. Reject evidence-free cᵢ > 0
+    // so callers cannot derive progress from time/token/file counts.
+    if (c > 0) {
+      const ref = entry?.evidenceRef;
+      if (ref === null || ref === undefined || ref.trim() === '') {
+        throw new InvalidCompletionError(
+          `Item ${item.id}: c=${round2(c)} > 0 requires valid evidence (§20) — evidenceRef is missing`,
+        );
+      }
+    }
     if (item.kind === 'seal' && c === 1) sealFinalized = true;
     numerator += item.weight * c;
     denominator += item.weight;
@@ -105,11 +131,23 @@ export function computeProgress(
 
   if (denominator === 0) throw new InvalidWeightError('Weight plan has no countable leaf items');
 
-  const percent = round2((100 * numerator) / denominator);
+  // §20 (G-26): without a seal item among the counted items there is no
+  // weighted final seal, so 100% is unreachable by definition — cap the
+  // displayed percent at 99.99 (raw numerator/denominator are returned
+  // unchanged) and say so in blockers instead of throwing, so existing
+  // seal-less plans keep rendering.
+  const blockers = [...(opts.blockers ?? [])];
+  let percent = round2((100 * numerator) / denominator);
+  const hasSeal = counted.some((i) => i.kind === 'seal');
+  if (!hasSeal && percent > 99.99) {
+    percent = 99.99;
+    blockers.push('plan has no seal item: progress cannot reach 100% (§20)');
+  }
   return {
     planId: plan.id,
     planVersion: plan.version,
     calculationVersion: CALCULATION_VERSION,
+    currentGate: opts.currentGate ?? null,
     percent,
     numerator: round2(numerator),
     denominator: round2(denominator),
@@ -118,7 +156,7 @@ export function computeProgress(
       ...(deduped.has(r.id) ? { sharedGateDeduped: true as const } : {}),
     })),
     sealFinalized,
-    blockers: opts.blockers ?? [],
+    blockers,
     updatedAt: iso(opts.now),
   };
 }

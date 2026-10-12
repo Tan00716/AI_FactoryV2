@@ -23,13 +23,17 @@ const NOW = 1700000000000;
 const now = () => NOW;
 const ISO = new Date(NOW).toISOString();
 
+// §20 (G-25) test-data correction: entries used to carry evidenceRef:
+// null with c > 0, which computeProgress now rejects — positive cᵢ must
+// be backed by evidence. Default to a synthetic ref.
 function entry(itemId: string, c: number): CompletionEntry {
-  return { itemId, c, evidenceRef: null };
+  return { itemId, c, evidenceRef: `ev-${itemId}` };
 }
 
 function report(percent: number): ProgressReport {
   return {
     planId: 'p', planVersion: 1, calculationVersion: 'progress/v2.0',
+    currentGate: null,
     percent, numerator: percent, denominator: 100, items: [],
     sealFinalized: false, blockers: [], updatedAt: ISO,
   };
