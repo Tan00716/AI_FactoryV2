@@ -21,3 +21,16 @@ console.log(`unread: ${engine.unreadCount()}`);
 const [first] = engine.list();
 engine.markRead(first.id);
 console.log(`after markRead: unread=${engine.unreadCount()}, deliveries=${engine.deliveriesFor().length}`);
+
+// §32 storm control: identical repeats merge; excess new records are
+// suppressed into one summary instead of flooding the recipient.
+const storm = new NotificationEngine({ rateLimit: { maxPerWindow: 3, windowMs: 60_000 } });
+for (let i = 0; i < 3; i += 1) {
+  storm.emit({ type: 'GATE_FAILED', entity: { kind: 'review', id: 'r9', label: 'hot.ts' }, detail: { reason: 'still failing' } });
+}
+const merged = storm.list().find((n) => n.type === 'GATE_FAILED');
+console.log(`storm: 3 identical gate failures merged into 1 record (mergedCount=${merged?.mergedCount})`);
+for (let i = 0; i < 5; i += 1) {
+  storm.emit({ type: 'TASK_COMPLETED', entity: { kind: 'task', id: `burst-${i}` } });
+}
+console.log(`burst: suppressed=${storm.suppressedCount()}, stored records=${storm.list().length} (2 delivered + 1 merged + 1 summary)`);

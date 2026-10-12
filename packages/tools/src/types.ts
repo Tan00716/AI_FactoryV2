@@ -81,7 +81,23 @@ export interface ToolCall {
   cwd?: string;
 }
 
-export type ExecutionOutcome = 'SUCCEEDED' | 'FAILED' | 'TIMED_OUT' | 'DENIED';
+/**
+ * Execution outcomes (§33: schema errors, non-zero exit, timeout and empty
+ * results are handled separately).
+ *
+ * EMPTY_RESULT: the tool ran cleanly (exit 0, no denial) but produced no
+ * result payload at all — see isEmptyResult() in executor.ts for the exact
+ * shape rule. It is NOT an error (the call does not throw and is not
+ * FAILED), but it is also NOT a success: an empty result must never be
+ * sealed as success evidence, because "nothing came back" does not prove
+ * the intended effect happened or that a query found data.
+ */
+export type ExecutionOutcome =
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'TIMED_OUT'
+  | 'DENIED'
+  | 'EMPTY_RESULT';
 
 /**
  * Unified execution record (§33). `exitCode` is the truth: a natural-language

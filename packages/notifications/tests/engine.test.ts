@@ -58,9 +58,11 @@ test('markRead is idempotent', () => {
 
 test('maxStored evicts oldest (and its delivery)', () => {
   const eng = new NotificationEngine({ clock, maxStored: 2 });
-  eng.emit({ type: 'GENERIC', detail: { n: '1' } });
-  eng.emit({ type: 'GENERIC', detail: { n: '2' } });
-  eng.emit({ type: 'GENERIC', detail: { n: '3' } });
+  // §32: distinct entities so the three records do NOT dedupe-merge —
+  // this test pins eviction, not merging (see dedupe-ratelimit.test.ts).
+  eng.emit({ type: 'GENERIC', entity: { kind: 'event', id: 'n1' }, detail: { n: '1' } });
+  eng.emit({ type: 'GENERIC', entity: { kind: 'event', id: 'n2' }, detail: { n: '2' } });
+  eng.emit({ type: 'GENERIC', entity: { kind: 'event', id: 'n3' }, detail: { n: '3' } });
   const list = eng.list();
   assert.equal(list.length, 2);
   assert.equal(list[1].createdAt, '2023-11-14T22:13:20.000Z');
@@ -71,7 +73,9 @@ test('emit with actor defaults to system', () => {
   const eng = new NotificationEngine({ clock });
   const [n] = eng.emit({ type: 'GENERIC' });
   assert.equal(n.actor, 'system');
-  const [m] = eng.emit({ type: 'GENERIC', actor: 'human' });
+  // §32: distinct entity so this is a separate record, not a merge into the
+  // first one (a merge keeps the first record's actor by design).
+  const [m] = eng.emit({ type: 'GENERIC', actor: 'human', entity: { kind: 'event', id: 'other' } });
   assert.equal(m.actor, 'human');
 });
 

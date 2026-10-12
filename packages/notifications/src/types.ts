@@ -33,7 +33,26 @@ export interface NotificationEvent {
   actor?: string;
   /** Epoch ms; defaults to clock.now(). */
   at?: number;
+  /**
+   * Recipient bucket for §32 dedupe / rate limiting. The current deployment
+   * has a single human operator, so most events omit this and land in
+   * DEFAULT_RECIPIENT; named buckets keep the semantics ready for more.
+   */
+  recipient?: string;
 }
+
+/**
+ * Default recipient bucket (§32). Events without an explicit recipient are
+ * deduplicated and rate-limited together under this bucket.
+ */
+export const DEFAULT_RECIPIENT = 'default';
+
+/**
+ * Type label of the engine-generated summary record that stands in for
+ * notifications suppressed by the §32 rate limiter. Its mergedCount is the
+ * number of notifications suppressed in the recipient's current window.
+ */
+export const SUPPRESSED_NOTIFICATION_TYPE = 'SUPPRESSED_SUMMARY';
 
 /** A produced notification record. */
 export interface Notification {
@@ -47,6 +66,21 @@ export interface Notification {
   read: boolean;
   createdAt: string;
   readAt: string | null;
+  /**
+   * Recipient bucket this record belongs to (§32). Always set on
+   * engine-produced records; optional here so hand-built literals stay valid.
+   */
+  recipient?: string;
+  /**
+   * §32 — how many events this record represents: 1 when fresh, incremented
+   * each time a duplicate is merged into it. Always set by the engine.
+   */
+  mergedCount?: number;
+  /**
+   * §32 — ISO time of the most recent event folded into this record
+   * (equals createdAt until the first merge). Always set by the engine.
+   */
+  lastAt?: string;
 }
 
 /** Delivery record for a notification over one channel (prototype: in-app). */

@@ -7,22 +7,66 @@
 import { randomUUID } from 'crypto';
 import type { EvidenceType } from '@ai-factory/core';
 
-/** Log entry captured at commit time (see GitRepo.commit / log). */
+/**
+ * The five §36 change-evidence fields that MUST be recorded for a code
+ * change: Base SHA, Candidate SHA, Target SHA, Diff Hash, Artifact Digest.
+ * Every field is nullable — an unrecordable value is recorded as null,
+ * never invented.
+ */
+export interface ChangeEvidenceFields {
+  /** Base SHA — parent / branch point the change is measured against. */
+  baseSha: string | null;
+  /** Candidate SHA — the commit that carries the change. */
+  candidateSha: string | null;
+  /** Target SHA — the target branch tip the candidate is aimed at / landed on. */
+  targetSha: string | null;
+  /** Diff Hash — sha256 hex of the base→candidate diff text. */
+  diffHash: string | null;
+  /** Artifact Digest — digest of the build artifact for this change, if any. */
+  artifactDigest: string | null;
+}
+
+/** Normalize a partial/legacy entry's §36 fields: missing → null. */
+export function changeEvidenceFields(entry: Partial<ChangeEvidenceFields>): ChangeEvidenceFields {
+  return {
+    baseSha: entry.baseSha ?? null,
+    candidateSha: entry.candidateSha ?? null,
+    targetSha: entry.targetSha ?? null,
+    diffHash: entry.diffHash ?? null,
+    artifactDigest: entry.artifactDigest ?? null,
+  };
+}
+
+/**
+ * Log entry captured at commit time (see GitRepo.commit / log).
+ * The five §36 fields are optional so entries persisted before they were
+ * recorded still type-check and read back; GitRepo.log() populates them.
+ */
 export interface CodeChangeLogEntry {
   sha: string;
   message: string;
   author: string;
   date: string;
+  baseSha?: string | null;
+  candidateSha?: string | null;
+  targetSha?: string | null;
+  diffHash?: string | null;
+  artifactDigest?: string | null;
 }
 
 /**
  * Payload for EvidenceType 'code_change' (§42).
- * `logEntry` is the {sha,message,author,date} tuple from a fresh commit.
+ * `logEntry` is the {sha,message,author,date} tuple from a fresh commit,
+ * plus the five §36 fields (Base/Candidate/Target SHA, Diff Hash,
+ * Artifact Digest). Legacy entries without them record nulls, not guesses.
+ * artifactDigest is null whenever no build artifact exists for the change;
+ * the payload then carries `artifactNote: 'no artifact'` saying so.
  */
 export function codeChangeEvidencePayload(logEntry: CodeChangeLogEntry): {
   type: Extract<EvidenceType, 'code_change'>;
   payload: Record<string, unknown>;
 } {
+  const fields = changeEvidenceFields(logEntry);
   return {
     type: 'code_change',
     payload: {
@@ -30,6 +74,12 @@ export function codeChangeEvidencePayload(logEntry: CodeChangeLogEntry): {
       message: logEntry.message,
       author: logEntry.author,
       date: logEntry.date,
+      baseSha: fields.baseSha,
+      candidateSha: fields.candidateSha,
+      targetSha: fields.targetSha,
+      diffHash: fields.diffHash,
+      artifactDigest: fields.artifactDigest,
+      ...(fields.artifactDigest === null ? { artifactNote: 'no artifact' } : {}),
     },
   };
 }

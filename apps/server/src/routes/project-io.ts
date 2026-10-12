@@ -7,9 +7,12 @@
  *       { projectId, exportedAt, format, files: {".ai/...": "..."} }.
  *       The client downloads it as `<name>.ai-export.json`.
  *  POST /api/projects/:id/import   {files: {".ai/...": "..."}}
- *       Validate the export (schema + secret-value scan); on any issue
- *       NOTHING is written and the issues are returned (422). On success
- *       the files are written to `<projectDir>/.ai/`.
+ *       Run the §52.4 v1→v2 migration first (v1-shaped sections are
+ *       migrated and reported, never silently read as v2), then
+ *       validate the migrated export (schema + secret-value scan); on
+ *       any issue NOTHING is written and the issues are returned (422).
+ *       On success the files are written to `<projectDir>/.ai/`. Both
+ *       responses carry the structured `migration` report.
  *
  * PROTOTYPE NOTE: agents are the AI employees assigned to the project's
  * tasks (the agents table has no project_id); workflows and memory are
@@ -175,15 +178,17 @@ export async function handleProjectIoRoutes(
     if (!result.ok) {
       ctx.audit.record('human', 'PROJECT_IMPORT_REJECTED', 'project', projectId, {
         issues: result.issues.length,
+        v1MigrationDetected: result.migration?.detected ?? false,
       });
-      ctx.json(res, 422, { ok: false, issues: result.issues });
+      ctx.json(res, 422, { ok: false, issues: result.issues, migration: result.migration ?? null });
       return true;
     }
     ctx.audit.record('human', 'PROJECT_IMPORTED', 'project', projectId, {
       written: result.written.length,
       targetDir,
+      v1MigrationDetected: result.migration?.detected ?? false,
     });
-    ctx.json(res, 200, { ok: true, targetDir, written: result.written });
+    ctx.json(res, 200, { ok: true, targetDir, written: result.written, migration: result.migration ?? null });
     return true;
   }
 

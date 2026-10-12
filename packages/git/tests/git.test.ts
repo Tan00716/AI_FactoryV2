@@ -6,6 +6,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -20,6 +21,7 @@ import {
   ProtectedBranchError,
   codeChangeEvidencePayload,
   mergeEvidencePayload,
+  changeEvidenceFields,
   PrStore,
 } from '../src/index';
 
@@ -87,6 +89,49 @@ describe('evidence payloads + PR store', () => {
     });
     assert.equal(r.type, 'code_change');
     assert.equal(r.payload.sha, 'deadbeef');
+  });
+
+  it('codeChangeEvidencePayload passes the five §36 fields through', () => {
+    const r = codeChangeEvidencePayload({
+      sha: 'cand',
+      message: 'feat: x',
+      author: 'agent',
+      date: '2026-10-08T00:00:00Z',
+      baseSha: 'base',
+      candidateSha: 'cand',
+      targetSha: 'tgt',
+      diffHash: 'a'.repeat(64),
+      artifactDigest: 'sha256:art',
+    });
+    assert.equal(r.payload.baseSha, 'base');
+    assert.equal(r.payload.candidateSha, 'cand');
+    assert.equal(r.payload.targetSha, 'tgt');
+    assert.equal(r.payload.diffHash, 'a'.repeat(64));
+    assert.equal(r.payload.artifactDigest, 'sha256:art');
+    // a real digest present → no 'no artifact' note
+    assert.equal(r.payload.artifactNote, undefined);
+  });
+
+  it('legacy entries without §36 fields read back as nulls (never invented)', () => {
+    const r = codeChangeEvidencePayload({
+      sha: 'deadbeef',
+      message: 'feat: x',
+      author: 'agent',
+      date: '2026-10-08T00:00:00Z',
+    });
+    assert.equal(r.payload.baseSha, null);
+    assert.equal(r.payload.candidateSha, null);
+    assert.equal(r.payload.targetSha, null);
+    assert.equal(r.payload.diffHash, null);
+    assert.equal(r.payload.artifactDigest, null);
+    assert.equal(r.payload.artifactNote, 'no artifact');
+    assert.deepEqual(changeEvidenceFields({}), {
+      baseSha: null,
+      candidateSha: null,
+      targetSha: null,
+      diffHash: null,
+      artifactDigest: null,
+    });
   });
 
   it('mergeEvidencePayload returns a merge payload', () => {
@@ -291,6 +336,74 @@ describe('GitRepo integration', () => {
     assert.deepEqual(r.conflicts, []);
     const log = await repo.log(1);
     assert.equal(log[0].sha, sha);
+  });
+
+  it('log() populates the five §36 evidence fields from the real repo', needsGit, async () => {
+    const { dir, repo } = setup();
+    const initSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim();
+    writeFileSync(join(dir, 'hello.txt'), 'hello\n');
+    execFileSync('git', ['add', 'hello.txt'], { cwd: dir });
+    const sha = await repo.commit('feat: add hello');
+
+    const [entry, root] = await repo.log(2);
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim();
+    assert.equal(head, sha);
+    // candidate = the commit itself; base = its parent; target = current HEAD
+    assert.equal(entry.candidateSha, sha);
+    assert.equal(entry.baseSha, initSha);
+    assert.equal(entry.targetSha, head);
+    // diffHash = sha256 of the real base→candidate diff
+    const diff = execFileSync('git', ['diff', initSha, sha], { cwd: dir }).toString();
+    const expected = createHash('sha256').update(diff).digest('hex');
+    assert.match(entry.diffHash!, /^[0-9a-f]{64}$/);
+    assert.equal(entry.diffHash, expected);
+    // no build artifact exists for a changelog entry — null, never invented
+    assert.equal(entry.artifactDigest, null);
+
+    // root commit: no parent → baseSha null, diff still hashed (vs empty tree)
+    assert.equal(root.sha, initSha);
+    assert.equal(root.baseSha, null);
+    assert.equal(root.candidateSha, initSha);
+    assert.match(root.diffHash!, /^[0-9a-f]{64}$/);
+
+    // and the payload carries the same five fields
+    const p = codeChangeEvidencePayload(entry);
+    assert.equal(p.payload.candidateSha, sha);
+    assert.equal(p.payload.baseSha, initSha);
+    assert.equal(p.payload.targetSha, head);
+    assert.equal(p.payload.diffHash, expected);
+    assert.equal(p.payload.artifactDigest, null);
+    assert.equal(p.payload.artifactNote, 'no artifact');
+  });
+
+  it('merge() evidence records base/candidate/target of the real merge', needsGit, async () => {
+    const { dir, repo } = setup();
+    writeFileSync(join(dir, 'base.txt'), 'base\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    await repo.commit('chore: base');
+
+    await repo.createBranch('feature/evidence');
+    await repo.checkout('feature/evidence');
+    writeFileSync(join(dir, 'feat.txt'), 'feat\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    const candidateSha = await repo.commit('feat: feature work');
+    await repo.checkout('main');
+    writeFileSync(join(dir, 'main.txt'), 'main\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    const baseSha = await repo.commit('feat: main work');
+
+    const r = await repo.merge('feature/evidence');
+    assert.equal(r.ok, true);
+    assert.ok(r.evidence, 'successful merge carries §36 evidence');
+    const targetSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim();
+    assert.equal(r.evidence.baseSha, baseSha); // target tip before the merge
+    assert.equal(r.evidence.candidateSha, candidateSha); // merged branch tip
+    assert.equal(r.evidence.targetSha, targetSha); // merge commit on target
+    assert.notEqual(targetSha, candidateSha); // a real merge commit was created
+    const diff = execFileSync('git', ['diff', baseSha, targetSha], { cwd: dir }).toString();
+    assert.equal(r.evidence.diffHash, createHash('sha256').update(diff).digest('hex'));
+    assert.match(r.evidence.diffHash!, /^[0-9a-f]{64}$/);
+    assert.equal(r.evidence.artifactDigest, null);
   });
 
   it('ensureTaskBranch() creates and checks out task/<id>-<slug>', needsGit, async () => {

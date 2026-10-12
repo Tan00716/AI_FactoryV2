@@ -9,8 +9,11 @@ import {
   ToolDeniedError,
   ToolExecutor,
   ToolRegistry,
+  isEmptyResult,
   type CapabilityGrant,
+  type RunnerResult,
   type ToolCall,
+  type ToolRunner,
   type ToolMetadata,
   type ToolPrincipal,
 } from '../src/index';
@@ -293,5 +296,115 @@ describe('§23.4 approval gate at execution point', () => {
     const r = await executor.execute(call({ toolId: 'gated.tool' }));
     assert.equal(r.outcome, 'SUCCEEDED');
     assert.equal(runs(), 1);
+  });
+});
+
+describe('§33 empty-result modeling (EMPTY_RESULT)', () => {
+  function emptyExecutor(runner: ToolRunner) {
+    const registry = new ToolRegistry();
+    registry.register(fsWriteTool('fs.write'));
+    return new ToolExecutor(registry, {
+      now: () => 1_700_000_000_000,
+      runner,
+    });
+  }
+
+  it('isEmptyResult: shape rule over stdout + artifacts only', () => {
+    assert.equal(isEmptyResult({ exitCode: 0, stdout: '', stderr: '' }), true);
+    assert.equal(isEmptyResult({ exitCode: 0, stdout: '  \n\t ', stderr: '', artifacts: [] }), true);
+    // stderr is diagnostics, never a result payload.
+    assert.equal(isEmptyResult({ exitCode: 0, stdout: '', stderr: 'warn: no match' }), true);
+    // Any stdout payload or any artifact makes it a real result.
+    assert.equal(isEmptyResult({ exitCode: 0, stdout: 'ok', stderr: '' }), false);
+    assert.equal(isEmptyResult({ exitCode: 0, stdout: '', stderr: '', artifacts: ['a.txt'] }), false);
+    // A literal "[]" body is emitted output (shape rule; no JSON guessing).
+    assert.equal(isEmptyResult({ exitCode: 0, stdout: '[]', stderr: '' }), false);
+  });
+
+  it('clean exit with no output at all → EMPTY_RESULT, raw emptiness preserved', async () => {
+    const executor = emptyExecutor(() => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const r = await executor.execute(call());
+    assert.equal(r.exitCode, 0);
+    assert.equal(r.outcome, 'EMPTY_RESULT');
+    assert.equal(r.stdout, '', 'the raw empty result is carried, not dressed up as data');
+    // Recorded in the audit log — as EMPTY_RESULT, never sealed as SUCCEEDED.
+    assert.equal(executor.attempts().length, 1);
+    assert.equal(executor.attempts()[0].outcome, 'EMPTY_RESULT');
+  });
+
+  it('whitespace-only stdout and an empty artifact list → EMPTY_RESULT', async () => {
+    const executor = emptyExecutor(() => ({ exitCode: 0, stdout: ' \n ', stderr: '', artifacts: [] }));
+    const r = await executor.execute(call());
+    assert.equal(r.outcome, 'EMPTY_RESULT');
+  });
+
+  it('stderr alone does not rescue an empty result', async () => {
+    const executor = emptyExecutor(() => ({ exitCode: 0, stdout: '', stderr: 'warning: nothing matched' }));
+    const r = await executor.execute(call());
+    assert.equal(r.outcome, 'EMPTY_RESULT');
+    assert.equal(r.stderr, 'warning: nothing matched');
+  });
+
+  it('empty stdout but an artifact produced → SUCCEEDED', async () => {
+    const executor = emptyExecutor(() => ({ exitCode: 0, stdout: '', stderr: '', artifacts: ['report.json'] }));
+    const r = await executor.execute(call());
+    assert.equal(r.outcome, 'SUCCEEDED');
+    assert.deepEqual(r.artifacts, ['report.json']);
+  });
+
+  it('non-zero exit with empty output → FAILED (emptiness never overrides exit code)', async () => {
+    const executor = emptyExecutor(() => ({ exitCode: 3, stdout: '', stderr: '' }));
+    const r = await executor.execute(call());
+    assert.equal(r.outcome, 'FAILED');
+  });
+
+  it('timeout still → TIMED_OUT, not EMPTY_RESULT', async () => {
+    const registry = new ToolRegistry();
+    registry.register({ ...fsWriteTool('slow.tool'), timeoutMs: 20 });
+    const executor = new ToolExecutor(registry, {
+      now: () => 1_700_000_000_000,
+      runner: () => new Promise<RunnerResult>(() => {}),
+    });
+    const r = await executor.execute(call({ toolId: 'slow.tool' }));
+    assert.equal(r.outcome, 'TIMED_OUT');
+  });
+
+  it('denial takes precedence: BLOCKED tool → DENIED even though nothing is produced', async () => {
+    const registry = new ToolRegistry();
+    registry.register({ ...fsWriteTool('evil.tool'), approvalPolicy: 'BLOCKED' });
+    let runs = 0;
+    const executor = new ToolExecutor(registry, {
+      now: () => 1_700_000_000_000,
+      runner: () => {
+        runs += 1;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+    });
+    const r = await executor.execute(call({ toolId: 'evil.tool' }));
+    assert.equal(r.outcome, 'DENIED');
+    assert.equal(runs, 0);
+  });
+
+  it('approval gate is orthogonal: approved gated tool returning nothing → EMPTY_RESULT', async () => {
+    const registry = new ToolRegistry();
+    registry.register({ ...fsWriteTool('gated.tool'), approvalPolicy: 'HUMAN_APPROVAL' });
+    let runs = 0;
+    const executor = new ToolExecutor(registry, {
+      now: () => 1_700_000_000_000,
+      approvalChecker: () => ({ approved: true, approvalId: 'appr-1' }),
+      runner: () => {
+        runs += 1;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+    });
+    const r = await executor.execute(call({ toolId: 'gated.tool' }));
+    assert.equal(runs, 1, 'gate passed and the tool really executed');
+    assert.equal(r.outcome, 'EMPTY_RESULT');
+  });
+
+  it('executeOrThrow does NOT throw on EMPTY_RESULT (it is not an error)', async () => {
+    const executor = emptyExecutor(() => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const r = await executor.executeOrThrow(call());
+    assert.equal(r.outcome, 'EMPTY_RESULT');
   });
 });

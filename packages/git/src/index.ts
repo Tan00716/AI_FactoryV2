@@ -27,9 +27,11 @@ export {
 export {
   codeChangeEvidencePayload,
   mergeEvidencePayload,
+  changeEvidenceFields,
   PrStore,
   type PrStatus,
   type PrRecord,
   type CreatePrInput,
   type CodeChangeLogEntry,
+  type ChangeEvidenceFields,
 } from './evidence';

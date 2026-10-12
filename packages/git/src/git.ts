@@ -10,9 +10,14 @@
  */
 
 import { execFile } from 'child_process';
+import { createHash } from 'crypto';
 import { promisify } from 'util';
+import type { ChangeEvidenceFields } from './evidence';
 
 const execFileAsync = promisify(execFile);
+
+/** Git's well-known empty-tree object id — the diff base for root commits. */
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 /** Thrown by every GitRepo method on git failure. */
 export class GitError extends Error {
@@ -50,6 +55,14 @@ export interface BranchInfo {
 export interface MergeResult {
   ok: boolean;
   conflicts: string[];
+  /**
+   * §36 change evidence for a successful merge (absent on conflict):
+   * baseSha = target tip before the merge, candidateSha = merged branch
+   * tip, targetSha = target tip after the merge, diffHash = sha256 of the
+   * base→target diff that landed, artifactDigest = null (no artifact is
+   * produced by a merge — 'no artifact').
+   */
+  evidence?: ChangeEvidenceFields;
 }
 
 export interface CommitOptions {
@@ -63,6 +76,19 @@ export interface LogEntry {
   message: string;
   author: string;
   date: string;
+  /**
+   * §36 change-evidence fields, populated by log(): candidateSha is the
+   * commit itself, baseSha its first parent (null for a root commit),
+   * targetSha the current HEAD (target branch tip at read time), diffHash
+   * the sha256 of the base→candidate diff (null if the diff cannot be
+   * computed), artifactDigest null — a changelog entry has no build
+   * artifact ('no artifact').
+   */
+  baseSha?: string | null;
+  candidateSha?: string | null;
+  targetSha?: string | null;
+  diffHash?: string | null;
+  artifactDigest?: string | null;
 }
 
 export interface MutatingOptions {
@@ -182,12 +208,30 @@ export class GitRepo {
     return out.split('\n').map((l) => l.trim()).filter(Boolean);
   }
 
+  /** Resolve a ref to its commit sha (throws GitError when unknown). */
+  private async revParse(ref: string): Promise<string> {
+    return (await this.run(['rev-parse', ref])).trim();
+  }
+
+  /** sha256 hex of the `git diff from to` text; null when not computable. */
+  private async diffHash(from: string, to: string): Promise<string | null> {
+    try {
+      const diff = await this.run(['diff', from, to]);
+      return createHash('sha256').update(diff).digest('hex');
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * §34 — merge `branch` into the current branch.
    * Returns {ok:false, conflicts:[…]} when the merge stops on conflicts
    * (the merge is left in the working tree, exactly like `git merge`).
+   * On success the result carries the §36 evidence fields (see MergeResult).
    */
   async merge(branch: string, opts: MutatingOptions = {}): Promise<MergeResult> {
+    const baseSha = await this.revParse('HEAD');
+    const candidateSha = await this.revParse(branch);
     try {
       await this.run(['merge', '--no-edit', branch]);
     } catch (err) {
@@ -196,9 +240,20 @@ export class GitRepo {
       if (conflicts.length === 0) throw err; // real failure, not a conflict
       return { ok: false, conflicts };
     }
-    const sha = (await this.run(['rev-parse', 'HEAD'])).trim();
+    const sha = await this.revParse('HEAD');
     opts.audit?.('GIT_MERGE', { repo: this.path, branch, sha });
-    return { ok: true, conflicts: [] };
+    return {
+      ok: true,
+      conflicts: [],
+      evidence: {
+        baseSha,
+        candidateSha,
+        targetSha: sha,
+        diffHash: await this.diffHash(baseSha, sha),
+        // A merge produces no build artifact — 'no artifact', never invented.
+        artifactDigest: null,
+      },
+    };
   }
 
   /** §34 — rebase the current branch onto `branch`. */
@@ -233,23 +288,41 @@ export class GitRepo {
     opts.audit?.('GIT_TAG_CREATED', { repo: this.path, tag: name });
   }
 
-  /** §34 — log: newest `limit` commits. */
+  /**
+   * §34 — log: newest `limit` commits, each enriched with the §36
+   * change-evidence fields (see LogEntry). targetSha is the current HEAD,
+   * fetched once; diffHash is computed per commit against its first
+   * parent (the empty tree for a root commit).
+   */
   async log(limit = 20): Promise<LogEntry[]> {
     const SEP = '\x1f';
     const out = await this.run([
       'log',
-      `--format=%H${SEP}%s${SEP}%an${SEP}%aI`,
+      `--format=%H${SEP}%s${SEP}%an${SEP}%aI${SEP}%P`,
       `-n`,
       String(limit),
     ]);
-    return out
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [sha, message, author, date] = line.split(SEP);
-        return { sha, message, author, date };
+    const lines = out.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return [];
+    const targetSha = await this.revParse('HEAD');
+    const entries: LogEntry[] = [];
+    for (const line of lines) {
+      const [sha, message, author, date, parents] = line.split(SEP);
+      const baseSha = parents?.split(' ').filter(Boolean)[0] ?? null;
+      entries.push({
+        sha,
+        message,
+        author,
+        date,
+        baseSha,
+        candidateSha: sha,
+        targetSha,
+        diffHash: await this.diffHash(baseSha ?? EMPTY_TREE, sha),
+        // A changelog entry has no build artifact — 'no artifact'.
+        artifactDigest: null,
       });
+    }
+    return entries;
   }
 
   /** Files currently marked as conflicted (U = unmerged). */

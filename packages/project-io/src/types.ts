@@ -6,6 +6,7 @@
  * file text. The server may transport it as multi-file JSON; the desktop
  * downloads/uploads it as a single `.ai-export.json` document.
  */
+import type { V1MigrationReport } from './migrate-import';
 
 /** Relative path → file text. Keys are relative to the project dir. */
 export type ExportFiles = Record<string, string>;
@@ -113,6 +114,13 @@ export interface ImportResult {
   issues: ValidationIssue[];
   /** Absolute paths written (only when ok). */
   written: string[];
+  /**
+   * §52.4 v1→v2 migration report — present whenever the migration step
+   * ran (the default), including when validation then rejected the
+   * import. `migration.detected === false` means every section was
+   * checked and reported as skipped (treated as v2).
+   */
+  migration?: V1MigrationReport;
 }
 
 /** Format marker embedded in the transport envelope. */

@@ -8,6 +8,13 @@
  *
  * Exit-code truth: a natural-language "success" in output never overrides a
  * non-zero exit code.
+ *
+ * Outcome separation (§33): input-schema errors and capability/approval
+ * failures are DENIED before execution; a non-zero exit is FAILED; a runner
+ * that does not settle within the tool timeout is TIMED_OUT; and a clean
+ * exit that produced no result payload is EMPTY_RESULT (isEmptyResult) —
+ * recorded in the audit log like any other outcome, but never SUCCEEDED,
+ * so an empty result cannot be sealed as success evidence downstream.
  */
 import { randomUUID } from 'node:crypto';
 import { REASON_CODES, type ReasonCode } from '@ai-factory/api-contracts';
@@ -85,6 +92,26 @@ export type ApprovalChecker = (
   tool: ToolMetadata,
   level: 'HUMAN_APPROVAL' | 'AI_REVIEW_PLUS_POLICY',
 ) => Promise<ApprovalCheckResult> | ApprovalCheckResult;
+
+/**
+ * Empty-result rule (§33) — judged purely on the shape of the raw
+ * RunnerResult, before redaction/truncation. A result is EMPTY when BOTH:
+ *
+ *   1. stdout carries no payload: it is empty or whitespace-only.
+ *      (stderr never counts — it is a diagnostic stream, not a result.)
+ *   2. no artifacts were produced: `artifacts` is absent or an empty list.
+ *
+ * Anything else (any non-whitespace stdout, or at least one artifact) is a
+ * real payload. The rule is deliberately shape-based: RunnerResult has no
+ * structured output value, so a tool that prints a literal "[]" has emitted
+ * output and is NOT empty by this rule — emptiness means the execution
+ * handed back nothing at all.
+ */
+export function isEmptyResult(result: RunnerResult): boolean {
+  const noStdout = result.stdout.trim().length === 0;
+  const noArtifacts = !result.artifacts || result.artifacts.length === 0;
+  return noStdout && noArtifacts;
+}
 
 const SECRET_PATTERNS: RegExp[] = [
   /secret:\/\/[^\s"'<>]+/g,
@@ -215,8 +242,12 @@ export class ToolExecutor {
       });
     }
 
-    // Exit-code truth: the runner's note never overrides exitCode.
-    const outcome: ExecutionOutcome = result.exitCode === 0 ? 'SUCCEEDED' : 'FAILED';
+    // Exit-code truth: the runner's note never overrides exitCode, and
+    // emptiness never overrides it either — a non-zero exit is FAILED even
+    // when nothing was printed. Only a clean exit is split by payload:
+    // something came back → SUCCEEDED; nothing at all → EMPTY_RESULT.
+    const outcome: ExecutionOutcome =
+      result.exitCode !== 0 ? 'FAILED' : isEmptyResult(result) ? 'EMPTY_RESULT' : 'SUCCEEDED';
     return this.finishRecord(call, result.exitCode, result.stdout, result.stderr, {
       outcome,
       startedAt,
@@ -226,7 +257,12 @@ export class ToolExecutor {
     });
   }
 
-  /** Throw ToolDeniedError when the outcome is DENIED. */
+  /**
+   * Throw ToolDeniedError when the outcome is DENIED. Every other outcome —
+   * including EMPTY_RESULT, which is not an error — resolves with the
+   * record; callers must check `record.outcome` before treating a result
+   * as success evidence.
+   */
   async executeOrThrow(call: ToolCall): Promise<ExecutionRecord> {
     const record = await this.execute(call);
     if (record.outcome === 'DENIED') {
