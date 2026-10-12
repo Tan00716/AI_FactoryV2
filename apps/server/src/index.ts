@@ -40,7 +40,7 @@ import {
 } from '@ai-factory/core';
 import { FactoryDatabase, seedIfEmpty } from '@ai-factory/db';
 import { NotificationEngine } from '@ai-factory/notifications';
-import { OperationLedger } from '@ai-factory/runtime';
+import { CheckpointLog, OperationLedger } from '@ai-factory/runtime';
 import type { StepIntentStore, TargetLedgerQuery } from '@ai-factory/runtime';
 import type { RouteContext } from './routes/context';
 import { handleGitRoutes } from './routes/git';
@@ -191,6 +191,20 @@ const startupIntentScan = {
 const operationLedger = new OperationLedger({ store: fdb.operations });
 
 /**
+ * §28.3 (G-59) — checkpoints are durable too: the coordinator builds
+ * the runtime CheckpointLog over the SQLite CheckpointStore from the
+ * FactoryDatabase, so a checkpoint captured by any future embedder
+ * survives the restart it exists for. Honest scope: NOTHING in this
+ * server creates or reads checkpoints yet — no route exposes them and
+ * the run path does not capture them (CheckpointV2's only callers
+ * today are runtime tests). This const is the coordinator-level
+ * injection point, constructed exactly like the operation ledger
+ * above was before its first consumer; the health block below reports
+ * the store's live count so the wiring is observable, not decorative.
+ */
+const checkpointLog = new CheckpointLog({ store: fdb.checkpoints });
+
+/**
  * Startup reconcile (§28.2): every non-terminal operation in the DB
  * predates this process — it was left PREPARED / DISPATCHED / UNKNOWN
  * by a process that died. Each one runs through the ledger's existing
@@ -337,7 +351,11 @@ const server = createServer(async (req, res) => {
     // The operations block is the §28.2 counterpart: how many external
     // operations were left non-terminal at boot and how the startup
     // reconcile classified them (audit: STARTUP_OPERATION_RECONCILE,
-    // table: external_operations).
+    // table: external_operations). The checkpoints block is the §28.3
+    // durability status: the store backing the coordinator's
+    // CheckpointLog and how many checkpoints it currently holds (no
+    // server path captures checkpoints yet — see the construction
+    // comment above; the count is live, read per request).
     if (method === 'GET' && path === '/api/health') {
       return json(res, 200, {
         ok: true,
@@ -353,6 +371,10 @@ const server = createServer(async (req, res) => {
           unresolvedAtStartup: startupOperationScan.unresolvedCount,
           safeToRetryAtStartup: startupOperationScan.safeToRetryCount,
           needsManualRecoveryAtStartup: startupOperationScan.needsManualRecoveryCount,
+        },
+        checkpoints: {
+          store: 'sqlite',
+          stored: checkpointLog.list().length,
         },
       });
     }

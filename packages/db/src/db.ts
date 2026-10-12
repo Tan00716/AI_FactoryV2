@@ -21,6 +21,7 @@ import type { CrossProjectReusable, MemoryEntry } from '@ai-factory/memory';
 import { SCHEMA } from './schema';
 import { SqliteStepIntentStore } from './step-intents';
 import { SqliteOperationStore } from './operations';
+import { SqliteCheckpointStore } from './checkpoints';
 
 const J = {
   parse<T>(s: string | null, fallback: T): T {
@@ -576,6 +577,12 @@ export class FactoryDatabase {
    * restarts and the startup reconcile has something to read.
    */
   readonly operations: SqliteOperationStore;
+  /**
+   * §28.3 (G-59) — durable checkpoints; the CheckpointStore a runtime
+   * CheckpointLog is constructed over, so a captured checkpoint (the
+   * resumption contract) survives the restart it exists for.
+   */
+  readonly checkpoints: SqliteCheckpointStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -595,6 +602,7 @@ export class FactoryDatabase {
     this.memory = new SqliteMemoryStore(this.db);
     this.stepIntents = new SqliteStepIntentStore(this.db);
     this.operations = new SqliteOperationStore(this.db);
+    this.checkpoints = new SqliteCheckpointStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------

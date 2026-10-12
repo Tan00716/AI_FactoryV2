@@ -257,4 +257,38 @@ CREATE TABLE IF NOT EXISTS external_operations (
 );
 CREATE INDEX IF NOT EXISTS idx_external_operations_state
   ON external_operations (state);
+
+-- SPEC v2 §28.3 (G-59): checkpoints — the resumption contract for a
+-- run at a step position (§28.3 field set; structured data, not a chat
+-- tail). Identity is (run_id, step_position): a re-capture at the same
+-- position replaces the earlier capture. captured_at is epoch
+-- milliseconds (the runtime CheckpointV2 shape). Optional fields stay
+-- NULL until a capture sets them; read-back keeps unset fields ABSENT.
+-- Composite fields (tool/process/approval lists, the budget-usage
+-- record) are JSON text — lossless for string[] / number[] /
+-- Record<string, number>.
+-- New table: CREATE TABLE IF NOT EXISTS covers old databases on open.
+CREATE TABLE IF NOT EXISTS checkpoints (
+  run_id TEXT NOT NULL,
+  step_position INTEGER NOT NULL,
+  schema_version TEXT NOT NULL,
+  workflow_version TEXT NOT NULL,
+  task_version TEXT NOT NULL,
+  context_manifest_hash TEXT NOT NULL,
+  model_session_ref TEXT,
+  workspace_snapshot_hash TEXT,
+  git_base TEXT,
+  git_candidate TEXT,
+  active_tools TEXT NOT NULL,
+  active_processes TEXT NOT NULL,
+  lease_generation INTEGER NOT NULL,
+  fencing_token INTEGER NOT NULL,
+  pending_approvals TEXT NOT NULL,
+  budget_usage TEXT NOT NULL,
+  pending_side_effects TEXT NOT NULL,
+  resume_preconditions TEXT NOT NULL,
+  captured_at INTEGER NOT NULL,
+  PRIMARY KEY (run_id, step_position)
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_run ON checkpoints (run_id);
 `;

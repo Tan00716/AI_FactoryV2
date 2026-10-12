@@ -439,6 +439,140 @@ export function validateCheckpointV2(c: unknown): asserts c is CheckpointV2 {
 }
 
 /* ------------------------------------------------------------------ */
+/* Checkpoint store — the §28.3 persistence seam (G-59)                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Storage seam for checkpoints (§28.3, G-59).
+ *
+ * A checkpoint's identity is (runId, stepPosition): capturing again at
+ * the same position of the same run REPLACES the earlier capture — the
+ * newest capture is the resumption contract for that position, and an
+ * older one at the same position has no meaning. Implementations must
+ * hand back records the caller may freely mutate (copies, or freshly
+ * read rows): checkpoints carry NESTED state (tool/process lists, the
+ * budget-usage record), so the copies must be deep — a store returning
+ * live internal references would let a caller rewrite the stored
+ * checkpoint in place.
+ */
+export interface CheckpointStore {
+  /** The checkpoint captured for one step position of one run. */
+  get(runId: string, stepPosition: number): CheckpointV2 | undefined;
+  /** Insert a checkpoint, or replace the capture at its (runId, stepPosition). */
+  put(checkpoint: CheckpointV2): void;
+  /** Every stored checkpoint in first-capture order, optionally one run only. */
+  list(runId?: string): CheckpointV2[];
+  /** Remove one capture; returns whether one existed. */
+  delete(runId: string, stepPosition: number): boolean;
+}
+
+/**
+ * Default CheckpointStore: the original in-process Map. Nothing here
+ * survives a restart — it exists so embedders without a database keep
+ * working, and so the log's default path needs no database. Durable
+ * deployments inject a persistent implementation (see
+ * SqliteCheckpointStore in @ai-factory/db).
+ */
+export class InMemoryCheckpointStore implements CheckpointStore {
+  private readonly checkpoints = new Map<string, CheckpointV2>();
+
+  private static key(runId: string, stepPosition: number): string {
+    return `${runId} ${stepPosition}`;
+  }
+
+  get(runId: string, stepPosition: number): CheckpointV2 | undefined {
+    const c = this.checkpoints.get(InMemoryCheckpointStore.key(runId, stepPosition));
+    return c ? structuredClone(c) : undefined;
+  }
+
+  put(checkpoint: CheckpointV2): void {
+    this.checkpoints.set(
+      InMemoryCheckpointStore.key(checkpoint.runId, checkpoint.stepPosition),
+      structuredClone(checkpoint),
+    );
+  }
+
+  list(runId?: string): CheckpointV2[] {
+    return [...this.checkpoints.values()]
+      .filter((c) => runId === undefined || c.runId === runId)
+      .map((c) => structuredClone(c));
+  }
+
+  delete(runId: string, stepPosition: number): boolean {
+    return this.checkpoints.delete(InMemoryCheckpointStore.key(runId, stepPosition));
+  }
+}
+
+export interface CheckpointLogOptions {
+  /**
+   * Backing store for checkpoint records. Defaults to a fresh
+   * InMemoryCheckpointStore (nothing survives a restart). Durable
+   * deployments inject a persistent implementation (see
+   * SqliteCheckpointStore in @ai-factory/db).
+   */
+  store?: CheckpointStore;
+  /** Clock for capture timestamps; defaults to the system clock. */
+  clock?: Clock;
+}
+
+/**
+ * The runtime-side consumer of the CheckpointStore seam: creation,
+ * validation, and the resume lookup (latest position of a run) live
+ * here; persistence is the store's only job. Every checkpoint is run
+ * through validateCheckpointV2 BEFORE it is stored — a checkpoint that
+ * would fail validation at resume time must never be persisted as if
+ * it were a valid resumption contract.
+ */
+export class CheckpointLog {
+  private readonly store: CheckpointStore;
+  private readonly clock?: Clock;
+
+  constructor(opts: CheckpointLogOptions = {}) {
+    this.store = opts.store ?? new InMemoryCheckpointStore();
+    this.clock = opts.clock;
+  }
+
+  /** Build a §28.3 checkpoint from its field set, validate it, store it. */
+  capture(input: Omit<CheckpointV2, 'schemaVersion' | 'capturedAt'>): CheckpointV2 {
+    return this.record(createCheckpointV2(input, this.clock));
+  }
+
+  /** Validate and store an already-built checkpoint (replaces a same-position capture). */
+  record(checkpoint: CheckpointV2): CheckpointV2 {
+    validateCheckpointV2(checkpoint);
+    this.store.put(checkpoint);
+    return structuredClone(checkpoint);
+  }
+
+  /** The checkpoint captured for one step position of one run. */
+  get(runId: string, stepPosition: number): CheckpointV2 | undefined {
+    return this.store.get(runId, stepPosition);
+  }
+
+  /**
+   * The resume entry point: the highest step position captured for a
+   * run, or undefined when the run has no checkpoint.
+   */
+  latest(runId: string): CheckpointV2 | undefined {
+    let best: CheckpointV2 | undefined;
+    for (const c of this.store.list(runId)) {
+      if (best === undefined || c.stepPosition > best.stepPosition) best = c;
+    }
+    return best;
+  }
+
+  /** Every stored checkpoint in first-capture order, optionally one run only. */
+  list(runId?: string): CheckpointV2[] {
+    return this.store.list(runId);
+  }
+
+  /** Remove one capture; returns whether one existed. */
+  remove(runId: string, stepPosition: number): boolean {
+    return this.store.delete(runId, stepPosition);
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Disk / DB safe mode — §28.4                                         */
 /* ------------------------------------------------------------------ */
 

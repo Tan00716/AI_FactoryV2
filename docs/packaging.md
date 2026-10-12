@@ -34,17 +34,33 @@
 
 ## 本机实测状态（2026-10-12，Linux x64 / Electron 44.7.0 / builder 26.15.3）
 
-- **Linux：构建成功且运行验证通过。** `release/AI Factory-0.1.0.AppImage`
-  （约 124MB）。`--appimage-extract` 后结构完整（asar 内主进程入口 +
-  renderer，resources/server + 40 个工作区包）；xvfb 无头启动实测：
-  渲染页从 asar 加载、后端在 127.0.0.1:3100 监听、`/api/stats`、
-  `/api/tasks` 返回真实数据、后端恰好一个进程。
-- **Windows：本机构建失败（预期卡点）。** 打包进行到 NSIS 载荷
-  （`ai-factory-0.1.0-x64.nsis.7z`，约 113MB）后，electron-builder 需要
-  wine 完成 NSIS/portable 的 exe 定稿（rcedit），本机未装 wine 而中止；
-  残留的 190KB `AI Factory Setup 0.1.0.exe` 只是未合入载荷的模板，
-  **不可用**。解决：`apt install wine64` 后在 Linux 重跑，或直接在
-  Windows 机器上 `npm run dist:win`。
+- **Linux：构建成功且运行验证通过（含图标/桌面元数据）。**
+  `release/AI Factory-0.1.0.AppImage`（129,516,201 字节，约 124MB）。
+  `--appimage-extract` 后结构完整（asar 内主进程入口 + renderer，
+  resources/server + 40 个工作区包）；图标已进入产物：
+  `usr/share/icons/hicolor/512x512/apps/ai-factory.png` 与根目录
+  `ai-factory.png` 均在，解码抽查像素与源图逐点一致；桌面条目为
+  `AI Factory.desktop`，含 `Icon=ai-factory` 与
+  `StartupWMClass=AI Factory`（来自 package.json 的 `desktopName` +
+  yml 的 `linux.syncDesktopName`），可执行文件名为 `ai-factory`
+  （`linux.executableName`）。xvfb 无头启动复验：后端在
+  127.0.0.1:3100 监听、`/api/health` 与 `/api/stats` 返回真实数据、
+  数据库真实落盘、后端恰好一个进程。
+- **Windows：本机仍未定稿（卡点在 wine 安装之前）。** 载荷
+  `ai-factory-0.1.0-x64.nsis.7z`（113,497,943 字节）已打包，但最后
+  一步 NSIS/portable 的 exe 定稿（rcedit）需要 wine。2026-10-12
+  Batch 11 再次尝试安装 wine：本机以 root 运行、sudo 免密，均无问题，
+  但 `apt-get update` 14 分钟未完成被终止——Ubuntu 源
+  （azure.archive.ubuntu.com / mirror.cogentco.com）从本机网络
+  无响应，只有 github/cloudflared/nodesource 的源拉到了列表，
+  `wine64` 包根本查不到，安装无从谈起；`dist:win` 因此未重跑
+  （重跑也只会停在同一步）。`release/` 里 189,788 字节的
+  `AI Factory Setup 0.1.0.exe` 仍是未合入载荷的模板，**不可用**。
+  给 Tan 的最短解法：**在 Windows 机器上跑 `npm run dist:win`**
+  （配置与图标均已就绪，预期产出百兆量级的 Setup exe + portable
+  exe）；次选是给本机换一个可达的 Ubuntu 镜像后
+  `dpkg --add-architecture i386 && apt-get update && apt-get install -y wine`
+  再重跑 `dist:win`。
 - **macOS：本机不可构建。** DMG 制作调用 macOS 独占的 `sips` 等工具，
   Linux 上直接失败；配置已就绪，请在 Mac 上 `npm run dist:mac`。
 
@@ -58,9 +74,22 @@
   Apple Developer ID 证书 + notarization。
 - Linux：AppImage 无签名要求，可直接分发。
 
+## 图标与元数据（2026-10-12 已补）
+
+- 应用图标：`apps/desktop/build/icon.png`（512×512），几何齿轮造型
+  （琥珀色齿轮 + 深蓝圆角方底）；同目录有矢量源 `icon.svg`、
+  256×256 的 `icon-256.png`，以及零依赖的生成脚本
+  `generate-icon.mjs`（同一组几何参数同时生成 SVG 与 PNG，
+  `node apps/desktop/build/generate-icon.mjs` 可重跑）。yml 已给
+  win/mac/linux 三平台都指定该图标，builder 自动派生各尺寸
+  （.ico/.icns/AppImage 图标集）。
+- 根 package.json 已填 `author: "Tan"` 与
+  `desktopName: "AI Factory"`（后者是 builder 26 的实际机制：
+  Electron 以它作 app_id / WM_CLASS，yml 里没有 `desktopName` 键，
+  对应的是 `linux.syncDesktopName: true`）。
+
 ## 已知粗糙点（不影响运行，商业打磨项）
 
-- 暂无应用图标，打包用的是 Electron 默认图标；补 `build/` 图标后
-  在配置里指定 `linux/win/mac.icon`。
-- 未设 `desktopName`：Linux 桌面环境下窗口与启动器图标的关联可能不准。
-- 根 package.json 未填 `author`，builder 每次会提示。
+- 图标只有单一 512 源图，靠 builder 派生小尺寸；要极致锐利可再补
+  一套手工修过的小尺寸图。
+- Windows/macOS 安装包仍未签名、未公证（见上节，等证书采购）。

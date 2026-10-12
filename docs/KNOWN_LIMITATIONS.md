@@ -39,7 +39,14 @@
 - **Step intent 已落 SQLite 并接进服务端（G-59，Batch 9）**。`runAgent` 在默认运行路径创建（或接受注入）`StepIntentStore` 并挂到 harness 上，工具执行前先落 intent、执行后提交结果（G-53 接线）；服务端注入的是 db 包的 `SqliteStepIntentStore`（`step_intents` 表），intents 跨重启保留。无 DB 的嵌入方不注入时仍回退进程内 Map——那只是接线回退，不是持久化。审计链的 reason/result/summary_hash/prev_hash 四列同期落盘（§32），跨重启 `verifyAuditChain` 可验真且链头连续。
 - **启动扫描已做，但只报告不处置**。服务端启动时扫描上个进程留下的 PENDING intents，结果写审计 `STARTUP_INTERRUPTED_INTENTS`（含计数）并在 `GET /api/health` 的 `stepIntents` 段可查；扫描绝不把 intent 改写成已执行、绝不重放工具调用，处置（对账/受控恢复）仍留给上层。
 - **External ops 已落 SQLite 并接进服务端（G-59，Batch 10）**。runtime 的 `OperationLedger` 经 `OperationStore` 接口读写，db 包提供 `SqliteOperationStore`（`external_operations` 表），服务端以它构造 ledger；跨重启 prepare 同一幂等键返回原记录、不重复建行。启动 reconcile 已做，但只分类不处置：服务端启动时无目标系统（部署/PR）的活句柄可查，target 查询如实无法应答，未终态 operation 据此分为 safe-to-retry（可逆）与 needs-manual-recovery（不可逆），结果写审计 `STARTUP_OPERATION_RECONCILE` 并在 `GET /api/health` 的 `operations` 段可查；分类不采纳、不改状态、不重放，真实对账（拿得到目标 ledger 应答时）与受控恢复仍留给上层。无 DB 的嵌入方不注入 store 时回退进程内 Map——接线回退，非持久化。
-- **仍未持久化：checkpoints**。`CheckpointV2` 仍是进程内数据结构（无 store 接缝、无落盘点）；崩溃后可凭 step intents + external ops 对账，但检查点级恢复仍不完整。
+- **Checkpoints 已落 SQLite（G-59，Batch 11）**。runtime 抽出 `CheckpointStore` 接缝 + `CheckpointLog`（创建/校验/latest 恢复查询，副本为深拷贝），db 包提供 `SqliteCheckpointStore`（`checkpoints` 表，身份为 (run_id, step_position)、同位置再捕获即替换、可选字段 NULL↔读回缺失）；服务端协调层已以 SQLite store 构造 `CheckpointLog`，`/api/health` 的 `checkpoints` 段可查实时存量。**但消费面尚未接通**：尚无任何服务端路由或运行路径真正捕获/读取 checkpoint（`CheckpointV2` 目前只有 runtime 测试在调用），落盘与接线已就绪，检查点级恢复要等第一个捕获方接线后才实际生效。
+
+## 首次运行走查发现（Batch 11，详见 docs/FIRST_RUN_WALKTHROUGH.md）
+
+- **F1（高）：v2 生命周期经纯 HTTP 走不到 DONE**。`finalize()` / REQUEST_COMPLETE 没有 HTTP 路由，v2-transition 到 DONE 返回 422；纯 API 用户只能绕 v1 transition 端点完成最后一步，代价是完成谓词不校验、`final_seal` 恒 0、同进程内 v2 镜像与 DB 状态不一致（重启 re-seed 后自愈）。
+- **F2（中）：需求（RequirementManager）不落库**。需求版本与兼容声明是进程内单例状态，服务重启即丢失；重启后带 requirement pin 的证据登记会 400，卡在 STALE 门中间的任务须先在新进程重建需求、版本与兼容声明。
+- **F3（中）：v2 迁移不封存被消费证据**。`onSealEvidence` 钩子服务端未接；任务走完 v2 全程后，已过 Gate 的证据大多仍是可改的 DRAFT 状态，与 §42 证据不可变的口径有差距。
+- **F4（低）：run 记录是进程内 Map**。服务重启后 `GET /api/runs/:id` 返回 404；run 的副作用（step intents、证据）已落库，丢失的只是 run 记录本身。
 
 ## 数据与团队
 

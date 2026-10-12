@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#26355a"/>
+      <stop offset="1" stop-color="#10182b"/>
+    </linearGradient>
+    <linearGradient id="gear" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbbf24"/>
+      <stop offset="1" stop-color="#d97706"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="512" height="512" rx="102.4" fill="url(#bg)"/>
+  <g fill="url(#gear)">
+    <path fill-rule="evenodd" d="M 129.024 256 a 126.976 126.976 0 1 0 253.952 0 a 126.976 126.976 0 1 0 -253.952 0 M 195.584 256 a 60.416 60.416 0 1 0 120.832 0 a 60.416 60.416 0 1 0 -120.832 0"/>
+    <rect x="223.7" y="84.5" width="64.5" height="69.1" transform="rotate(0 256 256)"/>
+    <rect x="223.7" y="84.5" width="64.5" height="69.1" transform="rotate(45 256 256)"/>
+    <rect x="223.7" y="84.5" width="64.5" height="69.1" transform="rotate(90 256 256)"/>
+    <rect x="223.7" y="84.5" width="64.5" height="69.1" transform="rotate(135 256 256)"/>
+    <rect x="223.7" y="84.5" width="64.5" height="69.1" transform="rotate(180 256 256)"/>
+    <rect x="223.7" y="84.5" width="64.5" height="69.1" transform="rotate(225 256 256)"/>
+    <rect x="223.7" y="84.5" width="64.5" height="69.1" transform="rotate(270 256 256)"/>
+    <rect x="223.7" y="84.5" width="64.5" height="69.1" transform="rotate(315 256 256)"/>
+  </g>
+</svg>

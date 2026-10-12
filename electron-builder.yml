@@ -45,6 +45,7 @@ extraResources:
       - "!*/dist/tests/**"
       - "!*/dist/demo/**"
 win:
+  icon: apps/desktop/build/icon.png
   target:
     - nsis
     - portable
@@ -55,10 +56,17 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: AI Factory
 mac:
+  icon: apps/desktop/build/icon.png
   target:
     - dmg
   category: public.app-category.developer-tools
 linux:
+  icon: apps/desktop/build/icon.png
+  executableName: ai-factory
+  # package.json "desktopName" is used by Electron as app_id / WM_CLASS;
+  # syncDesktopName makes the .desktop file name match it so desktop
+  # environments associate running windows with the launcher entry.
+  syncDesktopName: true
   target:
     - AppImage
   category: Development
