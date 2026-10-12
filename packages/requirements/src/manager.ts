@@ -36,6 +36,27 @@ export class AcRefinementRejectedError extends RequirementError {}
 export class CompletionTargetChangeRejectedError extends RequirementError {}
 export class EvidenceReuseDeniedError extends RequirementError {}
 
+/**
+ * Thrown by assertPromotionAllowed() when a task still has an active
+ * (unreleased) PromotionHold (§16 G-05): the hold is a hard gate, not a
+ * record nobody reads. Carries the blocking holds for callers that need
+ * to report them (e.g. the promotion-check route's 409 body).
+ */
+export class PromotionHeldError extends RequirementError {
+  readonly taskId: string;
+  readonly holds: PromotionHold[];
+  constructor(taskId: string, holds: PromotionHold[]) {
+    const first = holds[0]!;
+    super(
+      `Promotion held for task ${taskId}: hold ${first.id} ` +
+        `(requirement ${first.requirementId}@${first.requirementVersion}: ${first.reason})` +
+        (holds.length > 1 ? `; +${holds.length - 1} more active hold(s)` : ''),
+    );
+    this.taskId = taskId;
+    this.holds = holds;
+  }
+}
+
 export interface AcRefinementPatch {
   description?: string;
   expectedEvidence?: string;
@@ -263,7 +284,19 @@ export class RequirementManager {
     const now = this.iso();
 
     // Suspend promotions of affected tasks until re-planning / re-authorization.
+    // Dedup (§16 G-05): re-running impact analysis for the same
+    // taskId + requirementId + toVersion must not stack a second active
+    // hold — the already-active hold is the suspension, reuse it. A hold
+    // that was released does NOT block creating a fresh one.
     const suspendedPromotions: PromotionHold[] = affected.taskIds.map((taskId) => {
+      const existing = this.holds.find(
+        (h) =>
+          h.taskId === taskId &&
+          h.requirementId === id &&
+          h.requirementVersion === toVersion &&
+          h.releasedAt === null,
+      );
+      if (existing) return existing;
       const hold: PromotionHold = {
         id: randomUUID(),
         taskId,
@@ -344,5 +377,28 @@ export class RequirementManager {
 
   listHolds(taskId?: string): PromotionHold[] {
     return taskId ? this.holds.filter((h) => h.taskId === taskId) : [...this.holds];
+  }
+
+  /** Active (unreleased) promotion holds for a task — the gate's input. */
+  activeHolds(taskId: string): PromotionHold[] {
+    return this.holds.filter((h) => h.taskId === taskId && h.releasedAt === null);
+  }
+
+  /** True while any active PromotionHold blocks this task's promotion. */
+  isPromotionHeld(taskId: string): boolean {
+    return this.activeHolds(taskId).length > 0;
+  }
+
+  /**
+   * The §16 promotion gate (G-05): fail-closed. Throws PromotionHeldError
+   * (naming the hold id, requirementId@version and reason) while an active
+   * hold exists; returns normally once every hold has been released via
+   * releaseHold() with a revalidation note. Promotion paths MUST call this
+   * (or isPromotionHeld) before promoting — holds are enforced here, not
+   * merely recorded by analyzeImpact().
+   */
+  assertPromotionAllowed(taskId: string): void {
+    const active = this.activeHolds(taskId);
+    if (active.length > 0) throw new PromotionHeldError(taskId, active);
   }
 }

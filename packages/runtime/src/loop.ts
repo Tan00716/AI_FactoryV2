@@ -28,6 +28,7 @@ import {
   systemClock,
   TraceStep,
 } from './types';
+import type { BudgetTracker } from './limits';
 
 export interface AgentLoopOptions {
   budgets: LoopBudgets;
@@ -43,6 +44,13 @@ export interface AgentLoopOptions {
    * any repeat counts.
    */
   evidenceAddedSinceLastFailure?: () => boolean;
+  /**
+   * SPEC v2 §25 (G-51) — extended budgets. When attached, the loop
+   * enforces wall-time, counts repair loops (one per failure-driven or
+   * RETRY-driven cycle) and tracks consecutive no-progress steps.
+   * runAgent's default path always attaches one.
+   */
+  budgetTracker?: BudgetTracker;
 }
 
 interface CheckpointState {
@@ -61,6 +69,7 @@ export class AgentLoop {
   private readonly onTrace?: (step: TraceStep) => void;
   private readonly stagnationLimit: number;
   private readonly evidenceAddedSinceLastFailure?: () => boolean;
+  private budgetTracker?: BudgetTracker;
 
   private phaseIdx = 0;
   private totalSteps = 0;
@@ -76,6 +85,18 @@ export class AgentLoop {
     this.onTrace = options.onTrace;
     this.stagnationLimit = options.stagnationLimit ?? 3;
     this.evidenceAddedSinceLastFailure = options.evidenceAddedSinceLastFailure;
+    this.budgetTracker = options.budgetTracker;
+  }
+
+  /** §25 (G-51) — attach the run's BudgetTracker after construction
+   *  (used by runAgent when the caller supplied their own loop). No-op
+   *  when a tracker is already attached. */
+  attachBudgetTracker(tracker: BudgetTracker): void {
+    if (!this.budgetTracker) this.budgetTracker = tracker;
+  }
+
+  get tracker(): BudgetTracker | undefined {
+    return this.budgetTracker;
   }
 
   /** Read-only view of current loop state. */
@@ -147,6 +168,8 @@ export class AgentLoop {
 
     for (;;) {
       this.enforceBudgets();
+      // §25 (G-51): extended wall-time budget, checked every step.
+      this.budgetTracker?.checkWallTime();
       const phase: LoopPhase = LOOP_PHASES[this.phaseIdx];
 
       let result: PhaseResult;
@@ -164,6 +187,9 @@ export class AgentLoop {
 
       this.totalSteps += 1;
       this.recordTrace(phase, result.note ?? '', result.ok ? 'ok' : `fail: ${result.error ?? 'unknown'}`);
+      // §25 (G-51): a failed phase is a step without observable progress;
+      // exceeding maxNoProgressSteps throws BudgetExceeded here.
+      this.budgetTracker?.noteProgress(result.ok);
 
       if (!result.ok) {
         this.registerFailure(result);
@@ -189,6 +215,8 @@ export class AgentLoop {
             this.phaseIdx = 0;
             break;
           case 'RETRY':
+            // §25 (G-51): an EVALUATE-driven retry is a repair loop too.
+            this.budgetTracker?.consumeRepairLoop();
             this.retries += 1;
             this.enforceRetryBudget();
             this.phaseIdx = 0;
@@ -209,6 +237,17 @@ export class AgentLoop {
   /** A failed phase: stagnation check, then retry-budget check (may throw). */
   private registerFailure(result: PhaseResult): void {
     const sig = result.errorSignature ?? result.error ?? 'unknown-error';
+    // §25: a budget exhaustion reported by a step is terminal — quota is
+    // not auto-retryable, and counting it toward stagnation would mask
+    // the real cause behind a LOOP_STAGNATION escalation.
+    if (sig === 'BUDGET_EXCEEDED') {
+      throw new BudgetExceeded(
+        `step reported BUDGET_EXCEEDED — terminal, not retried (${result.error ?? 'no detail'})`,
+      );
+    }
+    // §25 (G-51): every failure-driven restart is one repair loop;
+    // exceeding maxRepairLoops throws BudgetExceeded here.
+    this.budgetTracker?.consumeRepairLoop();
     if (sig === this.lastErrorSignature) {
       // §25: new evidence since the last failure means the loop is making
       // progress (different test output, new diagnostics) — not stagnation.

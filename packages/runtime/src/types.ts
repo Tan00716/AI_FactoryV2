@@ -126,6 +126,15 @@ export interface RunResult {
   handoffs: string[];
   trace: TraceStep[];
   reason?: string;
+  /** §25 (G-51) — extended-budget consumption for this run, when a
+   *  BudgetTracker was wired (runAgent's default path always wires one). */
+  budgetUsage?: {
+    modelCalls: number;
+    toolCalls: number;
+    repairLoops: number;
+    noProgressSteps: number;
+    elapsedMs: number;
+  };
 }
 
 export type { Agent, Permission, Task };

@@ -10,6 +10,7 @@ import type {
   DashboardStatus,
   DashboardStats,
   DeploymentSnapshot,
+  OutcomeSnapshot,
   Stat,
 } from './types';
 
@@ -151,11 +152,64 @@ function computeStatus(input: DashboardInput): DashboardStatus {
   };
 }
 
+export interface AocrResult {
+  /** Percent (0–100, 1dp) or null when there are no authorized outcomes. */
+  ratePercent: number | null;
+  authorizedTotal: number;
+  authorizedCompleted: number;
+}
+
+/**
+ * §1.2 — Authorized Outcome Completion Rate (the product's PRIMARY metric):
+ * the share of AUTHORIZED outcomes that were completed within scope,
+ * budget and risk bounds.
+ *
+ *   AOCR = |{o : o.authorized ∧ o.completed ∧ within bounds}| / |{o : o.authorized}|
+ *
+ * Unauthorized outcomes never enter either side (completing unauthorized
+ * work does not raise the rate). Denominator 0 → ratePercent is null:
+ * unavailable, never a fabricated 100%.
+ */
+export function computeAuthorizedOutcomeCompletionRate(
+  outcomes: readonly OutcomeSnapshot[],
+): AocrResult {
+  const authorized = outcomes.filter((o) => o.authorized);
+  const completed = authorized.filter(
+    (o) =>
+      o.completed &&
+      o.withinScope !== false &&
+      o.withinBudget !== false &&
+      o.withinRisk !== false,
+  );
+  return {
+    ratePercent:
+      authorized.length === 0 ? null : round1((completed.length / authorized.length) * 100),
+    authorizedTotal: authorized.length,
+    authorizedCompleted: completed.length,
+  };
+}
+
 function computeMetrics(input: DashboardInput): DashboardMetrics {
   const TASK_SRC = '任务存储 tasks (GET /api/tasks)';
   const QA_SRC = 'QA 运行记录 (GET /api/qa/runs)';
   const DEPLOY_SRC = 'CI/CD 部署记录 (GET /api/deployments)';
   const APPROVAL_SRC = '审批记录 approvals (GET /api/approvals)';
+
+  const OUTCOME_SRC = '获准结果记录 outcomes (§1.2 主指标)';
+
+  // §1.2 PRIMARY metric — AOCR. No authorized outcomes → null + 暂无数据,
+  // exactly like every other stat: never invent a rate.
+  const aocr = computeAuthorizedOutcomeCompletionRate(input.outcomes ?? []);
+  const authorizedOutcomeCompletionRate =
+    aocr.ratePercent === null
+      ? noData('authorizedOutcomeCompletionRate', '授权结果完成率 (AOCR)', OUTCOME_SRC, '%')
+      : stat(
+          'authorizedOutcomeCompletionRate',
+          '授权结果完成率 (AOCR)',
+          aocr.ratePercent,
+          OUTCOME_SRC,
+          '%',
+        );
 
   const completed = input.tasks.filter((t) => t.status === 'DONE');
 
@@ -243,6 +297,7 @@ function computeMetrics(input: DashboardInput): DashboardMetrics {
       : stat('humanInterventions', '人工干预数', decidedByHuman.length, APPROVAL_SRC, '次');
 
   return {
+    authorizedOutcomeCompletionRate,
     tasksCompleted,
     firstPassSuccessRate,
     avgTaskDuration,

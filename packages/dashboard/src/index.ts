@@ -7,5 +7,10 @@
  * stat value is `null` with note '暂无数据'.
  */
 export * from './types';
-export { computeDashboardStats, latestOf, NO_DATA_NOTE } from './aggregate';
-export type { Clock } from './aggregate';
+export {
+  computeAuthorizedOutcomeCompletionRate,
+  computeDashboardStats,
+  latestOf,
+  NO_DATA_NOTE,
+} from './aggregate';
+export type { AocrResult, Clock } from './aggregate';

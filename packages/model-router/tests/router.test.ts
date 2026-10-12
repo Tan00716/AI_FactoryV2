@@ -150,6 +150,51 @@ describe('INV-29 availability (no silent degradation)', () => {
     assert.match(d.reason, /all .* offline/);
   });
 
+  it('deprioritizes a degraded model behind an equally-fit online one, and says so', () => {
+    const mk = (model: string, availability: 'online' | 'degraded') => ({
+      provider: 'shared',
+      model,
+      capabilities: { vision: false, tools: true, reasoning: false, maxContext: 'small' as const },
+      costTier: 'low' as const,
+      latencyTier: 'low' as const,
+      availability,
+    });
+    const d = route(baseRequest(), [mk('model-degraded', 'degraded'), mk('model-online', 'online')]);
+    assert.equal(d.unavailable, false);
+    assert.equal(d.primary!.model, 'model-online');
+    assert.equal(d.fallback!.model, 'model-degraded');
+    assert.match(d.reason, /availability notice: model-degraded degraded/);
+  });
+
+  it('keeps a degraded model eligible when it is the only fit (degraded ≠ offline)', () => {
+    const d = route(baseRequest(), [
+      {
+        provider: 'shared',
+        model: 'only-degraded',
+        capabilities: { vision: false, tools: true, reasoning: false, maxContext: 'small' },
+        costTier: 'low',
+        latencyTier: 'low',
+        availability: 'degraded',
+      },
+    ]);
+    assert.equal(d.unavailable, false);
+    assert.equal(d.primary!.model, 'only-degraded');
+    assert.match(d.reason, /degraded/);
+  });
+
+  it('still routes architecture to the degraded reasoning model (fit beats the penalty) and flags it', () => {
+    const d = route({
+      ...baseRequest(),
+      taskType: 'architecture',
+      complexity: 5,
+      needsReasoning: true,
+      contextNeeded: 'large',
+    });
+    assert.equal(d.primary!.model, 'reasoning-architect');
+    assert.equal(d.primary!.availability, 'degraded');
+    assert.match(d.reason, /availability notice: reasoning-architect degraded/);
+  });
+
   it('reports unavailability when hard constraints eliminate everything', () => {
     const d = route({ ...baseRequest(), needsVision: true, privacy: 'sensitive' }, [
       {

@@ -24,6 +24,16 @@ import {
   TraceStep,
 } from './types';
 import type { StepIntentStore } from './durable';
+import {
+  BudgetTracker,
+  RetryPolicy,
+  withRetryBudget,
+} from './limits';
+import {
+  assertNoPermissionBypass,
+  classifyFailure,
+  isAutoRetryAllowed,
+} from './failures';
 
 export interface AuditEvent {
   t: number;
@@ -53,6 +63,26 @@ export interface HarnessOptions {
   intentStore?: StepIntentStore;
   /** Run id stamped onto persisted intents. */
   runId?: string;
+  /**
+   * SPEC v2 §25 (G-51/G-52) — extended budget tracker. When attached,
+   * every tool-call ATTEMPT consumes one tool call; exceeding
+   * maxToolCalls throws BudgetExceeded. runAgent attaches the run's
+   * tracker automatically; direct Harness users may pass their own.
+   */
+  budgetTracker?: BudgetTracker;
+  /**
+   * §25 (G-52) — jittered retry for tool execution. When set, transient
+   * failures are retried via withRetryBudget(): attempts are bounded by
+   * BOTH policy.maxAttempts (derived from maxRetries by runAgent) and
+   * policy.totalBudgetMs. Permission denials are never retried — the
+   * no-bypass guard (failures.ts) turns a retry attempt after a denial
+   * into a loud PermissionBypassAttempt. Absent → single attempt (legacy).
+   */
+  toolRetryPolicy?: RetryPolicy;
+  /** Injectable randomness for retry jitter (deterministic tests). */
+  retryRand?: () => number;
+  /** Injectable sleep for retry backoff (deterministic tests). */
+  retrySleep?: (ms: number) => Promise<void>;
 }
 
 /** Default mapping from tool name to the core Permission it requires. */
@@ -74,11 +104,31 @@ export class Harness {
   private readonly clock: Clock;
   private readonly evidenceLog: EvidenceRecord[] = [];
   private readonly traceLog: TraceStep[] = [];
+  private budgetTracker?: BudgetTracker;
+  private toolRetryPolicy?: RetryPolicy;
 
   constructor(options: HarnessOptions) {
     this.options = options;
     this.clock = options.clock ?? systemClock;
     this.allowedRoots = options.allowedRoots.map((r) => path.resolve(r));
+    this.budgetTracker = options.budgetTracker;
+    this.toolRetryPolicy = options.toolRetryPolicy;
+  }
+
+  /** The attached extended-budget tracker, if any (§25). */
+  get tracker(): BudgetTracker | undefined {
+    return this.budgetTracker;
+  }
+
+  /**
+   * §25 (G-51/G-52) — attach the run's BudgetTracker (and, unless one was
+   * configured, its tool retry policy) after construction. Used by
+   * runAgent so caller-supplied harnesses join the run's accounting.
+   * No-op for slots already filled.
+   */
+  attachBudgetTracker(tracker: BudgetTracker, retryPolicy?: RetryPolicy): void {
+    if (!this.budgetTracker) this.budgetTracker = tracker;
+    if (!this.toolRetryPolicy && retryPolicy) this.toolRetryPolicy = retryPolicy;
   }
 
   /** Drain internally recorded trace steps (also forwarded to onTrace). */
@@ -145,6 +195,12 @@ export class Harness {
   /**
    * §26 Tool Routing — permission check, timeout, evidence, tracing.
    * Denials throw PermissionDenied and are audited.
+   *
+   * §25 (G-51/G-52): when a BudgetTracker is attached each attempt
+   * consumes a tool call; when a retry policy is configured, transient
+   * failures retry with jitter inside a total budget — bounded by both
+   * maxAttempts and totalBudgetMs — and a retry after a permission
+   * denial trips assertNoPermissionBypass (loud, never a workaround).
    */
   async runTool(name: string, args: unknown, impl: ToolImpl): Promise<unknown> {
     this.checkPermission(name);
@@ -155,8 +211,28 @@ export class Harness {
       name,
       args,
     );
+    const attempt = async (): Promise<unknown> => {
+      // §25 (G-51): every real execution attempt counts against the
+      // tool-call budget; exceeding it throws BudgetExceeded.
+      this.budgetTracker?.consumeToolCall();
+      return this.withTimeout(`tool:${name}`, async () => impl(args));
+    };
     try {
-      const result = await this.withTimeout(`tool:${name}`, async () => impl(args));
+      const result = this.toolRetryPolicy
+        ? await withRetryBudget(attempt, {
+            policy: this.toolRetryPolicy,
+            clock: this.clock,
+            ...(this.options.retryRand ? { rand: this.options.retryRand } : {}),
+            ...(this.options.retrySleep ? { sleep: this.options.retrySleep } : {}),
+            isRetryable: (err: unknown) => {
+              const kind = classifyFailure(err);
+              // §25 guard: choosing to retry after a permission denial
+              // IS a bypass attempt — throws PermissionBypassAttempt.
+              assertNoPermissionBypass(kind, `retry tool '${name}'`);
+              return isAutoRetryAllowed(kind);
+            },
+          })
+        : await attempt();
       if (intent) this.options.intentStore?.recordResult(intent.id, true, { ok: true });
       this.collectEvidence({
         type: 'tool_result',

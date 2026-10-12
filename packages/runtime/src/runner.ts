@@ -14,6 +14,7 @@ import { AgentLoop } from './loop';
 import { Harness, type ToolImpl } from './harness';
 import type { RuntimeAdapter } from './adapters';
 import {
+  BudgetExceeded,
   Clock,
   EvidenceRecord,
   LoopPhase,
@@ -24,6 +25,12 @@ import {
   TraceStep,
   systemClock,
 } from './types';
+import {
+  BudgetTracker,
+  DEFAULT_EXTENDED_BUDGETS,
+  type ExtendedBudgets,
+  type RetryPolicy,
+} from './limits';
 
 export interface RunAgentOptions {
   agent: Agent;
@@ -39,6 +46,16 @@ export interface RunAgentOptions {
   /** Tool implementations available to the default StepFn's ACT phase. */
   tools?: Record<string, ToolImpl>;
   clock?: Clock;
+  /**
+   * §25 (G-51) — extended budgets for this run. Any field omitted takes
+   * the DEFAULT_EXTENDED_BUDGETS value from limits.ts: the default path
+   * wires ALL 8 limits into one BudgetTracker (steps, wall time, retries,
+   * model calls, tool calls, repair loops, context chars, no-progress
+   * steps) — not just steps/time/retries as before.
+   */
+  extendedBudgets?: Partial<ExtendedBudgets>;
+  /** Pre-built tracker (tests / advanced callers); wins over extendedBudgets. */
+  budgetTracker?: BudgetTracker;
 }
 
 function buildPrompt(agent: Agent, task: Task): string {
@@ -58,16 +75,20 @@ interface DefaultStepContext {
   adapter: RuntimeAdapter;
   tools: Record<string, ToolImpl>;
   routing?: RouteDecision;
+  /** §25 — the run's extended-budget tracker (all 8 limits). */
+  tracker: BudgetTracker;
 }
 
 /** Adapter-driven StepFn used when the caller does not script behavior. */
 function defaultStepFn(ctx: DefaultStepContext): StepFn {
-  const { agent, task, harness, adapter, tools, routing } = ctx;
+  const { agent, task, harness, adapter, tools, routing, tracker } = ctx;
   let adapterNote = '';
 
   return async (phase: LoopPhase): Promise<PhaseResult> => {
     switch (phase) {
-      case 'OBSERVE':
+      case 'OBSERVE': {
+        // §25 (G-51): the assembled context counts against maxContextChars.
+        tracker.checkContext(buildPrompt(agent, task).length);
         harness.collectEvidence({
           type: 'context',
           title: 'context assembled',
@@ -78,6 +99,7 @@ function defaultStepFn(ctx: DefaultStepContext): StepFn {
           },
         });
         return { ok: true, note: `observing task ${task.id}` };
+      }
 
       case 'UNDERSTAND':
         return { ok: true, note: `goal: ${task.goal.slice(0, 120)}` };
@@ -89,12 +111,17 @@ function defaultStepFn(ctx: DefaultStepContext): StepFn {
         };
 
       case 'ACT': {
+        // §25 (G-51): every adapter invocation is a model call; exceeding
+        // maxModelCalls throws BudgetExceeded OUT of the StepFn (the loop
+        // treats BUDGET_EXCEEDED as terminal — never retried into success).
+        tracker.consumeModelCall();
         let output;
         try {
           output = await harness.withTimeout('adapter.invoke', () =>
             adapter.invoke({ prompt: buildPrompt(agent, task), tools: Object.keys(tools) }),
           );
         } catch (err) {
+          if (err instanceof BudgetExceeded) throw err;
           const message = err instanceof Error ? err.message : String(err);
           return {
             ok: false,
@@ -116,6 +143,11 @@ function defaultStepFn(ctx: DefaultStepContext): StepFn {
           try {
             await harness.runTool(tc.tool, tc.args, impl);
           } catch (err) {
+            // §25: budget exhaustion and bypass attempts are terminal —
+            // rethrow so the run fails/escalates explicitly instead of
+            // looping until an unrelated stagnation/retry limit fires.
+            if (err instanceof BudgetExceeded) throw err;
+            if (err instanceof Error && (err as { code?: string }).code === 'PERMISSION_BYPASS_ATTEMPT') throw err;
             const message = err instanceof Error ? err.message : String(err);
             return {
               ok: false,
@@ -176,12 +208,35 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
     pushTrace('RUNNER', 'model routing', `primary=${routing.primary.model}`);
   }
 
+  // §25 (G-51): ONE BudgetTracker for the whole run, built from all 8
+  // extended limits (defaults from limits.ts DEFAULT_EXTENDED_BUDGETS).
+  // If the caller's harness already carries a tracker it wins, so tool
+  // accounting and loop accounting can never diverge.
+  const budgets: ExtendedBudgets = { ...DEFAULT_EXTENDED_BUDGETS, ...options.extendedBudgets };
+  const tracker: BudgetTracker =
+    options.budgetTracker ?? harness.tracker ?? new BudgetTracker(budgets, clock);
+  // Tool retries (§25 G-52): bounded by maxRetries (attempts = retries + 1)
+  // AND by a total budget equal to the run's wall-time budget.
+  const toolRetryPolicy: RetryPolicy = {
+    maxAttempts: budgets.maxRetries + 1,
+    baseMs: 100,
+    capMs: 1_000,
+    totalBudgetMs: budgets.maxWallTimeMs,
+  };
+  harness.attachBudgetTracker(tracker, toolRetryPolicy);
+
   const loop =
     options.loop ??
     new AgentLoop({
-      budgets: { maxSteps: 60, timeMs: 120_000, maxRetries: 3 },
+      budgets: {
+        maxSteps: budgets.maxSteps,
+        timeMs: budgets.maxWallTimeMs,
+        maxRetries: budgets.maxRetries,
+      },
       clock,
+      budgetTracker: tracker,
     });
+  if (options.loop) options.loop.attachBudgetTracker(tracker);
   const stepFn =
     options.stepFn ??
     defaultStepFn({
@@ -191,6 +246,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
       adapter,
       tools: options.tools ?? {},
       routing,
+      tracker,
     });
 
   pushTrace('RUNNER', 'run start', `agent=${agent.id} task=${task.id} adapter=${adapter.name}`);
@@ -210,6 +266,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
       handoffs,
       trace,
       reason: `loop decision: ${outcome.decision}`,
+      budgetUsage: tracker.usage,
     };
   } catch (err) {
     // Recover the partial loop trace when run() threw (budget/stagnation).
@@ -220,10 +277,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
     // §25: stagnation auto-escalates instead of failing the run.
     if (err instanceof LoopStagnation) {
       pushTrace('RUNNER', 'auto-escalate', err.message);
-      return { outcome: 'escalated', steps, evidence, handoffs, trace, reason: err.message };
+      return { outcome: 'escalated', steps, evidence, handoffs, trace, reason: err.message, budgetUsage: tracker.usage };
     }
     const reason = err instanceof Error ? err.message : String(err);
     pushTrace('RUNNER', 'run failed', reason);
-    return { outcome: 'failed', steps, evidence, handoffs, trace, reason };
+    return { outcome: 'failed', steps, evidence, handoffs, trace, reason, budgetUsage: tracker.usage };
   }
 }

@@ -8,6 +8,9 @@
  *  POST /api/requirements/:id/impact              {fromVersion, toVersion} → impact analysis
  *  POST /api/requirements/:id/ac-refinement       {acId, patch} → refined version
  *  POST /api/requirements/:id/compatibility       {evidenceId, requirementVersion, compatible, basis}
+ *  GET  /api/requirements/holds?taskId=           list promotion holds (optionally per task)
+ *  POST /api/requirements/holds/:id/release      {by, revalidationNote} → release a hold
+ *  POST /api/requirements/promotion-check         {taskId} → 200 {allowed:true} | 409 {allowed:false, holds}
  */
 import type { IncomingMessage, ServerResponse } from 'http';
 import { RequirementManager } from '@ai-factory/requirements';
@@ -46,6 +49,56 @@ export async function handleRequirementRoutes(
       ctx.json(res, 201, { requirement: r });
     } catch (err) {
       ctx.json(res, 400, { error: (err as Error).message });
+    }
+    return true;
+  }
+
+  // Promotion-hold routes (§16 G-05) — MUST precede the generic
+  // GET /api/requirements/:id handler below, or 'holds' would be read
+  // as a requirement id.
+  if (method === 'GET' && seg.length === 1 && seg[0] === 'holds') {
+    const taskId = url.searchParams.get('taskId') ?? undefined;
+    ctx.json(res, 200, { holds: manager.listHolds(taskId) });
+    return true;
+  }
+
+  if (method === 'POST' && seg.length === 3 && seg[0] === 'holds' && seg[2] === 'release') {
+    const body = await ctx.readBody(req);
+    try {
+      const hold = manager.releaseHold(
+        seg[1],
+        (body['by'] as string | undefined) ?? 'api',
+        (body['revalidationNote'] as string | undefined) ?? '',
+      );
+      ctx.audit.record('api', 'PROMOTION_HOLD_RELEASED', 'requirement', hold.requirementId, {
+        holdId: hold.id,
+        taskId: hold.taskId,
+      });
+      ctx.json(res, 200, { hold });
+    } catch (err) {
+      ctx.json(res, 400, { error: (err as Error).message });
+    }
+    return true;
+  }
+
+  if (method === 'POST' && seg.length === 1 && seg[0] === 'promotion-check') {
+    const body = await ctx.readBody(req);
+    const taskId = body['taskId'] as string | undefined;
+    if (!taskId) {
+      ctx.json(res, 400, { error: 'taskId is required' });
+      return true;
+    }
+    // Fail-closed gate: assertPromotionAllowed throws while a hold is
+    // active; the 409 body lists the blocking holds.
+    try {
+      manager.assertPromotionAllowed(taskId);
+      ctx.json(res, 200, { allowed: true });
+    } catch (err) {
+      if (manager.isPromotionHeld(taskId)) {
+        ctx.json(res, 409, { allowed: false, holds: manager.activeHolds(taskId) });
+      } else {
+        ctx.json(res, 500, { error: (err as Error).message });
+      }
     }
     return true;
   }

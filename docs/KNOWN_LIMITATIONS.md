@@ -19,6 +19,13 @@
 - **无真实隔离 Host**。在 Linux 本机直跑，非合规隔离后端；`CONFINEMENT_UNAVAILABLE` 的 fail-closed 路径有单测，但真实 Host 隔离未验证。
 - Windows 工具探测（PowerShell / .NET 等）未在 Windows 上验证。
 
+## 工作流引擎接线（§18.2，G-18）
+
+- **v2 引擎已接线到服务端，但 Board 仍走 v1**。新增端点 `POST /api/tasks/:id/v2-transition` 与 `GET /api/tasks/:id/v2-state` 真实调用 `WorkflowEngineV2`（三态/里程碑/证据失效门禁），成功后写回 DB，门禁拒绝返回 422 且 DB 不变（有路由测试覆盖）。桌面 Board 的拖拽仍调用 v1 端点：Board 的列是 v1 状态（含 BLOCKED 等异常列），v2 是三态分离、且流转要求需求版本钉住（requirement pin），Board 目前不提供这些输入，硬切只会变成"永远回退 v1"的假接线，所以本批未切换 UI。
+- **v2 引擎状态是内存镜像**。服务端以 taskId 为键在内存中维护 v2 状态，首次 v2 访问时从 DB 行的当前状态播种；服务重启后重新播种。v1 异常状态（BLOCKED、QA_FAILED 等）从未单独记录过 v2 阶段，首次播种的阶段是近似值（异常本身会播种为 v2 的 condition 字段）。
+- **写回有一处有损映射**：v2 的 `OUTCOME_VERIFICATION` 阶段在 v1 状态列里没有对应值，写回为 `PROD_VERIFICATION`，精确阶段只能从 `GET /v2-state` 读到；`DONE` 只能经引擎 `finalize()`（完成谓词 + final_seal 同事务）到达，本批端点不暴露 finalize。
+- **门禁输入部分靠调用方声明**：证据与依赖就绪由服务端按 DB 实算；budget/quota/confinement 三项服务端尚无可核验的服务，靠请求显式声明，未声明按 false 处理（fail-closed，拒绝流转而不是放行）；authorization 是调用方提供的快照（本机 API 尚无认证层）。
+
 ## 数据与团队
 
 - **单机 SQLite**，无团队 PostgreSQL、无远程 Host、无 50+ 并发 Run 验证。

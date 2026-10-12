@@ -7,7 +7,9 @@
  *   GET  /api/projects            POST /api/projects {name, description?, path?}
  *   GET  /api/tasks?projectId=    POST /api/tasks {projectId, title, goal?, ...}
  *   GET  /api/tasks/:id
- *   POST /api/tasks/:id/transition   {to, actor?}
+ *   POST /api/tasks/:id/transition   {to, actor?}   (v1 engine)
+ *   POST /api/tasks/:id/v2-transition {toState|to, by|actor, ...}  (v2 engine, §18.2)
+ *   GET  /api/tasks/:id/v2-state     (v2 three-state view, §18/§19)
  *   POST /api/tasks/:id/evidence     {type, title, payload?, createdBy?}
  *   POST /api/tasks/:id/subtasks     {title, ...}
  *   POST /api/tasks/:id/dependencies {kind, taskId}
@@ -73,6 +75,7 @@ import { handleWatchdogRoutes } from './routes/watchdog';
 import { handleTakeoverRoutes } from './routes/takeover';
 import { handleDisputeRoutes } from './routes/disputes';
 import { handleReportRoutes } from './routes/reports';
+import { handleV2TransitionRoutes } from './routes/v2-transitions';
 import { handleDashboardRoutes } from './routes/dashboard';
 import { handleNotificationRoutes } from './routes/notifications';
 import { handleEventRoutes } from './routes/events';
@@ -213,6 +216,7 @@ const server = createServer(async (req, res) => {
     if (await handleTakeoverRoutes(req, res, url, routeCtx)) return;
     if (await handleDisputeRoutes(req, res, url, routeCtx)) return;
     if (await handleReportRoutes(req, res, url, routeCtx)) return;
+    if (await handleV2TransitionRoutes(req, res, url, routeCtx)) return;
     if (await handleDashboardRoutes(req, res, url, routeCtx)) return;
     if (await handleNotificationRoutes(req, res, url, routeCtx)) return;
     if (await handleEventRoutes(req, res, url, routeCtx)) return;

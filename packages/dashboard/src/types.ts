@@ -61,6 +61,22 @@ export interface ResourceUsageSnapshot {
   };
 }
 
+/**
+ * Minimal outcome fields for the §1.2 primary metric (AOCR).
+ * An outcome counts toward the numerator only when it was authorized,
+ * completed, AND completed within its scope/budget/risk bounds — a bound
+ * flag left undefined means "not recorded as violated".
+ */
+export interface OutcomeSnapshot {
+  id: string;
+  /** Was this outcome authorized (获准) by a human / policy? */
+  authorized: boolean;
+  completed: boolean;
+  withinScope?: boolean;
+  withinBudget?: boolean;
+  withinRisk?: boolean;
+}
+
 /** Everything computeDashboardStats needs. All collections may be empty. */
 export interface DashboardInput {
   tasks: TaskSnapshot[];
@@ -70,6 +86,8 @@ export interface DashboardInput {
   approvals: ApprovalSnapshot[];
   /** Optional: omitted / null means no resource data was recorded. */
   resources?: ResourceUsageSnapshot | null;
+  /** Optional: omitted / empty means AOCR has no backing data (null, never faked). */
+  outcomes?: OutcomeSnapshot[] | null;
 }
 
 export type StatValue = number | string | null;
@@ -99,6 +117,8 @@ export interface DashboardStatus {
 }
 
 export interface DashboardMetrics {
+  /** §1.2 PRIMARY metric — Authorized Outcome Completion Rate. */
+  authorizedOutcomeCompletionRate: Stat;
   tasksCompleted: Stat;
   firstPassSuccessRate: Stat;
   avgTaskDuration: Stat;

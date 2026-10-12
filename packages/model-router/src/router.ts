@@ -5,7 +5,8 @@
  *  1. Hard constraints filter the catalog: privacy=sensitive → local models
  *     only; needsVision → vision-capable only; requiredTools → tool-capable
  *     only; contextNeeded → models with a large enough context window;
- *     availability=offline → never eligible (INV-29). When nothing survives,
+ *     availability=offline → never eligible (INV-29); availability=degraded
+ *     stays eligible but is deprioritized and named in the reason. When nothing survives,
  *     route() returns unavailable=true with an explicit report instead of
  *     silently degrading to an unsuitable model.
  *  2. If the shared pool is exhausted (currentUsage.usedPct >=
@@ -49,6 +50,14 @@ function satisfiesHardConstraints(m: ModelRef, req: RouteRequest): boolean {
 function scoreModel(m: ModelRef, req: RouteRequest): { score: number; why: string[] } {
   let score = 0;
   const why: string[] = [];
+  if (m.availability === 'degraded') {
+    // INV-29 reporting: degraded is NOT offline — the model stays eligible
+    // (excluding it would fake unavailability), but it is deprioritized
+    // behind an equally-fit online model and the state is named in the
+    // decision reason instead of being silently treated as healthy.
+    score -= 25;
+    why.push('availability=degraded → deprioritized, still eligible (INV-29)');
+  }
   if (req.privacy === 'sensitive' && m.provider === 'local') {
     score += 1000;
     why.push('privacy=sensitive → local model (§30)');
@@ -148,6 +157,17 @@ export function route(
     `fallback=${fallback.model}`,
     `emergency=${emergency.model}`,
   );
+
+  // INV-29: surface degraded selections in ANY slot, not just primary —
+  // a degraded fallback/emergency must not pass as silently healthy.
+  const degradedPicks = [primary, fallback, emergency].filter(
+    (m, i, arr) => m.availability === 'degraded' && arr.indexOf(m) === i,
+  );
+  if (degradedPicks.length > 0) {
+    reasons.push(
+      `availability notice: ${degradedPicks.map((m) => m.model).join(', ')} degraded (INV-29)`,
+    );
+  }
 
   return { primary, fallback, emergency, reason: reasons.join(' | '), unavailable: false };
 }

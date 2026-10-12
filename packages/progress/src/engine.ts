@@ -6,6 +6,8 @@ import {
   CompletionEntry,
   CompletionLedgerEntry,
   ProgressReport,
+  TeamProgressEntry,
+  TeamProgressReport,
   WeightItem,
   WeightPlan,
 } from './types';
@@ -16,6 +18,7 @@ export class InvalidCompletionError extends ProgressError {}
 export class DoubleCountError extends ProgressError {}
 export class WeightConservationError extends ProgressError {}
 export class UnauthorizedScopeChangeError extends ProgressError {}
+export class PlanLockedError extends ProgressError {}
 
 /** Calculation version shown on every ticket (§20.4: % + current_gate + calculation_version + updated_at). */
 export const CALCULATION_VERSION = 'progress/v2.0';
@@ -145,6 +148,136 @@ export function defaultWeightPlan(now?: () => number): WeightPlan {
     supersedes: null,
     scopeChangeNote: null,
     authorizations: [],
+    locked: false,
+    lockedAt: null,
+    lockedBy: null,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* §20.3 (G-27) — weight plan locking                                  */
+/* ------------------------------------------------------------------ */
+
+/** True when the plan was locked via lockWeightPlan(). Legacy plans
+ *  without lock fields are unlocked. */
+export function isPlanLocked(plan: WeightPlan): boolean {
+  return plan.locked === true;
+}
+
+function unlockedFields(): { locked: boolean; lockedAt: null; lockedBy: null } {
+  return { locked: false, lockedAt: null, lockedBy: null };
+}
+
+/**
+ * §20.3 (G-27) — lock a weight plan once planning completes. Returns a
+ * NEW plan object (the input is not mutated) with the lock recorded in
+ * the authorization trail, in the same style as scope-change records.
+ * Locking requires an authorized actor; locking twice is an error.
+ */
+export function lockWeightPlan(
+  plan: WeightPlan,
+  by: string,
+  opts: EngineOptions & { note?: string } | string = {},
+): WeightPlan {
+  const o: EngineOptions & { note?: string } = typeof opts === 'string' ? { note: opts } : opts;
+  if (!by) {
+    throw new UnauthorizedScopeChangeError('Locking a weight plan requires an authorized actor');
+  }
+  if (isPlanLocked(plan)) {
+    throw new PlanLockedError(
+      `Weight plan ${plan.id} v${plan.version} is already locked by ${plan.lockedBy ?? 'unknown'} at ${plan.lockedAt ?? 'unknown'}`,
+    );
+  }
+  const at = iso(o.now);
+  const note = o.note ?? 'weight plan locked (planning complete)';
+  return {
+    ...plan,
+    items: plan.items.map((i) => ({ ...i })),
+    locked: true,
+    lockedAt: at,
+    lockedBy: by,
+    authorizations: [...plan.authorizations, { by, note, at }],
+  };
+}
+
+export interface UpdatePlanItemsOptions extends EngineOptions {
+  by?: string;
+  scopeChangeNote?: string;
+}
+
+/**
+ * §20.3 (G-27) — direct item/weight change. Allowed only while the plan
+ * is UNLOCKED (planning still in progress; same version, new plan object).
+ * On a LOCKED plan this throws PlanLockedError: the change must go
+ * through supersedePlan() / newPlanVersion(), which produce version+1.
+ */
+export function updatePlanItems(
+  plan: WeightPlan,
+  items: WeightItem[],
+  opts: UpdatePlanItemsOptions = {},
+): WeightPlan {
+  if (isPlanLocked(plan)) {
+    throw new PlanLockedError(
+      `Weight plan ${plan.id} v${plan.version} is locked (by ${plan.lockedBy ?? 'unknown'}); ` +
+        'direct weight changes are forbidden — use supersedePlan() with a scopeChangeNote and authorization',
+    );
+  }
+  for (const item of items) {
+    if (!(item.weight > 0)) {
+      throw new InvalidWeightError(`Item ${item.id}: weight must be > 0, got ${item.weight}`);
+    }
+  }
+  return {
+    ...plan,
+    items: items.map((i) => ({ ...i })),
+    authorizations: opts.by
+      ? [...plan.authorizations, { by: opts.by, note: opts.scopeChangeNote ?? 'plan items updated (unlocked)', at: iso(opts.now) }]
+      : [...plan.authorizations],
+  };
+}
+
+/** Alias matching the change-entry naming used in the gap audit (G-27). */
+export const applyPlanChange = updatePlanItems;
+
+export interface SupersedePlanOptions extends EngineOptions {
+  /** Authorized actor — required. */
+  by: string;
+  /** Why the scope changed — required, recorded on the new version. */
+  scopeChangeNote: string;
+}
+
+/**
+ * §20.3 (G-27) — the ONLY way to change a locked plan: produce a new
+ * version (version+1, supersedes = old version) carrying the new items,
+ * the scope-change note and an authorization record. The old plan object
+ * is left untouched. The new version starts UNLOCKED (its own planning
+ * must complete and be locked again). Also valid on unlocked plans.
+ */
+export function supersedePlan(
+  plan: WeightPlan,
+  items: WeightItem[],
+  opts: SupersedePlanOptions,
+): WeightPlan {
+  if (!opts.by) {
+    throw new UnauthorizedScopeChangeError('Superseding a weight plan requires an authorized actor');
+  }
+  if (!opts.scopeChangeNote) {
+    throw new UnauthorizedScopeChangeError('Superseding a weight plan requires a scopeChangeNote');
+  }
+  for (const item of items) {
+    if (!(item.weight > 0)) {
+      throw new InvalidWeightError(`Item ${item.id}: weight must be > 0, got ${item.weight}`);
+    }
+  }
+  return {
+    ...plan,
+    version: plan.version + 1,
+    items: items.map((i) => ({ ...i })),
+    createdAt: iso(opts.now),
+    supersedes: plan.version,
+    scopeChangeNote: opts.scopeChangeNote,
+    authorizations: [...plan.authorizations, { by: opts.by, note: opts.scopeChangeNote, at: iso(opts.now) }],
+    ...unlockedFields(),
   };
 }
 
@@ -175,6 +308,8 @@ export function splitItem(
         }))
       : [i],
   );
+  // Splitting produces a NEW version, so it is a valid change path even
+  // for a locked plan (G-27); the new version starts unlocked.
   return {
     ...plan,
     version: plan.version + 1,
@@ -183,6 +318,7 @@ export function splitItem(
     supersedes: plan.version,
     scopeChangeNote: `split ${itemId} into ${parts.map((p) => p.id).join(', ')} (weight conserved)`,
     authorizations: [...plan.authorizations, { by, note: `split ${itemId}`, at: iso(opts.now) }],
+    ...unlockedFields(),
   };
 }
 
@@ -201,6 +337,8 @@ export function newPlanVersion(
   if (!authorizedBy) {
     throw new UnauthorizedScopeChangeError('Scope change requires an authorized actor');
   }
+  // Authorized scope change = the supersede path for locked plans (G-27);
+  // the new version starts unlocked.
   return {
     ...plan,
     version: plan.version + 1,
@@ -209,6 +347,7 @@ export function newPlanVersion(
     supersedes: plan.version,
     scopeChangeNote: scopeNote,
     authorizations: [...plan.authorizations, { by: authorizedBy, note: scopeNote, at: iso(opts.now) }],
+    ...unlockedFields(),
   };
 }
 
@@ -253,4 +392,51 @@ export function applyInvalidation(
   }
   completions.set(itemId, { itemId, c: to, evidenceRef: cur?.evidenceRef ?? null });
   ledger.record(itemId, from, to, reason, by);
+}
+
+/* ------------------------------------------------------------------ */
+/* §20 (G-28) — team progress aggregation                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * §20 (G-28) — aggregate per-goal progress reports into a team figure,
+ * weighted by each goal's work weight:
+ *
+ *   team percent = Σ(wᵢ × percentᵢ) / Σwᵢ   (rounded to 2 decimals)
+ *
+ * Failure policy (explicit, by design): an EMPTY entry list throws
+ * ProgressError and any entry with weight ≤ 0 (or non-finite) throws
+ * InvalidWeightError — a team aggregate over no goals is meaningless,
+ * and silently returning 0% would look like real data.
+ */
+export function aggregateTeamProgress(entries: TeamProgressEntry[]): TeamProgressReport {
+  if (entries.length === 0) {
+    throw new ProgressError('aggregateTeamProgress requires at least one entry');
+  }
+  let totalWeight = 0;
+  let weighted = 0;
+  const contributions = entries.map((e) => {
+    if (!Number.isFinite(e.weight) || e.weight <= 0) {
+      throw new InvalidWeightError(
+        `Goal ${e.goalId}: team aggregation weight must be > 0, got ${e.weight}`,
+      );
+    }
+    totalWeight += e.weight;
+    weighted += e.weight * e.report.percent;
+    return {
+      goalId: e.goalId,
+      teamId: e.teamId ?? null,
+      weight: e.weight,
+      percent: e.report.percent,
+      contribution: round2(e.weight * e.report.percent),
+    };
+  });
+  return {
+    percent: round2(weighted / totalWeight),
+    totalWeight: round2(totalWeight),
+    entries: contributions.map((c) => ({
+      ...c,
+      weightSharePercent: round2((c.weight / totalWeight) * 100),
+    })),
+  };
 }

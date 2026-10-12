@@ -181,12 +181,17 @@ export class WorkflowEngineV2 {
 
   register(
     taskId: string,
-    init?: Partial<Pick<TaskV2State, 'requirementRef' | 'completionTarget'>>,
+    init?: Partial<Pick<TaskV2State, 'requirementRef' | 'completionTarget' | 'stage'>>,
   ): TaskV2State {
     const now = this.iso();
     const state: TaskV2State = {
       taskId,
-      stage: 'TODO',
+      // `stage` in init exists for seeding a mirror of a task that already
+      // exists elsewhere (e.g. the server seeding from the DB row on first
+      // v2 access, §18.2 wiring). It is a creation-time fact only — after
+      // registration the stage moves exclusively via requestTransitionV2 /
+      // finalize, never by re-registering.
+      stage: init?.stage ?? 'TODO',
       condition: {
         condition: 'ACTIVE',
         reason: 'registered',
@@ -211,6 +216,7 @@ export class WorkflowEngineV2 {
     this.deps.audit.record('system', 'TASK_V2_REGISTERED', 'task', taskId, {
       requirementRef: state.requirementRef,
       completionTarget: state.completionTarget,
+      seededStage: state.stage,
     });
     return state;
   }
