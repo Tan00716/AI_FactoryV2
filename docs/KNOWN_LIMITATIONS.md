@@ -11,8 +11,16 @@
 
 ## AI 能力
 
-- **模型适配器是 stub**。未接入任何真实 LLM（Anthropic / OpenAI 等），"AI 员工"不会真的干活，所有 AI 行为都是占位。
+- **除 Codex 外的模型适配器仍是 stub**。CodexAdapter 已真实实现（见下一节），其余供应商（Anthropic 等）未接入，"AI 员工"目前只能经 Codex 这一条真回路干活，且真 turn 尚待登录验证。
 - **MCP Registry 有实现，但未接入真实 MCP 服务**。Unknown MCP 默认 BLOCK 的逻辑在，但没有连过真实服务器做握手验证。
+
+## 真实模型接入（Codex app-server）
+
+- **CodexAdapter 已真实现**（2026-10-12，提交 `18fce3c`，SPEC §27/§28 的 B 路线）：一个 JSON-RPC 客户端连接 Codex app-server，双传输——spawn `codex app-server --stdio` 子进程，或连接已用 `--listen ws://` 启动的服务器；走完 initialize → thread/start → turn/start 全流程。线程默认为只读沙箱（sandbox: read-only）+ approvalPolicy `never`，fail-closed 取向，需要写操作时须显式放宽 config。
+- **动作映射为 observed actions，toolCalls 恒空**：Codex 在它自己的沙箱里执行命令/改文件/调工具，这些在工厂侧只记为已发生的观测记录（AdapterOutput 新增的 `actions` 字段）；`AdapterOutput.toolCalls` 对 Codex 恒为 `[]`——因为工厂 harness 会把 toolCalls 当待执行指令再跑一遍，塞进去会造成重复执行。反过来，工厂原生工具经 Codex 调用的桥接（如 MCP 转发）尚未实现。
+- **真 turn 端到端验证尚未完成**：需先在本开发机完成 `codex login`（device-auth，ChatGPT 授权），当前仍未登录。已实测到认证边界：协议链路对真实 app-server 跑通，`getAccountStatus()` 真实返回 reachable / requiresOpenaiAuth，未登录时 turn 被服务器以真实 401 拒绝，错误原文透传，适配器不回退 StubAdapter、不伪造成功。无登录路径由假服务器 demo（`npm run demo:codex`）与适配器单测覆盖；真机 demo `codex-live.demo.ts` 需要登录，不在 demo 套件内。
+- **账号状态（profile）默认仍是 stub**：model-router 的 profile 账号状态默认返回 stub 形状；`getAccountStatus()` 已能经 app-server 真实查询，profile 也已备好 live 注入点（可注入真实结果并标注来源），但 server 侧把真实账号状态接进 API 路由的工作由另一组进行中，尚未完成——接线完成前，API/UI 看到的账号状态仍可能是 stub。
+- **StubAdapter 仍是测试与 demo 的默认**：全部单测和 demo 套件（假服务器 Codex demo 除外）都跑在 StubAdapter 的脚本回放上，不消耗真实模型额度。
 
 ## 隔离与安全
 

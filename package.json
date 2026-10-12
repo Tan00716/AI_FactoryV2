@@ -21,6 +21,7 @@
     "demo:skills": "npm run build -w @ai-factory/skills && node packages/skills/dist/demo/skills.demo.js",
     "demo:memory": "npm run build -w @ai-factory/memory && node packages/memory/dist/demo/memory.demo.js",
     "demo:runtime": "npm run build -w @ai-factory/runtime && node packages/runtime/dist/demo/demo.js",
+    "demo:codex": "npm run build -w @ai-factory/runtime && node packages/runtime/dist/demo/codex-fake.demo.js",
     "demo:orchestrator": "npm run build -w @ai-factory/orchestrator && node packages/orchestrator/dist/demo/decompose.demo.js",
     "demo:factory": "npm run build -w @ai-factory/employee-factory && node packages/employee-factory/dist/demo/factory.demo.js",
     "demo:mcp": "npm run build -w @ai-factory/mcp && node packages/mcp/dist/demo/mcp.demo.js",

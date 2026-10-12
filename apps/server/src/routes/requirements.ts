@@ -5,6 +5,9 @@
  *  GET  /api/requirements/:id                     latest version
  *  GET  /api/requirements/:id/versions/:v        immutable version read
  *  POST /api/requirements/:id/versions           {changeKind, changeNote, patch} → new version
+ *  POST /api/requirements/:id/links               {version, taskIds?, planIds?, codeRefs?,
+ *                                                  testIds?, evidenceIds?, approvalIds?,
+ *                                                  releaseIds?} → updated EntityLinks
  *  POST /api/requirements/:id/impact              {fromVersion, toVersion} → impact analysis
  *  POST /api/requirements/:id/ac-refinement       {acId, patch} → refined version
  *  POST /api/requirements/:id/compatibility       {evidenceId, requirementVersion, compatible, basis}
@@ -14,6 +17,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'http';
 import { RequirementManager } from '@ai-factory/requirements';
+import type { EntityLinks } from '@ai-factory/requirements';
 import type { RouteContext } from './context';
 
 const manager = new RequirementManager();
@@ -134,6 +138,50 @@ export async function handleRequirementRoutes(
         },
       );
       ctx.json(res, 201, { version: v });
+    } catch (err) {
+      ctx.json(res, 400, { error: (err as Error).message });
+    }
+    return true;
+  }
+
+  // Entity links (§16) — binds tasks/plans/code/tests/evidence/approvals/
+  // releases to one requirement version. This is the HTTP entry point that
+  // makes impact analysis (and its promotion holds) reachable end-to-end:
+  // without it no task could ever be linked, so analyzeImpact() would
+  // never suspend anything. Fail-closed: a missing/invalid version or a
+  // nonexistent requirement version is a 400, never a silent no-op.
+  if (method === 'POST' && seg.length === 2 && seg[1] === 'links') {
+    const body = await ctx.readBody(req);
+    const version = Number(body['version']);
+    if (!Number.isInteger(version) || version < 1) {
+      ctx.json(res, 400, { error: 'version (positive integer) is required' });
+      return true;
+    }
+    const LINK_FIELDS = [
+      'planIds',
+      'taskIds',
+      'codeRefs',
+      'testIds',
+      'evidenceIds',
+      'approvalIds',
+      'releaseIds',
+    ] as const;
+    const links: Partial<EntityLinks> = {};
+    for (const f of LINK_FIELDS) {
+      const v = body[f];
+      if (v === undefined) continue;
+      if (!Array.isArray(v) || !v.every((e) => typeof e === 'string')) {
+        ctx.json(res, 400, { error: `${f} must be an array of strings` });
+        return true;
+      }
+      links[f] = v as string[];
+    }
+    try {
+      manager.linkEntities(seg[0], version, links);
+      ctx.audit.record('api', 'REQUIREMENT_ENTITIES_LINKED', 'requirement', seg[0], {
+        version,
+      });
+      ctx.json(res, 200, { links: manager.getLinks(seg[0], version) });
     } catch (err) {
       ctx.json(res, 400, { error: (err as Error).message });
     }
