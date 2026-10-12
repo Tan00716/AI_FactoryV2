@@ -6,10 +6,10 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Agent, Permission, Task } from '@ai-factory/core';
 import {
-  AdapterNotImplemented,
   AgentLoop,
   BudgetExceeded,
   CodexAdapter,
+  CodexAdapterError,
   Harness,
   LoopStagnation,
   StubAdapter,
@@ -231,24 +231,31 @@ describe('adapters (§27)', () => {
     assert.deepEqual(exhausted, { text: '', toolCalls: [] });
   });
 
-  it('CodexAdapter.invoke throws a clear AdapterNotImplemented (§28)', async () => {
-    const adapter = new CodexAdapter({ auth: 'chatgpt-oauth', appServerUrl: 'http://127.0.0.1:18791' });
+  it('CodexAdapter.invoke fails closed when no app-server is reachable (§28)', async () => {
+    // Nothing listens on ws://127.0.0.1:1 — the real adapter must fail with
+    // a CodexAdapterError, never a fake success.
+    const adapter = new CodexAdapter({
+      auth: 'chatgpt-oauth',
+      appServerUrl: 'ws://127.0.0.1:1',
+      timeoutMs: 5_000,
+    });
     assert.equal(adapter.name, 'codex');
     assert.equal(adapter.authKind, 'chatgpt-oauth');
     await assert.rejects(
       adapter.invoke({ prompt: 'x', tools: [] }),
-      (err: unknown) =>
-        err instanceof AdapterNotImplemented &&
-        /Codex app-server/.test(err.message) &&
-        /chatgpt-oauth/.test(err.message),
+      (err: unknown) => err instanceof CodexAdapterError && /codex app-server/i.test(err.message),
     );
   });
 
   it('a failing CodexAdapter surfaces through the loop (sanity)', async () => {
-    const err = await new CodexAdapter({ auth: 'api-key' })
+    const err = await new CodexAdapter({
+      auth: 'api-key',
+      command: 'ai-factory-definitely-not-a-codex-binary',
+      timeoutMs: 5_000,
+    })
       .invoke({ prompt: 'x', tools: [] })
       .catch((e: unknown) => e);
-    assert.ok(err instanceof AdapterNotImplemented);
+    assert.ok(err instanceof CodexAdapterError);
     assert.ok(!(err instanceof LoopStagnation));
     assert.ok(!(err instanceof BudgetExceeded));
   });
