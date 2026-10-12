@@ -180,7 +180,7 @@ describe('v2 transition §16 compatibility wiring', () => {
   // Batch 8 describe block below for the full stale/compatible chain.
   // The evidence here carries no recorded version, so these cases pin the
   // declaration-consultation behavior itself.)
-  function setup(requirements?: Pick<RequirementManager, 'canReuseEvidence'>) {
+  function setup(requirements?: Pick<RequirementManager, 'canReuseEvidence' | 'getVersion'>) {
     const tasks = new TaskManager();
     const evidence = new EvidenceEngine();
     const audit = new AuditLog();
@@ -210,6 +210,11 @@ describe('v2 transition §16 compatibility wiring', () => {
       canReuseEvidence: (id: string, req: string, v: number): boolean => {
         calls.push([id, req, v]);
         return id === planId;
+      },
+      // Gate assembly never reads versions; getVersion only serves the
+      // §20.1 completion snapshot, which these cases do not exercise.
+      getVersion: (): never => {
+        throw new Error('getVersion is not exercised by gate assembly');
       },
     };
     const s = setup(stub);

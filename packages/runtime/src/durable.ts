@@ -330,14 +330,45 @@ export interface StepIntent {
   argsHash: string;
   capabilityRef?: string;
   persistedAt: number;
-  status: 'PENDING' | 'EXECUTED' | 'FAILED';
+  status: 'PENDING' | 'EXECUTED' | 'FAILED' | 'DENIED';
   resultHash?: string;
 }
 
 /**
- * Durable intent log. persistIntent() is called BEFORE the tool executes;
- * recordResult() commits the fact after. On restart, PENDING intents are
- * reconciled against the external ledger instead of blindly re-run.
+ * §28.1 — the committed result payload of a permission-DENIED intent.
+ *
+ * The intent is persisted BEFORE the permission gate runs, so a refusal
+ * is a recorded fact, not just an audit line: recordDenied() commits the
+ * intent with this payload and the DENIED status. DENIED is a DECIDED
+ * terminal state — the tool never ran — so it is distinct from FAILED
+ * (the tool ran and failed) and must never be folded into the executed
+ * count. `denied: true` is the contract marker: every StepIntentStore
+ * implementation must map a committed result carrying it to the DENIED
+ * status (see isStepIntentDenial), so the label survives whichever
+ * backing store a deployment injects.
+ */
+export interface StepIntentDenial {
+  ok: false;
+  denied: true;
+  /** The permission gate's refusal reason (PermissionDenied message). */
+  reason: string;
+}
+
+/** True when a committed intent result is a permission denial payload. */
+export function isStepIntentDenial(result: unknown): result is StepIntentDenial {
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    (result as { denied?: unknown }).denied === true
+  );
+}
+
+/**
+ * Durable intent log. persistIntent() is called BEFORE the tool executes
+ * (and before the permission gate, §28.1); recordResult() commits the
+ * fact after, recordDenied() commits a gate refusal. On restart, PENDING
+ * intents are reconciled against the external ledger instead of blindly
+ * re-run — DENIED intents are decided and never surface as PENDING.
  */
 export class StepIntentStore {
   private readonly intents = new Map<string, StepIntent>();
@@ -364,9 +395,24 @@ export class StepIntentStore {
   recordResult(id: string, ok: boolean, result: unknown): StepIntent {
     const intent = this.intents.get(id);
     if (!intent) throw new FactoryError('INTENT_NOT_FOUND', `Step intent ${id} not found`);
-    intent.status = ok ? 'EXECUTED' : 'FAILED';
+    // A denial payload (§28.1) wins over the ok flag: the tool never ran,
+    // so the intent is DENIED — never EXECUTED, never a plain FAILED.
+    intent.status = isStepIntentDenial(result) ? 'DENIED' : ok ? 'EXECUTED' : 'FAILED';
     intent.resultHash = sha256Hex(JSON.stringify(result ?? null));
     return { ...intent };
+  }
+
+  /**
+   * §28.1 — commit a PENDING intent as DENIED: the permission gate
+   * refused the call before the tool ever ran. Delegates to
+   * recordResult() so there is exactly ONE commit channel: store
+   * implementations that override recordResult() (e.g. the SQLite-backed
+   * store in packages/db) persist the denial through it, and the
+   * resultHash commits to the denial payload either way.
+   */
+  recordDenied(id: string, reason: string): StepIntent {
+    const denial: StepIntentDenial = { ok: false, denied: true, reason };
+    return this.recordResult(id, false, denial);
   }
 
   pendingIntents(runId?: string): StepIntent[] {

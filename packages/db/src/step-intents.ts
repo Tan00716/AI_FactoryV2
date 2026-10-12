@@ -26,6 +26,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   FactoryError,
   StepIntentStore,
+  isStepIntentDenial,
   systemClock,
   type Clock,
   type StepIntent,
@@ -99,7 +100,13 @@ export class SqliteStepIntentStore extends StepIntentStore {
       // Same failure contract as the in-memory store (code + message).
       throw new FactoryError('INTENT_NOT_FOUND', `Step intent ${id} not found`);
     }
-    const status: StepIntent['status'] = ok ? 'EXECUTED' : 'FAILED';
+    // A denial payload (§28.1, Batch 12) is a decided terminal state of
+    // its own: the tool never ran, so it is neither EXECUTED nor FAILED.
+    const status: StepIntent['status'] = isStepIntentDenial(result)
+      ? 'DENIED'
+      : ok
+        ? 'EXECUTED'
+        : 'FAILED';
     const resultHash = sha256Hex(JSON.stringify(result ?? null));
     this.sqlite
       .prepare('UPDATE step_intents SET status = ?, result_hash = ? WHERE id = ?')

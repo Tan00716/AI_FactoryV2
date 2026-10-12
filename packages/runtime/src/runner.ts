@@ -260,6 +260,9 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
       executed: mine.filter((i) => i.status === 'EXECUTED').length,
       failed: mine.filter((i) => i.status === 'FAILED').length,
       pending: mine.filter((i) => i.status === 'PENDING').length,
+      // §28.1 — permission-denied calls are their own bucket: the tool
+      // never ran, so they are neither executed nor failed executions.
+      denied: mine.filter((i) => i.status === 'DENIED').length,
     };
   };
 

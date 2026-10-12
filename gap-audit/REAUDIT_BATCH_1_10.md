@@ -53,3 +53,30 @@
 |---|---|---|---|
 | 6-1 | 工具空结果 EMPTY_RESULT 不 seal 成功 | 证实 | `packages/tools/src/executor.ts:250` 结局判定 `exitCode!==0? FAILED: isEmptyResult? EMPTY_RESULT: SUCCEEDED`，按原始
 ...[truncated 4797 chars]
+---
+
+## 主线补记（2026-10-12，Batch 12 收口时）
+
+本文件原始写入在 Batch 6 条目 6-1 中途截断，Batch 7–10 的表格与文末观察未落盘。审计员的完整结论已在其交付报告中给出（总判定：抽查 21 条，证实 21 / 部分证实 0 / 假关闭 0），以下为据该报告转录的缺失部分判定与观察，证据细节以审计员报告为准；本节为补记，非审计员原文。
+
+### Batch 7（提交 8938108）— 转录判定：证实
+- PolicyStore.set() 守卫：无 caller 权威改 locked 规则抛 PolicySetDeniedError + overrideDenied 事件留痕 + 状态零变更；同层 caller 对照放行。
+- §22 leases 真实超时等待：deadline、双界、prune、Atomics.wait、可注入 sleep 时钟契约齐全（只读实现核对，未只看测试）。
+
+### Batch 8（提交 987754a）— 转录判定：证实
+- Exception Grant 的 WAIVED 在类型层（verdict 联合的独立成员）与代码层（WAIVED 分支不回 approval_id、不写审批记录）均不冒充 APPROVED。
+- 核心审计 hash chain：审计员自写脚本对内存审计链做两类篡改（改 actor、删中间记录），verifyAuditChain 均报 ok:false, brokenAt:1。
+
+### Batch 9（提交 4dcce5b）— 转录判定：证实
+- SqliteAuditStore 哈希落盘：自写脚本跨进程重开 SQLite 库，2 条审计记录 hash/prev_hash 完整、verify 通过。
+- Linux AppImage 实体存在（129,565,317 字节）；git check-ignore 实证 release/ 被 .gitignore 命中。
+
+### Batch 10（提交 e47c797）— 转录判定：证实
+- 根 build 脚本顺序对声明依赖抽查 4 对（runtime/leases/approvals→db、core→requirements）全部依赖在前。
+- FACTORY_RUNTIME_TOOLS 在路由源码层核实：未设解析为空名单、权限仅在名单非空时授予、未知工具名在 index.ts 启动期致命拒绝。
+
+### 审计员的 4 条观察（不改变判定）
+1. StepIntent 在权限检查之后才落 intent：被 default-deny 的工具调用无 intent 记录（只有审计事件），与 §28.1「执行前落 intent」字面有细微差。——**已于 Batch 12 修复**（intent 先于权限检查落盘，被拒调用留 DENIED 终态 intent，db 标签同步对齐）。
+2. leases 真等待只在进程内可观察（TTL 到期/prune）；跨进程/分布式锁不在此实现范围（设计注释已声明）。
+3. tools 层空结果不产生执行记录意义上的成功，但 Batch 7 后 harness 仍封存一条显式标 empty:true 的 tool_result 证据——只认 type 不看 payload 的仓库外消费方仍会看到一条记录（Batch 7 报告已自述此界）。
+4. AOCR「authorized := 有 APPROVED 审批」的口径是已声明的本地映射，与声明一致；分母定义若未来要对齐 §1.2 其他解释需另行确认（非缺口）。

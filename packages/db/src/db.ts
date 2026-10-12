@@ -22,6 +22,8 @@ import { SCHEMA } from './schema';
 import { SqliteStepIntentStore } from './step-intents';
 import { SqliteOperationStore } from './operations';
 import { SqliteCheckpointStore } from './checkpoints';
+import { SqliteRequirementStore } from './requirements';
+import { SqliteRuntimeRunStore } from './runs';
 
 const J = {
   parse<T>(s: string | null, fallback: T): T {
@@ -583,6 +585,18 @@ export class FactoryDatabase {
    * resumption contract) survives the restart it exists for.
    */
   readonly checkpoints: SqliteCheckpointStore;
+  /**
+   * §16 (F2) — durable requirement state; the RequirementStore a
+   * RequirementManager is constructed over, so requirement versions,
+   * compatibility declarations, holds and links survive restarts.
+   */
+  readonly requirements: SqliteRequirementStore;
+  /**
+   * HTTP run records (apps/server §24–§27 routes, F4) — the
+   * RuntimeRunStore the server's run registry is installed over, so a
+   * run's record survives the restart its step intents already did.
+   */
+  readonly runs: SqliteRuntimeRunStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -603,6 +617,8 @@ export class FactoryDatabase {
     this.stepIntents = new SqliteStepIntentStore(this.db);
     this.operations = new SqliteOperationStore(this.db);
     this.checkpoints = new SqliteCheckpointStore(this.db);
+    this.requirements = new SqliteRequirementStore(this.db);
+    this.runs = new SqliteRuntimeRunStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------

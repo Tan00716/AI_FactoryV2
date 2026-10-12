@@ -6,6 +6,7 @@
  * v1 engine. This module wires the v2 engine into the server for real:
  *
  *   POST /api/tasks/:id/v2-transition  { toState|to, by|actor, ...gate inputs }
+ *   POST /api/tasks/:id/v2-complete    { by|actor, ...attestations }
  *   GET  /api/tasks/:id/v2-state
  *
  * Design (deliberately narrow, no fake wiring):
@@ -50,6 +51,27 @@
  *   with no recorded version (registered without a requirement context,
  *   or predating Batch 8) is absent from the map and treated as not
  *   stale — no version is ever invented for it.
+ * - COMPLETION (§20.1, Batch 12 — walkthrough finding F1): until now the
+ *   v2 lifecycle dead-ended over HTTP one step before DONE — the engine
+ *   requires finalize() for DONE and no route exposed it, so API users
+ *   detoured through the v1 endpoint and lost the completion predicates,
+ *   the final seal, and mirror/DB consistency. POST /v2-complete now
+ *   assembles a CompletionSnapshot from server-side facts (see
+ *   completionSnapshot() for the exact rule per field — nothing is
+ *   waved through: a field the server cannot verify is either a real
+ *   recorded fact or an explicit caller attestation in the established
+ *   fail-closed style) and calls engine.finalize(). On success DONE +
+ *   final_seal=1 commit in the engine and DONE is written back to the
+ *   DB row, so the mirror and the row agree. POST /v2-transition to
+ *   DONE still returns 422 by engine design — finalize is the only
+ *   road to DONE, now reachable.
+ * - EVIDENCE SEALING (§42, Batch 12 — walkthrough finding F3): the
+ *   engine's onSealEvidence hook is wired to EvidenceEngine.seal, so
+ *   the evidence a gate consumes becomes immutable the moment the
+ *   transition commits. Denied transitions consume nothing and seal
+ *   nothing. Predicate-checked evidence (e.g. the production approval,
+ *   read by a gate predicate rather than consumed as a requirement) is
+ *   NOT sealed — sealing tracks consumption, exactly §42's rule.
  *
  * The v1 endpoint POST /api/tasks/:id/transition is unchanged, and the
  * desktop Board still uses it — see docs/KNOWN_LIMITATIONS.md for why the
@@ -65,8 +87,10 @@ import {
 } from '@ai-factory/core';
 import type {
   ActorAuthorization,
+  CompletionSnapshot,
   Evidence,
   GateContext,
+  LifecycleMilestone,
   Task,
   TaskConditionValue,
   TaskStatus,
@@ -141,9 +165,21 @@ export interface V2TransitionDeps {
    * §16 compatibility declarations (optional). When present, gate
    * assembly fills GateContext.compatibleEvidenceIds from real
    * canReuseEvidence records for the task's pinned requirement version.
-   * Absent = the field is omitted and behavior is unchanged.
+   * Absent = the field is omitted and behavior is unchanged. Also the
+   * source of the pinned version's acceptance criteria for the §20.1
+   * completion snapshot (getVersion).
    */
-  requirements?: Pick<RequirementManager, 'canReuseEvidence'>;
+  requirements?: Pick<RequirementManager, 'canReuseEvidence' | 'getVersion'>;
+  /**
+   * Task approval records (optional, §20.1). When present, the
+   * completion snapshot's authorizationsComplete additionally requires
+   * that no approval for the task is still PENDING or lapsed EXPIRED.
+   * Absent = the caller's authorization snapshot is the only
+   * authorization fact, mirroring gateContext's trust model.
+   */
+  approvals?: {
+    listByTask(taskId: string): ReadonlyArray<{ status: string }>;
+  };
 }
 
 export interface V2StateView {
@@ -164,13 +200,112 @@ export interface V2StateView {
   updatedAt: string;
 }
 
+/** Parse a requirement pin ref ('REQ-001@2') into id + version. */
+function parsePin(pin: string): { id: string; version: number } | null {
+  const at = pin.lastIndexOf('@');
+  if (at <= 0) return null;
+  const version = Number(pin.slice(at + 1));
+  if (!Number.isInteger(version) || version < 1) return null;
+  return { id: pin.slice(0, at), version };
+}
+
+/**
+ * §20.1 AC verification, judged from recorded evidence only. An
+ * acceptance criterion declares what evidence must exist in its own
+ * `expectedEvidence` — the recorded shape is '<type> with verdict <V>'
+ * (e.g. 'qa_result with verdict PASS'; see AcceptanceCriterion). The AC
+ * counts verified iff a task evidence record of that type exists whose
+ * payload verdict equals <V> (a bare '<type>' requires the type alone).
+ * An expectedEvidence string in any other shape names no machine-
+ * checkable evidence and the AC counts UNVERIFIED — fail-closed, never
+ * inferred from prose.
+ */
+function acVerifiedByEvidence(
+  ac: { expectedEvidence: string },
+  evidence: Evidence[],
+): boolean {
+  const m = /^([A-Za-z0-9_]+)(?:\s+with\s+verdict\s+(\S+))?/i.exec(
+    ac.expectedEvidence.trim(),
+  );
+  if (!m) return false;
+  const type = m[1];
+  const verdict = m[2];
+  return evidence.some((e) => {
+    if (e.type !== type) return false;
+    if (verdict === undefined) return true;
+    const v = (e.payload as { verdict?: unknown }).verdict;
+    return typeof v === 'string' && v === verdict;
+  });
+}
+
+/** §19 milestones each completion target requires (DONE excluded — finalize sets it). */
+const MILESTONES_BY_TARGET: Record<
+  TaskV2State['completionTarget'],
+  LifecycleMilestone[]
+> = {
+  IMPLEMENTATION: ['IMPLEMENTED'],
+  VERIFIED_DELIVERY: ['IMPLEMENTED', 'VERIFIED'],
+  RELEASED_OUTCOME: ['IMPLEMENTED', 'VERIFIED', 'RELEASED', 'OUTCOME_VERIFIED'],
+};
+
+/**
+ * The stage at which a milestone is demonstrably achieved: reaching the
+ * stage means the gate guarding it was passed (its evidence consumed).
+ */
+const MILESTONE_STAGE: ReadonlyArray<
+  readonly [LifecycleMilestone, WorkflowStage]
+> = [
+  ['IMPLEMENTED', 'CODE_REVIEW'],
+  ['VERIFIED', 'PENDING_PROD'],
+  ['RELEASED', 'PROD_VERIFICATION'],
+  ['OUTCOME_VERIFIED', 'OUTCOME_VERIFICATION'],
+];
+
+export type CompleteResult =
+  | {
+      ok: true;
+      taskId: string;
+      finalSeal: 1;
+      taskVersion: number;
+      snapshot: CompletionSnapshot;
+      warnings: string[];
+      state: V2StateView;
+    }
+  | {
+      ok: false;
+      reasonCode: string;
+      missing: string[];
+      snapshot?: CompletionSnapshot;
+      warnings?: string[];
+    };
+
 export class V2TransitionService {
   readonly engine: WorkflowEngineV2;
   private deps: V2TransitionDeps;
 
   constructor(deps: V2TransitionDeps) {
     this.deps = deps;
-    this.engine = new WorkflowEngineV2({ audit: deps.audit });
+    this.engine = new WorkflowEngineV2({
+      audit: deps.audit,
+      // §42 (F3): the engine names the evidence each successful gate
+      // consumed; seal those records in the store so a judged record
+      // can no longer be edited after the fact (EvidenceEngine.update /
+      // delete throw on SEALED). Idempotent. The hook runs AFTER the
+      // transition commits, so a seal failure must not un-commit it —
+      // it is audit-logged (EVIDENCE_SEAL_FAILED), never thrown, never
+      // silent.
+      onSealEvidence: (ids) => {
+        for (const id of ids) {
+          try {
+            deps.evidence.seal(id);
+          } catch (e) {
+            deps.audit.record('system', 'EVIDENCE_SEAL_FAILED', 'evidence', id, {
+              error: (e as Error).message,
+            });
+          }
+        }
+      },
+    });
   }
 
   /**
@@ -336,11 +471,9 @@ export class V2TransitionService {
   ): ReadonlySet<string> | undefined {
     const mgr = this.deps.requirements;
     if (!mgr || pin === null) return undefined;
-    const at = pin.lastIndexOf('@');
-    if (at <= 0) return undefined;
-    const version = Number(pin.slice(at + 1));
-    if (!Number.isInteger(version) || version < 1) return undefined;
-    const requirementId = pin.slice(0, at);
+    const parsed = parsePin(pin);
+    if (!parsed) return undefined;
+    const { id: requirementId, version } = parsed;
     const ids = new Set<string>();
     for (const e of evidence) {
       if (mgr.canReuseEvidence(e.id, requirementId, version)) ids.add(e.id);
@@ -387,12 +520,226 @@ export class V2TransitionService {
     if (fresh.status !== dbStatus) {
       this.deps.tasks.setStatus(taskId, dbStatus);
     }
+    // §19: record the milestone this stage demonstrably achieves, so the
+    // milestone axis is real recorded state (not re-derived at read time).
+    this.reconcileMilestones(taskId, actor, check.consumedEvidence[0]?.id);
     return {
       ok: true,
       from: check.from,
       to: check.to,
       intent: check.intent,
       deduped: check.deduped,
+      state: this.stateView(taskId),
+    };
+  }
+
+  /**
+   * §19 — mark every milestone the task's current stage demonstrably
+   * implies and that is not yet recorded. Idempotent; called after each
+   * successful transition and before finalize, so a mirror seeded
+   * mid-lifecycle catches up from its stage alone. DONE is never marked
+   * here — only finalize() commits it, together with the seal.
+   */
+  private reconcileMilestones(
+    taskId: string,
+    actor: string,
+    evidenceRef?: string,
+  ): void {
+    const s = this.engine.get(taskId);
+    const stageIdx = WORKFLOW_STAGES.indexOf(s.stage);
+    for (const [milestone, threshold] of MILESTONE_STAGE) {
+      if (
+        stageIdx >= WORKFLOW_STAGES.indexOf(threshold) &&
+        !s.milestones[milestone].achieved
+      ) {
+        this.engine.markMilestone(
+          taskId,
+          milestone,
+          actor,
+          threshold === s.stage ? evidenceRef : undefined,
+        );
+      }
+    }
+  }
+
+  /**
+   * §20.1 — assemble the CompletionSnapshot finalize() judges, from
+   * server-side facts. The rule per field (nothing is waved through):
+   * - applicableAcs: the pinned requirement version's ACs from the
+   *   requirements manager, each verified per acVerifiedByEvidence
+   *   against the task's recorded evidence. No pin → no ACs apply.
+   *   A pin the manager cannot resolve (unknown requirement/version —
+   *   including the pre-persistence in-memory manager after a restart,
+   *   finding F2) enumerates NO ACs and is surfaced in `warnings` and
+   *   the audit log (COMPLETION_ACS_UNRESOLVED) instead of silently
+   *   passing or hard-denying on another subsystem's data loss.
+   * - gatesValid: the engine's outcomeGateValid — the one recorded
+   *   invalidation signal for already-passed gates (a rollback flips
+   *   it). Per-evidence staleness is NOT re-litigated here: it is
+   *   judged by checkTransitionV2 at the gate that consumes the
+   *   evidence, which is §16's enforcement point.
+   * - milestonesValid: every milestone applicable to the task's
+   *   completionTarget is recorded achieved (reconcileMilestones ran
+   *   first, so recorded state reflects the walked stages).
+   * - pendingBlocks: the condition's blockedOn list plus every hard
+   *   dependency (depends_on / blocked_by) not DONE — real DB facts,
+   *   the same computation gateContext makes for dependenciesReady.
+   * - authorizationsComplete: the caller's authorization snapshot
+   *   resolves AUTHORIZED and unexpired (same parsing as gateContext),
+   *   and — when an approvals store is wired — no approval record for
+   *   the task is still PENDING or lapsed EXPIRED. REJECTED records are
+   *   complete (decided); the gates that needed them already judged
+   *   the outcome during the stage walk.
+   * - releaseApplicable: releaseState is RELEASED, or the RELEASED
+   *   milestone is recorded (the task demonstrably passed the
+   *   deployment gate; recordRelease has no HTTP route yet, so the
+   *   milestone is the server-observable release fact).
+   * - releaseNaAuthorized: explicit caller attestation only
+   *   (body.releaseNaAuthorized === true), the established fail-closed
+   *   pattern for facts the server cannot verify itself.
+   */
+  private completionSnapshot(
+    task: Task,
+    body: Record<string, unknown>,
+  ): { snapshot: CompletionSnapshot; warnings: string[] } {
+    const state = this.engine.get(task.id);
+    const evidence = this.deps.evidence.listByTask(task.id);
+    const warnings: string[] = [];
+
+    const applicableAcs: Array<{ id: string; verified: boolean }> = [];
+    const mgr = this.deps.requirements;
+    const pin = state.requirementRef;
+    if (pin !== null) {
+      const parsed = parsePin(pin);
+      if (!mgr || !parsed) {
+        warnings.push(
+          `pinned requirement ${pin} cannot be resolved here — no acceptance criteria were enumerated for the completion check`,
+        );
+        this.deps.audit.record('system', 'COMPLETION_ACS_UNRESOLVED', 'task', task.id, {
+          requirementRef: pin,
+        });
+      } else {
+        try {
+          const ver = mgr.getVersion(parsed.id, parsed.version);
+          for (const ac of ver.acceptanceCriteria) {
+            applicableAcs.push({
+              id: ac.id,
+              verified: acVerifiedByEvidence(ac, evidence),
+            });
+          }
+        } catch {
+          warnings.push(
+            `pinned requirement ${pin} is unknown to the requirements manager — no acceptance criteria were enumerated for the completion check`,
+          );
+          this.deps.audit.record('system', 'COMPLETION_ACS_UNRESOLVED', 'task', task.id, {
+            requirementRef: pin,
+          });
+        }
+      }
+    }
+
+    const gatesValid = state.outcomeGateValid;
+
+    const milestonesValid = MILESTONES_BY_TARGET[state.completionTarget].every(
+      (ms) => state.milestones[ms].achieved,
+    );
+
+    const pendingBlocks: string[] = state.condition.blockedOn.map(
+      (b) => `blocked on ${b}`,
+    );
+    for (const d of task.dependencies) {
+      if (d.kind !== 'depends_on' && d.kind !== 'blocked_by') continue;
+      let done = false;
+      try {
+        done = this.deps.tasks.get(d.taskId).status === 'DONE';
+      } catch {
+        done = false; // dangling dependency → still blocking (fail-closed)
+      }
+      if (!done) pendingBlocks.push(`dependency ${d.taskId} is not DONE`);
+    }
+
+    const authStatus = body['authorizationStatus'];
+    const callerStatus =
+      authStatus === 'WAITING_HUMAN_DISPATCH' ||
+      authStatus === 'REVOKED' ||
+      authStatus === 'EXPIRED'
+        ? authStatus
+        : 'AUTHORIZED';
+    const expiresAt =
+      typeof body['authorizationExpiresAt'] === 'string'
+        ? body['authorizationExpiresAt']
+        : null;
+    const callerExpired =
+      expiresAt !== null &&
+      Number.isFinite(Date.parse(expiresAt)) &&
+      Date.parse(expiresAt) <= Date.now();
+    let authorizationsComplete = callerStatus === 'AUTHORIZED' && !callerExpired;
+    if (authorizationsComplete && this.deps.approvals) {
+      const rows = this.deps.approvals.listByTask(task.id);
+      if (rows.some((a) => a.status === 'PENDING' || a.status === 'EXPIRED')) {
+        authorizationsComplete = false;
+      }
+    }
+
+    const releaseApplicable =
+      state.releaseState === 'RELEASED' || state.milestones.RELEASED.achieved;
+    const releaseNaAuthorized = body['releaseNaAuthorized'] === true;
+
+    return {
+      snapshot: {
+        applicableAcs,
+        gatesValid,
+        milestonesValid,
+        pendingBlocks,
+        authorizationsComplete,
+        releaseApplicable,
+        releaseNaAuthorized,
+      },
+      warnings,
+    };
+  }
+
+  /**
+   * §20.1 — complete a task over HTTP (F1): assemble the snapshot from
+   * server facts, run engine.finalize() (completion predicates + DONE +
+   * final_seal=1 in one commit), and write DONE back to the DB row so
+   * the v2 mirror and the row agree. On a predicate denial nothing is
+   * written — the engine state and the DB row are both untouched.
+   */
+  complete(
+    taskId: string,
+    actor: string,
+    body: Record<string, unknown>,
+  ): CompleteResult {
+    const task = this.ensureSeeded(
+      taskId,
+      typeof body['requirementVersion'] === 'string'
+        ? body['requirementVersion']
+        : null,
+    );
+    this.reconcileMilestones(taskId, actor);
+    const { snapshot, warnings } = this.completionSnapshot(task, body);
+    const result = this.engine.finalize(taskId, actor, snapshot);
+    if (!result.ok) {
+      return {
+        ok: false,
+        reasonCode: result.reasonCode,
+        missing: result.missing,
+        snapshot,
+        warnings,
+      };
+    }
+    const fresh = this.deps.tasks.get(taskId);
+    if (fresh.status !== 'DONE') {
+      this.deps.tasks.setStatus(taskId, 'DONE');
+    }
+    return {
+      ok: true,
+      taskId,
+      finalSeal: 1,
+      taskVersion: result.taskVersion,
+      snapshot,
+      warnings,
       state: this.stateView(taskId),
     };
   }
@@ -409,6 +756,13 @@ export function getV2TransitionService(ctx: RouteContext): V2TransitionService {
       // The same RequirementManager instance the requirements routes
       // write compatibility declarations to (single process, one store).
       requirements: getRequirementManager(),
+      // §20.1: real approval records for the completion snapshot. The
+      // shape guard keeps minimal embedder contexts (no DB) working —
+      // they simply get the caller-snapshot-only authorization rule.
+      approvals:
+        ctx.fdb && typeof ctx.fdb.approvals?.listByTask === 'function'
+          ? ctx.fdb.approvals
+          : undefined,
     });
   }
   return shared;
@@ -419,7 +773,7 @@ export function createV2TransitionService(deps: V2TransitionDeps): V2TransitionS
   return new V2TransitionService(deps);
 }
 
-const TASK_V2_RE = /^\/api\/tasks\/([^/]+)\/(v2-transition|v2-state)$/;
+const TASK_V2_RE = /^\/api\/tasks\/([^/]+)\/(v2-transition|v2-state|v2-complete)$/;
 
 export async function handleV2TransitionRoutes(
   req: IncomingMessage,
@@ -469,6 +823,33 @@ export async function handleV2TransitionRoutes(
       ctx.bus.emit(
         'WORKFLOW_TRANSITIONED',
         { taskId, from: r.from, to: r.to, actor, engine: 'v2' },
+        'workflow',
+      );
+      ctx.json(res, 200, r);
+    } catch (e) {
+      ctx.json(res, 404, { error: (e as Error).message });
+    }
+    return true;
+  }
+
+  if (method === 'POST' && m[2] === 'v2-complete') {
+    const body = await ctx.readBody(req);
+    const actor =
+      (typeof body['by'] === 'string' && body['by']) ||
+      (typeof body['actor'] === 'string' && body['actor']) ||
+      'human';
+    try {
+      const r = service.complete(taskId, actor, body);
+      if (!r.ok) {
+        // Completion predicates unmet (or wrong stage/condition): 422,
+        // engine state and DB row untouched. The assembled snapshot is
+        // returned so the caller can see exactly which fact failed.
+        ctx.json(res, 422, r);
+        return true;
+      }
+      ctx.bus.emit(
+        'WORKFLOW_TRANSITIONED',
+        { taskId, from: 'OUTCOME_VERIFICATION', to: 'DONE', actor, engine: 'v2', intent: 'REQUEST_COMPLETE' },
         'workflow',
       );
       ctx.json(res, 200, r);

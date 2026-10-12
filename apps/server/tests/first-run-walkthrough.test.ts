@@ -14,21 +14,33 @@
  *   report counts, startup-scan audit and the §32 audit hash chain all
  *   still verify.
  *
- * Two honest findings are PINNED here, not worked around silently:
- *  F1. DONE is unreachable via POST /v2-transition — the v2 engine
- *      requires finalize() (§20.1) and no HTTP route exposes finalize /
- *      REQUEST_COMPLETE. The script asserts the 422 denial, then
- *      completes through the v1 transition endpoint (the Board's path),
- *      which is what a real user would fall back to.
- *  F2. The RequirementManager behind /api/requirements is an in-memory
- *      process singleton: requirement versions and compatibility
- *      declarations do NOT survive a restart. The script therefore does
- *      the whole requirement lifecycle inside the first boot; after the
- *      restart it asserts only DB-backed facts (projects / tasks /
- *      evidence / approvals / report). The step-7 stage walk runs on the
- *      second boot and deliberately registers its evidence WITHOUT
- *      requirement pins, so the lost declarations cannot re-block it —
- *      see docs/FIRST_RUN_WALKTHROUGH.md.
+ * Honest findings are PINNED here, not worked around silently:
+ *  F1 (FIXED in Batch 12). DONE used to be unreachable via the v2 API —
+ *      the engine requires finalize() (§20.1) and no HTTP route exposed
+ *      it, so the script completed through the v1 transition endpoint
+ *      (the Board's path), losing the completion predicates and the
+ *      final seal. The script still asserts the 422 on POST
+ *      /v2-transition to DONE (engine design: finalize is the only road),
+ *      then completes through the new POST /v2-complete route and
+ *      asserts finalSeal 1 plus v2-mirror / DB agreement. The
+ *      completion snapshot's AC check binds for real in step 7:
+ *      AC-001 is judged verified from the task's recorded qa_result
+ *      PASS evidence (the pinned version is re-resolved from the
+ *      durable requirement registry — see F2).
+ *  F3 (FIXED in Batch 12). v2 transitions now seal the evidence they
+ *      consume (§42): of the script's 11 evidence rows, the 10
+ *      gate-consumed records end SEALED; the approval record —
+ *      inspected by a gate predicate, never consumed — stays DRAFT.
+ *  F2 (FIXED in Batch 12, parallel work). The RequirementManager
+ *      behind /api/requirements used to be an in-memory process
+ *      singleton — versions and compatibility declarations died with
+ *      the process. It is now backed by a durable store, and this
+ *      script proves it end-to-end: the requirement lifecycle happens
+ *      in boot A, yet the boot-B completion re-resolves REQ-001@2
+ *      from the registry and genuinely checks AC-001. The step-7
+ *      stage walk still registers its evidence WITHOUT requirement
+ *      pins — a choreography choice (the walk exercises stage gates,
+ *      not pin bookkeeping), not a workaround.
  *
  * Choreography: three boots of the real compiled server over ONE temp
  * DB file. Boot A (no tool allowlist) runs steps 1–5. Boot B
@@ -352,8 +364,8 @@ describe('first-run walkthrough (HTTP only, fresh DB)', () => {
       assert.equal(echoEvidence[0].payload['ok'], true);
 
       // Step 7 — walk the v2 stages to DONE. Evidence registered here
-      // carries NO requirement pin (see F2 in the header): it is never
-      // judged stale, on any boot.
+      // carries NO requirement pin (choreography choice, see F2 in the
+      // header): it is never judged stale, on any boot.
       const addEvidence = async (
         type: string,
         payload: Record<string, unknown>,
@@ -408,29 +420,63 @@ describe('first-run walkthrough (HTTP only, fresh DB)', () => {
       await addEvidence('smoke_test', { verdict: 'PASS' });
       await advance('OUTCOME_VERIFICATION');
 
-      // F1 (pinned): DONE via the v2 endpoint is refused — finalize()
-      // has no HTTP route. The denial is the documented behavior.
-      const doneViaV2 = await api(portB, 'POST', `/api/tasks/${taskId}/v2-transition`, {
+      // DONE via POST /v2-transition is still refused — by engine
+      // design DONE requires finalize() (§20.1). The refusal stands;
+      // what Batch 12 added is the finalize road itself, below.
+      const doneViaTransition = await api(portB, 'POST', `/api/tasks/${taskId}/v2-transition`, {
         toState: 'DONE',
         by: 'human',
         requirementVersion: 'REQ-001@2',
       });
-      assert.equal(doneViaV2.status, 422);
-      assert.equal(doneViaV2.body['reasonCode'], 'POLICY_DENIED');
+      assert.equal(doneViaTransition.status, 422);
+      assert.equal(doneViaTransition.body['reasonCode'], 'POLICY_DENIED');
       assert.ok(
-        (doneViaV2.body['missing'] as string[]).some((m) => m.includes('finalize')),
+        (doneViaTransition.body['missing'] as string[]).some((m) => m.includes('finalize')),
         'the denial names the finalize() requirement',
       );
 
-      // The user's working path: the v1 transition endpoint (the
-      // Board's engine), which also seals the consumed smoke evidence.
-      const doneViaV1 = await api(portB, 'POST', `/api/tasks/${taskId}/transition`, {
-        to: 'DONE',
-        actor: 'human',
+      // F1 fixed: POST /v2-complete assembles the §20.1 completion
+      // snapshot from server facts and runs finalize(). Completion
+      // predicates genuinely pass on this walk (dependencies none,
+      // the step-5 approval decided, outcome gate valid, milestones
+      // recorded by the walk). The AC check binds for real: boot B
+      // re-resolves REQ-001@2 from the durable requirement registry
+      // (F2 fixed), so AC-001 is enumerated and judged verified from
+      // the task's qa_result PASS evidence — no unresolved warning.
+      const completed = await api(portB, 'POST', `/api/tasks/${taskId}/v2-complete`, {
+        by: 'human',
+        requirementVersion: 'REQ-001@2',
       });
-      assert.equal(doneViaV1.status, 200);
+      assert.equal(completed.status, 200, JSON.stringify(completed.body));
+      assert.equal(completed.body['ok'], true);
+      assert.equal(completed.body['finalSeal'], 1);
+      assert.deepEqual(completed.body['warnings'], []);
+      const completionSnapshot = completed.body['snapshot'] as unknown as {
+        applicableAcs: Array<{ id: string; verified: boolean }>;
+        gatesValid: boolean;
+        milestonesValid: boolean;
+        pendingBlocks: string[];
+        authorizationsComplete: boolean;
+        releaseApplicable: boolean;
+      };
+      assert.deepEqual(completionSnapshot.applicableAcs, [
+        { id: 'AC-001', verified: true },
+      ]);
+      assert.equal(completionSnapshot.gatesValid, true);
+      assert.equal(completionSnapshot.milestonesValid, true);
+      assert.deepEqual(completionSnapshot.pendingBlocks, []);
+      assert.equal(completionSnapshot.authorizationsComplete, true);
+      assert.equal(completionSnapshot.releaseApplicable, true);
+
       const doneTask = await api(portB, 'GET', `/api/tasks/${taskId}`);
       assert.equal(doneTask.body['status'], 'DONE');
+      // The v2 mirror and the DB row agree — no more divergence until
+      // the next restart re-seeds the mirror (the old F1 symptom).
+      const v2AfterDone = await api(portB, 'GET', `/api/tasks/${taskId}/v2-state`);
+      assert.equal(v2AfterDone.status, 200);
+      assert.equal(v2AfterDone.body['stage'], 'DONE');
+      assert.equal(v2AfterDone.body['finalSeal'], 1);
+      assert.equal(v2AfterDone.body['dbStatus'], 'DONE');
 
       const allEvidence = await api(portB, 'GET', `/api/evidence?taskId=${taskId}`);
       const evidenceRows = allEvidence.body as unknown as Array<{
@@ -444,6 +490,15 @@ describe('first-run walkthrough (HTTP only, fresh DB)', () => {
       assert.equal(
         evidenceRows.find((e) => e.type === 'plan')?.requirementVersion,
         'REQ-001@1',
+      );
+      // F3 fixed: every gate-consumed record is SEALED (10 of 11). The
+      // approval record was only inspected by a gate predicate, never
+      // consumed — it stays DRAFT, exactly §42's consumption rule.
+      const sealedRows = evidenceRows.filter((e) => e.status === 'SEALED');
+      assert.equal(sealedRows.length, 10);
+      assert.equal(
+        evidenceRows.find((e) => e.type === 'approval')?.status,
+        'DRAFT',
       );
 
       // Final report: every count matches the script's own bookkeeping.
@@ -465,7 +520,7 @@ describe('first-run walkthrough (HTTP only, fresh DB)', () => {
       assert.equal(report.extensions.tasks.terminal, 1);
       assert.equal(report.extensions.tasks.open, 0);
       assert.equal(report.extensions.evidence.total, 11);
-      assert.equal(report.extensions.evidence.sealed, 1);
+      assert.equal(report.extensions.evidence.sealed, 10);
       assert.equal(report.extensions.evidence.withRequirementPin, 1);
       assert.equal(report.extensions.approvals.total, 1);
       assert.deepEqual(report.extensions.approvals.decisions, {
@@ -550,6 +605,7 @@ describe('first-run walkthrough (HTTP only, fresh DB)', () => {
       assert.ok(actions.includes('STARTUP_INTERRUPTED_INTENTS'), 'startup scan audit exists');
       assert.ok(actions.includes('STARTUP_OPERATION_RECONCILE'), 'operation reconcile audit exists');
       assert.ok(actions.includes('FINAL_REPORT_GENERATED'), 'report generation is audited');
+      assert.ok(actions.includes('WORKFLOW_FINALIZED'), 'finalize committed in boot B');
 
       await stopServer(server);
       server = undefined;

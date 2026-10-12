@@ -148,6 +148,8 @@ export interface RunResult {
     executed: number;
     failed: number;
     pending: number;
+    /** §28.1 — calls the permission gate refused before execution. */
+    denied: number;
   };
 }
 

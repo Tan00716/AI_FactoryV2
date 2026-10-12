@@ -291,4 +291,81 @@ CREATE TABLE IF NOT EXISTS checkpoints (
   PRIMARY KEY (run_id, step_position)
 );
 CREATE INDEX IF NOT EXISTS idx_checkpoints_run ON checkpoints (run_id);
+
+-- SPEC v2 §16 (F2): requirements — the RequirementManager's durable
+-- state. The manager used to be a process-wide in-memory singleton, so
+-- a restart lost requirement versions and §16 compatibility
+-- declarations (evidence pinned to a requirement version then failed
+-- registration, and tasks caught mid-STALE-gate were stuck). The
+-- tables below back the requirements package's RequirementStore seam:
+--   requirements          — one row per requirement (id/status/created)
+--   requirement_versions  — (above, §48.3) one immutable payload per
+--                           version; payload is the RequirementVersion
+--                           JSON, written once and never updated
+--   requirement_links     — entity links per (requirement, version)
+--   promotion_holds       — §16 G-05 holds, released ones included
+--   evidence_compatibility — §16 compatibility declarations, append-only
+--   requirement_store_meta — manager bookkeeping (the auto-id sequence)
+-- Composite records are JSON text — lossless for these shapes, and
+-- every read is a fresh parse, so the store's copy contract holds
+-- structurally.
+-- New tables: CREATE TABLE IF NOT EXISTS covers old databases on open.
+CREATE TABLE IF NOT EXISTS requirements (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS requirement_links (
+  requirement_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  PRIMARY KEY (requirement_id, version)
+);
+CREATE TABLE IF NOT EXISTS promotion_holds (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  requirement_id TEXT NOT NULL,
+  requirement_version INTEGER NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_promotion_holds_task ON promotion_holds (task_id);
+CREATE TABLE IF NOT EXISTS evidence_compatibility (
+  evidence_id TEXT NOT NULL,
+  requirement_id TEXT NOT NULL,
+  requirement_version INTEGER NOT NULL,
+  compatible INTEGER NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS requirement_store_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+-- HTTP run records (apps/server §24–§27 routes, F4): the record a POST
+-- /api/runtime/runs creates and GET /api/runtime/runs/:id returns. It
+-- used to be a process-local Map, so a restart lost the record even
+-- though its step intents and evidence side effects were durable. One
+-- row per run, upserted at creation, on every evidence append, and at
+-- the terminal write — a crashed process leaves its last persisted
+-- state (possibly still RUNNING: the record of an interrupted run, not
+-- a claim it finished). evidence / handoffs / trace are JSON text —
+-- lossless for the plain-data entries the harness and loop produce.
+-- Nullable columns (outcome, finished_at, error) stay NULL until the
+-- run sets them; read-back keeps them null. created_at / finished_at
+-- keep the record's ISO-string shape (TEXT, not epoch).
+-- New table: CREATE TABLE IF NOT EXISTS covers old databases on open.
+CREATE TABLE IF NOT EXISTS runtime_runs (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  outcome TEXT,
+  steps INTEGER NOT NULL,
+  evidence TEXT NOT NULL,
+  handoffs TEXT NOT NULL,
+  trace TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  finished_at TEXT,
+  error TEXT
+);
 `;

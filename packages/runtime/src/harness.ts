@@ -58,7 +58,10 @@ export interface HarnessOptions {
   onTrace?: (step: TraceStep) => void;
   /**
    * SPEC v2 §28.1 — when provided, the tool-call intent is persisted BEFORE
-   * execution and the result committed after. Absent → legacy behavior.
+   * the permission gate and before execution; the outcome is committed
+   * after (EXECUTED / FAILED, or DENIED when the gate refuses the call —
+   * a refusal is a recorded intent, never a silent absence).
+   * Absent → legacy behavior.
    */
   intentStore?: StepIntentStore;
   /** Run id stamped onto persisted intents. */
@@ -241,6 +244,10 @@ export class Harness {
    * §26 Tool Routing — permission check, timeout, evidence, tracing.
    * Denials throw PermissionDenied and are audited.
    *
+   * §28.1: the step intent is persisted BEFORE the permission check, so
+   * a denied call still leaves an intent record — committed DENIED via
+   * recordDenied(), with the tool never invoked.
+   *
    * §25 (G-51/G-52): when a BudgetTracker is attached each attempt
    * consumes a tool call; when a retry policy is configured, transient
    * failures retry with jitter inside a total budget — bounded by both
@@ -252,14 +259,25 @@ export class Harness {
    * `empty: true` — "nothing came back" is never sealed as a plain ok.
    */
   async runTool(name: string, args: unknown, impl: ToolImpl): Promise<unknown> {
-    this.checkPermission(name);
-    this.trace('HARNESS', `tool:${name}`, 'start');
-    // §28.1 — persist the intent BEFORE executing the tool.
+    // §28.1 — persist the intent BEFORE the permission gate, not just
+    // before execution: a denied call is an intent too, and reconciliation
+    // (§28.1 startup scan) must see it. The gate's refusal commits the
+    // intent as DENIED below — never EXECUTED, never left PENDING (a
+    // leftover PENDING would be misreported as an interrupted execution).
     const intent = this.stepIntentStore?.persistIntent(
       this.options.runId ?? 'unknown-run',
       name,
       args,
     );
+    try {
+      this.checkPermission(name);
+    } catch (err) {
+      if (intent && err instanceof PermissionDenied) {
+        this.stepIntentStore?.recordDenied(intent.id, err.message);
+      }
+      throw err;
+    }
+    this.trace('HARNESS', `tool:${name}`, 'start');
     const attempt = async (): Promise<unknown> => {
       // §25 (G-51): every real execution attempt counts against the
       // tool-call budget; exceeding it throws BudgetExceeded.

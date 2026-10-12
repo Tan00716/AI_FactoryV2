@@ -3,8 +3,20 @@
  *
  *  POST /api/runtime/runs        {agentId, taskId, script?, routeRequest?}
  *                               → executes an agent loop with the StubAdapter
- *  GET  /api/runtime/runs        list runs (in-memory)
+ *  GET  /api/runtime/runs        list runs
  *  GET  /api/runtime/runs/:id    one run
+ *
+ * RUN RECORDS (walkthrough F4): run records live in a RuntimeRunStore
+ * (see @ai-factory/db — the seam sits there because this record is the
+ * route's HTTP projection, not a runtime domain type). The module
+ * default is in-memory; the coordinator installs the SQLite store
+ * (FactoryDatabase.runs) at startup via setRuntimeRunStore, so in the
+ * real server a run's record survives restarts — GET after a restart
+ * no longer 404s a run whose intents and evidence were already durable.
+ * The route persists at EVERY record change (creation, each evidence
+ * append, the terminal write, the error write), so a process that dies
+ * mid-run leaves its last persisted state behind — possibly still
+ * RUNNING, which is the honest record of an interrupted run.
  *
  * PROTOTYPE NOTE: runs use the scripted StubAdapter (no real LLM). `script`
  * is an array of {text, toolCalls[]} adapter outputs; when omitted, a
@@ -41,33 +53,42 @@ import {
   type ToolImpl,
 } from '@ai-factory/runtime';
 import type { Permission } from '@ai-factory/core';
+import {
+  InMemoryRuntimeRunStore,
+  type RuntimeRunRecord,
+  type RuntimeRunStore,
+} from '@ai-factory/db';
 import type { RouteContext } from './context';
 
-export interface RuntimeRunRecord {
-  id: string;
-  agentId: string;
-  taskId: string;
-  status: 'RUNNING' | 'COMPLETED' | 'ESCALATED' | 'FAILED';
-  outcome: string | null;
-  steps: number;
-  evidence: unknown[];
-  handoffs: string[];
-  trace: unknown[];
-  createdAt: string;
-  finishedAt: string | null;
-  error: string | null;
-}
+// The record type is owned by @ai-factory/db (see the header note);
+// re-exported so existing imports from this module keep working.
+export type { RuntimeRunRecord } from '@ai-factory/db';
 
-/** In-memory run store — the coordinator may persist this later. */
-const runs = new Map<string, RuntimeRunRecord>();
+/**
+ * The active run-record store. Module-level because the registry
+ * itself is module-level: the Activity aggregation (§67–§68) reads it
+ * through the accessors below, across route modules. Starts as the
+ * in-memory default (standalone use, tests); the coordinator replaces
+ * it with the SQLite store at startup.
+ */
+let runStore: RuntimeRunStore = new InMemoryRuntimeRunStore();
+
+/**
+ * Install the run-record store. Called once by the coordinator
+ * (apps/server/src/index.ts) with FactoryDatabase.runs before the
+ * server takes traffic; embedders and tests may install their own.
+ */
+export function setRuntimeRunStore(store: RuntimeRunStore): void {
+  runStore = store;
+}
 
 /** Accessor for the Activity/run-detail aggregation (§67–§68). */
 export function listRuntimeRuns(): RuntimeRunRecord[] {
-  return [...runs.values()];
+  return runStore.list();
 }
 
 export function getRuntimeRun(id: string): RuntimeRunRecord | undefined {
-  return runs.get(id);
+  return runStore.get(id);
 }
 
 const DEFAULT_SCRIPT = [
@@ -165,12 +186,12 @@ export async function handleRuntimeRoutes(
   if (!path.startsWith('/api/runtime/')) return false;
 
   if (method === 'GET' && path === '/api/runtime/runs') {
-    return ctx.json(res, 200, { runs: [...runs.values()].map(slim) }), true;
+    return ctx.json(res, 200, { runs: runStore.list().map(slim) }), true;
   }
 
   const one = path.match(/^\/api\/runtime\/runs\/([^/]+)$/);
   if (method === 'GET' && one) {
-    const r = runs.get(one[1]);
+    const r = runStore.get(one[1]);
     if (!r) return ctx.json(res, 404, { error: 'run not found' }), true;
     return ctx.json(res, 200, slim(r)), true;
   }
@@ -246,7 +267,12 @@ export async function handleRuntimeRoutes(
       finishedAt: null,
       error: null,
     };
-    runs.set(id, rec);
+    // F4 — the record is persisted at creation and at every later
+    // change (evidence appends in the harness sink below, the terminal
+    // write, the error write), so the store always holds the run's
+    // last state even if this process dies mid-run.
+    const persistRun = () => runStore.put(rec);
+    persistRun();
     // §91 — agent runs are first-class bus events.
     ctx.bus.emit(
       'RUN_STARTED',
@@ -298,6 +324,9 @@ export async function handleRuntimeRoutes(
           evidence: {
             collect: (e) => {
               rec.evidence.push(e);
+              // Step-by-step durability: each appended evidence entry
+              // is persisted as it lands, not held until the run ends.
+              persistRun();
             },
           },
           onAudit: (event) => {
@@ -341,6 +370,7 @@ export async function handleRuntimeRoutes(
         rec.trace = result.trace;
         rec.handoffs = result.handoffs;
         rec.finishedAt = new Date().toISOString();
+        persistRun();
         // §91 — the finishing step of every run is on the bus.
         ctx.bus.emit(
           'RUN_STEP',
@@ -358,6 +388,7 @@ export async function handleRuntimeRoutes(
         rec.status = 'FAILED';
         rec.error = e instanceof Error ? e.message : String(e);
         rec.finishedAt = new Date().toISOString();
+        persistRun();
         ctx.bus.emit(
           'RUN_STEP',
           { runId: id, agentId, taskId, phase: 'FINISH', outcome: 'failed', error: rec.error },

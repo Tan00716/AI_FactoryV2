@@ -40,6 +40,7 @@ import {
   RequirementVersion,
   VERIFIED_DELIVERY_PROJECT_CATEGORIES,
 } from './types';
+import type { RequirementStore } from './store';
 
 export class RequirementError extends Error {}
 export class RequirementNotFoundError extends RequirementError {
@@ -98,6 +99,14 @@ export interface AcRefinementPatch {
 
 export interface ManagerOptions {
   now?: () => number;
+  /**
+   * Persistence seam (F2): when given, the manager hydrates its full
+   * state (requirements + versions, links, holds, compatibility
+   * declarations, auto-id sequence) from the store at construction and
+   * writes every mutation through to it. Without a store the manager
+   * is process memory only — the pre-seam behavior, unchanged.
+   */
+  store?: RequirementStore;
 }
 
 export interface NewVersionOptions {
@@ -168,8 +177,25 @@ export class RequirementManager {
   private holds: PromotionHold[] = [];
   private compatibility: EvidenceCompatibility[] = [];
   private seq = 0;
+  private readonly store: RequirementStore | undefined;
 
-  constructor(private opts: ManagerOptions = {}) {}
+  constructor(private opts: ManagerOptions = {}) {
+    this.store = opts.store;
+    if (this.store) {
+      // Hydrate the full state the previous process left behind, so a
+      // restarted manager answers getVersion / canReuseEvidence /
+      // activeHolds exactly as the one that wrote the records did.
+      for (const req of this.store.listRequirements()) {
+        this.requirements.set(req.id, req);
+      }
+      for (const rec of this.store.listLinks()) {
+        this.links.set(this.linkKey(rec.requirementId, rec.version), rec.links);
+      }
+      this.holds = this.store.listHolds();
+      this.compatibility = this.store.listCompatibility();
+      this.seq = this.store.getSeq();
+    }
+  }
 
   private iso(): string {
     return new Date(this.opts.now ? this.opts.now() : Date.now()).toISOString();
@@ -180,7 +206,12 @@ export class RequirementManager {
   }
 
   create(input: CreateRequirementInput): Requirement {
+    const autoId = input.id === undefined;
     const id = input.id ?? `REQ-${String(++this.seq).padStart(3, '0')}`;
+    // Persist the sequence at the exact point the in-memory counter is
+    // consumed (before any validation below can throw), so a restarted
+    // manager hands out the same next id this one would have.
+    if (autoId) this.store?.setSeq(this.seq);
     if (this.requirements.has(id)) throw new RequirementError(`Requirement ${id} already exists`);
 
     const seen = new Set<string>();
@@ -251,7 +282,10 @@ export class RequirementManager {
     };
     const req: Requirement = { id, versions: [v1], status: 'ACTIVE', createdAt: now };
     this.requirements.set(id, req);
-    this.links.set(this.linkKey(id, 1), freshLinks());
+    const links = freshLinks();
+    this.links.set(this.linkKey(id, 1), links);
+    this.store?.putRequirement(req);
+    this.store?.putLinks(id, 1, links);
     return req;
   }
 
@@ -386,7 +420,10 @@ export class RequirementManager {
       changeNote,
     };
     req.versions.push(next);
-    this.links.set(this.linkKey(id, next.version), freshLinks());
+    const links = freshLinks();
+    this.links.set(this.linkKey(id, next.version), links);
+    this.store?.putRequirement(req);
+    this.store?.putLinks(id, next.version, links);
     return next;
   }
 
@@ -464,6 +501,7 @@ export class RequirementManager {
       if (Array.isArray(v)) (cur[k as keyof EntityLinks] as string[]).push(...(v as string[]));
     }
     this.links.set(this.linkKey(id, version), cur);
+    this.store?.putLinks(id, version, cur);
   }
 
   getLinks(id: string, version: number): EntityLinks {
@@ -518,6 +556,7 @@ export class RequirementManager {
         revalidationNote: null,
       };
       this.holds.push(hold);
+      this.store?.putHold(hold);
       return hold;
     });
 
@@ -558,6 +597,7 @@ export class RequirementManager {
       compatible, checkedBy, at: this.iso(), basis,
     };
     this.compatibility.push(rec);
+    this.store?.addCompatibility(rec);
     return rec;
   }
 
@@ -581,6 +621,7 @@ export class RequirementManager {
     hold.releasedAt = this.iso();
     hold.releasedBy = by;
     hold.revalidationNote = revalidationNote;
+    this.store?.putHold(hold);
     return hold;
   }
 

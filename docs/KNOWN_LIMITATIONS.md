@@ -43,10 +43,11 @@
 
 ## 首次运行走查发现（Batch 11，详见 docs/FIRST_RUN_WALKTHROUGH.md）
 
-- **F1（高）：v2 生命周期经纯 HTTP 走不到 DONE**。`finalize()` / REQUEST_COMPLETE 没有 HTTP 路由，v2-transition 到 DONE 返回 422；纯 API 用户只能绕 v1 transition 端点完成最后一步，代价是完成谓词不校验、`final_seal` 恒 0、同进程内 v2 镜像与 DB 状态不一致（重启 re-seed 后自愈）。
-- **F2（中）：需求（RequirementManager）不落库**。需求版本与兼容声明是进程内单例状态，服务重启即丢失；重启后带 requirement pin 的证据登记会 400，卡在 STALE 门中间的任务须先在新进程重建需求、版本与兼容声明。
-- **F3（中）：v2 迁移不封存被消费证据**。`onSealEvidence` 钩子服务端未接；任务走完 v2 全程后，已过 Gate 的证据大多仍是可改的 DRAFT 状态，与 §42 证据不可变的口径有差距。
-- **F4（低）：run 记录是进程内 Map**。服务重启后 `GET /api/runs/:id` 返回 404；run 的副作用（step intents、证据）已落库，丢失的只是 run 记录本身。
+- **F1 已修复（Batch 12）**。新增 `POST /api/tasks/:id/v2-complete`：服务端从真实事实组装 §20.1 完成快照（钉住版本的 AC 按其 expectedEvidence 与任务证据核对、里程碑、依赖、审批记录、outcome gate 有效性），调用 `finalize()` 完成谓词校验 + DONE + final_seal=1 一次提交并写回 DB，v2 镜像与 DB 行一致。`v2-transition` 到 DONE 仍返回 422（引擎设计，finalize 是唯一道路）。残留：finalSeal 只存在于引擎镜像与 WORKFLOW_FINALIZED 审计记录中，服务重启后镜像重新播种时 finalSeal 显示回 0（stage 仍为 DONE），TaskV2Extension 整体落库待后续批次。
+- **F2 已修复（Batch 12）**。需求、版本历史、实体链接、Promotion Hold 与 §16 兼容声明已落 SQLite：requirements 包抽出 `RequirementStore` 接缝（无 store 时仍为进程内默认，语义与原单例一致），db 包提供 `SqliteRequirementStore`（requirements / requirement_versions / requirement_links / promotion_holds / evidence_compatibility / requirement_store_meta 六表，版本行只写一次、永不更新）；服务端启动时以该 store 重构共享单例，`/api/health` 的 `requirements` 段可查实时存量。回归由服务端三 boot HTTP 测试钉住：重启后带 requirement pin 的证据登记不再 400、卡在 STALE 门中间的任务可凭已存兼容声明直接放行、hold 及其释放跨重启保留。
+- **F3 已修复（Batch 12）**。服务端已接 `onSealEvidence` → `EvidenceEngine.seal`：v2 迁移提交后，被该 Gate 消费的证据立即封存（SEALED，不可改/删）；被拒绝的迁移不封存。注意谓词检查型证据（如生产审批，由 gate predicate 读取而非作为 requiredEvidence 消费）不在封存之列——封存严格跟踪消费，与 §42 口径一致。
+- **F4 已修复（Batch 12）**。run 记录已落 SQLite。`RuntimeRunStore` 接缝 + `SqliteRuntimeRunStore`（`runtime_runs` 表）在 packages/db，服务端启动时把路由注册表安装到 SQLite store（standalone/测试默认仍是内存实现）；记录在创建、每条证据追加、终态与出错时同步落盘，重启后 `GET /api/runtime/runs/:id` 可查且字段保真，`/api/health` 的 `runs` 段可查实时存量。诚实边界：进程被杀时未及终态写的记录会以最后落盘状态留在库中（可能仍是 RUNNING——那是被中断 run 的如实记录，服务端不自动改写或清理，需人工或上层处置）。
+- **StepIntent 在权限检查之前落盘（Batch 12，复核观察 1）**：harness 先落 intent 再过权限门；被权限拒绝（含工具白名单外）的调用留下一条状态为 DENIED 的 intent（工具从未执行、resultHash 承诺拒绝载荷），内存与 SQLite 两个 store 标签一致；启动扫描只报 PENDING，不会把已裁决的拒绝误报为中断。
 
 ## 数据与团队
 

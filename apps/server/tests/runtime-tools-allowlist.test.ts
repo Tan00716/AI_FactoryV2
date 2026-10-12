@@ -3,10 +3,11 @@
  *
  * What this pins:
  *  1. Default (FACTORY_RUNTIME_TOOLS unset): the route's tools stay
- *     denied — the harness gate fires before any intent is persisted,
- *     the denial is audited, and the run's RUNTIME_RUN_STARTED audit
- *     record shows an empty grantedTools list. This is the pre-existing
- *     behavior; the allowlist changes nothing until it is set.
+ *     denied — per §28.1 (Batch 12) the intent is persisted BEFORE the
+ *     permission gate, so a denied call leaves a DENIED intent (the
+ *     tool never executes), the denial is audited, and the run's
+ *     RUNTIME_RUN_STARTED audit record shows an empty grantedTools
+ *     list. The allowlist changes nothing until it is set.
  *  2. Allowlist set: the named tools really execute through the HTTP
  *     route — tool_result evidence lands on the run record (visible via
  *     GET /api/runtime/runs/:id) and their step intents land in SQLite
@@ -180,7 +181,7 @@ describe('allowlist parsing', () => {
 });
 
 describe('runtime tool allowlist (FACTORY_RUNTIME_TOOLS)', () => {
-  it('default (env unset): tools are denied before any intent, grant audited as empty', { timeout: 20_000 }, async () => {
+  it('default (env unset): denied tool leaves a DENIED intent, grant audited as empty', { timeout: 20_000 }, async () => {
     await withAllowlistEnv(undefined, async () => {
       const dir = mkdtempSync(join(tmpdir(), 'factory-server-tools-'));
       try {
@@ -202,8 +203,12 @@ describe('runtime tool allowlist (FACTORY_RUNTIME_TOOLS)', () => {
           assert.equal(status, 202);
           const runId = body['id'] as string;
           const rec = await waitForRun(runId);
-          // The gate fired before persistIntent: no intent, no tool evidence.
-          assert.equal(world.fdb.stepIntents.listIntents().length, 0);
+          // §28.1 (Batch 12): the intent persisted before the gate, the
+          // gate denied it — one DENIED intent, no tool evidence.
+          const deniedIntents = world.fdb.stepIntents.listIntents();
+          assert.equal(deniedIntents.length, 1);
+          assert.equal(deniedIntents[0].tool, 'echo');
+          assert.equal(deniedIntents[0].status, 'DENIED');
           assert.equal(toolEvidence(rec, 'echo').length, 0);
           // The denial is audited through the harness hook…
           const denials = world.audit
@@ -326,11 +331,13 @@ describe('runtime tool allowlist (FACTORY_RUNTIME_TOOLS)', () => {
           });
           assert.equal(status, 202);
           const rec = await waitForRun(body['id'] as string);
-          // echo executed and committed; add was denied before persist.
+          // echo executed and committed; add's intent persisted (§28.1)
+          // and was then denied — DENIED, never executed.
           const intents = world.fdb.stepIntents.listIntents();
-          assert.equal(intents.length, 1);
-          assert.equal(intents[0].tool, 'echo');
-          assert.equal(intents[0].status, 'EXECUTED');
+          assert.equal(intents.length, 2);
+          const byTool = new Map(intents.map((i) => [i.tool, i]));
+          assert.equal(byTool.get('echo')?.status, 'EXECUTED');
+          assert.equal(byTool.get('add')?.status, 'DENIED');
           assert.equal(toolEvidence(rec, 'echo').length, 1);
           assert.equal(toolEvidence(rec, 'add').length, 0);
           const denials = world.audit

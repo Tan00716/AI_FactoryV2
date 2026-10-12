@@ -21,10 +21,24 @@
  */
 import type { IncomingMessage, ServerResponse } from 'http';
 import { RequirementManager } from '@ai-factory/requirements';
-import type { EntityLinks } from '@ai-factory/requirements';
+import type { EntityLinks, RequirementStore } from '@ai-factory/requirements';
 import type { RouteContext } from './context';
 
-const manager = new RequirementManager();
+let manager = new RequirementManager();
+
+/**
+ * Back the shared manager with a durable RequirementStore (§16, F2).
+ * Called exactly once from apps/server/src/index.ts at startup, BEFORE
+ * the server accepts requests: the default in-memory manager is
+ * replaced by one hydrated from the store, so requirement versions,
+ * compatibility declarations, promotion holds and entity links
+ * survive restarts. Every consumer reads the manager through
+ * getRequirementManager() per request, so the swap is safe.
+ */
+export function initRequirementManager(store: RequirementStore): RequirementManager {
+  manager = new RequirementManager({ store });
+  return manager;
+}
 
 /**
  * The shared process-wide manager — the same instance the routes above

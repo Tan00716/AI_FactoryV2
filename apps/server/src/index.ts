@@ -55,6 +55,7 @@ import {
   handleRuntimeRoutes,
   resolveRuntimeToolAllowlist,
   runtimeToolsStartupError,
+  setRuntimeRunStore,
 } from './routes/runtime';
 import { handleOrchestratorRoutes } from './routes/orchestrator';
 import { handleWorkforceRoutes } from './routes/workforce';
@@ -75,7 +76,11 @@ import { handleRecoveryRoutes } from './routes/recovery';
 import { handleResourceRoutes } from './routes/resources';
 import { handleAutonomyRoutes } from './routes/autonomy';
 import { handleCoordinationRoutes } from './routes/coordination';
-import { getRequirementManager, handleRequirementRoutes } from './routes/requirements';
+import {
+  getRequirementManager,
+  handleRequirementRoutes,
+  initRequirementManager,
+} from './routes/requirements';
 import { handleProgressRoutes } from './routes/progress';
 import { handleIsolationRoutes } from './routes/isolation';
 import { handleToolRoutes } from './routes/tools';
@@ -203,6 +208,36 @@ const operationLedger = new OperationLedger({ store: fdb.operations });
  * the store's live count so the wiring is observable, not decorative.
  */
 const checkpointLog = new CheckpointLog({ store: fdb.checkpoints });
+
+/**
+ * §16 (F2) — requirements are durable too: the shared
+ * RequirementManager behind /api/requirements is re-constructed over
+ * the SQLite RequirementStore from the FactoryDatabase, so requirement
+ * versions, §16 compatibility declarations, promotion holds and entity
+ * links survive restarts. Before this the manager was a process-wide
+ * in-memory singleton: after a restart, registering evidence with a
+ * requirement pin failed ("unknown requirement version") and a task
+ * caught mid-STALE-gate could not proceed until an operator recreated
+ * the requirement, its versions and the declarations by hand. The swap
+ * happens here, before the server accepts requests; every consumer
+ * reads the manager through getRequirementManager() per request. The
+ * health block below reports the store's live requirement count.
+ */
+initRequirementManager(fdb.requirements);
+
+/**
+ * Run records (walkthrough F4) — the runtime routes' registry is
+ * installed over the SQLite RuntimeRunStore, so a run's record survives
+ * the restart its step intents and evidence already survived (GET
+ * /api/runtime/runs/:id after a restart used to 404). The route module
+ * keeps an in-memory default for standalone use; this install is the
+ * coordinator's one wiring act, done before the server takes traffic.
+ * Records a dead process left mid-flight stay as last persisted —
+ * possibly RUNNING, the honest state of an interrupted run; nothing
+ * reaps or rewrites them (same report-only philosophy as the scans
+ * above).
+ */
+setRuntimeRunStore(fdb.runs);
 
 /**
  * Startup reconcile (§28.2): every non-terminal operation in the DB
@@ -355,7 +390,13 @@ const server = createServer(async (req, res) => {
     // durability status: the store backing the coordinator's
     // CheckpointLog and how many checkpoints it currently holds (no
     // server path captures checkpoints yet — see the construction
-    // comment above; the count is live, read per request).
+    // comment above; the count is live, read per request). The
+    // requirements block is the §16 (F2) counterpart: the durable
+    // store backing the shared RequirementManager and how many
+    // requirements it currently holds (live count, read per request). The runs
+    // block is the F4 counterpart: the store backing the runtime
+    // routes' run registry and how many run records it currently
+    // holds (live, read per request).
     if (method === 'GET' && path === '/api/health') {
       return json(res, 200, {
         ok: true,
@@ -375,6 +416,14 @@ const server = createServer(async (req, res) => {
         checkpoints: {
           store: 'sqlite',
           stored: checkpointLog.list().length,
+        },
+        requirements: {
+          store: 'sqlite',
+          stored: fdb.requirements.listRequirements().length,
+        },
+        runs: {
+          store: 'sqlite',
+          stored: fdb.runs.list().length,
         },
       });
     }
