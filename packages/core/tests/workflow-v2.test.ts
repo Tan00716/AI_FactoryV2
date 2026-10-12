@@ -185,6 +185,86 @@ describe('checkTransitionV2 denials (§18.2)', () => {
   });
 });
 
+describe('checkTransitionV2 §16 explicit compatibility exemption', () => {
+  // Evidence collected against REQ-001@1, task now pinned at REQ-001@2:
+  // the classic post-bump reuse situation §16 governs.
+  const plan = ev('ev-plan', 'plan');
+  const bumped = {
+    evidence: [plan],
+    requirementVersion: 'REQ-001@2',
+    evidenceReqVersions: { 'ev-plan': 'REQ-001@1' },
+  };
+
+  it('version mismatch + evidence in the compatible set → allowed', () => {
+    const r = checkTransitionV2(
+      'PLANNING', 'IN_PROGRESS',
+      baseCtx({ ...bumped, compatibleEvidenceIds: new Set(['ev-plan']) }),
+    );
+    assert.equal(r.ok, true);
+  });
+
+  it('version mismatch + compatible set names only OTHER evidence → still STALE_EVIDENCE', () => {
+    const r = checkTransitionV2(
+      'PLANNING', 'IN_PROGRESS',
+      baseCtx({ ...bumped, compatibleEvidenceIds: new Set(['ev-other']) }),
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.reasonCode, 'STALE_EVIDENCE');
+  });
+
+  it('version mismatch + empty compatible set → still STALE_EVIDENCE', () => {
+    const r = checkTransitionV2(
+      'PLANNING', 'IN_PROGRESS',
+      baseCtx({ ...bumped, compatibleEvidenceIds: new Set() }),
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.reasonCode, 'STALE_EVIDENCE');
+  });
+
+  it('version match + evidence in the compatible set → allowed (no distortion)', () => {
+    const r = checkTransitionV2(
+      'PLANNING', 'IN_PROGRESS',
+      baseCtx({
+        evidence: [plan],
+        requirementVersion: 'REQ-001@1',
+        evidenceReqVersions: { 'ev-plan': 'REQ-001@1' },
+        compatibleEvidenceIds: new Set(['ev-plan']),
+      }),
+    );
+    assert.equal(r.ok, true);
+  });
+
+  it('compatible set does NOT exempt the explicit staleEvidenceIds list', () => {
+    const r = checkTransitionV2(
+      'PLANNING', 'IN_PROGRESS',
+      baseCtx({
+        ...bumped,
+        staleEvidenceIds: ['ev-plan'],
+        compatibleEvidenceIds: new Set(['ev-plan']),
+      }),
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+      assert.equal(r.reasonCode, 'STALE_EVIDENCE');
+      // Denied by the explicit-stale branch, not the version branch.
+      assert.match(r.missing[0], /is stale/);
+    }
+  });
+
+  it('compatible set does NOT wave other gates through (budget still denies)', () => {
+    const r = checkTransitionV2(
+      'PLANNING', 'IN_PROGRESS',
+      baseCtx({
+        ...bumped,
+        compatibleEvidenceIds: new Set(['ev-plan']),
+        budgetOk: false,
+      }),
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.reasonCode, 'BUDGET_EXCEEDED');
+  });
+});
+
 describe('WorkflowEngineV2', () => {
   it('legal transition moves the stage and bumps the version', () => {
     const e = engine();

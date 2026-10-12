@@ -86,8 +86,15 @@ export interface LockGrant {
 
 export class LockTimeoutError extends Error {
   readonly code = 'LOCK_TIMEOUT';
-  constructor(readonly keys: string[]) {
-    super(`could not acquire locks in time: ${keys.join(', ')}`);
+  constructor(
+    readonly keys: string[],
+    /** How long the caller actually waited before giving up, in ms (0 = single-shot, no wait). */
+    readonly waitedMs = 0,
+  ) {
+    super(
+      `could not acquire locks in time: ${keys.join(', ')}` +
+        (waitedMs > 0 ? ` (waited ${waitedMs}ms)` : ''),
+    );
     this.name = 'LockTimeoutError';
   }
 }

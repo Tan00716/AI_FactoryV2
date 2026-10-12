@@ -5,6 +5,15 @@
  * runs WorkflowEngineV2 gates, writes the result back to the DB task row on
  * success, and leaves the DB untouched on a gate denial.
  * GET /api/tasks/:id/v2-state exposes the three-state view.
+ *
+ * NOTE: this file imports the route from dist (../dist/routes/v2-transitions.js).
+ * Since Batch 7-2, v2-transitions.ts value-imports the shared
+ * RequirementManager accessor from the sibling route module
+ * ('./requirements', extensionless) — the same pattern dashboard.ts uses
+ * with './qa'/'./cicd'/'./resources'. CommonJS/tsc resolve that fine but
+ * Node's type-stripping ESM loader cannot, so (like dashboard-aocr.test.ts)
+ * this test runs against the compiled dist and requires
+ * `npm run build -w @ai-factory/server` first.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,7 +22,12 @@ import {
   EvidenceEngine,
   TaskManager,
 } from '@ai-factory/core';
-import { handleV2TransitionRoutes } from '../src/routes/v2-transitions.ts';
+import { RequirementManager } from '@ai-factory/requirements';
+import {
+  createV2TransitionService,
+  handleV2TransitionRoutes,
+} from '../dist/routes/v2-transitions.js';
+import type { V2TransitionService } from '../dist/routes/v2-transitions.js';
 
 const tasks = new TaskManager();
 const evidence = new EvidenceEngine();
@@ -154,5 +168,71 @@ describe('v2 transition wiring (§18.2, G-18)', () => {
       toState: 'BLOCKED', // a v1 exception status, not a v2 stage
     });
     assert.equal(bogus.status, 400);
+  });
+});
+
+describe('v2 transition §16 compatibility wiring', () => {
+  // Service-level seam (createV2TransitionService): the gate assembly must
+  // consult the requirements manager's explicit declarations for the
+  // task's pinned version and pass matching evidence ids to the engine as
+  // GateContext.compatibleEvidenceIds. (The route assembles
+  // evidenceReqVersions: {} — the server does not track per-evidence
+  // requirement versions yet — so the exemption is verified here at the
+  // assembly seam, not via an HTTP outcome difference.)
+  function setup(requirements?: Pick<RequirementManager, 'canReuseEvidence'>) {
+    const tasks = new TaskManager();
+    const evidence = new EvidenceEngine();
+    const audit = new AuditLog();
+    const service = createV2TransitionService({ tasks, evidence, audit, requirements });
+    const taskId = tasks.create({ projectId: 'p1', title: 'compat wiring', creator: 'human' }).id;
+    const plan = evidence.create({
+      taskId, type: 'plan', title: 'PLAN', payload: {}, createdBy: 'tester',
+    });
+    return { service, taskId, planId: plan.id };
+  }
+
+  function advanceToInProgress(service: V2TransitionService, taskId: string) {
+    const seed = service.transition(taskId, 'PLANNING', 'human', {
+      requirementVersion: 'REQ-001@2',
+    });
+    assert.equal(seed.ok, true);
+    return service.transition(taskId, 'IN_PROGRESS', 'human', {
+      requirementVersion: 'REQ-001@2',
+      budgetOk: true,
+    });
+  }
+
+  it('gate assembly consults canReuseEvidence with the parsed pin for task evidence', () => {
+    const calls: Array<[string, string, number]> = [];
+    let planId = '';
+    const stub = {
+      canReuseEvidence: (id: string, req: string, v: number): boolean => {
+        calls.push([id, req, v]);
+        return id === planId;
+      },
+    };
+    const s = setup(stub);
+    planId = s.planId;
+    const r = advanceToInProgress(s.service, s.taskId);
+    assert.equal(r.ok, true);
+    assert.ok(
+      calls.some(([id, req, v]) => id === planId && req === 'REQ-001' && v === 2),
+      `expected a canReuseEvidence(${planId}, 'REQ-001', 2) consultation, got ${JSON.stringify(calls)}`,
+    );
+  });
+
+  it('real RequirementManager: an explicit compatible declaration for the pinned version flows through', () => {
+    const mgr = new RequirementManager();
+    const s = setup(mgr);
+    mgr.checkEvidenceCompatibility(s.planId, 'REQ-001', 2, true, 'ACs unchanged by v2', 'human');
+    assert.equal(mgr.canReuseEvidence(s.planId, 'REQ-001', 2), true);
+    const r = advanceToInProgress(s.service, s.taskId);
+    assert.equal(r.ok, true);
+  });
+
+  it('no requirements dep → behavior unchanged (legal path still works)', () => {
+    const s = setup(undefined);
+    const r = advanceToInProgress(s.service, s.taskId);
+    assert.equal(r.ok, true);
   });
 });

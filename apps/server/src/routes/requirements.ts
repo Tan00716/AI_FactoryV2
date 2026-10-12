@@ -26,6 +26,16 @@ import type { RouteContext } from './context';
 
 const manager = new RequirementManager();
 
+/**
+ * The shared process-wide manager — the same instance the routes above
+ * write to (including POST /:id/compatibility declarations). Other route
+ * modules (v2-transitions) read compatibility declarations from here so
+ * there is exactly one declaration store per server process.
+ */
+export function getRequirementManager(): RequirementManager {
+  return manager;
+}
+
 export async function handleRequirementRoutes(
   req: IncomingMessage,
   res: ServerResponse,

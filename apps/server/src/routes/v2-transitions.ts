@@ -33,6 +33,17 @@
  *   model as the rest of this local API (no auth layer exists yet).
  * - DENIALS: a v2 gate denial returns 422 with the engine's reasonCode and
  *   missing list, and the DB row is NOT touched.
+ * - COMPATIBILITY (§16): GateContext.compatibleEvidenceIds is filled from
+ *   the shared RequirementManager — the same instance that
+ *   POST /api/requirements/:id/compatibility writes declarations to — for
+ *   evidence the manager explicitly declares compatible with the task's
+ *   pinned version (canReuseEvidence). Assembled from real declarations
+ *   only, never inferred. Caveat, stated plainly: this route still passes
+ *   evidenceReqVersions: {} (the server does not track the version each
+ *   evidence row was collected against), so the version-mismatch branch
+ *   this set feeds cannot fire through this route yet — the data is wired
+ *   now, honestly latent, and takes effect the moment per-evidence
+ *   requirement versions are tracked.
  *
  * The v1 endpoint POST /api/tasks/:id/transition is unchanged, and the
  * desktop Board still uses it — see docs/KNOWN_LIMITATIONS.md for why the
@@ -48,6 +59,7 @@ import {
 } from '@ai-factory/core';
 import type {
   ActorAuthorization,
+  Evidence,
   GateContext,
   Task,
   TaskConditionValue,
@@ -55,7 +67,9 @@ import type {
   TaskV2State,
   WorkflowStage,
 } from '@ai-factory/core';
+import type { RequirementManager } from '@ai-factory/requirements';
 import type { RouteContext } from './context';
+import { getRequirementManager } from './requirements';
 
 /** v1 happy-path statuses map 1:1 onto v2 stages. */
 const STAGE_BY_STATUS: Partial<Record<TaskStatus, WorkflowStage>> = {
@@ -117,6 +131,13 @@ export interface V2TransitionDeps {
   tasks: TaskManager;
   evidence: EvidenceEngine;
   audit: AuditLog;
+  /**
+   * §16 compatibility declarations (optional). When present, gate
+   * assembly fills GateContext.compatibleEvidenceIds from real
+   * canReuseEvidence records for the task's pinned requirement version.
+   * Absent = the field is omitted and behavior is unchanged.
+   */
+  requirements?: Pick<RequirementManager, 'canReuseEvidence'>;
 }
 
 export interface V2StateView {
@@ -227,6 +248,18 @@ export class V2TransitionService {
           return false; // dangling dependency → not ready (fail-closed)
         }
       });
+    const evidence = this.deps.evidence.listByTask(task.id);
+    // Fall back to the requirement pinned at seed time — the engine's
+    // gate needs the effective pin, and a literal null here would fail
+    // the requirement-pinned predicate even for a pinned task.
+    const requirementVersion =
+      typeof body['requirementVersion'] === 'string'
+        ? body['requirementVersion']
+        : this.engine.get(task.id).requirementRef;
+    const compatibleEvidenceIds = this.compatibleEvidenceIds(
+      evidence,
+      requirementVersion,
+    );
     return {
       taskId: task.id,
       taskVersion: this.engine.get(task.id).taskVersion,
@@ -234,13 +267,7 @@ export class V2TransitionService {
       actorRole:
         typeof body['actorRole'] === 'string' ? body['actorRole'] : undefined,
       authorization,
-      // Fall back to the requirement pinned at seed time — the engine's
-      // gate needs the effective pin, and a literal null here would fail
-      // the requirement-pinned predicate even for a pinned task.
-      requirementVersion:
-        typeof body['requirementVersion'] === 'string'
-          ? body['requirementVersion']
-          : this.engine.get(task.id).requirementRef,
+      requirementVersion,
       candidateDigest:
         typeof body['candidateDigest'] === 'string'
           ? body['candidateDigest']
@@ -249,11 +276,16 @@ export class V2TransitionService {
         typeof body['implementerId'] === 'string'
           ? body['implementerId']
           : task.currentAgentId,
-      evidence: this.deps.evidence.listByTask(task.id),
+      evidence,
       // The server does not yet track per-evidence requirement versions or
       // a staleness set; the engine treats absent entries as "not stale".
       evidenceReqVersions: {},
       staleEvidenceIds: [],
+      // §16 explicit compatibility (see compatibleEvidenceIds() below):
+      // undefined unless the requirements manager declares task evidence
+      // compatible with the pinned version — omitting the field keeps the
+      // engine's behavior exactly as before.
+      compatibleEvidenceIds,
       // Fail-closed attestations: only an explicit `true` in the request
       // asserts these operational facts; the server cannot verify them yet.
       budgetOk: body['budgetOk'] === true,
@@ -274,6 +306,33 @@ export class V2TransitionService {
           ? body['idempotencyKey']
           : undefined,
     };
+  }
+
+  /**
+   * §16 explicit compatibility set for GateContext: ids of the task's
+   * evidence that the requirements manager explicitly declares compatible
+   * with the pinned requirement version (canReuseEvidence — a recorded
+   * declaration for exactly that version, never inferred from version
+   * proximity). Returns undefined — field omitted, engine behavior
+   * unchanged — when no manager is wired, the pin is not a parseable
+   * 'ID@N' ref, or no declaration matches (fail-closed in every case).
+   */
+  private compatibleEvidenceIds(
+    evidence: Evidence[],
+    pin: string | null,
+  ): ReadonlySet<string> | undefined {
+    const mgr = this.deps.requirements;
+    if (!mgr || pin === null) return undefined;
+    const at = pin.lastIndexOf('@');
+    if (at <= 0) return undefined;
+    const version = Number(pin.slice(at + 1));
+    if (!Number.isInteger(version) || version < 1) return undefined;
+    const requirementId = pin.slice(0, at);
+    const ids = new Set<string>();
+    for (const e of evidence) {
+      if (mgr.canReuseEvidence(e.id, requirementId, version)) ids.add(e.id);
+    }
+    return ids.size > 0 ? ids : undefined;
   }
 
   /**
@@ -334,6 +393,9 @@ export function getV2TransitionService(ctx: RouteContext): V2TransitionService {
       tasks: ctx.tasks,
       evidence: ctx.evidence,
       audit: ctx.audit,
+      // The same RequirementManager instance the requirements routes
+      // write compatibility declarations to (single process, one store).
+      requirements: getRequirementManager(),
     });
   }
   return shared;

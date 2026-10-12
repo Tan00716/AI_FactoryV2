@@ -14,6 +14,9 @@
  *  - only rules explicitly marked overridable ({ locked: false }) may be
  *    changed by an authorized lower layer — the attempt is still recorded
  *    (overrideAllowed).
+ *  - write gate: set() itself is guarded — replacing a document may not
+ *    rewrite, delete or unlock an existing locked rule unless the caller
+ *    carries authority at that layer or higher (PolicySetDeniedError).
  *
  * Resolution returns policy_hash (sha256 over canonical inputs + result),
  * the evaluation inputs, and per-key rule-hit detail (§23.1).
@@ -34,8 +37,38 @@ import {
   PolicyRule,
   PolicyRuleHit,
   PolicyScope,
+  PolicySetCaller,
+  PolicySetOptions,
   ResolvedPolicy,
 } from './types';
+
+/**
+ * Thrown by PolicyStore.set() when the patch would rewrite, delete or
+ * unlock an existing locked rule without a caller of sufficient authority
+ * (§23.1). The store is left completely unchanged (atomic rejection) and
+ * every protected key has already been recorded as an overrideDenied
+ * event on the store.
+ */
+export class PolicySetDeniedError extends Error {
+  readonly layer: PolicyLayer;
+  readonly scopeId: string;
+  /** Keys whose existing rules are locked and were protected. */
+  readonly protectedKeys: string[];
+  readonly caller?: PolicySetCaller;
+
+  constructor(layer: PolicyLayer, scopeId: string, protectedKeys: string[], caller?: PolicySetCaller) {
+    super(
+      `policy set denied at ${layer}/${scopeId}: locked rule(s) [${protectedKeys.join(', ')}] ` +
+        `may only be changed by a caller with ${layer}-layer or higher authority` +
+        (caller ? ` (got actor '${caller.actor}' at layer '${caller.layer}')` : ' (no caller given)'),
+    );
+    this.name = 'PolicySetDeniedError';
+    this.layer = layer;
+    this.scopeId = scopeId;
+    this.protectedKeys = protectedKeys;
+    this.caller = caller;
+  }
+}
 
 function isRule(v: unknown): v is PolicyRule {
   return (
@@ -117,8 +150,20 @@ export class PolicyStore {
    * Set (or replace) the policy document for a layer/scope. Bare values are
    * stored as locked rules; pass `{ value, locked, merge?, denyValue? }` for
    * finer control, or set the store-wide `locked` option for the whole patch.
+   *
+   * §23.1 write gate: because set() replaces the whole document, it must
+   * not silently rewrite a locked rule. If the existing document holds a
+   * locked rule that this patch would change (different value/merge/
+   * denyValue), unlock, or drop, the set requires `opts.caller` /
+   * `opts.authorizedBy` with authority at this layer or higher — see
+   * PolicySetCaller. Without sufficient authority the set is rejected
+   * atomically (PolicySetDeniedError, store untouched) and each protected
+   * key is recorded as an overrideDenied event; an authorized change is
+   * recorded as overrideAllowed. Sets that touch no existing locked rule
+   * (first configuration, unlocked rules, additions, tightening a rule to
+   * locked) behave exactly as before and need no caller.
    */
-  set(layer: PolicyLayer, scopeId: string, patch: PolicyPatch, opts?: { locked?: boolean }): void {
+  set(layer: PolicyLayer, scopeId: string, patch: PolicyPatch, opts?: PolicySetOptions): void {
     const defaultLocked = opts?.locked ?? true;
     const rules: Record<string, PolicyRule> = {};
     for (const [key, v] of Object.entries(patch)) {
@@ -131,12 +176,78 @@ export class PolicyStore {
         rules[key] = { value: v, locked: defaultLocked };
       }
     }
+    this.guardLockedRules(layer, scopeId, rules, opts?.caller ?? opts?.authorizedBy);
     let byScope = this.layers.get(layer);
     if (!byScope) {
       byScope = new Map();
       this.layers.set(layer, byScope);
     }
     byScope.set(scopeId, { rules });
+  }
+
+  /**
+   * §23.1 write gate for set(): find existing locked rules of the target
+   * document that the new document would change, unlock or drop, and
+   * require sufficient caller authority for them. Runs entirely before
+   * any mutation, so a denial leaves the store byte-identical.
+   */
+  private guardLockedRules(
+    layer: PolicyLayer,
+    scopeId: string,
+    nextRules: Record<string, PolicyRule>,
+    caller: PolicySetCaller | undefined,
+  ): void {
+    const existing = this.layers.get(layer)?.get(scopeId);
+    if (!existing) return;
+    const protectedKeys = Object.keys(existing.rules).filter((key) => {
+      const old = existing.rules[key];
+      if (!old.locked) return false;
+      const next = nextRules[key];
+      // Dropping the key, or any change to value/locked/merge/denyValue.
+      return next === undefined || canonicalJson(next) !== canonicalJson(old);
+    });
+    if (protectedKeys.length === 0) return;
+
+    const authorized = this.isSetAuthorized(layer, scopeId, caller);
+    const ts = new Date().toISOString();
+    for (const key of protectedKeys) {
+      const old = existing.rules[key];
+      const next = nextRules[key];
+      this.emit(authorized ? 'overrideAllowed' : 'overrideDenied', {
+        key,
+        attempted: { layer, scopeId, value: next?.value },
+        winner: authorized
+          ? { layer, scopeId, value: next?.value }
+          : { layer, scopeId, value: old.value },
+        winnerLocked: authorized ? (next?.locked ?? false) : true,
+        allowed: authorized,
+        actor: caller?.actor ?? 'anonymous',
+        ts,
+      });
+    }
+    if (!authorized) throw new PolicySetDeniedError(layer, scopeId, protectedKeys, caller);
+  }
+
+  /**
+   * §23.1 authority mapping: POLICY_LAYERS is ordered highest-first, so a
+   * caller may rewrite locked rules of `layer` only when its own layer
+   * index is ≤ the target layer's index (same layer or above). A caller
+   * acting at the *same* layer and naming a scopeId is confined to that
+   * scope — a peer scope cannot rewrite another scope's locked rules.
+   */
+  private isSetAuthorized(
+    layer: PolicyLayer,
+    scopeId: string,
+    caller: PolicySetCaller | undefined,
+  ): boolean {
+    if (!caller) return false;
+    const callerIdx = POLICY_LAYERS.indexOf(caller.layer);
+    const targetIdx = POLICY_LAYERS.indexOf(layer);
+    if (callerIdx < 0 || callerIdx > targetIdx) return false;
+    if (caller.layer === layer && caller.scopeId !== undefined && caller.scopeId !== scopeId) {
+      return false;
+    }
+    return true;
   }
 
   /** Get the raw policy document for a layer/scope (undefined when absent). */

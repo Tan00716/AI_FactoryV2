@@ -129,6 +129,19 @@ export interface GateContext {
   /** evidenceId -> requirement version the evidence was collected against. */
   evidenceReqVersions: Record<string, string>;
   staleEvidenceIds: string[];
+  /**
+   * Evidence ids carrying an EXPLICIT §16 compatibility declaration for the
+   * current requirement version (RequirementManager.checkEvidenceCompatibility
+   * with compatible=true for exactly this version — see canReuseEvidence).
+   * Membership exempts ONLY the requirement-version-mismatch staleness check
+   * in checkTransitionV2: evidence declared compatible with the pinned
+   * version is not judged STALE merely for having been collected against an
+   * older one. It does NOT exempt the explicit staleEvidenceIds list,
+   * missing-evidence, or any gate predicate, and it is never inferred from
+   * version proximity — an explicit whitelist only (fail-closed: field
+   * absent = no exemptions, exactly the pre-existing behavior).
+   */
+  compatibleEvidenceIds?: ReadonlySet<string>;
   budgetOk: boolean;
   quotaOk: boolean;
   confinementOk: boolean;
@@ -540,7 +553,10 @@ export function checkTransitionV2(
     if (
       ctx.requirementVersion !== null &&
       evReq !== undefined &&
-      evReq !== ctx.requirementVersion
+      evReq !== ctx.requirementVersion &&
+      // §16: an explicit compatibility declaration for the pinned version
+      // exempts the version-mismatch judgment only (see GateContext docs).
+      !ctx.compatibleEvidenceIds?.has(ev.id)
     ) {
       return deny(
         from, to, 'STALE_EVIDENCE',

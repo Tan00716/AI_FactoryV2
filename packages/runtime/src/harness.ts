@@ -98,6 +98,34 @@ export const DEFAULT_TOOL_PERMISSIONS: Record<string, Permission> = {
 
 export type ToolImpl = (args: unknown) => Promise<unknown> | unknown;
 
+/**
+ * §33 — empty tool-result predicate.
+ *
+ * A tool that returns "nothing" has NOT produced the effect or data a
+ * successful result implies, so an empty result must never be sealed as
+ * a plain success (the tools package makes the same distinction with its
+ * EMPTY_RESULT outcome; the harness walks an independent ToolImpl path
+ * and needs its own predicate). Empty is judged on the RAW result value:
+ *
+ *   EMPTY:     undefined · null · a string that is blank after trim ·
+ *              a zero-length array · an object with no own enumerable
+ *              keys (a Map/Set with size 0 counts as an empty object).
+ *   NOT EMPTY: everything else — crucially 0 and false are REAL results
+ *              (a count of zero, a boolean answer), never "empty"; NaN,
+ *              non-blank strings, non-empty arrays/objects likewise.
+ *
+ * Empty is not an error: the run continues, nothing is retried — only
+ * the evidence and intent records stop claiming an unqualified success.
+ */
+export function isEmptyToolResult(result: unknown): boolean {
+  if (result === undefined || result === null) return true;
+  if (typeof result === 'string') return result.trim().length === 0;
+  if (Array.isArray(result)) return result.length === 0;
+  if (result instanceof Map || result instanceof Set) return result.size === 0;
+  if (typeof result === 'object') return Object.keys(result).length === 0;
+  return false;
+}
+
 export class Harness {
   readonly allowedRoots: string[];
   private readonly options: HarnessOptions;
@@ -218,6 +246,10 @@ export class Harness {
    * failures retry with jitter inside a total budget — bounded by both
    * maxAttempts and totalBudgetMs — and a retry after a permission
    * denial trips assertNoPermissionBypass (loud, never a workaround).
+   *
+   * §33: a tool that returns an empty result (see isEmptyToolResult) is
+   * not an error, but its evidence and intent records are marked
+   * `empty: true` — "nothing came back" is never sealed as a plain ok.
    */
   async runTool(name: string, args: unknown, impl: ToolImpl): Promise<unknown> {
     this.checkPermission(name);
@@ -250,13 +282,27 @@ export class Harness {
             },
           })
         : await attempt();
-      if (intent) this.stepIntentStore?.recordResult(intent.id, true, { ok: true });
+      // §33 — an empty result is not an error (the run continues, the
+      // tool is not retried), but it is not a substantive success either:
+      // the evidence says so in its title and payload, and the intent's
+      // committed result carries `empty: true` so its resultHash commits
+      // to the empty outcome instead of a plain { ok: true }.
+      const empty = isEmptyToolResult(result);
+      if (intent) {
+        this.stepIntentStore?.recordResult(
+          intent.id,
+          true,
+          empty ? { ok: true, empty: true } : { ok: true },
+        );
+      }
       this.collectEvidence({
         type: 'tool_result',
-        title: `tool ${name} ok`,
-        payload: { tool: name, ok: true },
+        title: empty ? `tool ${name} returned empty` : `tool ${name} ok`,
+        payload: empty
+          ? { tool: name, ok: true, empty: true }
+          : { tool: name, ok: true },
       });
-      this.trace('HARNESS', `tool:${name}`, 'ok');
+      this.trace('HARNESS', `tool:${name}`, empty ? 'ok (empty)' : 'ok');
       return result;
     } catch (err) {
       if (intent) this.stepIntentStore?.recordResult(intent.id, false, { ok: false });

@@ -98,7 +98,44 @@ export interface OverrideAttempt {
   winnerLocked: boolean;
   /** false → recorded as an overrideDenied event (upper wins). */
   allowed: boolean;
+  /**
+   * Who made the attempt, when the attempt carries an identity: set for
+   * PolicyStore.set() write-gate events (§23.1, actor of the caller, or
+   * 'anonymous' when no caller was given). Resolution-time attempts are
+   * document-driven and leave this undefined.
+   */
+  actor?: string;
   ts: string;
+}
+
+/**
+ * §23.1 — the caller identity behind a PolicyStore.set(). Authority is
+ * expressed in the same layer terms as OverrideEndpoint: the caller acts
+ * with the authority of `layer` in POLICY_LAYERS order (highest first).
+ *
+ * Write gate: a set() that would rewrite, delete or unlock an *existing
+ * locked* rule of layer L is only accepted from a caller whose layer is L
+ * or higher (index ≤ index(L)) — a locked organizational constraint cannot
+ * be silently rewritten by a lower layer. A caller acting at the same
+ * layer as the document and naming a `scopeId` may only write that scope.
+ */
+export interface PolicySetCaller {
+  /** Actor identity for audit (e.g. 'human:tan', 'agent:planner-1'). */
+  actor: string;
+  /** The layer whose authority the caller acts with. */
+  layer: PolicyLayer;
+  /** Scope the caller acts for (same-layer sets are confined to it). */
+  scopeId?: string;
+}
+
+/** Options for PolicyStore.set(). */
+export interface PolicySetOptions {
+  /** locked flag applied to bare values in the patch. Default true. */
+  locked?: boolean;
+  /** Caller identity, required only when the set touches locked rules. */
+  caller?: PolicySetCaller;
+  /** Alias of `caller`: the identity authorizing this set. */
+  authorizedBy?: PolicySetCaller;
 }
 
 /** Result of resolveEffectivePolicy. */
