@@ -161,6 +161,12 @@ export async function handleRuntimeRoutes(
           agent,
           task,
           harness,
+          // §28.1 (G-59) — intents go to the coordinator-injected store:
+          // SQLite-backed in this server, so they survive restarts and
+          // the next boot's startup scan can see what a dead process
+          // left uncommitted. (runAgent's own default remains a fresh
+          // in-memory store for embedders that inject none.)
+          intentStore: ctx.stepIntentStore,
           adapter: new StubAdapter(script),
           loop: new AgentLoop({
             budgets: { maxSteps: 40, timeMs: 60000, maxRetries: 3 },

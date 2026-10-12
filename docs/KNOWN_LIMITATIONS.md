@@ -36,8 +36,9 @@
 
 ## 持久化运行状态（§28，G-53/G-59）
 
-- **Step intent 已在默认运行路径接线（G-53），但仍是内存存储**。`runAgent` 现在为每次运行创建（或接受注入）一个 `StepIntentStore` 并挂到 harness 上，工具执行前先落 intent、执行后提交结果，运行结果带 `intentSummary` 可核查。这是**接线**，不是持久化：`StepIntentStore` 是进程内 Map，进程重启后 intents 全部丢失。
-- **DB 持久化与启动扫描未做（G-59）**。intents / external ops / checkpoints 尚未落 SQLite，启动时也没有扫描未决 intent 做对账恢复的代码；`durable.ts` 的对账逻辑（reconcile）只能作用于当前进程内的数据。把内存接线说成"已持久化"是错的——目前重启即丢，无法做崩溃后对账。
+- **Step intent 已落 SQLite 并接进服务端（G-59，Batch 9）**。`runAgent` 在默认运行路径创建（或接受注入）`StepIntentStore` 并挂到 harness 上，工具执行前先落 intent、执行后提交结果（G-53 接线）；服务端注入的是 db 包的 `SqliteStepIntentStore`（`step_intents` 表），intents 跨重启保留。无 DB 的嵌入方不注入时仍回退进程内 Map——那只是接线回退，不是持久化。审计链的 reason/result/summary_hash/prev_hash 四列同期落盘（§32），跨重启 `verifyAuditChain` 可验真且链头连续。
+- **启动扫描已做，但只报告不处置**。服务端启动时扫描上个进程留下的 PENDING intents，结果写审计 `STARTUP_INTERRUPTED_INTENTS`（含计数）并在 `GET /api/health` 的 `stepIntents` 段可查；扫描绝不把 intent 改写成已执行、绝不重放工具调用，处置（对账/受控恢复）仍留给上层。
+- **仍未持久化：external ops 与 checkpoints**。`OperationLedger` 与 checkpoint 仍是进程内数据（其状态机私有持有 Map，落盘需先改 runtime 的存储接缝），`durable.ts` 的 reconcile 也只能作用于当前进程数据；step intent 之外，崩溃后对账仍不完整。
 
 ## 数据与团队
 

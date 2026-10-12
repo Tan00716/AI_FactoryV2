@@ -17,6 +17,7 @@ import type {
 import type { FactoryDatabase } from '@ai-factory/db';
 import type { NotificationEngine } from '@ai-factory/notifications';
 import type { EventBus } from '@ai-factory/events';
+import type { StepIntentStore } from '@ai-factory/runtime';
 
 export interface RouteContext {
   tasks: TaskManager;
@@ -25,6 +26,15 @@ export interface RouteContext {
   agents: AgentRegistry;
   engine: WorkflowEngine;
   fdb: FactoryDatabase;
+  /**
+   * §28.1 (G-59) — the step-intent store runAgent writes through. The
+   * coordinator injects the SQLite-backed store (FactoryDatabase), so
+   * intents survive restarts. An embedder without a database omits this
+   * and runAgent falls back to its fresh in-memory StepIntentStore —
+   * wiring only, no durability; that fallback is the documented
+   * no-DB behavior, not a silent downgrade of this server.
+   */
+  stepIntentStore: StepIntentStore;
   /** In-app notification engine (spec module 30). */
   notify: NotificationEngine;
   /** System Event Bus — spec §91, shared singleton created in index.ts. */

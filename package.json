@@ -1,7 +1,9 @@
 {
-  "description": "AI Engineering Factory IDE \u2014 runnable prototype skeleton",
+  "description": "AI Engineering Factory IDE — runnable prototype skeleton",
   "devDependencies": {
     "@types/node": "^26.6.4",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
     "typescript": "^5.6.3"
   },
   "engines": {
@@ -39,7 +41,10 @@
     "demo:autonomy": "npm run build -w @ai-factory/autonomy && node packages/autonomy/dist/demo/full-mode-blocked.demo.js",
     "demo:coordination": "npm run build -w @ai-factory/coordination && node packages/coordination/dist/demo/parallel-conflict.demo.js",
     "demo:dispute": "npm run build -w @ai-factory/evaluation && node packages/evaluation/dist/demo/disagreement.demo.js",
-    "dist": "electron-builder",
+    "dist": "npm run build && npm run build:electron && electron-builder",
+    "dist:linux": "npm run build && npm run build:electron && electron-builder --linux",
+    "dist:win": "npm run build && npm run build:electron && electron-builder --win",
+    "dist:mac": "npm run build && npm run build:electron && electron-builder --mac",
     "demo:requirements": "npm run build -w @ai-factory/requirements && node packages/requirements/dist/demo/requirements.demo.js",
     "demo:progress": "npm run build -w @ai-factory/progress && node packages/progress/dist/demo/progress.demo.js",
     "demo:workflow-v2": "npm run build -w @ai-factory/core && node packages/core/dist/demo/workflow-v2.demo.js",

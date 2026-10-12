@@ -19,6 +19,7 @@ import {
 import type { Approval, ApprovalStore } from '@ai-factory/approvals';
 import type { CrossProjectReusable, MemoryEntry } from '@ai-factory/memory';
 import { SCHEMA } from './schema';
+import { SqliteStepIntentStore } from './step-intents';
 
 const J = {
   parse<T>(s: string | null, fallback: T): T {
@@ -352,25 +353,70 @@ export class SqliteApprovalStore implements ApprovalStore {
 }
 
 // ----------------------------------------------------------------- audit ---
+/**
+ * §32 (Batch 9) hash-chain columns. Existing local DBs are migrated in
+ * place: only the missing columns are added (see migrateEvidenceTable).
+ * The four columns are nullable ON PURPOSE: pre-chain rows have no
+ * reason/result and no hashes, and must read back as legacy AuditRecords
+ * (fields absent), never backfilled with invented values — core's
+ * verifyAuditChain counts them as legacy and skips them.
+ */
+export function migrateAuditTable(db: DatabaseSync): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(audit_logs)').all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
+  const add = (ddl: string, name: string): void => {
+    if (!cols.has(name)) db.exec(`ALTER TABLE audit_logs ADD COLUMN ${ddl}`);
+  };
+  add(`reason TEXT`, 'reason');
+  add(`result TEXT`, 'result');
+  add(`summary_hash TEXT`, 'summary_hash');
+  add(`prev_hash TEXT`, 'prev_hash');
+}
+
+function rowToAuditRecord(r: Record<string, unknown>): AuditRecord {
+  const rec: AuditRecord = {
+    id: r['id'] as string,
+    ts: r['ts'] as string,
+    actor: r['actor'] as string,
+    action: r['action'] as string,
+    entityType: r['entity_type'] as string,
+    entityId: r['entity_id'] as string,
+    details: J.parse<Record<string, unknown>>(r['details'] as string, {}),
+  };
+  // Optional §32 fields are set ONLY when the column carries a value:
+  // a legacy row must come back without the keys at all, exactly like a
+  // record written before chaining existed (core hashes reason/result
+  // with ?? null, so absence — not a stored '' — is the faithful form).
+  if (typeof r['reason'] === 'string') rec.reason = r['reason'];
+  if (typeof r['result'] === 'string') rec.result = r['result'];
+  if (typeof r['summary_hash'] === 'string') rec.summaryHash = r['summary_hash'];
+  if (typeof r['prev_hash'] === 'string') rec.prevHash = r['prev_hash'];
+  return rec;
+}
+
 export class SqliteAuditStore implements AuditStore {
   constructor(private db: DatabaseSync) {}
   append(r: AuditRecord): void {
     this.db.prepare(
-      `INSERT INTO audit_logs (id, ts, actor, action, entity_type, entity_id, details)
-       VALUES (?,?,?,?,?,?,?)`,
-    ).run(r.id, r.ts, r.actor, r.action, r.entityType, r.entityId, J.stringify(r.details));
+      `INSERT INTO audit_logs (id, ts, actor, action, entity_type, entity_id, details,
+        reason, result, summary_hash, prev_hash)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      r.id, r.ts, r.actor, r.action, r.entityType, r.entityId, J.stringify(r.details),
+      r.reason ?? null, r.result ?? null, r.summaryHash ?? null, r.prevHash ?? null,
+    );
   }
   list(): AuditRecord[] {
-    return (this.db.prepare('SELECT * FROM audit_logs ORDER BY ts').all() as Record<string, unknown>[]).map(
-      (r) => ({
-        id: r['id'] as string,
-        ts: r['ts'] as string,
-        actor: r['actor'] as string,
-        action: r['action'] as string,
-        entityType: r['entity_type'] as string,
-        entityId: r['entity_id'] as string,
-        details: J.parse<Record<string, unknown>>(r['details'] as string, {}),
-      }),
+    // ORDER BY ts is the historical read order; the rowid tiebreak makes
+    // it deterministic for same-millisecond appends, which is exactly
+    // the append order the §32 hash chain commits to — verifyAuditChain
+    // over a reloaded list must see the chain in the order it was written.
+    return (this.db.prepare('SELECT * FROM audit_logs ORDER BY ts, rowid').all() as Record<string, unknown>[]).map(
+      rowToAuditRecord,
     );
   }
 }
@@ -521,6 +567,8 @@ export class FactoryDatabase {
   readonly audit: SqliteAuditStore;
   readonly approvals: SqliteApprovalStore;
   readonly memory: SqliteMemoryStore;
+  /** §28.1 (G-59) — durable step intents; runtime's StepIntentStore on SQLite. */
+  readonly stepIntents: SqliteStepIntentStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -531,12 +579,14 @@ export class FactoryDatabase {
     migrateApprovalsTable(this.db);
     migrateMemoryTable(this.db);
     migrateEvidenceTable(this.db);
+    migrateAuditTable(this.db);
     this.tasks = new SqliteTaskStore(this.db);
     this.evidence = new SqliteEvidenceStore(this.db);
     this.agents = new SqliteAgentStore(this.db);
     this.audit = new SqliteAuditStore(this.db);
     this.approvals = new SqliteApprovalStore(this.db);
     this.memory = new SqliteMemoryStore(this.db);
+    this.stepIntents = new SqliteStepIntentStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------

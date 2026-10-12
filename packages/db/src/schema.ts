@@ -135,7 +135,11 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   action TEXT NOT NULL,
   entity_type TEXT NOT NULL,
   entity_id TEXT NOT NULL,
-  details TEXT DEFAULT '{}'
+  details TEXT DEFAULT '{}',
+  reason TEXT,
+  result TEXT,
+  summary_hash TEXT,
+  prev_hash TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
@@ -210,4 +214,21 @@ CREATE TABLE IF NOT EXISTS outbox_events (
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_undispatched
   ON outbox_events (dispatched_at);
+
+-- SPEC v2 §28.1 (G-59): step intents — persisted BEFORE tool execution,
+-- result committed after. Rows left in PENDING by a dead process are the
+-- startup scan's input (§28.3): they are reported, never auto-replayed.
+-- New table: CREATE TABLE IF NOT EXISTS covers old databases on open.
+CREATE TABLE IF NOT EXISTS step_intents (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  args_hash TEXT NOT NULL,
+  capability_ref TEXT,
+  persisted_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  result_hash TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_step_intents_run ON step_intents (run_id);
+CREATE INDEX IF NOT EXISTS idx_step_intents_status ON step_intents (status);
 `;

@@ -8,7 +8,11 @@ import { app, BrowserWindow } from 'electron';
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 
-const isDev = process.env.NODE_ENV !== 'production';
+// Dev means: unpackaged AND not forced to production. A packaged app must
+// take the production paths (bundled renderer + spawned backend) even though
+// nothing sets NODE_ENV for a double-clicked executable. Unpackaged behavior
+// is unchanged: NODE_ENV=production alone still selects production paths.
+const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production';
 const API_PORT = Number(process.env.PORT ?? 3100);
 const UI_PORT = Number(process.env.UI_PORT ?? 5173);
 
@@ -19,7 +23,12 @@ function startBackend(): void {
     ? path.join(__dirname, '..', '..', 'server', 'dist', 'index.js')
     : path.join(process.resourcesPath, 'server', 'index.js');
   backend = spawn(process.execPath, [serverEntry], {
-    env: { ...process.env, PORT: String(API_PORT) },
+    // ELECTRON_RUN_AS_NODE is load-bearing: a packaged Electron binary
+    // ignores a script-path argument and would relaunch the whole app
+    // (which spawns another "backend", ad infinitum). Run-as-node makes the
+    // child execute serverEntry as plain Node, in dev and packaged builds
+    // alike.
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT) },
     stdio: 'inherit',
   });
   backend.on('exit', (code) => console.log(`[main] backend exited with ${code}`));

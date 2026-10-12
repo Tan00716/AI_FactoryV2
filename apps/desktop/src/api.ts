@@ -1,10 +1,30 @@
 /** Typed client for the local @ai-factory/server API. */
 const BASE = 'http://localhost:3100/api';
 
+/**
+ * Operator API token for a server started with FACTORY_API_TOKEN
+ * (checklist B). Stored by the operator in localStorage under
+ * 'factory.apiToken'; when absent, no Authorization header is sent and the
+ * default token-less local server works unchanged.
+ */
+function apiToken(): string | null {
+  try {
+    const t = localStorage.getItem('factory.apiToken');
+    return t && t.trim() ? t.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = apiToken();
   const res = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   const body = (await res.json()) as T;
   if (!res.ok) {

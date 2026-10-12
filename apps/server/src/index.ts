@@ -40,6 +40,7 @@ import {
 } from '@ai-factory/core';
 import { FactoryDatabase, seedIfEmpty } from '@ai-factory/db';
 import { NotificationEngine } from '@ai-factory/notifications';
+import type { StepIntentStore } from '@ai-factory/runtime';
 import type { RouteContext } from './routes/context';
 import { handleGitRoutes } from './routes/git';
 import { handleQaRoutes } from './routes/qa';
@@ -55,6 +56,7 @@ import { handleMcpRoutes } from './routes/mcp';
 import { handleKnowledgeRoutes } from './routes/knowledge';
 import { handleEvaluationRoutes } from './routes/evaluation';
 import { handleProjectsRoutes } from './routes/projects';
+import { handleFinalReportRoutes } from './routes/final-report';
 import { handleProjectIoRoutes } from './routes/project-io';
 import { handleReviewRoutes } from './routes/review';
 import { handleReleaseRoutes } from './routes/releases';
@@ -85,12 +87,27 @@ import { handleNotificationRoutes } from './routes/notifications';
 import { handleEventRoutes } from './routes/events';
 import { handleActivityRoutes } from './routes/activity';
 import { EventBus } from '@ai-factory/events';
+import {
+  API_TOKEN_ENV,
+  enforceApiAuth,
+  resolveApiToken,
+  startupAuthError,
+} from './auth';
 
 const PORT = Number(process.env.PORT ?? 3100);
 // SPEC §7.4 — the control-plane API binds loopback by default. Override
 // only for an explicitly planned deployment (AI_FACTORY_HOST).
 const HOST = process.env.AI_FACTORY_HOST ?? '127.0.0.1';
 const DB_PATH = process.env.DB_PATH ?? './data/factory.db';
+// Single-operator API token (sellable checklist B; see ./auth). Unset =
+// open local mode on loopback; a non-loopback bind without a token is a
+// fatal startup error — fail-closed before any side effect (no DB open).
+const API_TOKEN = resolveApiToken();
+const authStartupError = startupAuthError(HOST, API_TOKEN);
+if (authStartupError) {
+  console.error(authStartupError);
+  process.exit(1);
+}
 
 function ensureDir(dbPath: string): void {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -102,6 +119,48 @@ const fdb = new FactoryDatabase(DB_PATH);
 const tasks = new TaskManager(fdb.tasks);
 const evidence = new EvidenceEngine(fdb.evidence);
 const audit = new AuditLog(fdb.audit);
+/**
+ * §28.1/§28.3 (G-59) — step intents live in the database now: this is
+ * the SQLite-backed StepIntentStore from the FactoryDatabase, handed to
+ * runAgent via RouteContext (routes/runtime.ts). An embedder without a
+ * database injects nothing and runAgent falls back to a fresh in-memory
+ * store — wiring only, no durability (see routes/context.ts).
+ */
+const stepIntentStore: StepIntentStore = fdb.stepIntents;
+
+/**
+ * Startup scan (§28.3): every PENDING intent in the DB predates this
+ * process — a previous process died between persistIntent and
+ * recordResult. The scan only REPORTS: an audit record (always written,
+ * count included, so "scan ran and found nothing" is itself on the
+ * record) plus the /api/health summary below. It never marks an intent
+ * executed and never replays a tool call; disposition (reconcile
+ * against the target system, controlled recovery) is an upper-layer
+ * decision.
+ */
+const interruptedAtStartup = fdb.stepIntents.listInterrupted();
+audit.record(
+  'system',
+  'STARTUP_INTERRUPTED_INTENTS',
+  'step_intent',
+  'startup-scan',
+  {
+    count: interruptedAtStartup.length,
+    intentIds: interruptedAtStartup.map((i) => i.id),
+    runIds: [...new Set(interruptedAtStartup.map((i) => i.runId))],
+  },
+  { result: interruptedAtStartup.length > 0 ? 'FOUND' : 'NONE' },
+);
+if (interruptedAtStartup.length > 0) {
+  console.warn(
+    `[ai-factory] startup scan: ${interruptedAtStartup.length} step intent(s) left uncommitted by a previous process (audit: STARTUP_INTERRUPTED_INTENTS)`,
+  );
+}
+const startupIntentScan = {
+  at: nowIso(),
+  interruptedCount: interruptedAtStartup.length,
+};
+
 const agents = new AgentRegistry(fdb.agents);
 const engine = new WorkflowEngine({ tasks, evidence, audit });
 const notify = new NotificationEngine();
@@ -118,7 +177,7 @@ function json(res: ServerResponse, status: number, body: unknown): void {
     'Content-Length': Buffer.byteLength(data),
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   });
   res.end(data);
 }
@@ -159,7 +218,7 @@ const server = createServer(async (req, res) => {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       });
       return res.end();
     }
@@ -168,9 +227,27 @@ const server = createServer(async (req, res) => {
     const path = url.pathname;
     const method = req.method ?? 'GET';
 
-    // Health
+    // API token gate (checklist B): the single pre-dispatch point. When
+    // FACTORY_API_TOKEN is configured, everything under /api except
+    // GET /api/health requires the Bearer token; denials are audited
+    // (AUTH_DENIED) inside enforceApiAuth. OPTIONS preflight above stays
+    // open — it carries no credentials and grants nothing.
+    if (!enforceApiAuth(req, res, { token: API_TOKEN, audit, json })) return;
+
+    // Health — includes the §28.3 startup scan summary (G-59): how many
+    // step intents a previous process left uncommitted when this process
+    // booted, and when the scan ran. Live intent state is in the audit
+    // record STARTUP_INTERRUPTED_INTENTS and the step_intents table.
     if (method === 'GET' && path === '/api/health') {
-      return json(res, 200, { ok: true, ts: nowIso() });
+      return json(res, 200, {
+        ok: true,
+        ts: nowIso(),
+        stepIntents: {
+          store: 'sqlite',
+          startupScanAt: startupIntentScan.at,
+          interruptedAtStartup: startupIntentScan.interruptedCount,
+        },
+      });
     }
 
     // Modular routes: git (§34), qa (§36–§38), approvals (§45, §69),
@@ -180,7 +257,7 @@ const server = createServer(async (req, res) => {
     // evaluation (§57–§58).
     // Each handler returns true when it owned the path.
     const routeCtx: RouteContext = {
-      tasks, evidence, audit, agents, engine, fdb, notify, bus, json, readBody,
+      tasks, evidence, audit, agents, engine, fdb, stepIntentStore, notify, bus, json, readBody,
     };
     if (await handleGitRoutes(req, res, url, routeCtx)) return;
     if (await handleQaRoutes(req, res, url, routeCtx)) return;
@@ -196,6 +273,7 @@ const server = createServer(async (req, res) => {
     if (await handleKnowledgeRoutes(req, res, url, routeCtx)) return;
     if (await handleEvaluationRoutes(req, res, url, routeCtx)) return;
     if (await handleProjectsRoutes(req, res, url, routeCtx)) return;
+    if (await handleFinalReportRoutes(req, res, url, routeCtx)) return;
     if (await handleProjectIoRoutes(req, res, url, routeCtx)) return;
     if (await handleReviewRoutes(req, res, url, routeCtx)) return;
     if (await handleReleaseRoutes(req, res, url, routeCtx)) return;
@@ -458,4 +536,13 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[ai-factory] API listening on http://${HOST}:${PORT} (db: ${DB_PATH})`);
+  if (API_TOKEN) {
+    console.log(`[ai-factory] API authentication enabled (${API_TOKEN_ENV} is set)`);
+  } else {
+    console.warn(
+      `[ai-factory] WARNING: API authentication disabled — ${API_TOKEN_ENV} is not set, ` +
+        'so any local process can call this API. Acceptable on the loopback desktop ' +
+        'bind only; the server refuses non-loopback binds in this state.',
+    );
+  }
 });
