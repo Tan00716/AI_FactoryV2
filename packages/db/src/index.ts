@@ -4,6 +4,7 @@ export * from './operations';
 export * from './checkpoints';
 export * from './requirements';
 export * from './runs';
+export * from './task-v2-state';
 export * from './seed';
 export * from './schema';
 export * from './constraints';

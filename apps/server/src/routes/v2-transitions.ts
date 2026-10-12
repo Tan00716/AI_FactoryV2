@@ -12,13 +12,29 @@
  * Design (deliberately narrow, no fake wiring):
  * - The service holds ONE WorkflowEngineV2 instance and keeps an in-memory
  *   mirror of each task's v2 state, keyed by taskId.
- * - SEEDING: on first v2 access for a task, the mirror is registered with
- *   the stage mapped from the task's current DB (v1) status — the DB stays
- *   the durable source of truth. v1 exception statuses (BLOCKED, QA_FAILED,
+ * - SEEDING: on first v2 access for a task with NO persisted v2 state,
+ *   the mirror is registered with the stage mapped from the task's
+ *   current DB (v1) status. v1 exception statuses (BLOCKED, QA_FAILED,
  *   …) have no v2 stage; they seed an approximate stage plus the matching
  *   v2 condition, because v1 never recorded the stage separately (that is
  *   exactly the §18 flaw v2 fixes). After the first successful v2
  *   transition the mirror and the DB status move together via write-back.
+ * - PERSISTENCE (§18/§19/§20.1, Batch 13): when a TaskV2StateStore is
+ *   wired (FactoryDatabase.taskV2States), the mirror itself is durable.
+ *   Every engine-committed mutation the service drives (seed,
+ *   transition, milestone reconciliation, finalize) is followed by a
+ *   verbatim snapshot put(); on first access a stored state is hydrated
+ *   back into the engine and takes precedence over the approximate
+ *   seed, so a restart restores the exact stage, condition, recorded
+ *   milestones, histories, outcome-gate validity, taskVersion and the
+ *   §20.1 final seal (the Batch 12 F1 residual: a re-seeded mirror used
+ *   to report finalSeal 0 for a DONE task). What is NOT persisted: the
+ *   engine's idempotency result cache, G-17 outbox queue and G-21
+ *   failure-event log — none of them is part of TaskV2State; the audit
+ *   log (already durable) is their record. Hydration restores engine-
+ *   produced state through the engine's getMutable() accessor: it
+ *   replays no transition and bypasses no gate — every stored state was
+ *   reached via the engine's own gated mutators in an earlier process.
  * - WRITE-BACK: a successful v2 transition writes the resulting stage back
  *   to the DB via TaskManager.setStatus (the same engine-only write the v1
  *   engine uses). v2's OUTCOME_VERIFICATION has no v1 status; it writes
@@ -180,6 +196,20 @@ export interface V2TransitionDeps {
   approvals?: {
     listByTask(taskId: string): ReadonlyArray<{ status: string }>;
   };
+  /**
+   * Durable v2 mirror store (optional, Batch 13). When present, the
+   * engine's TaskV2State is persisted after every mutation the service
+   * commits and hydrated from the store on first access, so a restart
+   * restores the exact v2 state instead of the approximate v1-row seed.
+   * Absent = the mirror is process-local (the pre-Batch-13 behavior).
+   * Structural on purpose: the concrete store is db's
+   * SqliteTaskV2StateStore, wired in getV2TransitionService behind the
+   * same shape guard as approvals.
+   */
+  v2States?: {
+    get(taskId: string): TaskV2State | undefined;
+    put(state: TaskV2State): void;
+  };
 }
 
 export interface V2StateView {
@@ -309,9 +339,59 @@ export class V2TransitionService {
   }
 
   /**
-   * Ensure the engine mirror exists for this task, seeding from the DB row
-   * on first access. Returns the DB task (throws TaskNotFoundError via
-   * TaskManager.get when the task does not exist).
+   * Persist the engine's current state for this task, verbatim, when a
+   * store is wired. engine.get() returns a deep-frozen snapshot clone,
+   * so the store receives exactly the committed state and nothing the
+   * caller can still mutate. No store wired = no-op (the mirror stays
+   * process-local, the pre-Batch-13 behavior).
+   */
+  private persist(taskId: string): void {
+    if (!this.deps.v2States) return;
+    this.deps.v2States.put(this.engine.get(taskId));
+  }
+
+  /**
+   * Restore a persisted state into the engine. register() can only
+   * seed stage/requirementRef/completionTarget — the remaining fields
+   * (condition, milestones + histories, release state, outcome-gate
+   * validity, finalSeal, taskVersion, updatedAt) are restored onto the
+   * live state via getMutable(). This is restoration, not a state
+   * change: the stored snapshot was produced by the engine itself and
+   * persisted immediately after an engine-committed mutation, so
+   * writing it back replays no transition and bypasses no gate.
+   */
+  private hydrate(taskId: string, saved: TaskV2State): void {
+    this.engine.register(taskId, {
+      stage: saved.stage,
+      requirementRef: saved.requirementRef ?? undefined,
+      completionTarget: saved.completionTarget,
+    });
+    const live = this.engine.getMutable(taskId);
+    const snap = structuredClone(saved);
+    live.stage = snap.stage;
+    live.condition = snap.condition;
+    live.milestones = snap.milestones;
+    live.milestoneHistory = snap.milestoneHistory;
+    live.releaseState = snap.releaseState;
+    live.releaseHistory = snap.releaseHistory;
+    live.outcomeGateValid = snap.outcomeGateValid;
+    live.finalSeal = snap.finalSeal;
+    live.taskVersion = snap.taskVersion;
+    live.requirementRef = snap.requirementRef;
+    live.completionTarget = snap.completionTarget;
+    live.completionHistory = snap.completionHistory;
+    live.updatedAt = snap.updatedAt;
+  }
+
+  /**
+   * Ensure the engine mirror exists for this task. On first access the
+   * persisted state wins when a store is wired and holds a row for the
+   * task (hydration — the exact pre-restart state); only a task with
+   * no stored state takes the legacy approximate seed from the DB row,
+   * and that seed is then persisted immediately so every later access
+   * (in this or any future process) hydrates instead. Returns the DB
+   * task (throws TaskNotFoundError via TaskManager.get when the task
+   * does not exist).
    */
   ensureSeeded(taskId: string, requirementRef?: string | null): Task {
     const task = this.deps.tasks.get(taskId);
@@ -319,7 +399,12 @@ export class V2TransitionService {
       this.engine.get(taskId);
       return task;
     } catch {
-      // Not mirrored yet — seed below.
+      // Not mirrored yet — hydrate or seed below.
+    }
+    const saved = this.deps.v2States?.get(taskId);
+    if (saved) {
+      this.hydrate(taskId, saved);
+      return task;
     }
     const stage =
       task.v2?.workflowStage ?? STAGE_BY_STATUS[task.status] ?? 'TODO';
@@ -337,6 +422,7 @@ export class V2TransitionService {
         { resumeState: null },
       );
     }
+    this.persist(taskId);
     return task;
   }
 
@@ -523,6 +609,9 @@ export class V2TransitionService {
     // §19: record the milestone this stage demonstrably achieves, so the
     // milestone axis is real recorded state (not re-derived at read time).
     this.reconcileMilestones(taskId, actor, check.consumedEvidence[0]?.id);
+    // Batch 13: the transition + milestone reconciliation are committed
+    // engine mutations — persist the resulting mirror verbatim.
+    this.persist(taskId);
     return {
       ok: true,
       from: check.from,
@@ -718,6 +807,10 @@ export class V2TransitionService {
         : null,
     );
     this.reconcileMilestones(taskId, actor);
+    // Batch 13: milestone reconciliation above is a committed mutation
+    // even when finalize() below denies — persist it either way, then
+    // persist again after a successful finalize (DONE + finalSeal).
+    this.persist(taskId);
     const { snapshot, warnings } = this.completionSnapshot(task, body);
     const result = this.engine.finalize(taskId, actor, snapshot);
     if (!result.ok) {
@@ -733,6 +826,7 @@ export class V2TransitionService {
     if (fresh.status !== 'DONE') {
       this.deps.tasks.setStatus(taskId, 'DONE');
     }
+    this.persist(taskId);
     return {
       ok: true,
       taskId,
@@ -762,6 +856,15 @@ export function getV2TransitionService(ctx: RouteContext): V2TransitionService {
       approvals:
         ctx.fdb && typeof ctx.fdb.approvals?.listByTask === 'function'
           ? ctx.fdb.approvals
+          : undefined,
+      // Batch 13: the durable v2 mirror store (task_v2_state table).
+      // Same shape-guard pattern: a context without the SQLite store
+      // keeps the process-local mirror.
+      v2States:
+        ctx.fdb &&
+        typeof ctx.fdb.taskV2States?.get === 'function' &&
+        typeof ctx.fdb.taskV2States?.put === 'function'
+          ? ctx.fdb.taskV2States
           : undefined,
     });
   }

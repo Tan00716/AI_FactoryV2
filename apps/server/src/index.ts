@@ -55,6 +55,7 @@ import {
   handleRuntimeRoutes,
   resolveRuntimeToolAllowlist,
   runtimeToolsStartupError,
+  setRuntimeCheckpointLog,
   setRuntimeRunStore,
 } from './routes/runtime';
 import { handleOrchestratorRoutes } from './routes/orchestrator';
@@ -97,6 +98,12 @@ import { handleDashboardRoutes } from './routes/dashboard';
 import { handleNotificationRoutes } from './routes/notifications';
 import { handleEventRoutes } from './routes/events';
 import { handleActivityRoutes } from './routes/activity';
+import {
+  applyPendingRestore,
+  handleBackupRoutes,
+  initBackupService,
+  resolveBackupConfig,
+} from './routes/backup';
 import { EventBus } from '@ai-factory/events';
 import {
   API_TOKEN_ENV,
@@ -136,11 +143,41 @@ function ensureDir(dbPath: string): void {
 }
 
 ensureDir(DB_PATH);
+/**
+ * Backup/restore (Batch 13-3): a restore staged by POST /api/restore is
+ * applied HERE — before the database is opened — by swapping the staged
+ * snapshot into place. The outgoing file is kept as
+ * <db>.superseded-<ts> (with its WAL sidecars); the RESTORE_APPLIED
+ * audit record is written into the restored database just after the
+ * AuditLog is constructed below. See routes/backup.ts for the full
+ * semantics (validation → pre-restore backup → stage → apply at boot).
+ */
+const pendingRestoreApplied = applyPendingRestore(path.resolve(DB_PATH));
+if (pendingRestoreApplied.applied) {
+  console.log(
+    `[ai-factory] staged restore applied (backup ${pendingRestoreApplied.info?.backupId ?? 'unknown'}); ` +
+      `previous database kept at ${pendingRestoreApplied.supersededPath}`,
+  );
+}
 const fdb = new FactoryDatabase(DB_PATH);
 
 const tasks = new TaskManager(fdb.tasks);
 const evidence = new EvidenceEngine(fdb.evidence);
 const audit = new AuditLog(fdb.audit);
+if (pendingRestoreApplied.applied) {
+  audit.record(
+    'system',
+    'RESTORE_APPLIED',
+    'backup',
+    pendingRestoreApplied.info?.backupId ?? 'unknown',
+    {
+      stagedAt: pendingRestoreApplied.info?.stagedAt ?? null,
+      preRestoreBackupId: pendingRestoreApplied.info?.preRestoreBackupId ?? null,
+      supersededPath: pendingRestoreApplied.supersededPath ?? null,
+    },
+    { result: 'APPLIED' },
+  );
+}
 /**
  * §28.1/§28.3 (G-59) — step intents live in the database now: this is
  * the SQLite-backed StepIntentStore from the FactoryDatabase, handed to
@@ -196,16 +233,20 @@ const startupIntentScan = {
 const operationLedger = new OperationLedger({ store: fdb.operations });
 
 /**
- * §28.3 (G-59) — checkpoints are durable too: the coordinator builds
- * the runtime CheckpointLog over the SQLite CheckpointStore from the
- * FactoryDatabase, so a checkpoint captured by any future embedder
- * survives the restart it exists for. Honest scope: NOTHING in this
- * server creates or reads checkpoints yet — no route exposes them and
- * the run path does not capture them (CheckpointV2's only callers
- * today are runtime tests). This const is the coordinator-level
- * injection point, constructed exactly like the operation ledger
- * above was before its first consumer; the health block below reports
- * the store's live count so the wiring is observable, not decorative.
+ * §28.3 (G-59, Batch 13) — checkpoints are durable AND consumed: the
+ * coordinator builds the runtime CheckpointLog over the SQLite
+ * CheckpointStore from the FactoryDatabase, and the runtime run path
+ * is its first production consumer — every executed step of an HTTP
+ * run captures a CheckpointV2 into this log (routes/runtime.ts,
+ * createRunCheckpointCapture), and GET
+ * /api/runtime/runs/:id/checkpoints[/latest] serves the captures back
+ * as the recovery entry point. The install into the route module
+ * (setRuntimeCheckpointLog, below with the other route installs) hands
+ * the route THIS log, so the health block below counts exactly what
+ * the run path writes: the stored count grows by one per executed
+ * run step. Nothing auto-resumes from a checkpoint (§28.4) — a
+ * restart serves an interrupted run's latest checkpoint as its
+ * recovery point and leaves the decision to a human/controller.
  */
 const checkpointLog = new CheckpointLog({ store: fdb.checkpoints });
 
@@ -238,6 +279,24 @@ initRequirementManager(fdb.requirements);
  * above).
  */
 setRuntimeRunStore(fdb.runs);
+
+/**
+ * Checkpoints (§28.3, Batch 13) — the runtime route's checkpoint log
+ * is installed over the coordinator's CheckpointLog above (the one
+ * /api/health counts), so run-path captures land in SQLite and
+ * survive the restart they exist for. The route module keeps an
+ * in-memory default for standalone use; this install is the
+ * coordinator's one wiring act, done before the server takes traffic.
+ */
+setRuntimeCheckpointLog(checkpointLog);
+
+/**
+ * Backup/restore (Batch 13-3) — the routes in routes/backup.ts read
+ * their config (live DB path, backup dir from FACTORY_BACKUP_DIR or
+ * <db dir>/backups, app version) from this install, done before the
+ * server takes traffic like the other coordinator wirings above.
+ */
+initBackupService(resolveBackupConfig(DB_PATH));
 
 /**
  * Startup reconcile (§28.2): every non-terminal operation in the DB
@@ -388,9 +447,9 @@ const server = createServer(async (req, res) => {
     // reconcile classified them (audit: STARTUP_OPERATION_RECONCILE,
     // table: external_operations). The checkpoints block is the §28.3
     // durability status: the store backing the coordinator's
-    // CheckpointLog and how many checkpoints it currently holds (no
-    // server path captures checkpoints yet — see the construction
-    // comment above; the count is live, read per request). The
+    // CheckpointLog and how many checkpoints it currently holds — the
+    // run path captures one per executed run step (Batch 13), so the
+    // count grows with real run activity (live, read per request). The
     // requirements block is the §16 (F2) counterpart: the durable
     // store backing the shared RequirementManager and how many
     // requirements it currently holds (live count, read per request). The runs
@@ -481,6 +540,7 @@ const server = createServer(async (req, res) => {
     if (await handleNotificationRoutes(req, res, url, routeCtx)) return;
     if (await handleEventRoutes(req, res, url, routeCtx)) return;
     if (await handleActivityRoutes(req, res, url, routeCtx)) return;
+    if (await handleBackupRoutes(req, res, url, routeCtx)) return;
 
     // Projects
     if (path === '/api/projects' && method === 'GET') {

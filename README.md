@@ -1,387 +1,156 @@
-# AI Engineering Factory IDE — Prototype
+# AI Factory（AI Engineering Factory IDE）
 
-Runnable prototype skeleton of the **AI Engineering Factory IDE** product spec
-(`~/workspace/user/files/AI_factory.txt`). Local-first: React UI + Node.js API
-+ SQLite, no cloud, no login.
+**本地优先的 AI 软件工程工厂：AI 员工负责干活，人负责把关——每一步流转都要过证据门禁、关键动作要人批准、全过程留一条可验真的审计链。**
 
-## Quick start
+当前状态：**可运行原型，尚未正式发布**（0.1.0 开发线）。本地优先：React 桌面
+UI + Node.js API + SQLite 单机存储，无云、无账号体系。权威规格为 SPEC_V2.md
+（v2.0）；仓库外同目录的 `AI_factory.txt` 是 v1.0 历史来源，已被 v2 全面取代。
+
+验证基线（2026-10-12，Batch 12 后，主线亲自复跑）：
+
+- 构建 0 错误；全量测试 **1826/1826 全绿**；46 个 demo 脚本全过（含首次运行走查 `demo:e2e`）
+- Linux AppImage 已构建并无头运行验证通过（见「安装包」一节）
+- 一次由未参与开发的审计员执行的独立复核：抽查 Batch 1–10 共 21 条已关闭项，
+  21 条全部证实、0 假关闭（[gap-audit/REAUDIT_BATCH_1_10.md](gap-audit/REAUDIT_BATCH_1_10.md)）
+
+## 真实能力（已实现并经测试/走查验证）
+
+- **证据门禁工作流**：AI 只能*申请*流转，引擎按每条迁移的证据要求*裁决*；
+  拒绝时逐项点名缺什么（422 + missing 清单），DB 状态不变。
+- **v2 三态工作流引擎已接线服务端**：`POST /api/tasks/:id/v2-transition`、
+  `GET /api/tasks/:id/v2-state`、`POST /api/tasks/:id/v2-complete`（服务端组装
+  §20.1 完成快照、调用 `finalize()`，完成谓词校验 + DONE + final_seal=1 一次提交）。
+- **证据不可变**：证据 DRAFT → SEALED 后改/删抛错；v2 迁移提交后，被该 Gate
+  消费的证据立即封存（谓词检查型证据如生产审批不算消费、不封存）。
+- **需求版本治理（§16）**：需求版本只增不可变、任务钉住版本；升版后旧证据走
+  STALE 门、须显式兼容声明才放行；完成目标/验收语义变更与 VERIFIED_DELIVERY
+  强制 HUMAN 授权；Promotion Hold 可冻结晋升（409 全链路）。需求、版本、链接、
+  Hold、兼容声明全部落 SQLite，重启不丢。
+- **审批硬约束**：评审独立性在服务端强制（缺评审身份 400、自审 422
+  INDEPENDENCE_REQUIRED、拒绝写审计且零证据封存）；Exception Grant 为
+  human-only 授予、带理由与 TTL，WAIVED 是独立裁决、类型层面永不冒充 APPROVED；
+  BLOCKED 类动作（如 secret.write）不可豁免。
+- **审计哈希链**：append-only 审计带 summaryHash/prevHash 链（GENESIS 根），
+  `verifyAuditChain` 可检出篡改/调序/删除；审计落 SQLite，跨重启仍可验真。
+- **运行时治理**：12 态 run 状态机；StepIntent 在工具执行*前*落盘、被权限
+  拒绝的调用留 DENIED 终态 intent（不再无记录）；工具执行走白名单
+  （`FACTORY_RUNTIME_TOOLS`，默认全拒）；预算/配额在真实调用点扣减；
+  harness 对空工具结果如实标 EMPTY_RESULT，不封存假成功证据。
+- **关键状态全部落库（SQLite）**：任务/证据/审批/需求/run 记录/审计/
+  step intents/external operations/checkpoints。启动扫描只报告不处置：
+  中断 intent 与未终态 operation 写审计并在 `/api/health` 可见，绝不自动
+  改写为已执行、绝不重放。
+- **Final Report 生成器**：`GET /api/projects/:id/final-report`（`?format=md`
+  输出 Markdown），全部段落源自 DB 真实记录，无数据如实标注，WAIVED 单列，
+  报告带 sha256 且生成动作本身写审计。
+- **API 认证**：设置 `FACTORY_API_TOKEN` 后 `/api/*` 需 Bearer 令牌
+  （健康端点豁免）；非 loopback 绑定且无 token 时服务拒绝启动。
+- **真实模型接入（一条）**：CodexAdapter 已真实实现——经 JSON-RPC 连接
+  Codex app-server（stdio 子进程或 ws://），走完 initialize → thread/start
+  → turn/start；账号状态可 live 查询（未登录如实标注）。**真 turn 尚未验通，
+  见下方非能力清单。**
+- **桌面 IDE 壳**：Electron + React，含任务 Board、组织图、任务/Agent 详情、
+  Git/QA/审批/CI-CD/技能/Memory/MCP/知识/评估等面板、Monaco 编辑器、
+  xterm 终端、Activity/Run 详情（凭据自动脱敏）。
+- **领域包矩阵（40 个包）**：Git 引擎、QA 失败闭环、CI/CD 风险分级与
+  canary、技能注册与安装安全门、结构化记忆、模型路由、编排调度、员工工厂、
+  事件总线、事件/事故、快照恢复、资源预算、自治分级、协调锁、争议裁决等，
+  每个包带单测与 demo（见 `package.json` 的 `demo:*` 脚本）。
+
+## 明确不具备 / 未验通（非能力清单）
+
+完整清单以 [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) 为准，以下为要点：
+
+- **Codex 真 turn 端到端未验通**：适配器已验到认证边界（未登录时真实 401
+  原文透传、不伪造成功）；完成验证需在机器上执行 `codex login --device-auth`。
+- **除 Codex 外的模型供应商适配器仍是 stub**（脚本回放，不消耗真实额度，
+  也不产生真实结果）。
+- **MCP Registry 未接入任何真实 MCP 服务**（未知来源默认 BLOCK 的逻辑在，
+  未做真实握手验证）。
+- **Checkpoint 已落库且运行路径已真实捕获**（Batch 13）：HTTP run 每步
+  捕获一条 checkpoint 并可经 API 查询最新恢复点；但**不自动 resume**——
+  重启后只提供恢复点，恢复决策留给人工/上层。
+- **桌面 Board 仍走 v1 流转端点**，未切 v2（Board 列模型与 v2 三态/版本钉
+  的输入不匹配，硬切只会是假接线，故未切）。
+- **v2 引擎状态已落库**（Batch 13）：完整镜像与 finalSeal 跨重启保真；
+  仅无 DB 的嵌入场景仍为进程内镜像，首次访问无落盘行时仍按 DB 行近似播种。
+- **无真实隔离 Host**：本机直跑，`CONFINEMENT_UNAVAILABLE` 的 fail-closed
+  路径有单测，真实隔离未验证。
+- **单机 SQLite**：无团队数据库、无远程 Host、无并发/稳态/真人 UAT 验证；
+  规格测试计划宣称的 275 条正式用例集（`docs/testing/v2/`）不存在，记 NOT_RUN。
+- **仅在 Linux 上验证过**；Windows/macOS 安装包未定稿（见下），**三平台均未签名**。
+
+## 运行
+
+环境：Node ≥ 22（使用内置 `node:sqlite`，无原生插件）。
+
+### 从源码运行（开发模式）
 
 ```bash
-cd ~/workspace/ai-factory
 npm install
-npm run dev        # builds everything, then starts API (:3100) + UI (:5173)
+npm run dev        # 构建全部包，然后启动 API (:3100) + UI (:5173)
 ```
 
-Open http://localhost:5173. The backend seeds a demo project (`MyApp`),
-a 6-agent AI organization, and 6 tasks on first run (`./data/factory.db`).
+打开 http://localhost:5173 。首次启动会在 `./data/factory.db` 建库并播种
+演示项目、AI 组织与任务。
 
-| Command | What it does |
+### 安装包运行（Linux AppImage）
+
+```bash
+npm run dist:linux   # 产出 release/AI Factory-<版本>.AppImage（约 124MB）
+./release/"AI Factory-0.1.0.AppImage"
+```
+
+AppImage 会拉起内置后端（127.0.0.1:3100）与桌面窗口，本机已无头运行验证
+通过（后端单进程、API 返回真实数据、数据库真实落盘）。`release/` 为本地
+产物目录（已 gitignore）。Windows 安装包需在 Windows 机器上执行
+`npm run dist:win` 定稿（配置、图标、载荷均已就绪，本开发机无法完成该步）；
+macOS 需在 Mac 上执行 `npm run dist:mac`。打包细节见
+[docs/packaging.md](docs/packaging.md)。
+
+### 测试与演示
+
+```bash
+npm test             # 全量单测（基线 1826 条，见文首日期）
+npm run demo:e2e     # 首次运行全流程走查（真实 server × 多次重启，纯 HTTP）
+npm run demo         # 证据链演示：TODO → DONE，中间有一次门禁拒绝
+npm run demo:codex   # Codex 适配器演示（假 app-server，不需要登录）
+```
+
+首次运行的完整剧本与每步实际结果见
+[docs/FIRST_RUN_WALKTHROUGH.md](docs/FIRST_RUN_WALKTHROUGH.md)。
+
+## 关键环境变量
+
+| 变量 | 作用 |
 |---|---|
-| `npm run dev` | Build all + start API (`:3100`) and Vite UI (`:5173`) |
-| `npm test` | Build all domain packages, run 636 unit tests (`node --test`) |
-| `npm run demo` | Evidence-chain demo: task TODO → DONE with a gate **denial** in the middle |
-| `npm run demo:qa` | QA-loop demo: test FAIL → classify → fix → rerun → PASS |
-| `npm run demo:cicd` | Pipeline demo: 8 stages → UAT, PROD parks on approval → resume → SUCCEEDED; failed deploy → auto-rollback |
-| `npm run demo:skills` | Skills demo: clean install → risky install blocked → discovery → single-skill instruction load |
-| `npm run demo:memory` | Memory demo: dedup merge, expiry, confidence decay, verify, lessons from evaluation |
-| `npm run demo:projects` | Projects demo: discover → template create → whitelisted exec |
-| `npm run demo:review` | Review demo: tainted diff → CHANGES_REQUESTED, clean diff → PASS |
-| `npm run demo:release` | Release demo: UAT deploy → PROD denied w/o approval → approved deploy → unhealthy auto-rollback |
-| `npm run demo:policy` | Policy demo: override denied → effective policy → YAML validation |
-| `npm run build` | TypeScript build (all packages + server) + Vite production bundle |
-| `npm run build:electron` | Compile the Electron main process (`apps/desktop/dist-electron/`) |
-| `npm run electron` | Launch the Electron shell (needs `npm i -D electron` first — binary not bundled) |
+| `FACTORY_API_TOKEN` | 设置后，除健康端点外所有 `/api/*` 请求须带 `Authorization: Bearer <token>`；未授权返回统一 401 并写 AUTH_DENIED 审计。绑定非 loopback 地址且未设置此变量时，服务**拒绝启动**。桌面端把 token 存在 localStorage 并自动注入请求头。 |
+| `FACTORY_RUNTIME_TOOLS` | HTTP 发起 run 时允许执行的工具白名单（逗号分隔，如 `echo,add`）。**未设置 = 全部工具拒绝**（fail-closed）；名单含未注册工具名时启动期 FATAL、请求期 500 并写审计。每次 run 写 RUNTIME_RUN_STARTED 审计（含 grantedTools）。 |
 
-Node ≥ 22 required (uses the built-in `node:sqlite`, no native addons).
-
-## Architecture
+## 架构速览
 
 ```text
-apps/desktop            React + TypeScript UI (spec §3 layout)
-  ├─ src/components     TopBar · Sidebar (org tree §84) · Board (§85) ·
-  │                     BottomPanel (activity/terminal/tests/logs) · CreateTaskModal
-  └─ electron/main.ts   Electron main process (spawns local backend)
-
-apps/server             Zero-dependency node:http JSON API (:3100)
-  └─ src/index.ts       /api/projects · /api/tasks · /api/tasks/:id/transition ·
-                        /api/tasks/:id/evidence · /api/agents · /api/org ·
-                        /api/board · /api/audit
-  └─ src/routes/        Modular route handlers (each returns true when handled):
-                        git.ts (§34) · qa.ts (§36–38) · approvals.ts (§45, §69)
-
-packages/git             Git engine (§34): GitRepo wraps the git CLI (status,
-                        diff, branch, checkout, commit, stash, merge, rebase,
-                        push, pull, tag, log), task-branch helper
-                        (`task/<id>-<slug>`), branch protection (main/master
-                        deny direct push), in-memory PR records; commits attach
-                        `code_change` evidence, PR merges attach `merge` evidence.
-
-packages/qa              QA engine (§36–§38): QA org on the agent registry
-                        (QA Lead + Functional/API/E2E/Regression/Performance/
-                        Security specialists), category test runner producing
-                        §37 machine-readable results, failure classification
-                        (PRODUCT/TEST/ENVIRONMENT/INFRA/AI/UNKNOWN), and the
-                        §38 failure loop (classify → owner → fix → rerun →
-                        regression). QA runs attach `qa_result` evidence.
-
-packages/approvals       Approval system (§45, §69): request/decide/cancel/
-                        expiry lifecycle, tool approval levels (AUTO /
-                        AI_REVIEW / HUMAN_APPROVAL / BLOCKED) with policy
-                        evaluation, SQLite-backed store (migrates the existing
-                        `approvals` table). Granting a prod approval attaches
-                        `approval` evidence — the PENDING_PROD → PROD_DEPLOYING
-                        gate (§41) requires it.
-
-packages/db             SQLite persistence (node:sqlite), spec §100 core tables:
-                        projects · tasks · agents · workflows · runs ·
-                        artifacts · evidence · approvals · audit_logs
-
-packages/core           Pure TypeScript domain layer (no I/O — unit-testable)
-  ├─ workflow.ts        State machine: §11 default flow + exception states,
-  │                     §12 gates (evidence requirements per transition)
-  ├─ engine.ts          requestTransition(): agents *request*, engine *decides* (§13, §92)
-  ├─ evidence.ts        Evidence engine: DRAFT → SEALED, immutable once a gate
-  │                     consumes it (§42 — "evidence beats claims")
-  ├─ tasks.ts           Task object (§8) + subtasks + dependency graph w/ cycle
-  │                     detection (§60)
-  ├─ agents.ts          Agent registry: autonomy levels 0–5 (§17), capability
-  │                     permissions (§44 subset), least-privilege role defaults
-  │                     (§2.5), org tree builder (§84)
-  └─ audit.ts           Append-only immutable audit log (§70)
+apps/desktop     React + TypeScript UI（Electron 壳，electron/main.ts 拉起后端）
+apps/server      零依赖 node:http JSON API (:3100)，路由按域拆分在 src/routes/
+packages/*       40 个领域包：core（工作流/证据/任务/审计）· db（SQLite 落库）·
+                 runtime（run 状态机/harness/适配器）· requirements · approvals ·
+                 git · qa · cicd · skills · memory · model-router · orchestrator ·
+                 security · recovery · resources · quotas/leases/watchdog/takeover …
 ```
 
-### The core principle, in code
+核心原则（证据高于声明）：
 
 ```text
-AI requests transition  →  engine checks gate  →  evidence present & verdicts ok?
-        │                                                     │
-        │ yes: seal evidence, move state, audit               │ no: DENY + list exactly
-        ▼                                                     ▼   what is missing
+AI 申请流转 → 引擎查门禁 → 证据齐全且裁决通过？
+   │ 是：封存被消费证据、迁移状态、写审计        │ 否：DENY + 逐项点名所缺
+   ▼                                            ▼
 ```
 
-Try it live: open a task card in QA → click `→ PENDING_UAT_MERGE` → watch the
-denial name the missing `security_report`, attach it, retry, and it passes.
+## 文档索引
 
-## Implemented (prototype)
-
-- **Workflow engine** (`packages/core`): full §11 state graph (12 happy-path +
-  8 exception states), per-transition evidence gates (§12), denial messages
-  naming missing evidence, unknown-transition rejection.
-- **Task system**: §8 core fields, subtasks, §60 dependencies with cycle detection.
-- **Evidence engine**: §42 immutability — sealed evidence throws on update/delete.
-- **Agent registry**: §15–17 fields, autonomy 0–5 validation, §44 permission
-  subset with least-privilege role defaults, org tree (§84).
-- **Audit log**: §70 append-only, no update/delete API.
-- **SQLite schema**: §100 core tables (projects, tasks, agents, workflows,
-  runs, artifacts, evidence, approvals, audit_logs).
-- **REST API**: projects/tasks/evidence/agents/org/board/audit; transition
-  endpoint returns `422 + missing[]` on gate denial.
-- **React IDE shell** (§3): top bar (project · agent count · status), left rail
-  (project tree · AI org · skills), center tabs (task board §85 · **Git panel** ·
-  **QA panel** · **Approvals panel** · **CI/CD panel** · **Skills panel** ·
-  **Memory panel** · **MCP panel** · **Knowledge panel** · **Evaluation panel** ·
-  **Agents panel** · **Orchestrate panel** · editor placeholder ·
-  **Stability panel** (§61–63, §71–80, §96–97)), bottom (AI activity from audit
-  log · terminal/tests/logs). Create-task modal.
-- **Organization 可视化图 (§84)** — `OrgGraph.tsx`: Agents 页签"列表/图谱"切换；
-  SVG 树形图 HUMAN→PM→…，节点按状态着色（在线绿/空闲灰/工作中蓝/阻塞橙/
-  失败红/暂停紫/归档暗），点击节点详情浮层（可跳转 §87 员工档案），
-  支持缩放（40–200%）+ 状态图例。
-- **Task Board 完整版 (§85)** — `Board.tsx`: 12 happy-path 列（TODO…DONE）
-  + BLOCKED/FAILED 异常列（终态 CANCELLED/REJECTED/ESCALATED 并入 DONE，
-  ROLLBACK 并入 FAILED）；卡片显示 ID/优先级/当前 Agent/Agent 数/风险/
-  happy-path 进度条/当前门禁所需证据/运行时长；拖拽跨列走
-  POST /tasks/:id/transition，多态列（FAILED）按引擎 nextStates 解析合法目标；
-  门禁拒绝（422）toast 点名缺少的证据。
-- **Task Detail (§86)** — `TaskDetail.tsx`: 点击卡片开抽屉，14 个页签
-  概览/时间线/团队/子任务/文件/Diff/测试/QA/安全/CI-CD/部署/证据/Memory/Trace，
-  复用 QaPanel/CicdPanel + 审计日志/证据/内存引擎，缺数据显"暂无"；
-  概览页可直接发起流转并内联显示门禁拒绝原因。
-- **AI Employee Detail (§87)** — `EmployeeDetail.tsx`: 点击 Agent（图谱/列表/
-  任务团队）开详情，15 个分区 档案/指令/技能/规则/策略/模型/工具/MCP/权限/
-  记忆/知识/当前任务/历史/评估/版本；当前任务可跳回任务详情，评估复用
-  /profiles 画像 API，缺数据显"暂无"。
-- **Git engine** (§34): full git CLI wrapper, `task/<id>-<slug>` branch workflow,
-  PR create/merge records, branch protection (direct push to main → 403),
-  `code_change`/`merge` evidence auto-attached, every mutation audited.
-- **QA engine** (§36–§38): QA Lead + dynamically created specialists, 11 test
-  categories, TAP-parsing shell runner, 6-class failure classifier, repair loop
-  with owner assignment and regression rerun, `qa_result` evidence.
-- **Approvals** (§45, §69): approval lifecycle with expiry, per-tool approval
-  levels, `POST /api/approvals/evaluate` policy check, approvals panel with
-  risk badges; prod gate requires granted `approval` evidence.
-- **CI/CD engine** (§39–§41, §77): 8-stage pipeline runner (build → smoke) with
-  injectable handlers, per-stage logs/artifacts; 4 environments
-  (LOCAL/DEV/UAT/PROD) with approval policies (PROD → HUMAN_APPROVAL);
-  snapshot-before-deploy with automatic rollback on failure; rollback-capability
-  gate refuses PROD deploys with no rollback method; parked deploys mint a real
-  approval ticket so the Approvals panel is the human gate; `deployment` /
-  `smoke_test` / `ci_result` evidence auto-attached; CI/CD panel (pipeline
-  list, stage grid, deploy/approve/rollback).
-- **Skills registry** (§47–§49, §74): versioned skills (multi-version
-  coexistence, DEPRECATED/RETIRED lifecycle), §74 install-time security
-  checklist (HIGH findings → install blocked pending HUMAN_APPROVAL),
-  keyword discovery with auditable selection records, single-skill instruction
-  loading (§48), per-task exact-version usage log (§49); 8 built-in OFFICIAL
-  skills; Skills panel (list, trust badges, discovery demo, SKILL.md viewer).
-- **Memory engine** (§54–§58): 5 scopes (employee/project/organization/task/
-  system) × 9 entry types; per-entry source/confidence/evidence/verification/
-  expiry; dedup-on-write merging, half-TTL confidence decay, auto-expiry;
-  `verify()` restores confidence; `lessonFromEvaluation()` turns task-end
-  evaluations into Lesson/Failure entries; `memory_entries` SQL table
-  (+ `SqliteMemoryStore`); Memory panel (scope tabs, confidence badges,
-  write/verify).
-- **Model router** (§28–§30): deterministic task→model routing (primary/
-  fallback/emergency) with hard-constraint filtering (privacy, vision, tools,
-  context) and §29 shared-pool exhaustion handling; provider profiles
-  (chatgpt-oauth/api-key/local/other) + account status.
-- **Agent runtime** (§24–§27): explicit loop state machine
-  (OBSERVE→…→EVALUATE→CONTINUE/RETRY/HANDOFF/ESCALATE/COMPLETE), budgets,
-  stagnation detection (same error ×3 → escalate), checkpoint/resume, harness
-  (permissions, filesystem boundary, timeouts, evidence sink, tracing);
-  provider-independent `RuntimeAdapter` (scripted `StubAdapter`, `CodexAdapter`
-  placeholder).
-- **Orchestrator** (§92–§95, §21): rule-based task auto-decomposition (4 kind
-  templates), dependency-aware priority scheduler, weighted agent selection,
-  pure next-action engine, manager/handoff pattern chooser.
-- **Employee factory** (§18–§19, §59): template-driven dynamic employee
-  creation, full governance (children/depth/total/budget/role/model/tool/
-  permission limits), self-modification proposals (auto-approve/deny/
-  needs-review).
-- **Task squads + org designer** (§20, §14): temporary squads with archive
-  semantics, org graph with cycle validation and JSON round-trip; **Agents**
-  and **Orchestrate** center tabs in the IDE.
-- **MCP registry** (§46, §73): server registration (name/version/tools/
-  resources/scopes/permissions/trust/approval-policy), unknown sources
-  default BLOCKED, approval-gated install flow (AUTO/AI_REVIEW/
-  HUMAN_APPROVAL/BLOCKED), multi-version installs, per project/agent/task
-  enablement, five-check pre-call tool gate with usage-version logging;
-  MCP panel (list, trust badges, install/review, gate-check demo).
-- **Knowledge engine + scout** (§50–§53): 5-level hierarchy
-  (GLOBAL→…→TASK) with scope-fallback queries and cross-project isolation;
-  8-state lifecycle (DISCOVERED→…→RETIRED) with verification-threshold,
-  evaluation-score, and external-approval gates; source credibility tiers
-  (§51); publishing returns proposal+notice only — never touches agents
-  (§53); 9-stage scout state machine with injectable hooks and retry/skip;
-  Knowledge panel (search, detail+lifecycle buttons, add/scout).
-- **Evaluation + improvement** (§57–§58): 11 metrics, weighted score with
-  hard POOR caps (failed tasks / false-completion > 0.3), incremental
-  agent profiles + leaderboard, failure-analysis → Lesson via injected sink,
-  improvement proposals with PROPOSED→APPROVED→APPLIED governance (critical
-  org rules need human approval, never silent); Evaluation panel
-  (run evaluation, leaderboard, proposal approve/reject/apply).
-- **Agent communication** (§22): 8 typed primitives (Assignment, ArtifactRef,
-  Decision, Report, Evidence, ApprovalRef, Handoff, Event) in a uniform
-  envelope over task-isolated channels — no free-form chat; payload
-  validation, correlationId chains, exportable task traces.
-- **Artifact system** (§23): all 19 types first-class with per-type schemas
-  (missing fields named on rejection), seal-immutable semantics, bidirectional
-  links, workflow hooks auto-generating artifacts (e.g. TASK_COMPLETED →
-  FINAL_REPORT draft), decoupled for core binding later.
-- **Projects** (§31–§33): sandboxed `WorkspaceExecutor` (command whitelist,
-  cwd confinement, timeout kill, output truncation, audit on allow+deny),
-  `discoverProject()` (language/framework/package-manager/test-framework/Git/
-  CI/AGENTS.md/skills/MCP detection → ProjectProfile), `createProject()`
-  (dir + git init + skeleton + README + `.ai/project.yaml`), 5 templates
-  (nextjs-saas, react, python-api, node-api, electron); `/api/projects/*`.
-- **Code Review Agent** (§35): 10 deterministic static dimensions (security,
-  testCoverage, dependencyChanges, conventions, maintainability, readability,
-  correctness, architecture, performance, regressionRisk), verdicts
-  PASS/PASS_WITH_WARNINGS/CHANGES_REQUESTED/BLOCK, `reviewGateEvidence()`
-  feeds the CODE REVIEW workflow gate; `/api/review`.
-- **Environment + Release Manager** (§40–§41, §77): full environment model
-  (variables, secret *references* only, healthCheck, rollbackMethod,
-  approvalPolicy; PROD → HUMAN_APPROVAL), semver releases with auto
-  changelog drafts, deploy gate (env → approval → snapshot → deploy →
-  healthCheck → auto-rollback), UAT→PROD promotion; `/api/releases`.
-- **Policy engine** (§43, §98–§99): 7-layer hierarchy (Global→…→Tool) with
-  upper-layer-wins merging — lower-layer silent overrides are recorded as
-  denials, never applied; hand-written YAML subset parser + validators for
-  `project.yaml` / `organization.yaml`; `/api/policy`.
-- **Permission engine** (§44 full): complete capability list
-  (filesystem.*/shell.execute/git.*/database.*/deploy.*/secret.*/agent.*/
-  mcp.*/skill.*/workflow.*), `checkCapability()` (unknown → deny,
-  `deploy.prod` denied by default, production-write policy override),
-  every deny audited.
-- **Terminal + Monaco** (§64–§65): xterm.js terminal panel backed by
-  whitelist-guarded `/api/exec`; real Monaco editor (offline bundle, no
-  CDN) with file tree, per-language highlighting, Ctrl+S save, DiffEditor.
-- **AI Change Review UI** (§66): Changes panel listing AI commits on task
-  branches (diff summary, reason, tests, evidence links) with
-  Accept/Reject/Revert (revert = real `git revert`); `/api/changes`.
-- **Security** (§71–§76): `SecretRef` (references only, `toString` → `***`),
-  `redactSecrets`/`redactDeep` audit-sink auto-redaction; prompt-injection
-  defense (`classifyContent` → INSTRUCTION/DATA/EXTERNAL_CONTENT,
-  `checkElevation` never promotes untrusted content); manifest scanner
-  (dangerous-script/network/file-access checklist → ALLOW/REVIEW/BLOCK,
-  unknown sources default BLOCK); two-tier sandbox (`local`/`strong`) with
-  directory-escape interception; `/api/security/*`.
-- **Snapshot / Recovery** (§77–§78): sealed file+DB snapshots (restore backs up
-  current state first — rollbacks are roll-backable); 12-type failure
-  classifier; 8-strategy selector with escalation chains and backoff;
-  `RecoveryLoop` orchestration with audit trail; `/api/recovery/*`.
-- **Resource management** (§79): six-dimension budgets (time/tokens/
-  concurrency/tool-calls/retries/storage/processes), `BudgetExceededError`
-  with escalation hook, increase-request approval flow, usage summarizer for
-  dashboards, priority-aware FIFO concurrency gate; `/api/resources/*`.
-- **Autonomy mode** (§80–§81): assisted/semi/autonomous/full project setting;
-  risk-graded action decision matrix; §41 independent prod checklist
-  (`verifyProdReadiness` — full mode still refuses without evidence);
-  human-escalation triggers; `/api/autonomy/*`.
-- **Coordination** (§61–§63): DAG → parallel-batch scheduler with cycle
-  detection; file-overlap detection (incl. directory-prefix) with
-  warn→coordinate→serialize/partition/merge-test plans; six-kind `LockManager`
-  with TTL expiry and globally single-active `deployment:prod` lock;
-  `/api/coordination/*`.
-- **AI disagreement** (§96–§97): verdict-conflict detection, independent
-  adjudication (evidence-weighted heuristic, low confidence → ESCALATED),
-  §97 gate enabling independent verification only for security/architecture/
-  high-risk-deploy/complex-bug; `/api/disputes`.
-- **Stability panel**: IDE center tab covering security scan/redact/classify,
-  snapshots, failure classification, budgets/usage, autonomy mode + prod
-  readiness, scheduling/overlap/locks, and dispute adjudication.
-- **Dashboard** (§83): `packages/dashboard` pure aggregation (status strip:
-  活跃任务/阻塞任务/运行中 Agent/QA 失败/最近部署/生产状态/资源用量; metric
-  cards: 任务完成数/首过成功率/平均任务时长/平均修复轮数/失败部署数/回滚数/
-  人工干预数 — every stat carries its data source; missing data → `null` +
-  暂无数据, never invented), `GET /api/stats`, IDE **Dashboard** center tab
-  with 5 s polling refresh.
-- **Electron main process**: `electron/main.ts` (spawns backend, opens window).
-- **Tests**: 918 unit tests, all passing (`npm test`).
-- **Demos**: `npm run demo` walks TODO → DONE with a mid-run denial;
-  `npm run demo:qa` shows FAIL → classify → fix → PASS;
-  `npm run demo:cicd` shows approved PROD deploy + auto-rollback;
-  `npm run demo:skills` shows install gate + discovery;
-  `npm run demo:memory` shows dedup/expiry/decay/verify;
-  `npm run demo:runtime` shows retry-then-pass and stagnation→escalate;
-  `npm run demo:orchestrator` shows decompose → schedule → select;
-  `npm run demo:factory` shows governed employee creation (approve + deny);
-  `npm run demo:mcp` shows register → BLOCK unknown → approve → install → gate;
-  `npm run demo:knowledge` shows scout → gated lifecycle → ACTIVE → query;
-  `npm run demo:evaluation` shows evaluate → profile → lesson → proposal flow;
-  `npm run demo:comms` shows Assignment → Handoff → Report chain + trace;
-  `npm run demo:artifacts` shows create → link → seal → hook-generated report;
-  `npm run demo:projects` shows discover → template create → whitelisted exec;
-  `npm run demo:review` shows tainted diff → CHANGES_REQUESTED → clean diff → PASS;
-  `npm run demo:release` shows UAT deploy → PROD denied w/o approval → approved deploy → unhealthy deploy auto-rollback;
-  `npm run demo:policy` shows global prod-write ban → project override denied → YAML validation errors;
-  `npm run demo:security` shows malicious skill install BLOCKED (score 0/100);
-  `npm run demo:recovery` shows pre-deploy snapshot → failure → auto-restore;
-  `npm run demo:resources` shows token budget blowout → refusal + escalation;
-  `npm run demo:autonomy` shows full-mode prod deploy vetoed by the independent checklist;
-  `npm run demo:coordination` shows two coders on one file → serialized + merge gated on tests;
-  `npm run demo:dispute` shows Coder PASS vs Reviewer FAIL → independent adjudication.
-
-## Activity center + Run / Trace detail (§67–§68)
-
-- **Activity panel** (desktop `Activity` center tab): realtime stream polling
-  `GET /api/activity` (default 3s), merging audit-log records and system-bus
-  events; every item is timestamped (§67). Rows carrying a `runId` open the
-  **Run Detail drawer**, showing every §68 field: run ID, agent + agent
-  version, task, model + provider, start/end time, input refs, tools used,
-  commands, files changed, artifacts, errors, retries, handoffs, approvals,
-  evidence, trace, final outcome.
-- **Credential hygiene**: run detail is passed through `@ai-factory/events`
-  `redactSecrets` — any value under a sensitive-looking key
-  (password/token/api-key/auth/cookie/…) renders as `***` (§68: "Sensitive
-  credentials must never appear in traces").
-- Routes: `GET /api/activity?limit=`, `GET /api/runs`, `GET /api/runs/:id`
-  (`apps/server/src/routes/activity.ts`).
-
-## System Event Bus (§91)
-
-- **`@ai-factory/events`**: in-memory pub/sub `EventBus`
-  (`subscribe`/`emit`, monotonic `seq` + ISO `ts` on every event, retention
-  window, subscriber errors never break emission). Mirrors the §91 vocabulary
-  verbatim — 29 event types (`EVENT_TYPES`, `isEventType` guard).
-- **Server routes**: `GET /api/events?type=&limit=` (newest first, type
-  validated), `POST /api/events/emit` (`apps/server/src/routes/events.ts`).
-- **Events panel** (desktop `Events` tab): realtime stream with multi-select
-  filtering by event type.
-- **Real producers** (core actions emitting bus events): task created /
-  completed, task workflow transitions, agent created, run started / steps,
-  QA completed, CI completed, gate passed / failed (approvals + policy),
-  deployment started / completed, rollback started / completed.
-
-## Model Registry UI (§90)
-
-- **Models panel** (desktop `Models` center tab): table of provider / model /
-  capability / context / reasoning / cost / latency / availability / fallback,
-  filterable by capability and provider.
-- Data comes from `GET /api/models` → `registryRows()` in
-  `@ai-factory/model-router` — the same capability metadata the router (§30)
-  uses for task→model routing, never hard-coded model names.
-
-## Placeholders / not implemented
-
-- **Electron binary**: `main.ts` compiles; launching needs `npm i -D electron`
-  (binary download was skipped — see `electron/electron.d.ts` shim note).
-- **Packaging** (electron-builder), **login/cloud**, **PostgreSQL**: out of scope.
-
-## Repo layout
-
-```text
-ai-factory/
-  packages/core/{src,tests,demo}   # domain layer + tests + demo script
-  packages/db/src                  # schema.ts · db.ts · seed.ts
-  packages/git/{src,tests}         # git CLI wrapper + task branches + PRs
-  packages/qa/{src,tests,demo}     # QA org + runner + failure loop + demo
-  packages/approvals/{src,tests}   # approval lifecycle + tool policy levels
-  packages/cicd/{src,tests,demo}    # pipeline runner + environments + deploy/rollback
-  packages/skills/{src,tests,demo}  # skill registry + discovery + security gate
-  packages/memory/{src,tests,demo}  # structured memory + confidence lifecycle
-  packages/model-router/{src,tests,demo} # deterministic task→model routing
-  packages/runtime/{src,tests,demo}      # agent loop + harness + adapters
-  packages/orchestrator/{src,tests,demo} # decompose + scheduler + selection
-  packages/employee-factory/{src,tests,demo} # governed dynamic hiring
-  packages/squads/{src,tests,demo}      # task squads + org designer
-  packages/mcp/{src,tests,demo}        # MCP registry + trust/install gates + tool-call gate
-  packages/knowledge/{src,tests,demo}  # knowledge hierarchy + lifecycle + scout
-  packages/evaluation/{src,tests,demo} # metrics + agent profiles + improvement proposals
-  packages/comms/{src,tests,demo}      # structured agent communication primitives
-  packages/artifacts/{src,tests,demo}  # 19 first-class artifact types + workflow hooks
-  apps/server/src/{index.ts,routes} # node:http API + modular route handlers
-  apps/desktop/{src,electron}       # React UI + Electron main
-  scripts/dev.mjs                  # dev launcher (backend + vite)
-  data/factory.db                  # created on first run (git-ignored)
-```
+- [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) — 已知限制（权威口径，不夸大）
+- [docs/FIRST_RUN_WALKTHROUGH.md](docs/FIRST_RUN_WALKTHROUGH.md) — 首次运行走查实录
+- [docs/packaging.md](docs/packaging.md) — 打包方式与三平台实测状态
+- [CHANGELOG.md](CHANGELOG.md) — 变更记录（0.1.0 开发线，尚未正式发布）
+- [gap-audit/REAUDIT_BATCH_1_10.md](gap-audit/REAUDIT_BATCH_1_10.md) — 独立复核报告
+- [docs/release/RELEASE_CHECKLIST.md](docs/release/RELEASE_CHECKLIST.md) — 发布前剩余事项

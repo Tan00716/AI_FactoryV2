@@ -368,4 +368,41 @@ CREATE TABLE IF NOT EXISTS runtime_runs (
   finished_at TEXT,
   error TEXT
 );
+
+-- SPEC v2 §18/§19/§20.1 (Batch 13): task v2 engine state — the
+-- WorkflowEngineV2 mirror (core's TaskV2State) itself. Until now the
+-- mirror lived only in the server process: on restart the v2 service
+-- re-seeded it approximately from the v1 task row (stage mapped from
+-- the v1 status, condition guessed from exception statuses), and
+-- everything the row cannot express was lost — recorded milestones,
+-- milestone/release/completion histories, the outcome-gate validity
+-- flag, the optimistic-concurrency taskVersion, and the §20.1 final
+-- seal (a finalized task came back with finalSeal 0: walkthrough F1
+-- residual). One row per task, upserted by the v2 transition service
+-- after every engine-committed mutation and hydrated verbatim on
+-- first access; only a task with NO row here still takes the legacy
+-- approximate seed (and is then persisted immediately).
+-- Every TaskV2State field is plain data — there are no live handles
+-- to exclude. Composite fields (the §18.3 condition record, the §19
+-- milestone map, the three history arrays) are JSON text, lossless
+-- for these shapes, and every read is a fresh parse. The two flags
+-- are 0/1 integers; requirement_ref stays NULL when the task carries
+-- no requirement pin (read back as null, never invented).
+-- New table: CREATE TABLE IF NOT EXISTS covers old databases on open.
+CREATE TABLE IF NOT EXISTS task_v2_state (
+  task_id TEXT PRIMARY KEY,
+  stage TEXT NOT NULL,
+  condition TEXT NOT NULL,
+  milestones TEXT NOT NULL,
+  milestone_history TEXT NOT NULL,
+  release_state TEXT NOT NULL,
+  release_history TEXT NOT NULL,
+  outcome_gate_valid INTEGER NOT NULL,
+  final_seal INTEGER NOT NULL,
+  task_version INTEGER NOT NULL,
+  requirement_ref TEXT,
+  completion_target TEXT NOT NULL,
+  completion_history TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;

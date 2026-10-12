@@ -6,6 +6,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
+import { existsSync } from 'node:fs';
 import {
   Agent,
   AgentStore,
@@ -24,6 +25,7 @@ import { SqliteOperationStore } from './operations';
 import { SqliteCheckpointStore } from './checkpoints';
 import { SqliteRequirementStore } from './requirements';
 import { SqliteRuntimeRunStore } from './runs';
+import { SqliteTaskV2StateStore } from './task-v2-state';
 
 const J = {
   parse<T>(s: string | null, fallback: T): T {
@@ -597,6 +599,15 @@ export class FactoryDatabase {
    * run's record survives the restart its step intents already did.
    */
   readonly runs: SqliteRuntimeRunStore;
+  /**
+   * §18/§19/§20.1 (Batch 13) — durable v2 engine state; the
+   * TaskV2StateStore the server's V2TransitionService persists its
+   * WorkflowEngineV2 mirror to after every committed mutation and
+   * hydrates from on first access, so a restart restores the exact
+   * stage/milestones/finalSeal/taskVersion instead of re-seeding
+   * approximately from the v1 task row.
+   */
+  readonly taskV2States: SqliteTaskV2StateStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -619,6 +630,7 @@ export class FactoryDatabase {
     this.checkpoints = new SqliteCheckpointStore(this.db);
     this.requirements = new SqliteRequirementStore(this.db);
     this.runs = new SqliteRuntimeRunStore(this.db);
+    this.taskV2States = new SqliteTaskV2StateStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------
@@ -640,5 +652,39 @@ export class FactoryDatabase {
 
   close(): void {
     this.db.close();
+  }
+
+  // -- backup support -------------------------------------------------------
+  /**
+   * Write a transactionally consistent snapshot of this database to
+   * destPath via VACUUM INTO. VACUUM reads only committed state (WAL
+   * included), so the snapshot is a complete standalone database file —
+   * never a raw copy of a live file mid-write. destPath must NOT exist
+   * yet (SQLite refuses to overwrite, and so do we: a backup target is
+   * always a fresh path).
+   */
+  snapshotTo(destPath: string): void {
+    if (existsSync(destPath)) {
+      throw new Error(`snapshot target already exists: ${destPath}`);
+    }
+    const escaped = destPath.replace(/'/g, "''");
+    this.db.exec(`VACUUM INTO '${escaped}'`);
+  }
+
+  /** Row counts for every user table (sqlite internals excluded). */
+  tableCounts(): Record<string, number> {
+    const tables = this.db
+      .prepare(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`,
+      )
+      .all() as { name: string }[];
+    const counts: Record<string, number> = {};
+    for (const { name } of tables) {
+      const row = this.db
+        .prepare(`SELECT COUNT(*) AS n FROM "${name.replace(/"/g, '""')}"`)
+        .get() as { n: number };
+      counts[name] = Number(row.n);
+    }
+    return counts;
   }
 }
