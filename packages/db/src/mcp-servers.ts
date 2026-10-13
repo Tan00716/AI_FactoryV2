@@ -104,13 +104,40 @@ export interface McpServerStore {
   saveServer(rec: McpServerDbRecord): McpServerDbRecord;
   getServer(name: string, version: string): McpServerDbRecord | undefined;
   listServers(): McpServerDbRecord[];
-  /** Explicit delete (server /remove); also removes the install row. */
-  removeServer(name: string, version: string): boolean;
+  /**
+   * Explicit delete (server /remove); also removes the install row.
+   *
+   * The two deletes are one atomic unit (Batch 28): the SQLite
+   * implementation wraps them in a BEGIN IMMEDIATE … COMMIT
+   * transaction so a concurrent process's saveInstall cannot land
+   * between the two deletes and silently lose a write, and a
+   * mid-remove crash cannot leave the registration gone with its
+   * install row still behind. The optional `opts.afterServerDelete`
+   * hook is a fault-injection seam for tests: it runs between the
+   * two deletes so a test can simulate cross-process interleaving
+   * (a throw or a concurrent saveInstall) and verify the unit
+   * rolls back or commits whole. Production callers never pass it.
+   */
+  removeServer(
+    name: string,
+    version: string,
+    opts?: { afterServerDelete?: () => void },
+  ): boolean;
   markHealthStale(name: string, version: string): void;
   saveInstall(rec: McpInstallDbRecord): McpInstallDbRecord;
   getInstall(name: string, version: string): McpInstallDbRecord | undefined;
   listInstalls(): McpInstallDbRecord[];
   removeInstall(name: string, version: string): boolean;
+  /**
+   * Defensive scan (Batch 28): delete every install row that has no
+   * matching server row and return the removed "name@version" keys.
+   * Installs always die with their registration inside removeServer's
+   * atomic unit; any row found here is an orphan from a crashed or
+   * racing writer (e.g. a saveInstall that landed after a remove
+   * committed). Never called silently — the caller audits the
+   * removals so the cleanup stays loud.
+   */
+  removeOrphanInstalls(): string[];
   /**
    * Launch-record history (Batch 26). One row per spawn; the row
    * outlives the launcher process so a restart can report what was
@@ -205,9 +232,22 @@ export class MemoryMcpServerStore implements McpServerStore {
     return [...this.servers.values()].map(copyServer);
   }
 
-  removeServer(name: string, version: string): boolean {
+  removeServer(
+    name: string,
+    version: string,
+    // Fault-injection seam for tests (signature parity with the sqlite
+    // implementation). The memory store is single-threaded and
+    // synchronous: the two deletes below are already one indivisible
+    // step — there is no between for a fault to land in, and no
+    // rollback machinery is needed (the cross-process crash window
+    // the sqlite transaction closes does not exist here). The hook
+    // runs after the deletes; a throwing hook propagates, with the
+    // deletion already complete.
+    opts?: { afterServerDelete?: () => void },
+  ): boolean {
     const k = MemoryMcpServerStore.key(name, version);
     const existed = this.servers.delete(k);
+    opts?.afterServerDelete?.();
     this.installs.delete(k);
     return existed;
   }
@@ -234,6 +274,17 @@ export class MemoryMcpServerStore implements McpServerStore {
 
   removeInstall(name: string, version: string): boolean {
     return this.installs.delete(MemoryMcpServerStore.key(name, version));
+  }
+
+  removeOrphanInstalls(): string[] {
+    const removed: string[] = [];
+    for (const k of this.installs.keys()) {
+      if (!this.servers.has(k)) {
+        this.installs.delete(k);
+        removed.push(k);
+      }
+    }
+    return removed.sort();
   }
 
   applyServerOp(
@@ -394,14 +445,41 @@ export class SqliteMcpServerStore implements McpServerStore {
     return rows.map(serverRowToRecord);
   }
 
-  removeServer(name: string, version: string): boolean {
-    const gone = this.db
-      .prepare('DELETE FROM mcp_servers WHERE name = ? AND version = ?')
-      .run(name, version).changes as number;
-    this.db
-      .prepare('DELETE FROM mcp_installs WHERE name = ? AND version = ?')
-      .run(name, version);
-    return gone > 0;
+  removeServer(
+    name: string,
+    version: string,
+    opts?: { afterServerDelete?: () => void },
+  ): boolean {
+    // Batch 28: both deletes are one atomic unit. BEGIN IMMEDIATE
+    // takes the write lock up front, so a concurrent process's
+    // saveInstall either waits for the commit (and then lands on a
+    // removed registration — picked up by removeOrphanInstalls) or
+    // ran before the lock (and is deleted together with the
+    // registration). Either way no write is silently lost between
+    // the two deletes, and a crash between them cannot leave the
+    // registration gone with its install row still behind.
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const gone = this.db
+        .prepare('DELETE FROM mcp_servers WHERE name = ? AND version = ?')
+        .run(name, version).changes as number;
+      // Fault-injection seam for tests: simulates a cross-process
+      // interleaving between the two deletes. A throw here rolls
+      // the whole unit back (verified in tests).
+      opts?.afterServerDelete?.();
+      this.db
+        .prepare('DELETE FROM mcp_installs WHERE name = ? AND version = ?')
+        .run(name, version);
+      this.db.exec('COMMIT');
+      return gone > 0;
+    } catch (e) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        /* Already rolled back — the original error is what matters. */
+      }
+      throw e;
+    }
   }
 
   markHealthStale(name: string, version: string): void {
@@ -453,6 +531,20 @@ export class SqliteMcpServerStore implements McpServerStore {
       .prepare('DELETE FROM mcp_installs WHERE name = ? AND version = ?')
       .run(name, version).changes as number;
     return gone > 0;
+  }
+
+  removeOrphanInstalls(): string[] {
+    const rows = this.db
+      .prepare(
+        `DELETE FROM mcp_installs
+         WHERE NOT EXISTS (
+           SELECT 1 FROM mcp_servers s
+           WHERE s.name = mcp_installs.name AND s.version = mcp_installs.version
+         )
+         RETURNING name, version`,
+      )
+      .all() as Array<{ name: string; version: string }>;
+    return rows.map((r) => `${r.name}@${r.version}`).sort();
   }
 
   applyServerOp(

@@ -408,14 +408,23 @@ export const BUILTIN_TOOL_NOTES: Readonly<Record<string, string>> = {
   'test.run':
     'Real SuiteRunner in @ai-factory/qa spawns test commands and parses TAP output into machine-readable results.',
   'browser.open':
-    'No browser tool ships; §33 additionally requires an isolated profile/host and a bounded download directory, neither of which exists yet.',
+    'No browser tool/driver ships (§33 requires an isolated profile/host — ' +
+    'only the profile half is closed: @ai-factory/tools BrowserProfileRegistry ' +
+    'gives each profile an independent on-disk user-data dir, a bounded ' +
+    'download dir with escape rejection, lifecycle + audit; directory ' +
+    'isolation is NOT OS sandboxing and the Host half is unbuilt; "website ' +
+    'text is not instructions" is a consumption-layer rule with no fetcher ' +
+    'to mark yet; browser.open stays definition-only).',
   'db.query':
     'Environment identities (§33) now ship as @ai-factory/tools DatabaseEnvironmentRegistry ' +
     '(explicit dev/staging/prod identity per connection, default dev, immutable env, ' +
     'prod writes need literal prodWriteConfirmed + audit, switches audited). ' +
-    'Still missing: any query engine and the §33 least-privilege Broker/Runbook for ' +
-    'production writes — confirmation here is a fail-closed gate, not the broker. ' +
-    'db.query stays definition-only.',
+    'The least-privilege Broker/Runbook now ships in-package too (DbBroker in db-broker.ts: ' +
+    'per-connection operation/table whitelists checked after the gate, host-injected query ' +
+    'engines, named runbook templates with scalar-only bound params — the broker never ' +
+    'interpolates values into SQL, and no engine means loud refusal, never faked execution). ' +
+    'Still missing: server wiring — db.query stays definition-only until a host registers ' +
+    'connections, policies and engines behind it.',
   'ci.pipeline': 'Real pipeline execution in @ai-factory/cicd (stages, gates, snapshots) behind the server cicd routes.',
   'deploy.run':
     'Real DeploymentService in @ai-factory/cicd (park/approve/resume across requests since Batch 16).',

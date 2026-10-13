@@ -90,7 +90,19 @@ export type DbAuditIntentType =
   | 'DB_PROD_WRITE_ATTEMPT'
   | 'DB_PROD_WRITE_CONFIRMED'
   | 'DB_PROD_WRITE_DENIED'
-  | 'DB_QUERY_DENIED';
+  | 'DB_QUERY_DENIED'
+  // Batch 28: least-privilege Broker/Runbook intents (see db-broker.ts).
+  | 'DB_BROKER_POLICY_SET'
+  | 'DB_BROKER_ENGINE_REGISTERED'
+  | 'DB_BROKER_ENGINE_DEREGISTERED'
+  | 'DB_BROKER_EXECUTED'
+  | 'DB_BROKER_DENIED'
+  | 'DB_BROKER_NO_ENGINE'
+  | 'DB_BROKER_EXECUTION_FAILED'
+  | 'DB_RUNBOOK_REGISTERED'
+  | 'DB_RUNBOOK_DEREGISTERED'
+  | 'DB_RUNBOOK_EXECUTED'
+  | 'DB_RUNBOOK_DENIED';
 
 export interface DbAuditIntent {
   type: DbAuditIntentType;
@@ -104,6 +116,17 @@ export interface DbAuditIntent {
   reason?: string;
   /** Free-form detail; never carries secret values. */
   detail?: string;
+  /**
+   * The SQL text involved (Batch 28). Parameter placeholders only — bound
+   * values are NEVER audited.
+   */
+  sql?: string;
+  /** Whether the broker/runbook allowed the execution (Batch 28). */
+  allowed?: boolean;
+  /** Rows returned/affected by an executed query (Batch 28). */
+  rowCount?: number;
+  /** Runbook template name, for runbook intents (Batch 28). */
+  templateName?: string;
 }
 
 /** Where audit intents go — injected by the host, like every other sink in this codebase. */
@@ -160,6 +183,20 @@ function firstKeyword(chunk: string): string | null {
   }
   const m = /^[A-Za-z]+/.exec(s);
   return m ? m[0].toUpperCase() : null;
+}
+
+/**
+ * First keyword of every statement in a (possibly multi-statement) string,
+ * uppercased; empty/comment-only chunks contribute nothing. Exported for the
+ * broker's least-privilege operation mapping (Batch 28).
+ */
+export function statementKeywords(sql: string): string[] {
+  const out: string[] = [];
+  for (const chunk of String(sql).split(';')) {
+    const kw = firstKeyword(chunk);
+    if (kw !== null) out.push(kw);
+  }
+  return out;
 }
 
 export interface AuthorizeDbQueryInput {

@@ -302,6 +302,18 @@ export async function handleMcpRoutes(
     // the install row). The uninstall above already fired the
     // persistence observers; this is the explicit delete.
     if (mcpStore && removed) removeMcpServerRecord(mcpStore, name, version);
+    if (mcpStore) {
+      // Batch 28: removeServer's two deletes are one atomic unit, but
+      // a saveInstall that raced *after* the remove committed still
+      // lands on a removed registration. Sweep those orphans here,
+      // loudly — the cleanup is never silent.
+      const orphans = mcpStore.removeOrphanInstalls();
+      if (orphans.length > 0) {
+        ctx.audit.record('human', 'MCP_INSTALL_ORPHAN_CLEANED', 'mcp_server', `${name}@${version}`, {
+          removed: orphans,
+        });
+      }
+    }
     ctx.audit.record('human', 'MCP_REMOVED', 'mcp_server', `${name}@${version}`, {});
     return ctx.json(res, 200, { ok: removed }), true;
   }
