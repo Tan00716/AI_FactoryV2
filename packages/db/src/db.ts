@@ -45,6 +45,7 @@ import { SqliteEscalationStore } from './escalations';
 import { SqliteProposalStore } from './proposals';
 import { SqliteManagementReportStore } from './management-reports';
 import { SqliteOrgGraphStore } from './organization-relationships';
+import { SqliteOrgVersionSnapshotStore } from './org-version-snapshots';
 import { SqlitePolicyVersionStore } from './policy-versions';
 
 const J = {
@@ -1149,6 +1150,15 @@ export class FactoryDatabase {
    */
   readonly orgGraph: SqliteOrgGraphStore;
 
+  /**
+   * Versioned org-graph snapshot history (§9.4, Batch 35): one
+   * append-only row per persisted graph mutation, carrying the full
+   * graph as of that version. Historical runs resolve the org exactly
+   * as it was. Snapshot rows hydrate as-is — history is terminal
+   * record state, there is nothing to demote.
+   */
+  readonly orgSnapshots: SqliteOrgVersionSnapshotStore;
+
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     // SPEC §48 — foreign keys are declared in SCHEMA but SQLite does not
@@ -1203,6 +1213,7 @@ export class FactoryDatabase {
     this.policyVersions = new SqlitePolicyVersionStore(this.db);
     this.builds = new SqliteBuildRecordStore(this.db);
     this.orgGraph = new SqliteOrgGraphStore(this.db);
+    this.orgSnapshots = new SqliteOrgVersionSnapshotStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------

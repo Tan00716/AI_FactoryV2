@@ -1,7 +1,8 @@
 /**
  * Agent factory governance — spec §19 (absolute ceilings) and §8.2
  * (relative ceiling: a delegation may not exceed the delegator's
- * grantable set).
+ * grantable set, the task scope, and the organization ceiling;
+ * effective permission is the intersection of all constraints).
  *
  * Dynamic agent creation requires policy limits. Every creation goes
  * through enforcePolicy() before the registry is touched: on any
@@ -54,7 +55,9 @@ export type GovernanceReason =
   | 'budget-exceeds-limit'
   | 'parent-not-found'
   /** §8.2 — the grant exceeds the delegator's own grantable set. */
-  | 'grant-exceeds-granter';
+  | 'grant-exceeds-granter'
+  /** §8.2 — the grant exceeds the task scope it is made under. */
+  | 'grant-exceeds-task-scope';
 
 export class GovernanceError extends Error {
   readonly reason: GovernanceReason;
@@ -80,6 +83,26 @@ export interface CreationRequest {
    * fabricate one. Absolute (§19) checks always apply.
    */
   granterAgentId?: string | null;
+  /**
+   * §8.2 "任务范围" (task scope): the scope of the task this grant is
+   * made under, in the §12.2 scope-token representation
+   * ("tool:<name>", "permission:<name>", "project:<id>", "path:<dir>",
+   * …). Only the capability-carrying tokens compare against the
+   * grant: requested tools must be covered by a "tool:<tool>" token and
+   * requested permissions by a "permission:<permission>" token.
+   * Domain tokens ("project:", "path:", …) are not capability grants
+   * and are ignored by this check — they are recorded for provenance,
+   * never invented as permission.
+   *
+   * When absent, the check is skipped — there is no recorded task scope
+   * to compare against, and the check refuses to fabricate one. When
+   * PRESENT (even empty), the check is strict: the grant must be a
+   * subset of the token-covered tools/permissions, so a task scope with
+   * no "tool:" tokens grants zero tools. Together with the granter-set
+   * check this implements §8.2's "有效权限取所有限制交集":
+   * requested ⊆ granter ∩ taskScope.
+   */
+  taskScope?: string[] | null;
   jobTitle: string;
   model?: string;
   tools?: string[];
@@ -108,21 +131,69 @@ export interface RelativeCeilingDeniedIntent {
   };
 }
 
+/**
+ * Audit intent emitted when the §8.2 task-scope ceiling denies a grant.
+ * The intent is delivered to the sink BEFORE the GovernanceError is
+ * thrown (same pattern as approvals' EXCEPTION_GRANT_DENIED).
+ */
+export interface TaskScopeCeilingDeniedIntent {
+  action: 'TASK_SCOPE_CEILING_DENIED';
+  /** The requester performing the grant (granterAgentId). */
+  actor: string;
+  details: {
+    granterAgentId: string;
+    /** The task scope the grant was checked against (verbatim). */
+    taskScope: string[];
+    requestedTools: string[];
+    requestedPermissions: Permission[];
+    /** Requested tools not covered by a "tool:<name>" token. */
+    exceededTools: string[];
+    /** Requested permissions not covered by a "permission:<name>" token. */
+    exceededPermissions: string[];
+  };
+}
+
 /** Injectable audit sink for governance denials. */
-export type GovernanceAuditSink = (intent: RelativeCeilingDeniedIntent) => void;
+export type GovernanceAuditSink = (
+  intent: RelativeCeilingDeniedIntent | TaskScopeCeilingDeniedIntent,
+) => void;
 
 /** Optional knobs for enforcePolicy. */
 export interface EnforcePolicyOptions {
   /**
-   * Called with a RELATIVE_CEILING_DENIED intent before the throw.
-   * Only invoked for the §8.2 relative-ceiling denial; absolute (§19)
-   * denials keep their pre-existing (throw-only) behavior.
+   * Called with a denial intent before the throw. Invoked for the two
+   * §8.2 relative-ceiling denials (RELATIVE_CEILING_DENIED and
+   * TASK_SCOPE_CEILING_DENIED); absolute (§19) denials keep their
+   * pre-existing (throw-only) behavior.
    */
   audit?: GovernanceAuditSink;
 }
 
-/** Depth of an agent in the parent chain = number of ancestors (top-level = 0). */
-export function agentDepth(registry: AgentRegistry, agentId: string | null): number {
+/**
+ * Split §12.2 scope tokens into the capability-carrying names they
+ * grant: "tool:<name>" → tools, "permission:<name>" → permissions.
+ * Domain tokens ("project:", "path:", …) carry no capability grant and
+ * are excluded — they never shrink or widen the tool/permission set.
+ */
+export function capabilityTokensFromScope(tokens: string[]): {
+  tools: string[];
+  permissions: string[];
+} {
+  const tools: string[] = [];
+  const permissions: string[] = [];
+  for (const token of tokens) {
+    const sep = token.indexOf(':');
+    if (sep < 0) continue;
+    const kind = token.slice(0, sep);
+    const name = token.slice(sep + 1);
+    if (!name) continue;
+    if (kind === 'tool') tools.push(name);
+    else if (kind === 'permission') permissions.push(name);
+  }
+  return { tools, permissions };
+}
+
+/** Depth of an agent in the parent chain = number of ancestors (top-level = 0). */export function agentDepth(registry: AgentRegistry, agentId: string | null): number {
   let depth = 0;
   let current: string | null =
     agentId === null ? null : registry.get(agentId).parentAgentId;
@@ -285,6 +356,47 @@ export function enforcePolicy(
           `grant ${parts.join(' and ')} exceeds granter ${granterId}'s grantable set (§8.2)`,
         );
       }
+    }
+  }
+
+  // 6. §8.2 task scope: the grant may not exceed the task scope it is
+  //    made under ("任务范围"). Combined with step 5, the requested
+  //    grant must be within granter ∩ taskScope — §8.2's "有效权限取
+  //    所有限制交集". Absolute checks (steps 1–4) keep their
+  //    first-position order; the two relative checks follow.
+  const taskScope = request.taskScope ?? null;
+  if (taskScope !== null) {
+    const granted = capabilityTokensFromScope(taskScope);
+    const exceededTools = (request.tools ?? []).filter(
+      (t) => !granted.tools.includes(t),
+    );
+    const exceededPermissions = (request.permissions ?? []).filter(
+      (p) => !granted.permissions.includes(p),
+    );
+    if (exceededTools.length > 0 || exceededPermissions.length > 0) {
+      const parts: string[] = [];
+      if (exceededTools.length > 0) {
+        parts.push(`tools [${exceededTools.join(', ')}]`);
+      }
+      if (exceededPermissions.length > 0) {
+        parts.push(`permissions [${exceededPermissions.join(', ')}]`);
+      }
+      opts.audit?.({
+        action: 'TASK_SCOPE_CEILING_DENIED',
+        actor: granterId ?? 'unknown',
+        details: {
+          granterAgentId: granterId ?? 'unknown',
+          taskScope: [...taskScope],
+          requestedTools: [...(request.tools ?? [])],
+          requestedPermissions: [...(request.permissions ?? [])],
+          exceededTools,
+          exceededPermissions,
+        },
+      });
+      throw new GovernanceError(
+        'grant-exceeds-task-scope',
+        `grant ${parts.join(' and ')} exceeds the task scope (§8.2 任务范围)`,
+      );
     }
   }
 }

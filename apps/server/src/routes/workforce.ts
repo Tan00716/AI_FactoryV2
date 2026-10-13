@@ -99,12 +99,21 @@ export async function handleWorkforceRoutes(
     }
     const requestedBy =
       typeof b['requestedBy'] === 'string' ? b['requestedBy'] : 'human';
+    // §8.2 任务范围: optional task-scope tokens for the creation grant.
+    // Non-array → ignored (never fabricated); validated shape only —
+    // the token semantics are enforced by enforcePolicy.
+    const rawScope = b['taskScope'];
+    const taskScope =
+      Array.isArray(rawScope) && rawScope.every((t) => typeof t === 'string')
+        ? (rawScope as string[])
+        : undefined;
     try {
       const agent = createEmployee(
         ctx.agents,
         requestedBy,
         {
           jobTitle: b['jobTitle'] as string,
+          taskScope,
           specialty:
             typeof b['specialty'] === 'string'
               ? (b['specialty'] as string)
@@ -118,19 +127,29 @@ export async function handleWorkforceRoutes(
         {
           // §8.2 relative ceiling: denials are audited here before the
           // 403 below (the package throws GovernanceError after the
-          // sink runs).
+          // sink runs). Both relative dimensions
+          // (RELATIVE_CEILING_DENIED / TASK_SCOPE_CEILING_DENIED) enter
+          // the hash-chained audit with their distinguishing action.
           audit: (intent) =>
             ctx.audit.record(
               intent.actor,
-              'RELATIVE_CEILING_DENIED',
+              intent.action,
               'agent',
               intent.details.granterAgentId,
-              {
-                requestedTools: intent.details.requestedTools,
-                requestedPermissions: intent.details.requestedPermissions,
-                exceededTools: intent.details.exceededTools,
-                exceededPermissions: intent.details.exceededPermissions,
-              },
+              intent.action === 'RELATIVE_CEILING_DENIED'
+                ? {
+                    requestedTools: intent.details.requestedTools,
+                    requestedPermissions: intent.details.requestedPermissions,
+                    exceededTools: intent.details.exceededTools,
+                    exceededPermissions: intent.details.exceededPermissions,
+                  }
+                : {
+                    taskScope: intent.details.taskScope,
+                    requestedTools: intent.details.requestedTools,
+                    requestedPermissions: intent.details.requestedPermissions,
+                    exceededTools: intent.details.exceededTools,
+                    exceededPermissions: intent.details.exceededPermissions,
+                  },
             ),
         },
       );

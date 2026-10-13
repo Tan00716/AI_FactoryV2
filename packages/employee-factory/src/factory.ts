@@ -48,6 +48,13 @@ export interface EmployeeSpec {
   tools?: string[];
   /** Overrides the template-selected permissions. */
   permissions?: Permission[];
+  /**
+   * §8.2 "任务范围": the task scope this creation happens under, in
+   * §12.2 scope-token form. Absent → the task-scope dimension of the
+   * relative ceiling check is skipped (never fabricated); present →
+   * strict subset against the token-covered tools/permissions.
+   */
+  taskScope?: string[];
 }
 
 /** What a specialty template contributes to a new employee. */
@@ -144,8 +151,9 @@ function slugify(title: string): string {
  *  2. Enforce the factory policy — GovernanceError on any violation.
  *     `requestedBy` is recorded as the granter for the §8.2 relative
  *     ceiling check (the grant may not exceed the delegator's own
- *     grantable set); a non-agent requester (e.g. 'human') skips the
- *     relative check but never the absolute (§19) checks.
+ *     grantable set, nor the task scope when spec.taskScope is set);
+ *     a non-agent requester (e.g. 'human') skips the relative check
+ *     but never the absolute (§19) checks.
  *  3. Register in the registry, parented under `spec.parentId`.
  */
 export function createEmployee(
@@ -169,6 +177,7 @@ export function createEmployee(
     {
       parentAgentId: spec.parentId ?? null,
       granterAgentId: requestedBy,
+      taskScope: spec.taskScope ?? null,
       jobTitle: spec.jobTitle,
       model,
       tools,

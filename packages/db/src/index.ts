@@ -24,6 +24,7 @@ export * from './escalations';
 export * from './proposals';
 export * from './management-reports';
 export * from './organization-relationships';
+export * from './org-version-snapshots';
 export * from './policy-versions';
 export * from './seed';
 export * from './schema';

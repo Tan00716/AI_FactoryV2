@@ -11,6 +11,8 @@
  *   GET    /api/org/relationships               list edges
  *   POST   /api/org/relationships               add an edge
  *   DELETE /api/org/relationships/:id           remove an edge
+ *   GET    /api/org/snapshots                   list version history (newest first)
+ *   GET    /api/org/snapshots/:id               resolve the graph as of a snapshot (§9.4)
  *
  * Every mutation is validated against a scratch OrgGraphV2 rebuilt
  * from the persisted rows (endpoints must exist, no cross-org edges,
@@ -32,8 +34,20 @@
  * hydrate as-is on restart, there is nothing to demote (unlike
  * delegations, Batch 32). Corrupt node rows are skipped loudly at
  * boot and on reads (ORG_NODE_CORRUPT audit) — one bad row never
- * hides the rest. The §9.4 versioned snapshot history stays in
- * memory: only the CURRENT graph is durable.
+ * hides the rest.
+ *
+ * The §9.4 versioned snapshot history is durable (Batch 35): every
+ * persisted mutation appends an org_version_snapshots row carrying
+ * the full graph as of that version (per-database monotonic
+ * graph_version, first row = 1). A historical run resolves the org
+ * exactly as it was via GET /api/org/snapshots/:id — the durable
+ * equivalent of OrgGraphV2.resolveAt(version). Snapshots are
+ * terminal record state: rows hydrate as-is, nothing is demoted.
+ * A database created before Batch 35 gets one GENESIS snapshot at
+ * boot recording the real current state — it records what is there,
+ * never invents history. Snapshot write failures are audited loudly
+ * (ORG_SNAPSHOT_PERSIST_FAILED) without rolling back the mutation
+ * that already landed (the audit is the record of the gap).
  *
  * The `actor` field is caller-asserted (HUMAN/AI/SERVICE, default
  * SERVICE) and written into the audit — the server has only coarse
@@ -139,6 +153,27 @@ function hydrate(db: FactoryDatabase, audit: AuditLog): void {
       error: e instanceof Error ? e.message : 'org graph hydrate failed',
     });
   }
+  // §9.4 durable history (Batch 35). Snapshots are terminal record
+  // state: they hydrate as-is, there is nothing to demote.
+  try {
+    const snapshots = db.orgSnapshots.maxVersion();
+    if (snapshots === 0) {
+      const hasGraph =
+        db.orgGraph.listNodeIds().length > 0 || db.orgGraph.listEdges().length > 0;
+      if (hasGraph) {
+        // GENESIS: snapshot the REAL current state of a pre-Batch-35
+        // database — it records what is there, never invents history.
+        recordSnapshot(db, audit, 'GENESIS', 'system', null, null);
+      }
+    }
+    audit.record('system', 'ORG_SNAPSHOT_HISTORY_HYDRATED', 'org-graph', '(all)', {
+      snapshots: db.orgSnapshots.maxVersion(),
+    });
+  } catch (e) {
+    audit.record('system', 'ORG_SNAPSHOT_HYDRATE_FAILED', 'org-graph', '(all)', {
+      error: e instanceof Error ? e.message : 'org snapshot hydrate failed',
+    });
+  }
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -155,6 +190,90 @@ function parseActor(b: Record<string, unknown>): ActorKind | null {
   const v = b['actor'];
   if (v === undefined) return 'SERVICE';
   return typeof v === 'string' && (ACTORS as string[]).includes(v) ? (v as ActorKind) : null;
+}
+
+/** Build the full graph payload from the persisted rows (the system
+ *  of record). Corrupt node rows are skipped loudly, one bad row never
+ *  hides the rest — the snapshot records what the readers see. */
+function buildGraphPayload(
+  db: FactoryDatabase,
+  audit: AuditLog,
+): { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] } {
+  const nodes: Record<string, unknown>[] = [];
+  for (const id of db.orgGraph.listNodeIds()) {
+    let row: ReturnType<FactoryDatabase['orgGraph']['getNode']> | undefined;
+    try {
+      row = db.orgGraph.getNode(id);
+    } catch (e) {
+      audit.record('system', 'ORG_NODE_CORRUPT', 'org-node', id, {
+        error: e instanceof Error ? e.message : 'corrupt org node row',
+      });
+      continue;
+    }
+    if (row === undefined) continue;
+    let identity: unknown = null;
+    try {
+      identity = row.identityJson === null ? null : JSON.parse(row.identityJson);
+    } catch (e) {
+      audit.record('system', 'ORG_NODE_CORRUPT', 'org-node', id, {
+        error: e instanceof Error ? e.message : 'corrupt org node row',
+      });
+      continue;
+    }
+    nodes.push({
+      id: row.nodeId,
+      org_id: row.orgId,
+      type: row.type,
+      display_name: row.displayName,
+      identity,
+      version: row.version,
+      status: row.status,
+      tombstone: row.tombstone,
+    });
+  }
+  const edges = db.orgGraph.listEdges().map((row) => ({
+    id: row.edgeId,
+    source_node_id: row.sourceNodeId,
+    target_node_id: row.targetNodeId,
+    relationship_type: row.relationshipType,
+    project_scope: row.projectScope,
+    authority_scope: row.authorityScope,
+    valid_from: row.validFrom,
+    valid_to: row.validTo,
+    version: row.version,
+    created_by: row.createdBy,
+    policy_ref: row.policyRef,
+  }));
+  return { nodes, edges };
+}
+
+/** Append a versioned snapshot after a persisted mutation. A write
+ *  failure is audited loudly (ORG_SNAPSHOT_PERSIST_FAILED) — the
+ *  mutation already landed, so there is no rollback; the audit is the
+ *  record of the gap in history. */
+function recordSnapshot(
+  db: FactoryDatabase,
+  audit: AuditLog,
+  change: 'GENESIS' | 'NODE_ADDED' | 'EDGE_ADDED' | 'EDGE_REMOVED',
+  actor: string,
+  nodeId: string | null,
+  edgeId: string | null,
+): void {
+  try {
+    db.orgSnapshots.append({
+      change,
+      nodeId,
+      edgeId,
+      actor,
+      graphJson: JSON.stringify(buildGraphPayload(db, audit)),
+    });
+  } catch (e) {
+    audit.record(actor, 'ORG_SNAPSHOT_PERSIST_FAILED', 'org-snapshot', change, {
+      error: e instanceof Error ? e.message : 'snapshot persist failed',
+      node_id: nodeId,
+      edge_id: edgeId,
+    });
+  }
 }
 
 export async function handleOrgGraphRoutes(
@@ -271,6 +390,7 @@ export async function handleOrgGraphRoutes(
       return json(res, 503, { error: 'persist failed', code: 'ORG_PERSIST_FAILED' }), true;
     }
     audit.record(actor, 'ORG_NODE_ADDED', 'org-node', id, { org_id: orgId, type });
+    recordSnapshot(db, audit, 'NODE_ADDED', actor, id, null);
     return json(res, 200, { node: { id, org_id: orgId, type, display_name: displayName, version, status } }), true;
   }
 
@@ -364,6 +484,7 @@ export async function handleOrgGraphRoutes(
       target: target,
       relationship_type: relType,
     });
+    recordSnapshot(db, audit, 'EDGE_ADDED', actor, null, id);
     return json(res, 200, { edge: { id, source_node_id: source, target_node_id: target, relationship_type: relType } }), true;
   }
 
@@ -389,7 +510,77 @@ export async function handleOrgGraphRoutes(
     }
     if (!removed) return json(res, 404, { error: `unknown edge ${id}` }), true;
     audit.record(actor, 'ORG_EDGE_REMOVED', 'org-edge', id, {});
+    recordSnapshot(db, audit, 'EDGE_REMOVED', actor, null, id);
     return json(res, 200, { removed: id }), true;
+  }
+
+  // -- versioned snapshot history (§9.4, Batch 35) -------------------------
+  if (p === '/api/org/snapshots' && req.method === 'GET') {
+    const snapshots: Record<string, unknown>[] = [];
+    // Per-row loud skip: list() fails loudly on the first corrupt row
+    // by store contract, so read id-scoped and skip only the bad rows.
+    for (const snapshotId of db.orgSnapshots.listSnapshotIds()) {
+      let row: ReturnType<FactoryDatabase['orgSnapshots']['get']>;
+      try {
+        row = db.orgSnapshots.get(snapshotId);
+      } catch (e) {
+        audit.record('system', 'ORG_SNAPSHOT_CORRUPT', 'org-snapshot', snapshotId, {
+          error: e instanceof Error ? e.message : 'corrupt org snapshot row',
+        });
+        continue;
+      }
+      if (row === undefined) continue;
+      let graph: { nodes?: unknown[]; edges?: unknown[] };
+      try {
+        graph = JSON.parse(row.graphJson) as { nodes?: unknown[]; edges?: unknown[] };
+      } catch (e) {
+        audit.record('system', 'ORG_SNAPSHOT_CORRUPT', 'org-snapshot', row.snapshotId, {
+          error: e instanceof Error ? e.message : 'corrupt org snapshot row',
+        });
+        continue;
+      }
+      snapshots.push({
+        snapshot_id: row.snapshotId,
+        graph_version: row.graphVersion,
+        change: row.change,
+        node_id: row.nodeId,
+        edge_id: row.edgeId,
+        actor: row.actor,
+        created_at: row.createdAt,
+        node_count: Array.isArray(graph.nodes) ? graph.nodes.length : 0,
+        edge_count: Array.isArray(graph.edges) ? graph.edges.length : 0,
+      });
+    }
+    return json(res, 200, { snapshots }), true;
+  }
+
+  const snapDetail = p.match(/^\/api\/org\/snapshots\/([^/]+)$/);
+  if (snapDetail && req.method === 'GET') {
+    const snapshotId = decodeURIComponent(snapDetail[1]!);
+    let row: ReturnType<FactoryDatabase['orgSnapshots']['get']>;
+    try {
+      row = db.orgSnapshots.get(snapshotId);
+    } catch (e) {
+      audit.record('system', 'ORG_SNAPSHOT_CORRUPT', 'org-snapshot', snapshotId, {
+        error: e instanceof Error ? e.message : 'corrupt org snapshot row',
+      });
+      return json(res, 500, { error: 'corrupt snapshot row', code: 'ORG_SNAPSHOT_CORRUPT' }), true;
+    }
+    if (row === undefined) return json(res, 404, { error: `unknown snapshot ${snapshotId}` }), true;
+    const graph = JSON.parse(row.graphJson) as { nodes: unknown[]; edges: unknown[] };
+    return json(res, 200, {
+      snapshot: {
+        snapshot_id: row.snapshotId,
+        graph_version: row.graphVersion,
+        change: row.change,
+        node_id: row.nodeId,
+        edge_id: row.edgeId,
+        actor: row.actor,
+        created_at: row.createdAt,
+      },
+      nodes: graph.nodes,
+      edges: graph.edges,
+    }), true;
   }
 
   if (p.startsWith('/api/org/')) return json(res, 405, { error: 'method not allowed' }), true;

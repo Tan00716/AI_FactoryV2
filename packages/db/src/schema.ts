@@ -896,8 +896,11 @@ CREATE INDEX IF NOT EXISTS idx_escalations_dispute
 -- its valid_to closed. An edge with valid_to = NULL is an *ongoing
 -- relationship*, not an in-flight process — rows hydrate as-is, there
 -- is nothing to demote (unlike delegations, Batch 32). The §9.4
--- versioned snapshot history stays in memory: only the CURRENT graph
--- (all nodes + all edges) is durable.
+-- versioned snapshot history is durable too (Batch 35):
+-- org_version_snapshots carries the full graph as of every persisted
+-- mutation, so historical runs can resolve the org version they ran
+-- against. The in-memory OrgGraphV2 history is a run-local query
+-- convenience only.
 CREATE TABLE IF NOT EXISTS organization_nodes (
   node_id TEXT PRIMARY KEY,
   org_id TEXT NOT NULL,
@@ -927,6 +930,28 @@ CREATE INDEX IF NOT EXISTS idx_organization_relationships_source
   ON organization_relationships(source_node_id);
 CREATE INDEX IF NOT EXISTS idx_organization_relationships_target
   ON organization_relationships(target_node_id);
+
+-- Versioned org-graph snapshot history (§9.4, Batch 35): one append-only
+-- row per persisted graph mutation, carrying the full graph (nodes +
+-- edges) as of that version. Historical runs resolve the org exactly
+-- as it was — the durable equivalent of OrgGraphV2.resolveAt(version).
+-- graph_version is a per-database monotonic counter (UNIQUE arbitrates
+-- concurrent writers); GENESIS rows snapshot the real current state of
+-- an older database — they record what is there, never invent rows.
+CREATE TABLE IF NOT EXISTS org_version_snapshots (
+  snapshot_id TEXT PRIMARY KEY,
+  graph_version INTEGER NOT NULL,
+  change TEXT NOT NULL,
+  node_id TEXT,
+  edge_id TEXT,
+  actor TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  graph_json TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_org_version_snapshots_version
+  ON org_version_snapshots(graph_version);
+CREATE INDEX IF NOT EXISTS idx_org_version_snapshots_created
+  ON org_version_snapshots(created_at);
 
 -- Self-modification proposals (§59, §48.2, Batch 33): one insert-only
 -- row per §59 proposal decision (POST /api/workforce/proposals).

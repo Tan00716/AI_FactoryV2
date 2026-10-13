@@ -19,6 +19,7 @@ import {
   GovernanceError,
   type FactoryPolicy,
   type RelativeCeilingDeniedIntent,
+  type TaskScopeCeilingDeniedIntent,
 } from '../src/index';
 
 function basePolicy(): FactoryPolicy {
@@ -57,8 +58,8 @@ function collectSink() {
   const intents: RelativeCeilingDeniedIntent[] = [];
   return {
     intents,
-    sink: (intent: RelativeCeilingDeniedIntent) => {
-      intents.push(intent);
+    sink: (intent: RelativeCeilingDeniedIntent | TaskScopeCeilingDeniedIntent) => {
+      if (intent.action === 'RELATIVE_CEILING_DENIED') intents.push(intent);
     },
   };
 }

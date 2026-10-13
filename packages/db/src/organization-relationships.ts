@@ -15,10 +15,10 @@
  *    are display projections). Upsert semantics; removeEdge deletes.
  *
  * The versioned snapshot history (§9.4 "resolve the graph as of a
- * historical version") stays in memory — it is a run-local query
- * convenience, not §48.2 durable state. The CURRENT graph (all
- * nodes + all edges) is what survives a restart; a fresh process
- * rebuilds its scratch history from the persisted rows.
+ * historical version") is durable too — see org-version-snapshots.ts:
+ * one append-only row per persisted mutation, carrying the full
+ * graph as of that version. The CURRENT graph is the query surface;
+ * the snapshots are the audit-grade history.
  *
  * Record semantics (pinned by tests):
  *  - nodes: saveNode upserts by node_id; getNode / listNodes read;
