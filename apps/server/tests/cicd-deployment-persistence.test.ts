@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 
 interface BootedServer {
   child: ChildProcess;
@@ -207,8 +208,13 @@ describe('deployment persistence across SIGKILL restarts (Batch 19)', () => {
       assert.equal(approve.status, 409);
       assert.equal(approve.body['code'], 'PROJECT_ARCHIVED');
       const actions = await auditActions(server.port);
+      // Batch 31: fresh databases rebuild through the pipeline-record
+      // path (the record is durable now), so the refusal audits as
+      // PIPELINE_REBUILD_REFUSED. The legacy deployment-stub path
+      // still audits DEPLOYMENT_REBUILD_REFUSED (pinned below for
+      // pre-Batch-31 databases).
       assert.ok(
-        actions.includes('DEPLOYMENT_REBUILD_REFUSED'),
+        actions.includes('PIPELINE_REBUILD_REFUSED'),
         'refused rebuild is on the audit trail',
       );
 
@@ -229,6 +235,62 @@ describe('deployment persistence across SIGKILL restarts (Batch 19)', () => {
       const r = await api(server.port, 'GET', '/api/pipelines/does-not-exist');
       assert.equal(r.status, 404);
       assert.match(r.body['error'] as string, /pipeline .* not found/);
+      await killServer(server);
+      server = undefined;
+    } finally {
+      if (server) await killServer(server);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('legacy path: a pre-Batch-31 database (no pipeline tables) still rebuilds via the deployment stub', { timeout: 240_000 }, async () => {
+    // A database that predates the pipeline_records tables has
+    // deployments but no pipeline rows: the rebuild must fall back
+    // to the Batch-19 deployment-stub path (DEPLOYMENT_REBUILD_REFUSED
+    // / DEPLOYMENT_REHYDRATED), not 404.
+    const dir = mkdtempSync(join(tmpdir(), 'factory-server-deploy-legacy-'));
+    const dbFile = join(dir, 'factory.db');
+    let server: BootedServer | undefined;
+    try {
+      server = await bootServer(dbFile);
+      const p = await api(server.port, 'POST', '/api/projects', { name: 'Legacy' });
+      const pid = p.body['id'] as string;
+      const t = await api(server.port, 'POST', '/api/tasks', { projectId: pid, title: 'Ship it' });
+      const tid = t.body['id'] as string;
+      const pl = await api(server.port, 'POST', '/api/pipelines', { taskId: tid });
+      const pipelineId = pl.body['id'] as string;
+      const dep = await api(server.port, 'POST', `/api/pipelines/${pipelineId}/deploy`, {
+        environment: 'PROD',
+        taskId: tid,
+        actor: 'deploy-bot',
+      });
+      assert.equal(dep.status, 200);
+      const approvalId = (dep.body['approval'] as Record<string, unknown>)['approval_id'] as string;
+      const decision = await api(server.port, 'POST', `/api/approvals/${approvalId}/decision`, {
+        approved: true,
+        decided_by: 'human',
+      });
+      assert.equal(decision.status, 200);
+
+      await killServer(server);
+      // Simulate the pre-Batch-31 database: deployments survive, the
+      // pipeline tables never existed.
+      {
+        const raw = new DatabaseSync(dbFile);
+        raw.exec('DROP TABLE IF EXISTS pipeline_stages; DROP TABLE IF EXISTS pipeline_records;');
+        raw.close();
+      }
+      server = await bootServer(dbFile);
+
+      // Approve rebuilds through the legacy stub path.
+      const approve = await api(server.port, 'POST', `/api/pipelines/${pipelineId}/approve`, {
+        approvalId,
+      });
+      assert.equal(approve.status, 200);
+      assert.equal((approve.body['deployment'] as Record<string, unknown>)['status'], 'SUCCEEDED');
+      const actions = await auditActions(server.port);
+      assert.ok(actions.includes('DEPLOYMENT_REHYDRATED'), 'legacy rebuild on the audit trail');
+
       await killServer(server);
       server = undefined;
     } finally {

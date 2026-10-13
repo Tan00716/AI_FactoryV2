@@ -203,10 +203,10 @@ count with `sampleIds`. An operator auditing exactly *which* files are
 at risk must also read the per-category evaluation detail. Same shape
 as every other category; consistent, just not file-enumerating.
 
-**F9 — Low (script-harness note).** The background build runner's
-queue is FIFO and asynchronous: the walkthrough polls the DB file for
-the build record rather than the HTTP surface, because there is no
-`/api/builds/:prId` read route in the product. The DB read is honest
-(the record is the system of record), but an operator with only HTTP
-access has no way to watch a build land. *Fix direction: a read-only
-builds listing endpoint when the build surface gets one.*
+**F9 — Low (CLOSED in Batch 31).** The background build runner's
+queue is FIFO and asynchronous: the walkthrough polled the DB file for
+the build record rather than the HTTP surface, because there was no
+`/api/builds` read route in the product. Batch 31 added the read-only
+builds surface (`GET /api/builds` + `GET /api/builds/:id`, viewer-readable;
+see `apps/server/tests/builds-read.test.ts`, which watches a real build
+land over pure HTTP).

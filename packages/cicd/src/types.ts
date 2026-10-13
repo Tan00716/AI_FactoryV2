@@ -47,6 +47,7 @@ export const PIPELINE_STAGE_ORDER: StageName[] = [
 export type StageStatus =
   | 'PENDING'
   | 'RUNNING'
+  | 'INTERRUPTED'
   | 'SUCCEEDED'
   | 'FAILED'
   | 'SKIPPED';
@@ -73,10 +74,20 @@ export interface PipelineStage {
   error?: string;
 }
 
-/** Pipeline-level lifecycle. */
+/**
+ * Pipeline-level lifecycle.
+ *
+ * INTERRUPTED is a hydration-time state (Batch 31): the process died
+ * mid-run, so a pipeline or stage left RUNNING in the durable store is
+ * demoted to INTERRUPTED on rebuild — it is never presented as still
+ * running, and it can never be resumed (stage handlers are host
+ * closures; /run on a hydrated record keeps 409ing). The runner
+ * itself never produces INTERRUPTED.
+ */
 export type PipelineStatus =
   | 'QUEUED'
   | 'RUNNING'
+  | 'INTERRUPTED'
   | 'SUCCEEDED'
   | 'FAILED'
   | 'ROLLED_BACK'

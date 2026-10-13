@@ -417,6 +417,14 @@ export function requiredRoleFor(method: string, path: string): ApiRole | null {
     return method === 'GET' ? 'viewer' : 'operator';
   }
   if (path === '/api/db/runbooks' && method === 'POST') return 'admin';
+  // Builds read surface (§40, Batch 31): the builds table is a read-only
+  // observation surface — no writable endpoint exists under /api/builds
+  // (the handler answers 405 for non-GET). GETs are viewer, like the
+  // other metadata surfaces; non-GET stays admin so a write-like call
+  // can never ride on a weaker role.
+  if (path === '/api/builds' || path.startsWith('/api/builds/')) {
+    return method === 'GET' ? 'viewer' : 'admin';
+  }
   return method === 'GET' ? 'viewer' : 'operator';
 }
 

@@ -34,6 +34,7 @@ import { SqliteAuthorizationTicketStore } from './authorization-tickets';
 import { SqliteMergeQueueEntryStore, SqliteMergeQueueDrainLock, SqlitePrStore } from './merge-queue';
 import { NO_SBOM_NOTE, SqliteBuildRecordStore } from './builds';
 import { SqliteDeploymentStore } from './deployments';
+import { SqlitePipelineRecordStore } from './pipelines';
 import { SqliteWorktreeStore } from './worktrees';
 import { SqliteMcpServerStore } from './mcp-servers';
 
@@ -910,6 +911,7 @@ export class FactoryDatabase {
    * never values (the type has no values field).
    */
   readonly deployments: SqliteDeploymentStore;
+  readonly pipelineRecords: SqlitePipelineRecordStore;
   /**
    * §22.1 (G-37, Batch 19) — worktree allocation records: one ACTIVE
    * worktree per (repo, task) at a time (partial unique index), paths
@@ -981,6 +983,7 @@ export class FactoryDatabase {
     this.backupSchedules = new SqliteBackupScheduleStore(this.db);
     this.authorizationTickets = new SqliteAuthorizationTicketStore(this.db);
     this.deployments = new SqliteDeploymentStore(this.db);
+    this.pipelineRecords = new SqlitePipelineRecordStore(this.db);
     this.worktrees = new SqliteWorktreeStore(this.db);
     this.prStore = new SqlitePrStore(this.db);
     this.mergeQueueEntries = new SqliteMergeQueueEntryStore(

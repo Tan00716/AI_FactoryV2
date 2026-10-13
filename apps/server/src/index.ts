@@ -163,6 +163,7 @@ import {
 } from './routes/backup-scheduler';
 import { handleAuthorizationTicketRoutes } from './routes/authorization-tickets';
 import { handleDbRoutes } from './routes/db';
+import { handleBuildsRoutes } from './routes/builds';
 import { createDbBrokerService } from './db-broker';
 import { EventBus } from '@ai-factory/events';
 import {
@@ -838,6 +839,7 @@ const server = createServer(async (req, res) => {
     if (await handleRetentionRoutes(req, res, url, routeCtx)) return;
     if (await handleAuthorizationTicketRoutes(req, res, url, routeCtx)) return;
     if (await handleDbRoutes(req, res, url, routeCtx)) return;
+    if (await handleBuildsRoutes(req, res, url, routeCtx)) return;
 
     // Projects
     if (path === '/api/projects' && method === 'GET') {

@@ -594,6 +594,38 @@ CREATE TABLE IF NOT EXISTS deployments (
 );
 CREATE INDEX IF NOT EXISTS idx_deployments_pipeline ON deployments (pipeline_id);
 
+-- Pipeline records + stage definitions (Batch 31): durable pipeline
+-- records (§39/§40). The record is persisted, never the run: stage
+-- handlers are host closures and can never be persisted (by design,
+-- like Batch 19's deployFn/smokeFn). A pipeline left RUNNING in the
+-- store (process died mid-run) is demoted to INTERRUPTED on rebuild —
+-- a first-class lifecycle state, never presented as still running.
+CREATE TABLE IF NOT EXISTS pipeline_records (
+  id              TEXT PRIMARY KEY,
+  commit_sha      TEXT NOT NULL,
+  environment     TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  task_id         TEXT,
+  failure_stage   TEXT,
+  failure_message TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  rehydrated_at   TEXT
+);
+CREATE TABLE IF NOT EXISTS pipeline_stages (
+  pipeline_id    TEXT NOT NULL,
+  position       INTEGER NOT NULL,
+  name           TEXT NOT NULL,
+  status         TEXT NOT NULL,
+  logs_json      TEXT NOT NULL DEFAULT '[]',
+  artifacts_json TEXT NOT NULL DEFAULT '[]',
+  started_at     TEXT,
+  ended_at       TEXT,
+  error          TEXT,
+  PRIMARY KEY (pipeline_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_stages_pipeline ON pipeline_stages (pipeline_id);
+
 -- Merge Queue + PR persistence — §36 (Batch 20). The queue in
 -- @ai-factory/git is operational in memory but writes every mutation
 -- through here the moment it happens; hydrate() rebuilds it after a

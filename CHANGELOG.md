@@ -1,5 +1,13 @@
 # Changelog
 
+## [未发布] Batch 31 — Pipeline 落库 / /api/builds / SPEC 扫荡 / Batch30 独立复核（在途）
+
+- **Batch 30 独立复核（31-1）**：三项实质声明全部成立（`gap-audit/REAUDIT_BATCH30.md`，零产品代码改动）：可售复验报告诚实性抽查（A-BLOCKED/文档翻绿均有代码依据）、走查第三版（1/1，真链路亲读确认）、扫荡三个候选（7/7、9/9、4/4）。附带两处如实记录："KNOWN_LIMITATIONS 现共 58 条目"实为 54（计数口径偏差，已纠偏）；主工作树在途的 `/api/builds` 路由是 Batch 31 后续工作、不在 Batch 30 基线内。
+- **SPEC_V2 59 章覆盖扫荡（31-4）**：`gap-audit/SPEC_COVERAGE_BATCH31.md`——逐章一句话状态 + 证据指针：已落地 26 章、部分 27 章、未做 0 整章（未做的是章内子项）。补入 KNOWN_LIMITATIONS 的 7 项"规格要求但此前未记录"缺口（§8.1 AUTHORITY_CONFLICT 仲裁缺失、§5 相对权限上限、§6.1 项目记录缺字段/Clone 入口/模板不可扩展、§6.4 项目知识 9 类无结构、§48.2 实体集合未落库清单）；纠偏"文档说没做但实际已做"滞后（INV-29/§5 脱敏/§6.2 发现诊断/§6.3 非空目录守卫/§1.2 AOCR 在 2026-10-11 group-a 审计后已落地）；SELLABLE_CHECKLIST 四处滞后纠偏 + 结论口径更新到 d81857a 亲验。零产品代码改动。收敛建议：AUTHORITY_CONFLICT、相对权限上限、gates/delegations 落库是纯代码可关闭的候选。
+- **/api/builds 只读面（31-3）**：关闭 walkthrough F9。`GET /api/builds`（列表：status/prId/revision 过滤，limit/offset 分页）与 `GET /api/builds/:id`（单条），只读 builds 表（不触发任何构建），viewer 可读（RBAC 中央门控，非 GET → admin）；记录拷贝原样序列化（null 不编造，note 恒存在）。真 server e2e：merge → 真实构建 → **纯 HTTP 轮询**观察到 SUCCEEDED（约 6 秒）。F9 在 FIRST_RUN_WALKTHROUGH.md 标记 CLOSED，KNOWN_LIMITATIONS 加条目。边界：记录 insert-only，状态机单向（终端行不可改写）。
+- **Pipeline 记录 + stage 定义落库（31-2）**：`pipeline_records` / `pipeline_stages` 表（老库自动建表），每次 pipeline 创建与每次 stage 结束写透（记录 + 全部 12 个 stage 定义，单事务原子；写透失败不回滚内存记录，写 `PIPELINE_PERSIST_FAILED` 审计）。重启后 `GET /api/pipelines/:id` 与 `GET /api/pipelines` 从落盘行重建记录（`PIPELINE_REHYDRATED` 审计，`rehydrated: true`）。`@ai-factory/cicd` 类型新增 `INTERRUPTED` 一等生命周期状态：落盘行里 RUNNING 的 pipeline 与 stage 在水合时降为 INTERRUPTED（永不伪装仍在运行、永不可恢复执行）。边界：① 落盘的是记录不是执行——stage handler 是宿主闭包，无法落盘是设计的；重建记录是只读历史，`/run` 保持 409 `PIPELINE_NOT_REHYDRATABLE`，绝不伪装可跑；② 归档守卫重建前重校验（→ 409 + `PIPELINE_REBUILD_REFUSED`；legacy deployment-stub 路径仍审计 `DEPLOYMENT_REBUILD_REFUSED`，测试钉住）；③ 无任何痕迹的 pipeline 仍 404；④ 腐坏 stage 行大声失败。实现中抓到两个真问题：node:sqlite 没有 `.transaction()`（改显式 BEGIN IMMEDIATE/COMMIT/ROLLBACK）；新库 record 路径先命中导致旧 Batch-19 测试的审计名断言失效（旧测试按新路径名更新 + 补 legacy 路径测试）。
+- KNOWN_LIMITATIONS：Batch 19 条目改写为"Pipeline 记录与 stage 定义已落库"、新增"规格扫荡发现（Batch 31）"一节、新增"构建只读面已关闭（Batch 31）"条目、结论口径更新到 d81857a 亲验。测试基线（主线亲验）：构建 0 错误；包套件 2304 → 2309（+5：db pipelines）；服务端全套 275 → 285（+10：builds-read 4、pipeline-persistence 5、legacy 路径 1）；desktop tsc 0；smoke:boot OK。
+
 ## [未发布] Batch 30 — Batch29 独立复核 / 可售清单复验 / walkthrough 第三版 / 缺口收敛扫荡
 
 - **Batch 29 独立复核（30-1）**：四项实质声明全部成立（`gap-audit/REAUDIT_BATCH29.md`，零产品代码改动）：db-broker 服务端接线（7/7 真 server e2e）、fetched-content 隔离契约（11/11）、29-2 轮询化稳定（7/7）。附带构建稳定性观察：`npm run build` 四遍中第一遍真实失败（apps/desktop vite build 失败，exit 2），后三遍全过——桌面构建偶发抖动，留观察记录（产物可用，测试针对亲构建产物全绿）。

@@ -26,11 +26,19 @@
  * (marked REHYDRATED in audit) instead of 404ing it, re-validating
  * the archive guard and rollback capability first. Rebuild failures
  * return 410 DEPLOYMENT_UNRECOVERABLE with the reason — never silent.
- * Pipeline RECORDS and STAGE definitions are still process memory:
- * GET /api/pipelines/:id on a rebuilt pipeline returns an honest
- * REHYDRATED stub, and /run on it is refused (its stages were never
- * persisted). Stage handlers, deployFn and smokeFn are still
- * simulated — this batch persists the spec, not host closures.
+ * DURABILITY (Batch 31): pipeline RECORDS and STAGE DEFINITIONS are
+ * durable now too. Every pipeline create and every stage transition
+ * writes through to `fdb.pipelineRecords` (record + all 12 stages in
+ * one transaction). A restarted server REBUILDS the record from the
+ * persisted rows (marked REHYDRATED): a pipeline left RUNNING in the
+ * store is demoted to INTERRUPTED — a first-class lifecycle state,
+ * never presented as still running — and so is any stage left
+ * RUNNING; the persisted definitions stay queryable. What is
+ * persisted is the RECORD, not the run: stage handlers are host
+ * closures and can never be persisted (by design, like Batch 19's
+ * deployFn/smokeFn), so /run on a rebuilt record keeps 409ing —
+ * execution is never faked after a restart. A pipeline with no
+ * persisted record at all still 404s exactly as before.
  *
  * Archived-project write guard (Batch 15, shared decision in
  * routes/project-guard.ts): every POST here binds to a task — at
@@ -65,9 +73,18 @@ import {
   type DeploymentRehydrationSpec,
   type EnvironmentName,
   type Pipeline,
+  type PipelineStage,
   type PipelineStatus,
+  type StageName,
+  type StageStatus,
 } from '@ai-factory/cicd';
-import type { DeploymentSpec, PersistedDeployment } from '@ai-factory/db';
+import type {
+  DeploymentSpec,
+  PersistedDeployment,
+  PersistedPipeline,
+  PersistedPipelineStatus,
+  PersistedStageStatus,
+} from '@ai-factory/db';
 import type { ApprovalLevel } from '@ai-factory/approvals';
 import { nowIso } from '@ai-factory/core';
 import { ApprovalManager } from '@ai-factory/approvals';
@@ -248,45 +265,92 @@ type RehydrateResult =
   | { kind: 'unrecoverable'; reason: string };
 
 /**
- * Batch 19 — rebuild a pipeline record from persisted deployment
- * rows after a restart. Only parked (AWAITING_APPROVAL) rows yield
- * live jobs; finished rows are re-attached as read-only history.
- * The archive guard is re-validated BEFORE any job is rebuilt —
- * a project archived while the server was down refuses the rebuild
- * with 409 PROJECT_ARCHIVED, never silently.
+ * Batch 31 — project the in-memory record to the durable shape:
+ * pipeline fields plus ALL stage definitions (status, logs,
+ * artifacts, timestamps). The record is the whole truth; there is
+ * no partial stage update.
  */
-function rehydratePipelineRecord(ctx: RouteContext, id: string): RehydrateResult | null {
-  const rows = ctx.fdb.deployments.byPipeline(id);
-  if (rows.length === 0) return null;
-  const taskId = rows.find((r) => r.status === 'AWAITING_APPROVAL')?.taskId
-    ?? rows[0].taskId ?? null;
-  if (taskId && isTaskProjectArchived(ctx.fdb, taskId)) {
-    const projectId = (projectIdOfTask(ctx.fdb, taskId) as string | null) ?? '';
-    ctx.audit.record('system', 'DEPLOYMENT_REBUILD_REFUSED', 'pipeline', id, {
-      taskId,
-      projectId,
-      reason: 'project archived while the server was down',
-    });
-    return { kind: 'archived', projectId, taskId };
-  }
-
-  const record: PipelineRecord = {
-    pipeline: {
-      id,
-      commitSha: 'REHYDRATED',
-      environment: rows[0].environment as EnvironmentName,
-      stages: [],
-      status: 'REHYDRATED' as PipelineStatus,
-      createdAt: rows[0].createdAt,
-      updatedAt: nowIso(),
-    },
-    taskId,
-    deployments: [],
-    rehydrated: true,
+function toPersistedPipeline(r: PipelineRecord): PersistedPipeline {
+  return {
+    id: r.pipeline.id,
+    commitSha: r.pipeline.commitSha,
+    environment: r.pipeline.environment,
+    status: r.pipeline.status as PersistedPipelineStatus,
+    taskId: r.taskId,
+    failureStage: r.pipeline.failure?.stage ?? null,
+    failureMessage: r.pipeline.failure?.message ?? null,
+    createdAt: r.pipeline.createdAt,
+    updatedAt: r.pipeline.updatedAt,
+    rehydratedAt: null,
+    stages: r.pipeline.stages.map((s, position) => ({
+      pipelineId: r.pipeline.id,
+      position,
+      name: s.name,
+      status: s.status as PersistedStageStatus,
+      logs: [...s.logs],
+      artifacts: s.artifacts.map((a) => ({ ...a })),
+      startedAt: s.startedAt,
+      endedAt: s.endedAt,
+      error: s.error ?? null,
+    })),
   };
+}
+
+/**
+ * Batch 31 — write the pipeline record + stage definitions through
+ * to the durable store (one transaction in the store: a reader never
+ * sees a half-written record). A write-through failure never rolls
+ * back the in-memory record; it writes PIPELINE_PERSIST_FAILED
+ * (same seam contract as the outbox sink / DEPLOYMENT_PERSIST_FAILED).
+ */
+function persistPipeline(ctx: RouteContext, record: PipelineRecord): void {
+  try {
+    ctx.fdb.pipelineRecords.save(toPersistedPipeline(record));
+  } catch (e) {
+    ctx.audit.record('system', 'PIPELINE_PERSIST_FAILED', 'pipeline', record.pipeline.id, {
+      message: (e as Error).message,
+    });
+  }
+}
+
+/**
+ * Batch 31 — the archive-guard refusal shared by both rebuild paths
+ * (the Batch-19 deployment-stub path and the Batch-31 record path):
+ * a project archived while the server was down refuses the rebuild
+ * with 409 PROJECT_ARCHIVED, never silently. The audit action keeps
+ * each path's historical name (DEPLOYMENT_REBUILD_REFUSED for the
+ * legacy stub path — pinned by tests; PIPELINE_REBUILD_REFUSED for
+ * the record path).
+ */
+function rebuildArchivedRefusal(
+  ctx: RouteContext,
+  id: string,
+  taskId: string,
+  auditAction: 'DEPLOYMENT_REBUILD_REFUSED' | 'PIPELINE_REBUILD_REFUSED',
+): RehydrateResult {
+  const projectId = (projectIdOfTask(ctx.fdb, taskId) as string | null) ?? '';
+  ctx.audit.record('system', auditAction, 'pipeline', id, {
+    taskId,
+    projectId,
+    reason: 'project archived while the server was down',
+  });
+  return { kind: 'archived', projectId, taskId };
+}
+
+/**
+ * Batch 31 — attach the Batch-19 durable deployments to a rebuilt
+ * record: finished rows as read-only history, parked
+ * (AWAITING_APPROVAL) rows rebuilt into live jobs. Extracted from
+ * rehydratePipelineRecord so both rebuild paths share it.
+ */
+function attachDeployments(
+  ctx: RouteContext,
+  record: PipelineRecord,
+): { rebuilt: number; unrecoverable: number } {
+  const id = record.pipeline.id;
   let rebuilt = 0;
   let unrecoverable = 0;
-  for (const row of rows) {
+  for (const row of ctx.fdb.deployments.byPipeline(id)) {
     if (row.status !== 'AWAITING_APPROVAL') {
       record.deployments.push(persistedToDeployment(row) as Deployment);
       continue;
@@ -372,6 +436,109 @@ function rehydratePipelineRecord(ctx: RouteContext, id: string): RehydrateResult
       });
     }
   }
+  return { rebuilt, unrecoverable };
+}
+
+/**
+ * Batch 31 — rebuild a pipeline record from the persisted pipeline
+ * rows after a restart. A pipeline left RUNNING in the store (the
+ * process died mid-run) is demoted to INTERRUPTED — a first-class
+ * lifecycle state, never presented as still running — and so is any
+ * stage left RUNNING. The rebuilt record is read-only history:
+ * /run on it keeps 409ing (stage handlers are host closures and can
+ * never be persisted). Deployments are re-attached the Batch-19 way.
+ * A pipeline with no persisted record falls back to the legacy
+ * deployment-stub path (pre-Batch-31 databases).
+ */
+function hydratePipelineRecord(ctx: RouteContext, id: string): RehydrateResult | null {
+  const persisted = ctx.fdb.pipelineRecords.get(id);
+  if (!persisted) {
+    return rehydratePipelineRecord(ctx, id);
+  }
+  const depRows = ctx.fdb.deployments.byPipeline(id);
+  const taskId = persisted.taskId
+    ?? depRows.find((r) => r.status === 'AWAITING_APPROVAL')?.taskId
+    ?? depRows[0]?.taskId
+    ?? null;
+  if (taskId && isTaskProjectArchived(ctx.fdb, taskId)) {
+    return rebuildArchivedRefusal(ctx, id, taskId, 'PIPELINE_REBUILD_REFUSED');
+  }
+  const wasRunning = persisted.status === 'RUNNING';
+  const stages: PipelineStage[] = persisted.stages.map((s) => ({
+    name: s.name as StageName,
+    status: (s.status === 'RUNNING' ? 'INTERRUPTED' : s.status) as StageStatus,
+    logs: s.logs,
+    artifacts: s.artifacts,
+    startedAt: s.startedAt,
+    endedAt: s.endedAt,
+    ...(s.error ? { error: s.error } : {}),
+  }));
+  const record: PipelineRecord = {
+    pipeline: {
+      id: persisted.id,
+      commitSha: persisted.commitSha,
+      environment: persisted.environment as EnvironmentName,
+      stages,
+      status: (wasRunning ? 'INTERRUPTED' : persisted.status) as PipelineStatus,
+      createdAt: persisted.createdAt,
+      updatedAt: nowIso(),
+      ...(persisted.failureStage && persisted.failureMessage
+        ? {
+            failure: {
+              stage: persisted.failureStage as StageName,
+              message: persisted.failureMessage,
+            },
+          }
+        : {}),
+    },
+    taskId,
+    deployments: [],
+    rehydrated: true,
+  };
+  const stamp = nowIso();
+  ctx.fdb.pipelineRecords.markRehydrated(id, stamp);
+  ctx.audit.record('system', 'PIPELINE_REHYDRATED', 'pipeline', id, {
+    wasRunning,
+    interruptedStages: persisted.stages.filter((s) => s.status === 'RUNNING').length,
+    deployments: depRows.length,
+  });
+  attachDeployments(ctx, record);
+  pipelines.set(id, record);
+  return { kind: 'record', record };
+}
+
+/**
+ * Batch 19 — rebuild a pipeline record from persisted deployment
+ * rows after a restart. Only parked (AWAITING_APPROVAL) rows yield
+ * live jobs; finished rows are re-attached as read-only history.
+ * The archive guard is re-validated BEFORE any job is rebuilt —
+ * a project archived while the server was down refuses the rebuild
+ * with 409 PROJECT_ARCHIVED, never silently.
+ */
+function rehydratePipelineRecord(ctx: RouteContext, id: string): RehydrateResult | null {
+  const rows = ctx.fdb.deployments.byPipeline(id);
+  if (rows.length === 0) return null;
+  const taskId = rows.find((r) => r.status === 'AWAITING_APPROVAL')?.taskId
+    ?? rows[0].taskId ?? null;
+  if (taskId && isTaskProjectArchived(ctx.fdb, taskId)) {
+    return rebuildArchivedRefusal(ctx, id, taskId, 'DEPLOYMENT_REBUILD_REFUSED');
+  }
+
+  const record: PipelineRecord = {
+    pipeline: {
+      id,
+      commitSha: 'REHYDRATED',
+      environment: rows[0].environment as EnvironmentName,
+      stages: [],
+      status: 'REHYDRATED' as PipelineStatus,
+      createdAt: rows[0].createdAt,
+      updatedAt: nowIso(),
+    },
+    taskId,
+    deployments: [],
+    rehydrated: true,
+  };
+  const { rebuilt, unrecoverable } = attachDeployments(ctx, record);
   if (rebuilt === 0 && record.deployments.length === 0) {
     return { kind: 'unrecoverable', reason: `${unrecoverable} parked deployment(s) failed rebuild` };
   }
@@ -460,7 +627,11 @@ export async function handleCicdRoutes(
     if (taskId && archivedRefusal(ctx, res, taskId)) return true;
     const runner = new PipelineRunner();
     const pipeline = runner.createPipeline(env, commitSha);
-    pipelines.set(pipeline.id, { pipeline, taskId, deployments: [], rehydrated: false });
+    const record: PipelineRecord = { pipeline, taskId, deployments: [], rehydrated: false };
+    pipelines.set(pipeline.id, record);
+    // Batch 31 — the record + all 12 stage definitions are durable
+    // from the moment of creation.
+    persistPipeline(ctx, record);
     ctx.audit.record('human', 'PIPELINE_CREATED', 'pipeline', pipeline.id, {
       environment: env,
       commitSha,
@@ -469,26 +640,38 @@ export async function handleCicdRoutes(
     return ctx.json(res, 201, serializePipeline(pipelines.get(pipeline.id)!)), true;
   }
 
-  // GET /api/pipelines
+  // GET /api/pipelines — live records first, persisted rows
+  // (Batch 31) fill in what a restart took out of memory. Live
+  // records win on id clashes; each fill-in is an honest hydrated
+  // record (INTERRUPTED demotion applied, rehydrated: true) —
+  // archived-project refusals are skipped, matching the projects
+  // list's default-hides-archived convention.
   if (method === 'GET' && path === PREFIX) {
-    return ctx.json(
-      res,
-      200,
-      [...pipelines.values()].map(serializePipeline),
-    ), true;
+    const live = [...pipelines.values()].map(serializePipeline);
+    const seen = new Set(live.map((p) => p.id as string));
+    const persisted: ReturnType<typeof serializePipeline>[] = [];
+    for (const row of ctx.fdb.pipelineRecords.list()) {
+      if (seen.has(row.id)) continue;
+      const h = hydratePipelineRecord(ctx, row.id);
+      if (h !== null && h.kind === 'record') persisted.push(serializePipeline(h.record));
+    }
+    return ctx.json(res, 200, [...live, ...persisted]), true;
   }
 
   const idMatch = path.match(/^\/api\/pipelines\/([^/]+)(\/.*)?$/);
   if (!idMatch) return false;
   const id = idMatch[1];
   const rest = idMatch[2] ?? '';
-  // Batch 19 — the pipeline record is process memory, but its
-  // deployments are durable now: a missing record is rebuilt from
-  // the persisted rows before we declare it gone. A pipeline with no
-  // persisted deployments at all still 404s exactly as before.
+  // Batch 19 + Batch 31 — the pipeline record used to be process
+  // memory, then only its deployments were durable; now the record
+  // itself (with all stage definitions) is durable too. A missing
+  // record is rebuilt from the persisted rows before we declare it
+  // gone: the Batch-31 record path first, then the legacy
+  // deployment-stub path. A pipeline with no persisted trace at all
+  // still 404s exactly as before.
   let record = pipelines.get(id);
   if (!record) {
-    const re = rehydratePipelineRecord(ctx, id);
+    const re = hydratePipelineRecord(ctx, id);
     if (!re) {
       return ctx.json(res, 404, { error: `pipeline ${id} not found` }), true;
     }
@@ -514,15 +697,16 @@ export async function handleCicdRoutes(
   if (method === 'POST' && rest === '/run') {
     const body = await ctx.readBody(req);
     const actor = typeof body['actor'] === 'string' ? body['actor'] : 'human';
-    // Batch 19 — a rehydrated stub has no stages (stages were never
-    // persisted): running it would "succeed" on an empty stage list,
-    // so it is refused explicitly instead of faking a run.
+    // Batch 19/31 — a rebuilt record is read-only history: its
+    // stage definitions ARE persisted now (Batch 31), but the stage
+    // HANDLERS are host closures that died with the old process, so
+    // resuming execution would fake a run. Refused explicitly.
     if (record.rehydrated) {
       return ctx.json(
         res,
         409,
         {
-          error: `pipeline ${id} was rebuilt from persisted deployments after a restart; stage definitions were not persisted and cannot be re-run`,
+          error: `pipeline ${id} was rebuilt from durable rows after a restart; it is read-only history and cannot be re-run (stage handlers are host closures)`,
           name: 'PIPELINE_NOT_REHYDRATABLE',
         },
       ), true;
@@ -545,10 +729,16 @@ export async function handleCicdRoutes(
       },
       audit: (action, details) =>
         ctx.audit.record(actor, action, 'pipeline', record.pipeline.id, details),
+      // Batch 31 — per-stage-end write-through: if the process dies
+      // mid-run, the durable row already holds every completed stage
+      // plus the RUNNING one, so the rebuild demotes it to
+      // INTERRUPTED honestly instead of pretending it never started.
+      onStageEnd: () => persistPipeline(ctx, record),
     });
     try {
       const pipeline = await runner.run(record.pipeline);
       record.pipeline = pipeline;
+      persistPipeline(ctx, record);
       // §91 — CI pipeline completion on the bus.
       ctx.bus.emit(
         'CI_COMPLETED',

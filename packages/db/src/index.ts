@@ -12,6 +12,7 @@ export * from './backup-schedules';
 export * from './authorization-tickets';
 export * from './worktrees';
 export * from './deployments';
+export * from './pipelines';
 export * from './merge-queue';
 export * from './builds';
 export * from './mcp-servers';
