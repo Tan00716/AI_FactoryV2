@@ -35,6 +35,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import {
   type CreatePrInput,
+  type DrainAcquireResult,
+  type MergeQueueDrainLock,
+  type MergeQueueDrainLockState,
   type MergeQueueEntry,
   type MergeQueueEntryPersistence,
   type PrRecord,
@@ -160,6 +163,8 @@ function rowToEntry(r: Record<string, unknown>): MergeQueueEntry {
     failureReason: (r['failure_reason'] as string | null) ?? null,
     mergeCommitSha: (r['merge_commit_sha'] as string | null) ?? null,
     decisionAuditRef: (r['decision_audit_ref'] as string | null) ?? null,
+    claimedBy: (r['claimed_by'] as string | null) ?? null,
+    claimedAt: (r['claimed_at'] as string | null) ?? null,
   };
 }
 
@@ -173,7 +178,20 @@ function rowToEntry(r: Record<string, unknown>): MergeQueueEntry {
  * hydrate() treats honestly.
  */
 export class SqliteMergeQueueEntryStore implements MergeQueueEntryPersistence {
-  constructor(private readonly db: DatabaseSync) {}
+  /**
+   * Cross-process drain mutual exclusion (Batch 23). When set (the
+   * FactoryDatabase wires one in), the queue serializes drains per
+   * repo across processes. Absent, the queue keeps its pre-Batch-23
+   * behavior: in-process serialization only.
+   */
+  readonly drainLock?: MergeQueueDrainLock;
+
+  constructor(
+    private readonly db: DatabaseSync,
+    drainLock?: MergeQueueDrainLock,
+  ) {
+    this.drainLock = drainLock;
+  }
 
   save(entry: MergeQueueEntry): void {
     const updated = this.db
@@ -183,7 +201,7 @@ export class SqliteMergeQueueEntryStore implements MergeQueueEntryPersistence {
            status=?, position=?, enqueued_by=?, enqueued_at=?, processed_at=?,
            base_sha=?, candidate_sha=?, candidate_tree_oid=?, target_sha=?,
            diff_hash=?, artifact_digest=?, verification=?, failure_reason=?,
-           merge_commit_sha=?, decision_audit_ref=?
+           merge_commit_sha=?, decision_audit_ref=?, claimed_by=?, claimed_at=?
          WHERE id = ?`,
       )
       .run(
@@ -207,6 +225,8 @@ export class SqliteMergeQueueEntryStore implements MergeQueueEntryPersistence {
         entry.failureReason,
         entry.mergeCommitSha,
         entry.decisionAuditRef,
+        entry.claimedBy,
+        entry.claimedAt,
         entry.id,
       );
     if (updated.changes === 0) {
@@ -217,8 +237,8 @@ export class SqliteMergeQueueEntryStore implements MergeQueueEntryPersistence {
               status, position, enqueued_by, enqueued_at, processed_at,
               base_sha, candidate_sha, candidate_tree_oid, target_sha,
               diff_hash, artifact_digest, verification, failure_reason,
-              merge_commit_sha, decision_audit_ref)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+              merge_commit_sha, decision_audit_ref, claimed_by, claimed_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(
           entry.id,
@@ -242,8 +262,33 @@ export class SqliteMergeQueueEntryStore implements MergeQueueEntryPersistence {
           entry.failureReason,
           entry.mergeCommitSha,
           entry.decisionAuditRef,
+          entry.claimedBy,
+          entry.claimedAt,
         );
     }
+  }
+
+  /**
+   * Atomically claim a QUEUED entry for draining (Batch 23). A single
+   * UPDATE … WHERE is atomic in SQLite: two processes racing on the
+   * same row cannot both see changes === 1. The claim wins when the row
+   * is QUEUED and (unclaimed, already held by `token`, or held longer
+   * ago than now - ttlMs). Terminal rows (MERGED/FAILED) are never
+   * claimable — the status predicate enforces it.
+   */
+  tryClaim(id: string, token: string, ttlMs: number): boolean {
+    const now = new Date().toISOString();
+    const cutoff = new Date(Date.now() - ttlMs).toISOString();
+    const updated = this.db
+      .prepare(
+        `UPDATE merge_queue_entries
+         SET claimed_by = ?, claimed_at = ?
+         WHERE id = ?
+           AND status = 'QUEUED'
+           AND (claimed_by IS NULL OR claimed_by = ? OR claimed_at < ?)`,
+      )
+      .run(token, now, id, token, cutoff);
+    return updated.changes === 1;
   }
 
   load(repo: string): MergeQueueEntry[] {
@@ -269,4 +314,89 @@ export class SqliteMergeQueueEntryStore implements MergeQueueEntryPersistence {
       .prepare('UPDATE merge_queue_entries SET decision_audit_ref = ? WHERE id = ?')
       .run(auditId, id);
   }
+}
+
+/**
+ * SQLite-backed cross-process drain mutual exclusion (Batch 23).
+ * One lease row per repo in `merge_queue_drain_locks`.
+ *
+ * Atomicity: the INSERT either wins outright or fails on the PRIMARY
+ * KEY; the takeover is a single conditional UPDATE on the observed
+ * heartbeat, so two contenders racing a stale lock cannot both win
+ * (exactly one sees changes === 1). SQLite serializes the writers;
+ * with the default rollback journal a contender that hits SQLITE_BUSY
+ * fails loudly rather than silently proceeding.
+ */
+export class SqliteMergeQueueDrainLock implements MergeQueueDrainLock {
+  constructor(private readonly db: DatabaseSync) {}
+
+  drainState(repo: string): MergeQueueDrainLockState | null {
+    const r = this.db
+      .prepare(
+        'SELECT holder_id, claimed_at, heartbeat_at FROM merge_queue_drain_locks WHERE repo_path = ?',
+      )
+      .get(repo) as
+      | { holder_id: string; claimed_at: number; heartbeat_at: number }
+      | undefined;
+    if (!r) return null;
+    return { holderId: r.holder_id, claimedAt: r.claimed_at, heartbeatAt: r.heartbeat_at };
+  }
+
+  acquireDrain(
+    repo: string,
+    holderId: string,
+    nowMs: number,
+    ttlMs: number,
+  ): DrainAcquireResult {
+    // Fast path: no row — the INSERT wins the race; losers get a
+    // PRIMARY KEY violation below.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        this.db
+          .prepare(
+            `INSERT INTO merge_queue_drain_locks
+               (repo_path, holder_id, claimed_at, heartbeat_at)
+             VALUES (?,?,?,?)`,
+          )
+          .run(repo, holderId, nowMs, nowMs);
+        return 'acquired';
+      } catch (e) {
+        if (!isUniqueViolation(e)) throw e;
+      }
+      const cur = this.drainState(repo);
+      if (!cur) continue; // holder released between our INSERT and SELECT — retry
+      if (nowMs - cur.heartbeatAt <= ttlMs) return 'contested';
+      // Stale heartbeat: conditional takeover — only one contender's
+      // UPDATE matches the observed heartbeat.
+      const took = this.db
+        .prepare(
+          `UPDATE merge_queue_drain_locks
+           SET holder_id = ?, claimed_at = ?, heartbeat_at = ?
+           WHERE repo_path = ? AND heartbeat_at = ?`,
+        )
+        .run(holderId, nowMs, nowMs, repo, cur.heartbeatAt);
+      return took.changes === 1 ? 'takeover' : 'contested';
+    }
+    return 'contested';
+  }
+
+  heartbeatDrain(repo: string, holderId: string, nowMs: number): boolean {
+    const r = this.db
+      .prepare(
+        `UPDATE merge_queue_drain_locks SET heartbeat_at = ?
+         WHERE repo_path = ? AND holder_id = ?`,
+      )
+      .run(nowMs, repo, holderId);
+    return r.changes === 1;
+  }
+
+  releaseDrain(repo: string, holderId: string): void {
+    this.db
+      .prepare('DELETE FROM merge_queue_drain_locks WHERE repo_path = ? AND holder_id = ?')
+      .run(repo, holderId);
+  }
+}
+
+function isUniqueViolation(e: unknown): boolean {
+  return e instanceof Error && /UNIQUE constraint failed/i.test(e.message);
 }

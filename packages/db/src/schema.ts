@@ -632,12 +632,59 @@ CREATE TABLE IF NOT EXISTS merge_queue_entries (
   verification TEXT,
   failure_reason TEXT,
   merge_commit_sha TEXT,
-  decision_audit_ref TEXT
+  decision_audit_ref TEXT,
+  claimed_by TEXT,
+  claimed_at TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS merge_queue_active_pr
   ON merge_queue_entries(pr_id) WHERE status IN ('QUEUED','VERIFYING');
 CREATE INDEX IF NOT EXISTS idx_merge_queue_repo
   ON merge_queue_entries(repo_path, position);
+
+-- Cross-process drain mutual exclusion (Batch 23). One lease row per
+-- repo: the drainer holding it refreshes heartbeat_at at every drain
+-- progress point; a contender whose heartbeat is older than the
+-- queue's drainLockTtlMs may take the lock over (audited takeover).
+-- A live heartbeat means "hands off" — contenders yield loudly.
+CREATE TABLE IF NOT EXISTS merge_queue_drain_locks (
+  repo_path TEXT PRIMARY KEY,
+  holder_id TEXT NOT NULL,
+  claimed_at INTEGER NOT NULL,
+  heartbeat_at INTEGER NOT NULL
+);
+
+-- Build records (§40, Batch 23). Step one of the "minimal build-record
+-- loop": one row per landed merge. The record is deliberately NOT a
+-- fake build — merges never run a build, so status is NOT_EXECUTED and
+-- digest/definition/sbom_ref/attestation_ref are null, each with a
+-- *_note explaining the absence. The nulls record absence, not
+-- placeholders; a future real build executor extends the status union
+-- and fills the digest on the same row shape.
+CREATE TABLE IF NOT EXISTS builds (
+  id TEXT PRIMARY KEY,
+  revision TEXT NOT NULL,
+  target_sha TEXT,
+  base_sha TEXT,
+  diff_hash TEXT,
+  repo_path TEXT NOT NULL,
+  pr_id TEXT NOT NULL,
+  task_id TEXT,
+  source_branch TEXT NOT NULL,
+  target_branch TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'NOT_EXECUTED',
+  digest TEXT,
+  digest_note TEXT NOT NULL,
+  definition_json TEXT,
+  definition_note TEXT NOT NULL,
+  sbom_ref TEXT,
+  attestation_ref TEXT,
+  built_by TEXT NOT NULL DEFAULT '',
+  built_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_builds_pr
+  ON builds(pr_id);
+CREATE INDEX IF NOT EXISTS idx_builds_revision
+  ON builds(revision);
 
 -- Durable MCP registry (§46, §34.1, Batch 21). Registrations and trust
 -- were process memory until now: a restart sent every approved server

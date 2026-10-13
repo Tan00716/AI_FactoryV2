@@ -61,6 +61,8 @@ function makeEntry(over: Partial<MergeQueueEntry> = {}): MergeQueueEntry {
     failureReason: null,
     mergeCommitSha: null,
     decisionAuditRef: null,
+    claimedBy: null,
+    claimedAt: null,
     ...over,
   };
 }

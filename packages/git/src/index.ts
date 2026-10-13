@@ -35,6 +35,11 @@ export {
   type MergeQueueHooks,
   type MergeQueueOptions,
   type MergeQueueEntryPersistence,
+  DEFAULT_CLAIM_TTL_MS,
+  DEFAULT_DRAIN_LOCK_TTL_MS,
+  type DrainAcquireResult,
+  type MergeQueueDrainLock,
+  type MergeQueueDrainLockState,
 } from './mergeQueue';
 export {
   taskBranchName,

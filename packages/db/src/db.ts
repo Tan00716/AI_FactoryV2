@@ -31,7 +31,8 @@ import { SqliteOutboxStore } from './outbox';
 import { SqliteRetentionStore } from './retention';
 import { SqliteBackupScheduleStore } from './backup-schedules';
 import { SqliteAuthorizationTicketStore } from './authorization-tickets';
-import { SqliteMergeQueueEntryStore, SqlitePrStore } from './merge-queue';
+import { SqliteMergeQueueEntryStore, SqliteMergeQueueDrainLock, SqlitePrStore } from './merge-queue';
+import { SqliteBuildRecordStore } from './builds';
 import { SqliteDeploymentStore } from './deployments';
 import { SqliteWorktreeStore } from './worktrees';
 import { SqliteMcpServerStore } from './mcp-servers';
@@ -273,6 +274,21 @@ export class SqliteAgentStore implements AgentStore {
 }
 
 // ------------------------------------------------------------- approvals ---
+/**
+ * Adds the Batch 23 drain-claim columns (claimed_by / claimed_at) to
+ * pre-existing merge_queue_entries tables. Fresh databases get them
+ * from SCHEMA; only the missing columns are added here.
+ */
+export function migrateMergeQueueTable(db: DatabaseSync): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(merge_queue_entries)').all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
+  if (!cols.has('claimed_by')) db.exec('ALTER TABLE merge_queue_entries ADD COLUMN claimed_by TEXT');
+  if (!cols.has('claimed_at')) db.exec('ALTER TABLE merge_queue_entries ADD COLUMN claimed_at TEXT');
+}
 /**
  * SPEC v2 §23.3 columns. Existing local DBs are migrated in place: only
  * missing columns are added. rowToApproval falls back to the v1 column names
@@ -827,6 +843,13 @@ export class FactoryDatabase {
    * hydrate (never trusted as fresh).
    */
   readonly mcpServers: SqliteMcpServerStore;
+  /**
+   * §40 (Batch 23) — build records: one row per landed merge. The
+   * record is deliberately NOT a fake build — merges never run a
+   * build, so status is NOT_EXECUTED and digest/definition/sbom_ref/
+   * attestation_ref are null with notes explaining the absence.
+   */
+  readonly builds: SqliteBuildRecordStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -841,6 +864,7 @@ export class FactoryDatabase {
     migrateEvidenceTable(this.db);
     migrateAuditTable(this.db);
     migrateRetentionTable(this.db);
+    migrateMergeQueueTable(this.db);
     this.tasks = new SqliteTaskStore(this.db);
     this.evidence = new SqliteEvidenceStore(this.db);
     this.agents = new SqliteAgentStore(this.db);
@@ -861,8 +885,14 @@ export class FactoryDatabase {
     this.deployments = new SqliteDeploymentStore(this.db);
     this.worktrees = new SqliteWorktreeStore(this.db);
     this.prStore = new SqlitePrStore(this.db);
-    this.mergeQueueEntries = new SqliteMergeQueueEntryStore(this.db);
+    this.mergeQueueEntries = new SqliteMergeQueueEntryStore(
+      this.db,
+      // Batch 23: cross-process drain mutual exclusion — one drainer
+      // per repo across processes sharing this DB file.
+      new SqliteMergeQueueDrainLock(this.db),
+    );
     this.mcpServers = new SqliteMcpServerStore(this.db);
+    this.builds = new SqliteBuildRecordStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------

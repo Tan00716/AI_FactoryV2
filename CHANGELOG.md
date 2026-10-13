@@ -1,5 +1,12 @@
 # Changelog
 
+## [未发布] Batch 23 — 构建记录表 / Merge Queue 跨进程互斥 / Batch 22 独立复核
+
+- **构建记录表（§40 最小闭环第一步）**：新建 `builds` 表（digest、构建定义、revision→commit 映射、SBOM/attestation 引用；memory/SQLite 双实现对拍；老库自动建表），每次合并（直接 + 队列）经 `buildRecordInputForMerge()` 落一条记录。但合并从不执行真实构建，故 `status` 恒为 `'NOT_EXECUTED'`，digest/definition/SBOM/attestation 全为 null 且每个 null 带 pinned 原因注记（`NO_BUILD_DIGEST_NOTE` 等，测试逐字钉住）——记录缺失而非占位；candidateSha 缺失时记 `BUILD_RECORD_SKIPPED` 审计，绝不用 targetSha 冒充 revision。merge 证据的 `artifactDigest` 仍是 null + `'no artifact'`（Batch 22-3 口径不变）。边界：无真实构建执行、无新增 HTTP 端点；真正闭环还需"真实构建执行 → 状态流转 → digest 回填 → 与证据绑定"。
+- **Merge Queue 跨进程 drain 互斥**：独立审计真跑复现了竞态——双进程共享同一 DB 时同一 entry 被各合并一次（4 MERGED / 2 entries），§36 串行不变量被违反；且第二进程的 hydrate 会把活着的 drainer 的 VERIFYING 行降级（偷在途工作）。实现双层互斥：① repo 级 drain 租约（`merge_queue_drain_locks` 表：原子 acquire、心跳、条件释放、takeover CAS；争用方审计 `MERGE_QUEUE_DRAIN_CONTESTED` 后明确让路；接管方诚实 re-hydrate，终态行不复活；verifier 内失锁中止合并 `MERGE_QUEUE_DRAIN_LOST`）；② per-entry `tryClaim` 原子认领（TTL 5 分钟）为纵深，无 drainLock 的旧 backing 仍受保护。修后同脚本：2 MERGED，每 entry 恰好一次，争用方返回空让路。实现中自己抓到一个真 bug（无事可做的 drain 拿了锁没放，测试抓到 lease 残留）。边界：只覆盖同一 DB 文件的多进程（不覆盖多机）；两进程同时 enqueue 的 position 可能碰撞（顺序不保证、任务不丢）。
+- **Batch 22 独立复核**：四项实质声明全部成立（`gap-audit/REAUDIT_BATCH22.md`）：boot smoke 亲跑通路/注入崩溃、F7 的 eventType 投影与 DB 列逐字一致、"不接线"审计取证成立、tsconfig 修正后 desktop tsc 第一次真正跑起来且 0 错误。另确认口径：7/3/6 修正已在三处落地。
+- KNOWN_LIMITATIONS 新增两条（drain 互斥、builds 表）。测试基线：包套件 2165 → 2186（db builds +3、db drain-lock +5、db claim +5、git drain +4、git claim +4），服务端全套 234 → 237（+3 build-records）。
+
 ## [未发布] Batch 22 — F6 CI 冒烟 / Batch 21 独立复核 / §40→§36 审计 / F7 收口
 
 - **F6 的 CI 冒烟补救**：Batch 21 走查真实踩中——部分包单独构建导致 dist 跨包不一致，真 server 启动直接崩溃 exit 1，而根 `npm test` 不跑 server 套件、门禁抓不住。新增 `scripts/boot-smoke.mjs`（启动编译产物 `apps/server/dist/index.js`、轮询 `GET /api/health` 到 200；hermetic 临时 DB + 临时 `FACTORY_SECRETS_DIR`；dist 不存在直接报错），根 script `smoke:boot`，新建 `.github/workflows/ci.yml`（push/PR 到 main 跑 `npm ci` → `npm run build` → `npm run smoke:boot`）。本地验证：通路 exit 0（~2.4s）；注入崩溃模拟 F6 → 打印崩溃栈 + 大声 exit 1（dist 已恢复干净）。CI 尚未在 GitHub 上跑过一次（下次推送即触发）。`docs/release/RELEASE_CHECKLIST.md` C 组新增冒烟条目（该文件此前被 gitignore 忽略，本批强制入库）。

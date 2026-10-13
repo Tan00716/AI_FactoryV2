@@ -125,6 +125,18 @@ export interface MergeQueueEntry {
    * decision itself is always auditable by entryId without this field.
    */
   decisionAuditRef: string | null;
+  /**
+   * Cross-process drain claim (Batch 23). When set, the named process
+   * (its claim token) owns this entry's drain turn: no other process may
+   * start processing it until the claim expires (claimedAt + the queue's
+   * claimTtlMs). Terminal rows keep the claim as the record of who
+   * processed them. hydrate() never clears a live claim — a crashed
+   * holder's claim expires by TTL; clearing it early would let a
+   * restarting process steal an entry a live peer is still merging.
+   */
+  claimedBy: string | null;
+  /** ISO-8601 time the claim was taken (null when unclaimed). */
+  claimedAt: string | null;
 }
 
 /**
@@ -144,6 +156,72 @@ export interface MergeQueueEntryPersistence {
   save(entry: MergeQueueEntry): void;
   /** All entries for one repo, in enqueue (position) order. */
   load(repo: string): MergeQueueEntry[];
+  /**
+   * Atomically claim a QUEUED entry for draining (Batch 23, optional).
+   * Returns true iff this caller now holds the claim: the row is QUEUED
+   * and (unclaimed, already claimed by `token`, or claimed earlier than
+   * now - ttlMs). The check-and-set must be atomic in the backing store
+   * (single UPDATE … WHERE) so two processes cannot both win.
+   * Backings without this method keep the old behavior: in-process
+   * tail-chain serialization only, cross-process drain unsafe.
+   */
+  tryClaim?(id: string, token: string, ttlMs: number): boolean;
+  /**
+   * Cross-process drain mutual exclusion (Batch 23, optional). The
+   * per-entry tryClaim above stops two processes from working the SAME
+   * entry, but it still lets two processes drain DIFFERENT entries of
+   * one repo concurrently — which breaks the queue's core §36 invariant
+   * (entries verified strictly one at a time, each against the tip that
+   * already contains every previously queued merge). When present, the
+   * queue takes this repo-level lease before each processOne: only one
+   * drainer per repo at a time. A contested drain yields loudly
+   * (audited MERGE_QUEUE_DRAIN_CONTESTED) instead of double-draining.
+   * When absent, cross-process drain stays unsafe (documented).
+   */
+  drainLock?: MergeQueueDrainLock;
+}
+
+/**
+ * Cross-process drain mutual exclusion for one repo (Batch 23).
+ *
+ * The lock is a lease row: the holder refreshes `heartbeatAt` at every
+ * drain progress point; a contender that finds a heartbeat older than
+ * `ttlMs` may take over (the previous holder is dead or wedged —
+ * takeover is audited and the new holder re-hydrates honestly before
+ * processing). A contender that finds a LIVE heartbeat yields loudly
+ * instead of touching the queue.
+ *
+ * Implementations must make acquireDrain's check-and-set atomic (a
+ * single conditional UPDATE) so two contenders cannot both believe
+ * they won the takeover.
+ */
+export type DrainAcquireResult = 'acquired' | 'contested' | 'takeover';
+
+export interface MergeQueueDrainLockState {
+  holderId: string;
+  /** ms epoch when the current holder took the lock. */
+  claimedAt: number;
+  /** ms epoch of the holder's last heartbeat. */
+  heartbeatAt: number;
+}
+
+export interface MergeQueueDrainLock {
+  /**
+   * Try to become the drainer for `repo`. Returns 'acquired' (lock was
+   * free), 'takeover' (previous heartbeat was stale — caller must
+   * re-hydrate before processing), or 'contested' (a live holder owns
+   * the repo — caller must yield without touching the queue).
+   */
+  acquireDrain(repo: string, holderId: string, nowMs: number, ttlMs: number): DrainAcquireResult;
+  /**
+   * Refresh the heartbeat. Returns false when this holder no longer
+   * owns the lock (lost to a takeover) — the caller must stop writing.
+   */
+  heartbeatDrain(repo: string, holderId: string, nowMs: number): boolean;
+  /** Release the lock; only releases when `holderId` still owns it. */
+  releaseDrain(repo: string, holderId: string): void;
+  /** Current lock row, or null when no drainer holds the repo. */
+  drainState(repo: string): MergeQueueDrainLockState | null;
 }
 
 /** Per-call hooks: hosts whose audit/evidence context is per-request
@@ -171,7 +249,31 @@ export interface MergeQueueOptions extends MergeQueueHooks {
    * call hydrate() once after construction to rebuild from load().
    */
   persistence?: MergeQueueEntryPersistence;
+  /**
+   * How long a drain claim stays valid (Batch 23). A crashed holder's
+   * entry becomes claimable again after this long; a live holder
+   * finishes merges far faster. Set it above your longest injected
+   * verifier runtime. Default 5 minutes.
+   */
+  claimTtlMs?: number;
+  /**
+   * How long a drain-lock heartbeat stays valid (Batch 23). A holder
+   * that stops heartbeating for longer than this is presumed dead or
+   * wedged and its lock may be taken over. Heartbeats are refreshed at
+   * every drain progress point, so set this above the longest gap
+   * between progress points — in practice, above your longest injected
+   * verifier runtime. Default 2 minutes.
+   */
+  drainLockTtlMs?: number;
+  /** Clock for drain-lock timestamps (Batch 23). Default Date. */
+  clock?: { now(): number };
 }
+
+/** Default drain-claim lease (Batch 23). */
+export const DEFAULT_CLAIM_TTL_MS = 5 * 60 * 1000;
+
+/** Default drain-lock heartbeat TTL (Batch 23). */
+export const DEFAULT_DRAIN_LOCK_TTL_MS = 2 * 60 * 1000;
 
 export class MergeQueue {
   /** Repository path this queue serializes merges for. */
@@ -187,6 +289,17 @@ export class MergeQueue {
   private nextPosition = 1;
   /** Serializes processing: drains chain onto this promise. */
   private tail: Promise<unknown> = Promise.resolve();
+  /**
+   * This instance's drain-claim identity (Batch 23): a random token so
+   * two processes' claims are distinguishable in the shared backing.
+   */
+  private readonly claimToken: string = randomUUID();
+  /** Lease length for drain claims (see MergeQueueOptions.claimTtlMs). */
+  private readonly claimTtlMs: number;
+  /** Heartbeat TTL for the cross-process drain lock (Batch 23). */
+  private readonly drainLockTtlMs: number;
+  /** Clock for drain-lock timestamps (Batch 23). */
+  private readonly clock: { now(): number };
 
   constructor(repoPath: string, opts: MergeQueueOptions = {}) {
     this.repoPath = repoPath;
@@ -195,6 +308,9 @@ export class MergeQueue {
     this.verify = opts.verify;
     this.verifierName = opts.verifierName ?? 'tests';
     this.persistence = opts.persistence;
+    this.claimTtlMs = opts.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS;
+    this.drainLockTtlMs = opts.drainLockTtlMs ?? DEFAULT_DRAIN_LOCK_TTL_MS;
+    this.clock = opts.clock ?? Date;
     this.hooks = { audit: opts.audit, onMerged: opts.onMerged };
   }
 
@@ -214,6 +330,12 @@ export class MergeQueue {
     if (!this.persistence) return;
     const rows = this.persistence.load(this.repoPath);
     const known = new Set(this.entries.map((e) => e.id));
+    // Batch 23: when a live drainer holds this repo's drain lock, its
+    // VERIFYING rows are being worked RIGHT NOW — demoting them would
+    // let this process steal an in-flight merge. Defer the demotion;
+    // the rows stay VERIFYING in memory and are skipped by claim logic.
+    const drainLockLive = this.drainLockLive();
+    const deferred: string[] = [];
     for (const row of rows) {
       if (known.has(row.id)) continue;
       const entry = structuredClone(row);
@@ -221,20 +343,58 @@ export class MergeQueue {
         this.nextPosition = entry.position + 1;
       }
       if (entry.status === 'VERIFYING') {
-        entry.status = 'QUEUED';
-        this.persist(entry);
-        this.hooks.audit?.('MERGE_QUEUE_REHYDRATED', {
-          repo: this.repoPath,
-          entryId: entry.id,
-          prId: entry.prId,
-          taskId: entry.taskId,
-          fromStatus: 'VERIFYING',
-          toStatus: 'QUEUED',
-        });
+        if (drainLockLive) {
+          deferred.push(entry.id);
+          this.entries.push(entry);
+          known.add(entry.id);
+          continue;
+        }
+        // Batch 23: only demote when no live process owns the row. A
+        // fresh claim means a peer is still working it — demoting (and
+        // clearing the claim) would let this process steal an entry
+        // that is being merged right now. An expired claim means the
+        // holder died: demote, clear the stale claim, re-audit.
+        const liveClaim =
+          entry.claimedBy !== null &&
+          entry.claimedAt !== null &&
+          Date.now() - Date.parse(entry.claimedAt) < this.claimTtlMs;
+        if (!liveClaim) {
+          entry.status = 'QUEUED';
+          entry.claimedBy = null;
+          entry.claimedAt = null;
+          this.persist(entry);
+          this.hooks.audit?.('MERGE_QUEUE_REHYDRATED', {
+            repo: this.repoPath,
+            entryId: entry.id,
+            prId: entry.prId,
+            taskId: entry.taskId,
+            fromStatus: 'VERIFYING',
+            toStatus: 'QUEUED',
+          });
+        }
       }
       this.entries.push(entry);
       known.add(entry.id);
     }
+    if (deferred.length > 0) {
+      this.hooks.audit?.('MERGE_QUEUE_REHYDRATED_DEFERRED', {
+        repo: this.repoPath,
+        entryIds: deferred,
+        note: 'a live drainer holds this repo; VERIFYING rows left untouched',
+      });
+    }
+  }
+
+  /**
+   * True when another (or this) drainer currently holds this repo's
+   * drain lock with a fresh heartbeat (Batch 23). Used to avoid
+   * stealing in-flight work during hydrate().
+   */
+  private drainLockLive(): boolean {
+    const lock = this.persistence?.drainLock;
+    if (!lock) return false;
+    const state = lock.drainState(this.repoPath);
+    return !!state && this.clock.now() - state.heartbeatAt <= this.drainLockTtlMs;
   }
 
   /**
@@ -306,6 +466,8 @@ export class MergeQueue {
       failureReason: null,
       mergeCommitSha: null,
       decisionAuditRef: null,
+      claimedBy: null,
+      claimedAt: null,
     };
     // Persist BEFORE the in-memory push: a cross-process duplicate is
     // rejected by the backing's partial unique index and must surface
@@ -337,6 +499,33 @@ export class MergeQueue {
   }
 
   /**
+   * Take the first QUEUED entry this process may drain (Batch 23).
+   * Without a persistence tryClaim the head QUEUED entry wins (the old
+   * behavior — in-process tail-chain serialization only). With one, each
+   * QUEUED entry is atomically claimed first: entries owned by a live
+   * peer are skipped, the first claimable entry is taken and stamped
+   * with this instance's claim token. Returns null when nothing is
+   * claimable right now. Skipped entries stay in the list — a peer's
+   * claim expiring (or its row reaching a terminal status, which the
+   * claim's status check enforces) makes them claimable on a later
+   * drain; nothing is dropped.
+   */
+  private claimNextQueued(): MergeQueueEntry | null {
+    for (const entry of this.entries) {
+      if (entry.status !== 'QUEUED') continue;
+      if (this.persistence?.tryClaim) {
+        if (!this.persistence.tryClaim(entry.id, this.claimToken, this.claimTtlMs)) {
+          continue;
+        }
+        entry.claimedBy = this.claimToken;
+        entry.claimedAt = new Date().toISOString();
+      }
+      return entry;
+    }
+    return null;
+  }
+
+  /**
    * Process the head QUEUED entry, if any: assemble + verify its
    * candidate against the CURRENT target tip, then merge only on a
    * passing verdict. Returns the processed entry (copy), or null when
@@ -364,11 +553,137 @@ export class MergeQueue {
     return run;
   }
 
+  /**
+   * Re-read the shared backing and reconcile in-memory state (Batch 23).
+   * Called with the drain lock held at the start of each processOne:
+   *  - rows other processes enqueued (or finished) since our last sync
+   *    are picked up, so a drainer never starves work it cannot see;
+   *  - known rows adopt the backing store's truth for non-terminal
+   *    states (a terminal in-memory state is never regressed — our own
+   *    terminal write is final).
+   */
+  private refreshFromPersistence(): void {
+    if (!this.persistence) return;
+    const rows = this.persistence.load(this.repoPath);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    for (let i = 0; i < this.entries.length; i++) {
+      const entry = this.entries[i];
+      const fresh = byId.get(entry.id);
+      if (!fresh) continue;
+      if (entry.status === 'MERGED' || entry.status === 'FAILED') continue;
+      if (fresh.status !== entry.status || fresh.claimedBy !== entry.claimedBy) {
+        this.entries[i] = structuredClone(fresh);
+      }
+    }
+    const known = new Set(this.entries.map((e) => e.id));
+    for (const row of rows) {
+      if (known.has(row.id)) continue;
+      if (row.position >= this.nextPosition) {
+        this.nextPosition = row.position + 1;
+      }
+      this.entries.push(structuredClone(row));
+      known.add(row.id);
+    }
+  }
+
+  /**
+   * Crash recovery after a drain-lock takeover (Batch 23): rows the
+   * dead holder left VERIFYING go back to QUEUED with their claims
+   * cleared, each audited. Only rows still VERIFYING in the backing
+   * store are demoted — a row the dead holder already finished keeps
+   * its terminal state and is never resurrected. Callers must
+   * refreshFromPersistence() first so memory matches the store.
+   */
+  private demoteAbandoned(audit?: GitAuditHook): void {
+    for (const entry of this.entries) {
+      if (entry.status !== 'VERIFYING') continue;
+      entry.status = 'QUEUED';
+      entry.claimedBy = null;
+      entry.claimedAt = null;
+      this.persist(entry);
+      audit?.('MERGE_QUEUE_REHYDRATED', {
+        repo: this.repoPath,
+        entryId: entry.id,
+        prId: entry.prId,
+        taskId: entry.taskId,
+        fromStatus: 'VERIFYING',
+        toStatus: 'QUEUED',
+      });
+    }
+  }
+
+  /** Refresh the drain-lock heartbeat (Batch 23); no-op without a lock. */
+  private heartbeat(holderId: string | null): void {
+    const drain = this.persistence?.drainLock;
+    if (drain && holderId) drain.heartbeatDrain(this.repoPath, holderId, this.clock.now());
+  }
+
+  /**
+   * True when this instance still owns the drain lock (Batch 23).
+   * Heartbeats first, then re-reads the lock row: a false means a
+   * takeover stole the lock while we were inside a slow verifier, and
+   * the caller must stop writing immediately to avoid double-processing.
+   */
+  private stillDrainOwner(holderId: string | null): boolean {
+    const drain = this.persistence?.drainLock;
+    if (!drain || !holderId) return true;
+    this.heartbeat(holderId);
+    return drain.drainState(this.repoPath)?.holderId === holderId;
+  }
+
   private async processOne(hooks: MergeQueueHooks): Promise<MergeQueueEntry | null> {
-    const entry = this.entries.find((e) => e.status === 'QUEUED');
-    if (!entry) return null;
     const audit = hooks.audit ?? this.hooks.audit;
     const onMerged = hooks.onMerged ?? this.hooks.onMerged;
+    const drain = this.persistence?.drainLock;
+    let holderId: string | null = null;
+
+    // --- Batch 23: cross-process drain mutual exclusion. Only one
+    // drainer per repo at a time; a contested drain yields loudly
+    // (audited) instead of double-draining. ---
+    if (drain) {
+      holderId = randomUUID();
+      const acquired = drain.acquireDrain(
+        this.repoPath,
+        holderId,
+        this.clock.now(),
+        this.drainLockTtlMs,
+      );
+      if (acquired === 'contested') {
+        const live = drain.drainState(this.repoPath);
+        audit?.('MERGE_QUEUE_DRAIN_CONTESTED', {
+          repo: this.repoPath,
+          holderId,
+          liveHolderId: live?.holderId ?? null,
+          note: 'another drainer holds this repo; yielding without touching the queue',
+        });
+        return null;
+      }
+      // Re-read shared state now that we serialize the repo: pick up
+      // entries other processes enqueued and rows peers finished.
+      this.refreshFromPersistence();
+      if (acquired === 'takeover') {
+        audit?.('MERGE_QUEUE_DRAIN_TAKEOVER', {
+          repo: this.repoPath,
+          holderId,
+          note: 'previous drain lock was stale; taking over after honest re-hydration',
+        });
+        this.demoteAbandoned(audit);
+      }
+      this.heartbeat(holderId);
+    }
+
+    const release = () => {
+      if (drain && holderId) drain.releaseDrain(this.repoPath, holderId);
+    };
+
+    // Batch 23: declared outside the try so the catch block can mark a
+    // claimed entry FAILED on operational errors (never silently dropped).
+    // Null only when claimNextQueued itself threw — then there is no
+    // entry to fail, and the error propagates after release().
+    let entry: MergeQueueEntry | null = null;
+    try {
+      entry = this.claimNextQueued();
+      if (!entry) return null;
     const pr = this.prs ? this.prs.get(entry.prId) : undefined;
     const prRecord: PrRecord =
       pr ??
@@ -387,7 +702,9 @@ export class MergeQueue {
 
     entry.status = 'VERIFYING';
     this.persist(entry);
-    try {
+    // Batch 23: the claim is written through — refresh the lease so a
+    // slow peer never mistakes this live drain for a dead one.
+    this.heartbeat(holderId);
       // --- assemble the candidate against the CURRENT target tip ---
       const baseSha = await this.repo.resolveRef(entry.targetBranch);
       const candidateSha = await this.repo.resolveRef(entry.sourceBranch);
@@ -437,6 +754,24 @@ export class MergeQueue {
           status: 'SKIPPED',
           detail: 'no candidate verifier configured — conflict check only',
         });
+      }
+      // Batch 23: the injected verifier is the long pole of a drain. If
+      // a takeover stole our lock while we were inside it, the new
+      // holder has re-hydrated and may already be processing this entry
+      // — abort before merging rather than double-processing. Our
+      // in-memory entry is stale (the new holder owns the DB row), so
+      // drop it; the next refreshFromPersistence() re-reads the truth.
+      if (!this.stillDrainOwner(holderId)) {
+        audit?.('MERGE_QUEUE_DRAIN_LOST', {
+          repo: this.repoPath,
+          entryId: entry.id,
+          prId: entry.prId,
+          taskId: entry.taskId,
+          note: 'drain lock lost during candidate verification; aborting before merge to avoid double-processing',
+        });
+        const ix = this.entries.indexOf(entry);
+        if (ix >= 0) this.entries.splice(ix, 1);
+        return null;
       }
       entry.verification = {
         checks,
@@ -516,10 +851,15 @@ export class MergeQueue {
         mergeCommitSha: entry.mergeCommitSha,
       });
       onMerged?.(structuredClone(entry), this.prs ? this.prs.get(entry.prId) : prRecord);
+      // Batch 23: the merge landed — refresh the lease before releasing.
+      this.heartbeat(holderId);
       return structuredClone(entry);
     } catch (err) {
       // Operational failure (missing branch, git error, …): the entry
       // is FAILED with the real error recorded — never silently dropped.
+      // (If claimNextQueued itself threw, entry is still null: nothing
+      // to mark FAILED, so the error propagates after release().)
+      if (!entry) throw err;
       entry.status = 'FAILED';
       entry.failureReason = err instanceof Error ? err.message : String(err);
       entry.processedAt = new Date().toISOString();
@@ -533,6 +873,10 @@ export class MergeQueue {
         conflicts: [],
       });
       return structuredClone(entry);
+    } finally {
+      // Batch 23: always release the drain lease (holder-conditional —
+      // a no-op when a takeover already moved it to the new holder).
+      release();
     }
   }
 

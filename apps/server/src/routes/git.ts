@@ -70,6 +70,7 @@ import {
   type GitBrokerContext,
 } from '@ai-factory/git';
 import type { RouteContext } from './context';
+import type { RecordBuildInput } from '@ai-factory/db';
 import {
   isTaskProjectArchived,
   projectArchivedBody,
@@ -184,6 +185,48 @@ function resolveGitBroker(
 
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+/**
+ * Batch 23 — build the StoredBuildRecord input for a landed merge.
+ *
+ * Returns null when no candidate SHA can be honestly established: the
+ * caller audits BUILD_RECORD_SKIPPED instead of recording a revision it
+ * does not have. (Falling back to targetSha here would silently
+ * redefine "revision" from "the change" to "the merge commit" — that
+ * is fabrication-adjacent, so the fallback does not exist.)
+ *
+ * Every other field is either a real value from the merge or an
+ * explicit absence filled by the store with its reason — the caller
+ * never invents digest/definition/SBOM values.
+ *
+ * Exported for unit tests (the null-candidate defensive path).
+ */
+export function buildRecordInputForMerge(args: {
+  repo: string;
+  prId: string;
+  taskId: string | null;
+  sourceBranch: string;
+  targetBranch: string;
+  baseSha: string | null;
+  candidateSha: string | null;
+  targetSha: string | null;
+  diffHash: string | null;
+  builtBy: string;
+}): RecordBuildInput | null {
+  if (!args.candidateSha) return null;
+  return {
+    revision: args.candidateSha,
+    baseSha: args.baseSha,
+    targetSha: args.targetSha,
+    diffHash: args.diffHash,
+    repo: args.repo,
+    prId: args.prId,
+    taskId: args.taskId,
+    sourceBranch: args.sourceBranch,
+    targetBranch: args.targetBranch,
+    builtBy: args.builtBy,
+  };
 }
 
 function gitErrorStatus(e: unknown): number {
@@ -490,6 +533,29 @@ export async function handleGitRoutes(
           createdBy: actor,
         });
       }
+      // Batch 23 (§40): write the build record for this landed merge.
+      // The record is NOT a build — merges never run one — so it lands
+      // with status NOT_EXECUTED and null digest/definition, each null
+      // carrying its reason. No revision, no record (audited instead).
+      const buildInput = buildRecordInputForMerge({
+        repo,
+        prId: pr.id,
+        taskId: pr.taskId || null,
+        sourceBranch: pr.sourceBranch,
+        targetBranch: pr.targetBranch,
+        baseSha: result.evidence?.baseSha ?? null,
+        candidateSha: result.evidence?.candidateSha ?? null,
+        targetSha: result.evidence?.targetSha ?? null,
+        diffHash: result.evidence?.diffHash ?? null,
+        builtBy: actor,
+      });
+      if (buildInput) {
+        ctx.fdb.builds.record(buildInput);
+      } else {
+        ctx.audit.record(actor, 'BUILD_RECORD_SKIPPED', 'pr', pr.id, {
+          reason: 'no candidate SHA available from the merge result',
+        });
+      }
       return ctx.json(res, 200, { ok: true, pr: merged, evidence }), true;
     }
 
@@ -558,6 +624,28 @@ export async function handleGitRoutes(
               title: `PR merged: ${mergedPr.title}`,
               payload: payload.payload,
               createdBy: actor,
+            });
+          }
+          // Batch 23 (§40): build record for the landed queue merge —
+          // same honest shape as the direct merge (NOT_EXECUTED, nulls
+          // with reasons, never a fabricated digest).
+          const buildInput = buildRecordInputForMerge({
+            repo,
+            prId: mergedPr.id,
+            taskId: mergedPr.taskId || null,
+            sourceBranch: mergedPr.sourceBranch,
+            targetBranch: mergedPr.targetBranch,
+            baseSha: mergedEntry.baseSha,
+            candidateSha: mergedEntry.candidateSha,
+            targetSha: mergedEntry.targetSha,
+            diffHash: mergedEntry.diffHash,
+            builtBy: actor,
+          });
+          if (buildInput) {
+            ctx.fdb.builds.record(buildInput);
+          } else {
+            ctx.audit.record(actor, 'BUILD_RECORD_SKIPPED', 'pr', mergedPr.id, {
+              reason: 'no candidate SHA on the merged queue entry',
             });
           }
         },
