@@ -9,6 +9,15 @@
  *
  * The model never directly owns critical workflow control: every tool call
  * passes through this harness.
+ *
+ * Execution-surface contract (Batch 21): this is the §26 AGENT execution
+ * surface (name-based, Permission-gated, step intents, budget, retry,
+ * trace/evidence). The §33 AUDITED DIRECT execution surface is the
+ * ToolExecutor in @ai-factory/tools (capability grants, approval gates,
+ * input-schema validation, idempotency, exit-code-truth records,
+ * implementation gate). The two stay separate by design — see
+ * apps/server/src/tool-runner.ts for the layering rationale and the
+ * shared command policy.
  */
 import * as path from 'node:path';
 import type { Permission } from '@ai-factory/core';

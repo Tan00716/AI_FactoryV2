@@ -25,6 +25,14 @@ import {
 
 export interface ManagerOptions {
   clock?: Clock;
+  /**
+   * Durability seams (Batch 21, §46). Install records and trust
+   * assessments live in the manager's maps; a host that wants them
+   * durable sets these observers (e.g. write-through to the factory
+   * DB). The manager itself stays storage-agnostic.
+   */
+  onInstallChanged?: (install: InstallRecord | undefined, name: string, version: string) => void;
+  onAssessmentChanged?: (assessment: TrustAssessment, name: string, version: string) => void;
 }
 
 function scopeKey(ref: ScopeRef): string {
@@ -36,9 +44,53 @@ export class McpManager {
   private assessments = new Map<string, TrustAssessment>();
   private usage: ToolUsage[] = [];
   private clock: Clock;
+  private onInstallChanged?: ManagerOptions['onInstallChanged'];
+  private onAssessmentChanged?: ManagerOptions['onAssessmentChanged'];
 
   constructor(private registry: McpRegistry, options: ManagerOptions = {}) {
     this.clock = options.clock ?? { now: () => Date.now() };
+    this.onInstallChanged = options.onInstallChanged;
+    this.onAssessmentChanged = options.onAssessmentChanged;
+  }
+
+  /** Attach (or replace) the durability observers after construction. */
+  setDurabilityObservers(observers: {
+    onInstallChanged?: ManagerOptions['onInstallChanged'];
+    onAssessmentChanged?: ManagerOptions['onAssessmentChanged'];
+  }): void {
+    this.onInstallChanged = observers.onInstallChanged;
+    this.onAssessmentChanged = observers.onAssessmentChanged;
+  }
+
+  /**
+   * Restore a persisted install record WITHOUT generating new
+   * history/audit events: this is hydration, not a fresh install.
+   * Unknown shapes are rejected loudly rather than silently coerced.
+   */
+  hydrateInstall(record: InstallRecord): void {
+    if (!record || typeof record.name !== 'string' || typeof record.version !== 'string') {
+      throw new Error('mcp: cannot hydrate install — record has no name/version');
+    }
+    this.installs.set(McpManager.key(record.name, record.version), {
+      name: record.name,
+      version: record.version,
+      status: record.status,
+      installedAt: record.installedAt,
+      scopeEnabled: { ...(record.scopeEnabled ?? {}) },
+      lastUsedVersion: record.lastUsedVersion,
+    });
+  }
+
+  /**
+   * Restore a persisted trust assessment WITHOUT re-stamping
+   * assessedAt or appending a TRUST_ASSESSED event: the assessment
+   * already happened; this process is only learning about it.
+   */
+  hydrateAssessment(assessment: TrustAssessment, name: string, version: string): void {
+    if (!assessment || typeof assessment.trustLevel !== 'string') {
+      throw new Error('mcp: cannot hydrate assessment — malformed record');
+    }
+    this.assessments.set(McpManager.key(name, version), { ...assessment });
   }
 
   private static key(name: string, version: string): string {
@@ -59,6 +111,9 @@ export class McpManager {
       detail: `${assessment.trustLevel}/${assessment.approvalPolicy}`,
       at: record.assessedAt,
     });
+    // appendHistory already fired the registry sink; the assessment
+    // itself travels on its own observer.
+    this.onAssessmentChanged?.(record, name, version);
     return record;
   }
 
@@ -89,10 +144,12 @@ export class McpManager {
         };
       case 'AUTO':
         this.markInstalled(name, version, undefined, now);
+        this.onInstallChanged?.(this.installs.get(McpManager.key(name, version)), name, version);
         return { ok: true, status: 'INSTALLED' };
       case 'AI_REVIEW':
       case 'HUMAN_APPROVAL':
         this.installs.set(McpManager.key(name, version), this.record(name, version, 'PENDING_REVIEW'));
+        this.onInstallChanged?.(this.installs.get(McpManager.key(name, version)), name, version);
         this.registry.appendHistory(name, version, { kind: 'INSTALL_PENDING', detail: server.approvalPolicy, at: now });
         return {
           ok: false,
@@ -110,6 +167,7 @@ export class McpManager {
     }
     if (!decision.approved) {
       rec.status = 'BLOCKED';
+      this.onInstallChanged?.(rec, name, version);
       this.registry.appendHistory(name, version, {
         kind: 'INSTALL_BLOCKED',
         actor: decision.reviewer,
@@ -118,6 +176,7 @@ export class McpManager {
       return { ok: false, status: 'BLOCKED', reason: `install denied by review${decision.reason ? `: ${decision.reason}` : ''}` };
     }
     this.markInstalled(name, version, decision.reviewer);
+    this.onInstallChanged?.(this.installs.get(McpManager.key(name, version)), name, version);
     return { ok: true, status: 'INSTALLED' };
   }
 
@@ -126,6 +185,7 @@ export class McpManager {
     // History lives on the registration record, so it survives the
     // uninstall — the UNINSTALLED entry is appended, never substituted.
     if (existed) this.registry.appendHistory(name, version, { kind: 'UNINSTALLED' });
+    if (existed) this.onInstallChanged?.(undefined, name, version);
     return existed;
   }
 

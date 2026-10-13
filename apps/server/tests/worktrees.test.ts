@@ -94,7 +94,7 @@ async function stopRealServer(child: ChildProcess): Promise<void> {
   child.kill('SIGTERM');
   const exited = await Promise.race([
     new Promise((r) => child.once('exit', () => r(true))),
-    new Promise((r) => setTimeout(() => r(false), 5_000))),
+    new Promise((r) => setTimeout(() => r(false), 5_000)),
   ]);
   if (!exited) {
     child.kill('SIGKILL');

@@ -478,7 +478,10 @@ export async function handleGitRoutes(
       });
       let evidence: unknown = null;
       if (pr.taskId) {
-        const payload = mergeEvidencePayload(merged);
+        // Batch 21-3: result.evidence carries the §36 fields GitRepo.merge
+        // computed; dropping them here (the old code did) silently
+        // un-records the five fields the spec requires on the evidence.
+        const payload = mergeEvidencePayload(merged, result.evidence);
         evidence = ctx.evidence.create({
           taskId: pr.taskId,
           type: payload.type,
@@ -542,11 +545,13 @@ export async function handleGitRoutes(
       });
       const processed = await queue.processAll({
         audit: auditHook(actor),
-        onMerged: (_mergedEntry, mergedPr) => {
+        onMerged: (mergedEntry, mergedPr) => {
           // The same merge evidence the direct merge route hangs on
           // the task (the PR record is already marked MERGED here).
+          // Batch 21-3: mergedEntry carries the §36 fields the queue's
+          // candidate verification and the merge itself recorded.
           if (mergedPr.taskId) {
-            const payload = mergeEvidencePayload(mergedPr);
+            const payload = mergeEvidencePayload(mergedPr, mergedEntry);
             ctx.evidence.create({
               taskId: mergedPr.taskId,
               type: payload.type,

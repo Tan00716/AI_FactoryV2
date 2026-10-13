@@ -15,6 +15,20 @@
  * exit that produced no result payload is EMPTY_RESULT (isEmptyResult) —
  * recorded in the audit log like any other outcome, but never SUCCEEDED,
  * so an empty result cannot be sealed as success evidence downstream.
+ *
+ * Execution-surface contract (Batch 21): this executor is the §33
+ * "audited direct execution" surface — capability grants, approval gates,
+ * input-schema validation, idempotency and exit-code-truth records. It is
+ * NOT the §26 agent harness (@ai-factory/runtime Harness: name-based,
+ * Permission-gated, step intents, budget, retry, trace/evidence for
+ * model-driven tool calls inside a run). The two surfaces stay separate
+ * on purpose — merging their call models would break both contracts —
+ * but they share the host's execution policy where they overlap: the
+ * server's tool runner (apps/server/src/tool-runner.ts) runs the same
+ * command policy (@ai-factory/runtime pty + the /api/exec whitelist/
+ * deny patterns) that the harness-facing /api/exec route enforces, and
+ * the implementationGate below guarantees a definition-only tool can
+ * never be executed into a fake success on either surface.
  */
 import { randomUUID } from 'node:crypto';
 import { REASON_CODES, type ReasonCode } from '@ai-factory/api-contracts';
@@ -69,6 +83,13 @@ export interface ExecutorOptions {
    * approval path.
    */
   approvalChecker?: ApprovalChecker;
+  /**
+   * §33 implementation gate (see ImplementationGate). Checked after the
+   * registry lookup and the BLOCKED policy check, before the approval
+   * gate: a tool that cannot run on this host is denied before any
+   * approval or schema work. Absent → no implementation check.
+   */
+  implementationGate?: ImplementationGate;
 }
 
 /**
@@ -92,6 +113,26 @@ export type ApprovalChecker = (
   tool: ToolMetadata,
   level: 'HUMAN_APPROVAL' | 'AI_REVIEW_PLUS_POLICY',
 ) => Promise<ApprovalCheckResult> | ApprovalCheckResult;
+
+/**
+ * §33 implementation-availability check, injected by the host
+ * (server/embedder); the executor itself stays dependency-free.
+ *
+ * When a tool's implementation is not wired on this host — e.g. its
+ * metadata is definition-only (a definition exists, no runnable
+ * implementation is reachable) — executing it would be a fake success,
+ * so the call is DENIED here, audit-logged like any other denial.
+ * Returning null means "no objection from this gate".
+ *
+ * The runner has a second, equivalent voice: throwing ToolDeniedError
+ * from the runner is converted to a DENIED record (not TIMED_OUT) —
+ * for policy refusals discovered at execution time (e.g. a command
+ * policy that only the runner can evaluate).
+ */
+export type ImplementationGate = (
+  tool: ToolMetadata,
+  call: ToolCall,
+) => { code: ReasonCode; message: string } | null;
 
 /**
  * Empty-result rule (§33) — judged purely on the shape of the raw
@@ -188,6 +229,15 @@ export class ToolExecutor {
       return deny('POLICY_DENIED', `tool ${tool.id} is BLOCKED by approval policy`);
     }
 
+    // §33 implementation gate: a tool with no runnable implementation on
+    // this host (e.g. definition-only metadata) is DENIED here — the
+    // alternative is executing it into a fake success, which the audit
+    // log must never show.
+    if (this.opts.implementationGate) {
+      const blocked = this.opts.implementationGate(tool, call);
+      if (blocked) return deny(blocked.code, blocked.message);
+    }
+
     // §23.4 approval gate: HUMAN_APPROVAL / AI_REVIEW_PLUS_POLICY tools must
     // pass an injected checker before execution. Fail-closed when no checker
     // is configured — the denial is audit-logged like any other.
@@ -233,6 +283,13 @@ export class ToolExecutor {
     try {
       result = await this.runWithTimeout(resolved, tool.timeoutMs);
     } catch (err) {
+      // A runner that refuses to run is a DENIED call, not a timeout:
+      // the runner's voice for policy refusals it discovers at
+      // execution time. Anything else that escapes the runner keeps the
+      // legacy TIMED_OUT mapping (a runner that does not settle).
+      if (err instanceof ToolDeniedError) {
+        return deny(err.reasonCode, err.message);
+      }
       const message = err instanceof Error ? err.message : String(err);
       return this.finishRecord(call, null, '', '', {
         outcome: 'TIMED_OUT',

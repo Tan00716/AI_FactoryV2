@@ -148,6 +148,7 @@ import {
   stagedRestoreBackupId,
 } from './routes/backup';
 import { handleRetentionRoutes } from './routes/retention';
+import { initMcpPersistence } from './routes/mcp';
 import {
   backupScheduler,
   handleBackupScheduleRoutes,
@@ -405,6 +406,15 @@ setRuntimeCheckpointLog(checkpointLog);
  * server takes traffic like the other coordinator wirings above.
  */
 initBackupService(resolveBackupConfig(DB_PATH));
+
+/**
+ * MCP registry durability (§46, Batch 21): registrations, trust
+ * assessments and install records are hydrated from fdb.mcpServers
+ * and written through from here on — a restart no longer sends
+ * approved servers back to BLOCKED. Health reports are stored but
+ * marked stale on hydrate, never trusted as fresh.
+ */
+initMcpPersistence(fdb);
 
 /**
  * Backup schedules (§47, Batch 20) — the in-process scheduler runs

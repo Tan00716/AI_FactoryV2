@@ -34,6 +34,7 @@ import { SqliteAuthorizationTicketStore } from './authorization-tickets';
 import { SqliteMergeQueueEntryStore, SqlitePrStore } from './merge-queue';
 import { SqliteDeploymentStore } from './deployments';
 import { SqliteWorktreeStore } from './worktrees';
+import { SqliteMcpServerStore } from './mcp-servers';
 
 const J = {
   parse<T>(s: string | null, fallback: T): T {
@@ -817,6 +818,15 @@ export class FactoryDatabase {
    * trusted); MERGED/FAILED rows are history.
    */
   readonly mergeQueueEntries: SqliteMergeQueueEntryStore;
+  /**
+   * §46 / §34.1 (Batch 21) — durable MCP registrations: the registry
+   * and the trust assessments were process memory; a restart used to
+   * send every approved server back to BLOCKED. Registrations, trust
+   * level/policy, assessments and install records are all written
+   * through here; health reports are stored but marked stale on
+   * hydrate (never trusted as fresh).
+   */
+  readonly mcpServers: SqliteMcpServerStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -852,6 +862,7 @@ export class FactoryDatabase {
     this.worktrees = new SqliteWorktreeStore(this.db);
     this.prStore = new SqlitePrStore(this.db);
     this.mergeQueueEntries = new SqliteMergeQueueEntryStore(this.db);
+    this.mcpServers = new SqliteMcpServerStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------

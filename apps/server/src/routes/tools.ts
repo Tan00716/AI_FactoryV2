@@ -19,13 +19,21 @@ import {
   type ToolPrincipal,
 } from '@ai-factory/tools';
 import type { RouteContext } from './context';
+import { createImplementationGate, createServerToolRunner } from '../tool-runner';
 
 const PREFIX = '/api/tools';
 
 // In-memory prototype singletons (consistent with other route modules here).
 const registry = new ToolRegistry();
+// Batch 21: the prototype runner (exitCode 0 for every tool — a silent
+// fake success) is gone. This executor runs the real server runner:
+// runtime.echo/add as pure functions, shell.execute through the SAME
+// command policy /api/exec enforces, definition-only tools DENIED by
+// the implementation gate, and implemented-but-unwired tools FAILED
+// loudly. See apps/server/src/tool-runner.ts for the contract.
 const executor = new ToolExecutor(registry, {
-  runner: () => ({ exitCode: 0, stdout: '', stderr: '', note: 'prototype runner: no real execution' }),
+  runner: createServerToolRunner(),
+  implementationGate: createImplementationGate(),
 });
 
 export async function handleToolRoutes(
@@ -91,6 +99,19 @@ export async function handleToolRoutes(
       idempotencyKey: typeof body['idempotencyKey'] === 'string' ? (body['idempotencyKey'] as string) : undefined,
     });
     // DENIED is a valid outcome (audited); the record carries the reason.
+    // Shared audit seam (Batch 21): the executor's attempts log is the
+    // tool audit, and DENIED/FAILED outcomes are additionally forwarded
+    // into the server audit log so they sit next to EXEC_DENIED from the
+    // other execution surfaces (/api/exec, /api/terminal).
+    if (record.outcome === 'DENIED' || record.outcome === 'FAILED') {
+      ctx.audit.record(
+        principal.id,
+        record.outcome === 'DENIED' ? 'TOOL_EXEC_DENIED' : 'TOOL_EXEC_FAILED',
+        'tools',
+        `${toolId}:${action}`,
+        { outcome: record.outcome, note: record.note ?? undefined },
+      );
+    }
     return ctx.json(res, 200, record), true;
   }
 

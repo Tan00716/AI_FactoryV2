@@ -13,6 +13,7 @@ export * from './authorization-tickets';
 export * from './worktrees';
 export * from './deployments';
 export * from './merge-queue';
+export * from './mcp-servers';
 export * from './seed';
 export * from './schema';
 export * from './constraints';

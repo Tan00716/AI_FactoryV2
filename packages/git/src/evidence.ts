@@ -162,11 +162,22 @@ export class PrStore implements PrStoreApi {
   }
 }
 
-/** Payload for EvidenceType 'merge' (§42), attached when a PR is merged. */
-export function mergeEvidencePayload(pr: PrRecord): {
+/**
+ * Payload for EvidenceType 'merge' (§42), attached when a PR is merged.
+ * The five §36 fields MUST be recorded for a code change, so the merge
+ * that produced them is passed as `fields` (MergeResult.evidence from
+ * GitRepo.merge, or a MergeQueueEntry). When omitted — e.g. legacy calls
+ * or a merge performed by an external tool whose SHAs we never saw —
+ * the fields record nulls, never guesses (see Batch 21-3 re-audit).
+ */
+export function mergeEvidencePayload(
+  pr: PrRecord,
+  fields?: Partial<ChangeEvidenceFields>,
+): {
   type: Extract<EvidenceType, 'merge'>;
   payload: Record<string, unknown>;
 } {
+  const f = changeEvidenceFields(fields ?? {});
   return {
     type: 'merge',
     payload: {
@@ -177,6 +188,12 @@ export function mergeEvidencePayload(pr: PrRecord): {
       title: pr.title,
       commits: [...pr.commits],
       mergedAt: pr.mergedAt,
+      baseSha: f.baseSha,
+      candidateSha: f.candidateSha,
+      targetSha: f.targetSha,
+      diffHash: f.diffHash,
+      artifactDigest: f.artifactDigest,
+      ...(f.artifactDigest === null ? { artifactNote: 'no artifact' } : {}),
     },
   };
 }

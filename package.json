@@ -71,7 +71,8 @@
     "demo:takeover": "npm run build -w @ai-factory/takeover && node packages/takeover/dist/demo/takeover.demo.js",
     "demo:durable": "npm run build -w @ai-factory/runtime && node packages/runtime/dist/demo/durable.demo.js",
     "demo:delegation": "npm run build -w @ai-factory/orchestrator && node packages/orchestrator/dist/demo/delegation.demo.js",
-    "demo:e2e": "npm run build -w @ai-factory/db && npm run build -w @ai-factory/worktrees && npm run build -w @ai-factory/server && node --test apps/server/tests/first-run-walkthrough.test.ts"
+    "demo:e2e": "npm run build -w @ai-factory/db && npm run build -w @ai-factory/worktrees && npm run build -w @ai-factory/server && node --test apps/server/tests/first-run-walkthrough.test.ts",
+    "demo:e2e-new": "npm run build -w @ai-factory/mcp && npm run build -w @ai-factory/db && npm run build -w @ai-factory/worktrees && npm run build -w @ai-factory/server && node --test apps/server/tests/first-run-walkthrough-b21.test.ts"
   },
   "version": "0.1.0",
   "workspaces": [

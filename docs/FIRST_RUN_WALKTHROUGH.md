@@ -83,3 +83,74 @@ reproducibility.
 - The desktop UI: this is an API-level walkthrough only.
 - A real-model run: HTTP runs use the scripted StubAdapter by design;
   the Codex live loop remains pending the postponed device login.
+
+---
+
+# Second edition — new capability chains (Batch 21-4, verified 2026-10-13)
+
+The Batch 11 walkthrough above only exercised the core v2 loop. This
+second walkthrough re-runs the new-user story on the Batch 20 tree
+(`6eadd28`), covering the chains that landed in B12–B20. Automated as
+`apps/server/tests/first-run-walkthrough-b21.test.ts`, run with
+`npm run demo:e2e-new` (requires a full workspace `npm run build`
+first — see F6). Two boots of the real compiled server share one
+temp SQLite file with a SIGKILL between them. Three consecutive runs
+green (~6.4s each); the Batch 11 script still passes unchanged on the
+same tree.
+
+## The script and what actually happened
+
+| # | Step (HTTP only) | Result |
+|---|---|---|
+| W1 | `GET /api/health` | 200; `outbox` and `secrets` sections present |
+| W2 | `POST /api/projects`, `/api/agents`, `POST /api/tasks` with `authorizationStatus: 'DRAFT'` | 201s; task starts `DRAFT` on the authorization axis |
+| W3 | `POST /api/runtime/runs` on the DRAFT task | **403 `TASK_NOT_AUTHORIZED`**, zero run records created |
+| W4 | `request-dispatch` → `dispatch` (`via: 'HUMAN'`) → same run request | `DRAFT → WAITING → AUTHORIZED`; run **202**, completes `COMPLETED` with a real `echo` `tool_result` |
+| W4b | requirement v1 + plan evidence pinned `REQ-001@1` → `v2-transition` to `PLANNING` | 200 — a genuine v2 engine commit, which is what feeds the outbox |
+| W5 | `GET /api/runtime/runs/:id/checkpoints[/latest]` | 200; checkpoints readable |
+| W6 | `GET /api/tasks/:id/outbox` | 200; persisted events with `to: 'PLANNING'` (engine shape — see F7) |
+| W7 | `PUT /api/secrets/walksecret` → `GET` metadata → `POST /api/exec` with `secretEnv` | PUT/GET never carry the value; `printenv` output redacted (`***`), sentinel absent |
+| W8 | `POST /api/terminal/sessions` → `POST :id/input` → `GET :id/stream` (SSE) → `DELETE` | 201; `echo w21-terminal` output streamed back over SSE (base64 frames); session closed |
+| W9 | `POST /api/backup/schedules` (interval) → `POST :id/run` → `GET /api/backups` | 201; manual run produced a backup, listed |
+| W10 | `POST /api/worktrees` (real temp git repo) → `GET` list → `POST :id/release` | 201; a real `git worktree` allocated, then released |
+| W11 | `POST /api/mcp/register` (stdio, `credentialRefs: ['walksecret']`) → `GET :id/trust` → `POST :id/trust/approve` → `POST /api/mcp/install` → `POST /api/mcp/review` (approved) → `POST /api/mcp/launch` (`node -e`, `secretEnv`) → `GET launches/:id/logs` → `POST launches/:id/stop` | 201/200/200/202/200/**201**; install pends review by design (202), the review completes it, the launch injects the declared secret and the logs carry no value |
+| W12 | `POST /api/pipelines` → `POST :id/deploy` (`PROD`) → approval decision | Deployment parks at `AWAITING_APPROVAL` with a real approval ticket; decision recorded |
+| — | **SIGKILL**, same DB file | — |
+| W13 | `GET /api/tasks/:id` | `authorizationStatus` still `AUTHORIZED` |
+| W14 | `GET /api/tasks/:id/outbox` | events intact, same count as boot A |
+| W15 | `POST /api/pipelines/:id/approve` (`approvalId`) | 200; deployment **SUCCEEDED** — rebuilt from the persisted spec |
+| W16 | `GET /api/backup/schedules`, `GET /api/backups` | schedule and backup both listed |
+| W17 | `GET /api/worktrees` | record persisted as `RELEASED` (archived, not deleted) |
+| W18 | `GET /api/mcp/servers/:id/trust`, `GET /api/mcp/launches` | trust decision persisted; launch table honestly empty (process memory) |
+| W19 | `GET /api/audit?limit=1000` + `AuditLog(fdb.audit).verify()` over the file | all expected actions present (`TASK_DISPATCH_REQUESTED/DISPATCHED`, `APPROVAL_REQUIRED`, `DEPLOYMENT_REHYDRATED`, `DEPLOY_RESUMED`, `DEPLOY_SUCCEEDED`, `BACKUP_SCHEDULE_CREATED`, `WORKTREE_ALLOCATED/RELEASED`, `MCP_SERVER_LAUNCH`, `SESSION_INPUT`, `SECRET_SET`); hash chain verifies |
+
+No product-code changes were needed: every failure hit during
+development of the script was a wrong assumption in the script
+itself (response shapes, the install→review→launch ordering, the
+trust-approve body fields). Findings below are F6+ in the Batch 11
+tradition.
+
+## Findings (second edition)
+
+**F6 — Medium (build/test infrastructure, not product code).**
+Partial workspace rebuilds can leave `dist/` inconsistent across
+packages: rebuilding only `@ai-factory/server` produced a
+`dist/mcp-persistence.js` calling `registry.setSink()` while
+`packages/mcp/dist` predated the method — the real server then
+crashed at boot with exit code 1 (`TypeError: registry.setSink is
+not a function`). A full `npm run build` resolves it; the product
+source is correct. The sharp edge is that root `npm test` never
+executes the server suite (it runs package `dist` tests only), so
+nothing in the standard gate catches a dist skew that breaks
+`node dist/index.js`. *Fix direction: e2e scripts must always
+full-build first (`demo:e2e-new` now builds mcp+db+worktrees+server);
+consider a CI boot-smoke of the compiled server.*
+
+**F7 — Low: the outbox read surface and the DB column speak
+different vocabularies.** `GET /api/tasks/:id/outbox` returns the
+engine's `OutboxEvent` shape (`{taskId, from, to, by, at, intent}`);
+the `WORKFLOW_TRANSITIONED` / `WORKFLOW_FINALIZED` event types exist
+only in the `outbox_events.event_type` column. An HTTP consumer
+cannot see the durable event type the DB stores. Harmless today
+(the engine shape carries the same facts), but the two surfaces
+should agree if the outbox gains external consumers.

@@ -26,7 +26,10 @@
  * a dead end (that dead end was a KNOWN_LIMITATIONS entry until now).
  *
  * The coordinator wires this in: handleMcpRoutes(req, res, url, ctx).
- * PROTOTYPE NOTE: registry is in-memory (lost on restart).
+ * Durability (Batch 21): registrations, trust/assessments and install
+ * records are written through to fdb.mcpServers and hydrated at
+ * startup (see initMcpPersistence / mcp-persistence.ts). Only
+ * launches stay process-local.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
@@ -36,7 +39,13 @@ import {
   type McpServerDefinition,
 } from '@ai-factory/mcp';
 import type { RouteContext } from './context';
+import type { FactoryDatabase, McpServerStore } from '@ai-factory/db';
 import { McpServerLauncher, McpLaunchError } from '../mcp-launcher';
+import {
+  hydrateMcpRegistry,
+  attachMcpPersistence,
+  removeMcpServerRecord,
+} from '../mcp-persistence';
 
 const PREFIX = '/api/mcp';
 
@@ -48,8 +57,43 @@ const gate = new ToolCallGate({ registry, manager });
 // KNOWN_LIMITATIONS (same honesty as the merge queue / PrStore).
 const launcher = new McpServerLauncher();
 
+/**
+ * Durable registry backing (§46, Batch 21). Set once at server
+ * startup by initMcpPersistence(); null in tests that drive the
+ * routes without a database.
+ */
+let mcpStore: McpServerStore | null = null;
+
+/**
+ * Server startup: replay persisted registrations/trust/installs into
+ * the in-memory registry+manager (no new history/audit events — this
+ * is learning, not re-doing), then attach the write-through
+ * observers so every later mutation lands in the DB.
+ */
+export function initMcpPersistence(fdb: FactoryDatabase): {
+  restoredServers: number;
+  restoredInstalls: number;
+  staleHealthMarked: number;
+} {
+  mcpStore = fdb.mcpServers;
+  const result = hydrateMcpRegistry({ registry, manager, store: mcpStore });
+  attachMcpPersistence({ registry, manager, store: mcpStore });
+  if (result.restoredServers > 0 || result.restoredInstalls > 0) {
+    console.log(
+      `[ai-factory] mcp registry hydrated: ${result.restoredServers} server(s), ` +
+        `${result.restoredInstalls} install(s)` +
+        (result.staleHealthMarked > 0
+          ? `, ${result.staleHealthMarked} stale health report(s) not trusted`
+          : ''),
+    );
+  }
+  return result;
+}
+
 // Well-known servers, registered (not installed) at boot so the
-// trust/approval flow is demonstrable immediately.
+// trust/approval flow is demonstrable immediately. Skipped when a
+// persisted registration already exists — hydration (Batch 21) owns
+// the record then, and re-registering would only append noise.
 for (const def of [
   { name: 'github', version: '1.0.0', provider: 'github', transport: 'http' as const,
     tools: [{ name: 'get_file_contents' }, { name: 'create_or_update_file' }],
@@ -58,7 +102,9 @@ for (const def of [
     tools: [{ name: 'read_file' }, { name: 'write_file' }],
     scopes: ['workspace'], permissions: ['filesystem.read', 'filesystem.write'] },
 ] as McpServerDefinition[]) {
-  try { registry.register(def); } catch { /* already registered */ }
+  if (!registry.has(def.name, def.version)) {
+    try { registry.register(def); } catch { /* already registered */ }
+  }
 }
 
 function summarize(name: string, version: string) {
@@ -234,6 +280,10 @@ export async function handleMcpRoutes(
       return ctx.json(res, 400, { error: 'name and version are required' }), true;
     }
     const removed = manager.uninstall(name, version) || registry.remove(name, version);
+    // Batch 21: the durable rows go with the registration (cascade to
+    // the install row). The uninstall above already fired the
+    // persistence observers; this is the explicit delete.
+    if (mcpStore && removed) removeMcpServerRecord(mcpStore, name, version);
     ctx.audit.record('human', 'MCP_REMOVED', 'mcp_server', `${name}@${version}`, {});
     return ctx.json(res, 200, { ok: removed }), true;
   }

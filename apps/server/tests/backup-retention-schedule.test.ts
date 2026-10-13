@@ -42,7 +42,7 @@ import {
   initBackupService,
   listBackupManifests,
   stagedRestoreBackupId,
-} from '../src/routes/backup.ts';
+} from '../dist/routes/backup.js';
 import {
   BackupScheduler,
   computeNextRun,
@@ -51,7 +51,10 @@ import {
   MIN_INTERVAL_MS,
   nextCronTime,
   parseCronExpr,
-} from '../src/routes/backup-scheduler.ts';
+} from '../dist/routes/backup-scheduler.js';
+// NOTE (Batch 21 closeout): backup-scheduler.ts value-imports './backup'
+// extensionless (tsc-only resolution). Tests import compiled dist so node
+// type-stripping works; run `npm run build` (root) before the server suite.
 import type { RouteContext } from '../src/routes/context.ts';
 
 const CONFIRM = { confirm: 'DELETE_EXPIRED' };

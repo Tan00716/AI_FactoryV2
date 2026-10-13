@@ -638,4 +638,44 @@ CREATE UNIQUE INDEX IF NOT EXISTS merge_queue_active_pr
   ON merge_queue_entries(pr_id) WHERE status IN ('QUEUED','VERIFYING');
 CREATE INDEX IF NOT EXISTS idx_merge_queue_repo
   ON merge_queue_entries(repo_path, position);
+
+-- Durable MCP registry (§46, §34.1, Batch 21). Registrations and trust
+-- were process memory until now: a restart sent every approved server
+-- back to BLOCKED. One row per (name, version); the full McpServer
+-- record travels as JSON (lossless), the columns are the indexable
+-- projection. assessment_json holds the TrustAssessment (assessedAt /
+-- assessedBy / notes); trust_level / approval_policy mirror the
+-- record's live fields for cheap queries. health_stale marks a health
+-- report that belongs to a dead process: hydration does NOT load it
+-- into the live registry (a restart must not pretend a fresh health
+-- check happened); the next recordHealth overwrites with health_stale=0.
+-- credentialRefs are names only; the server layer strips any smuggled
+-- runtimePolicy.stdioEnvFixed VALUES before the row is written, so
+-- secret values structurally cannot reach disk through this table.
+CREATE TABLE IF NOT EXISTS mcp_servers (
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  trust_level TEXT NOT NULL DEFAULT 'UNKNOWN',
+  approval_policy TEXT NOT NULL DEFAULT 'BLOCKED',
+  health_stale INTEGER NOT NULL DEFAULT 0,
+  record_json TEXT NOT NULL,
+  assessment_json TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (name, version)
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_servers_trust
+  ON mcp_servers(trust_level, approval_policy);
+
+-- Install records for the same (name, version) keyspace. Status is the
+-- InstallStatus enum text; uninstall deletes the row (history lives on
+-- the server row's append-only history, never here).
+CREATE TABLE IF NOT EXISTS mcp_installs (
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  status TEXT NOT NULL,
+  installed_at TEXT,
+  scope_enabled_json TEXT NOT NULL DEFAULT '{}',
+  last_used_version TEXT,
+  PRIMARY KEY (name, version)
+);
 `;

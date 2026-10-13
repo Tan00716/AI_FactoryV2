@@ -20,14 +20,41 @@ const DEFAULT_POLICY: ApprovalPolicy = 'BLOCKED';
 
 export interface RegistryOptions {
   clock?: Clock;
+  /**
+   * Durability seam (Batch 21, §46): when set, every mutation of a
+   * registration record is reported so a host can write it through
+   * (the registry itself stays storage-agnostic). The sink is
+   * expected to serialize synchronously.
+   */
+  sink?: McpRegistrySink;
+}
+
+/**
+ * Persistence observer for registration records. Called after each
+ * mutating operation (register / recordNegotiation / recordHealth /
+ * appendHistory) with the CURRENT record.
+ */
+export interface McpRegistrySink {
+  onServerChanged(server: McpServer): void;
 }
 
 export class McpRegistry {
   private servers = new Map<string, McpServer>();
   private clock: Clock;
+  private sink?: McpRegistrySink;
 
   constructor(options: RegistryOptions = {}) {
     this.clock = options.clock ?? { now: () => Date.now() };
+    this.sink = options.sink;
+  }
+
+  /** Attach (or replace) the durability sink after construction. */
+  setSink(sink: McpRegistrySink | undefined): void {
+    this.sink = sink;
+  }
+
+  private emit(server: McpServer): void {
+    this.sink?.onServerChanged(server);
   }
 
   private static key(name: string, version: string): string {
@@ -97,6 +124,7 @@ export class McpRegistry {
       kind: existing ? 'RE_REGISTERED' : 'REGISTERED',
     });
     this.servers.set(k, server);
+    this.emit(server);
     return server;
   }
 
@@ -116,6 +144,7 @@ export class McpRegistry {
     server.negotiatedVersion = negotiated.negotiatedVersion;
     server.extensionSet = negotiated.extensionSet ? [...negotiated.extensionSet] : [];
     this.appendHistory(name, version, { kind: 'NEGOTIATED', detail: negotiated.negotiatedVersion });
+    this.emit(server);
     return server;
   }
 
@@ -124,6 +153,7 @@ export class McpRegistry {
     const server = this.servers.get(McpRegistry.key(name, version));
     if (!server) throw new Error(`mcp: cannot record health — ${name}@${version} is not registered`);
     server.health = report;
+    this.emit(server);
     return server;
   }
 
@@ -137,6 +167,7 @@ export class McpRegistry {
     if (!server) return;
     const { at, ...rest } = event;
     (server.history ??= []).push({ at: at ?? this.clock.now(), ...rest });
+    this.emit(server);
   }
 
   get(name: string, version: string): McpServer | undefined {
