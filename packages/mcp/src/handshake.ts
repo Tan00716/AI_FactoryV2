@@ -22,8 +22,17 @@ import {
   McpServer,
 } from './types';
 
-/** The protocol baseline this build negotiates against (§34.2: 2026-07-28 line). */
-export const CLIENT_PROTOCOL_VERSIONS: readonly string[] = ['2026-07-28', '2025-06-18', '2025-03-26'];
+/** The protocol baseline this build negotiates against (§34.2: 2026-07-28 line).
+ *
+ * '2025-11-25' is a real-world protocol version, added in Batch 37 after a
+ * live handshake with @modelcontextprotocol/server-filesystem@1.0.0 answered
+ * with it (previously the client refused the session — correctly — rather
+ * than pretending to speak a version it did not list). The wire messages
+ * this client sends (initialize / notifications/initialized / tools/list /
+ * tools/call) are stable across all four versions. Order is proposal
+ * preference: the first entry is what initialize() proposes.
+ */
+export const CLIENT_PROTOCOL_VERSIONS: readonly string[] = ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26'];
 
 /** A connector failure, tagged with the stage that produced it and its §34.4 class. */
 export class McpConnectionError extends Error {

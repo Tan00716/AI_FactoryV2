@@ -60,8 +60,14 @@
  * configuration, but it EXECUTES REPO-CONTROLLED CODE (e.g. `npm run
  * build` runs the merged package.json scripts). Enable this only for
  * repos whose merged code is trusted — same posture as any CI runner.
- * The build runs with the server's OS privileges inside a worktree dir;
- * it is NOT a sandbox. This is documented, not hidden.
+ * Since Batch 37 the command additionally runs inside a bubblewrap
+ * sandbox when one is available (read-only toolchain roots, one
+ * writable bind at /work, fresh pid/ipc/uts namespaces, network
+ * isolated by default — see build-sandbox.ts); when bwrap is missing
+ * or unusable the runner falls back to the old unsandboxed execution
+ * and audits SANDBOX_UNAVAILABLE. The sandbox is a best-effort
+ * confinement layer, not a proof against a hostile kernel-level
+ * adversary — the "trusted repos only" posture still stands.
  */
 
 import { tmpdir } from 'node:os';
@@ -86,9 +92,13 @@ import {
   SBOM_NO_LOCKFILE_NOTE,
   sbomGenerationFailedNote,
 } from '@ai-factory/db';
-import { runCommandPipe } from '@ai-factory/runtime';
 import type { FactoryDatabase } from '@ai-factory/db';
 import { checkCommandPolicy, commandHitsControlDir } from './routes/exec';
+import {
+  runBuildCommand,
+  sandboxConfigFromEnv,
+  type SandboxConfig,
+} from './build-sandbox';
 
 export const BUILD_COMMAND_ENV = 'FACTORY_BUILD_COMMAND';
 export const BUILD_TIMEOUT_ENV = 'FACTORY_BUILD_TIMEOUT_MS';
@@ -120,6 +130,13 @@ export interface BuildRunnerConfig {
   workRoot: string;
   /** Where SBOM JSON files land (sbom-<buildId>.json). */
   sbomDir: string;
+  /**
+   * Bubblewrap sandbox for the build command (Batch 37). Optional —
+   * defaults to sandboxConfigFromEnv() so existing literal configs
+   * keep working. `enabled: false` restores the pre-Batch-37
+   * unsandboxed behavior explicitly.
+   */
+  sandbox?: SandboxConfig;
 }
 
 /**
@@ -148,6 +165,7 @@ export function buildRunnerConfigFromEnv(
     configFiles,
     workRoot: (env[BUILD_WORK_ROOT_ENV] ?? '').trim() || join(tmpdir(), 'factory-builds'),
     sbomDir: (env[BUILD_SBOM_DIR_ENV] ?? '').trim() || sbomDirFromEnv(env),
+    sandbox: sandboxConfigFromEnv(env),
   };
 }
 
@@ -606,9 +624,21 @@ export class BuildRunner {
         return;
       }
 
-      const result = await runCommandPipe(tokens, {
-        cwd: workDir,
+      // Batch 37 — the build command runs inside a bubblewrap sandbox
+      // when one is available (filesystem + pid/ipc/uts isolated,
+      // network isolated by default). When bwrap is missing or the
+      // probe fails, this falls back to the previous unsandboxed
+      // execution and audits SANDBOX_UNAVAILABLE — honest fallback,
+      // never a silent downgrade. See build-sandbox.ts.
+      const result = await runBuildCommand(tokens, {
+        workDir,
         timeoutMs: this.config.timeoutMs,
+        buildId,
+        sandbox: this.config.sandbox ?? sandboxConfigFromEnv(),
+        audit: {
+          record: (action, details) =>
+            audit.record('system', action, 'build', buildId, details),
+        },
       });
 
       if (result.timedOut) {

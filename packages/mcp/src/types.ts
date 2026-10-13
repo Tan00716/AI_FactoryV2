@@ -307,10 +307,10 @@ export interface McpToolCallResult {
 }
 
 /**
- * Transport-level client for ONE MCP server. The registry package ships
- * no real transport (real MCP servers are an environment dependency —
- * see the audit BLOCKED note); production wires a stdio/HTTP client,
- * tests wire a fixture. Each method maps to one graded-health level.
+ * Transport-level client for ONE MCP server. stdio servers get a real
+ * transport via StdioMcpConnector (stdio-connector.ts); SSE/HTTP still
+ * need a production client, and tests wire a fixture. Each method maps
+ * to one graded-health level.
  */
 export interface McpConnector {
   /** level 'launch': the process starts / the connection opens */

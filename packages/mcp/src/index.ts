@@ -20,6 +20,7 @@ export * from './registry';
 export * from './security';
 export * from './gate';
 export * from './handshake';
+export * from './stdio-connector';
 export * from './health';
 export * from './resilience';
 export * from './runtimePolicy';
