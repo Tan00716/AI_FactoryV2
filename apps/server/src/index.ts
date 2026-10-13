@@ -141,7 +141,8 @@ import { handleWatchdogRoutes } from './routes/watchdog';
 import { handleTakeoverRoutes } from './routes/takeover';
 import { handleDisputeRoutes, initDisputesPersistence } from './routes/disputes';
 import { handleOrgGraphRoutes, initOrgGraphRoutes } from './routes/org-graph';
-import { handleAuthorityRoutes } from './routes/authority';
+import { handleAuthorityRoutes, initAuthorityRoutes } from './routes/authority';
+import { handleNeedsHumanRoutes } from './routes/needs-human';
 import { handleReportRoutes, initReportsPersistence } from './routes/reports';
 import { handleV2TransitionRoutes } from './routes/v2-transitions';
 import { handleDashboardRoutes } from './routes/dashboard';
@@ -497,10 +498,22 @@ initProjectsRoutes(fdb, audit);
  * Escalation record durability (§48.2, Batch 33): hydrate the
  * persisted dispute-escalation rows into the disputes route's
  * read-back history. Rows are terminal records (no demotion, no
- * re-activation); the §81 needsHuman shape is deliberately not
- * covered — it has no server emission point.
+ * re-activation). (The §81 needsHuman shape lives in fdb.needsHuman,
+ * raised by AUTHORITY_CONFLICT OPEN — see below, not by disputes.)
  */
 initDisputesPersistence(fdb, audit);
+
+/**
+ * §81 needsHuman emission (Batch 36): wire the authority registry's
+ * onConflictOpened hook so that a freshly-opened AUTHORITY_CONFLICT
+ * (equal-rank, incompatible directives — the §81 'ai-disagreement'
+ * trigger) writes a needsHuman upgrade record to fdb.needsHuman.
+ * The other seven §81 triggers have no emitter. Rows are terminal
+ * records: nothing auto-resolves them; a human marks
+ * 'acknowledged'/'resolved' via POST /api/needs-human/:id/resolve.
+ * Open rows hydrate as-is (nothing to demote).
+ */
+initAuthorityRoutes(fdb);
 
 /**
  * Organization graph durability (§48.2 + §9, Batch 34): nodes and the
@@ -882,6 +895,7 @@ const server = createServer(async (req, res) => {
     if (await handleDisputeRoutes(req, res, url, routeCtx)) return;
     if (await handleOrgGraphRoutes(req, res, url, routeCtx)) return;
     if (await handleAuthorityRoutes(req, res, url, routeCtx)) return;
+    if (await handleNeedsHumanRoutes(req, res, url, routeCtx)) return;
     if (await handleReportRoutes(req, res, url, routeCtx)) return;
     if (await handleV2TransitionRoutes(req, res, url, routeCtx)) return;
     if (await handleDashboardRoutes(req, res, url, routeCtx)) return;

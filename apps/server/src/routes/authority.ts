@@ -15,11 +15,16 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
   AuthorityConflictRegistry,
+  AUTHORITY_RANK,
   type AuthorityAuditEvent,
+  type AuthorityConflict,
   type AuthorityLevel,
   type DirectiveEffect,
   type AuthorityTargetKind,
 } from '@ai-factory/policy';
+import { needsHuman } from '@ai-factory/autonomy';
+import type { FactoryDatabase } from '@ai-factory/db';
+import type { NeedsHumanDbRecord } from '@ai-factory/db';
 import type { RouteContext } from './context';
 
 /**
@@ -29,9 +34,154 @@ import type { RouteContext } from './context';
  * registry itself stays storage-agnostic.
  */
 const pendingAudit: AuthorityAuditEvent[] = [];
-const registry = new AuthorityConflictRegistry({
-  audit: (e) => pendingAudit.push(e),
-});
+
+/**
+ * §81 emission buffer (Batch 36): upgrade records built synchronously by
+ * the registry's onConflictOpened hook, written through to fdb by the
+ * directive handler after the conflict response is committed. A failed
+ * write-through is audited (NEEDS_HUMAN_PERSIST_FAILED) — it never
+ * rolls back the conflict record itself.
+ */
+const pendingUpgrades: NeedsHumanDbRecord[] = [];
+
+let needsHumanDb: FactoryDatabase | null = null;
+
+const LEVEL_BY_RANK: Record<number, AuthorityLevel> = {
+  4: 'owner',
+  3: 'security_authority',
+  2: 'manager',
+  1: 'operator',
+  0: 'viewer',
+};
+
+/**
+ * Build the §81 'ai-disagreement' upgrade record for a freshly-opened
+ * conflict. Two equally-valid, incompatible directives from same-rank
+ * principals is the determinate §81 trigger with a server emission
+ * point; the other seven §81 triggers have no emitter (honest).
+ *
+ * recipient is null: the server has coarse-grained token RBAC with no
+ * named human accounts, so we record the required level instead of
+ * inventing a person. requiredDeciderLevel is strictly higher than both
+ * parties (the §8.1 upward rule).
+ */
+function buildUpgradeRecord(
+  conflict: AuthorityConflict,
+  registry: AuthorityConflictRegistry,
+): NeedsHumanDbRecord {
+  const directives = conflict.directiveIds
+    .map((id) => registry.getDirective(id))
+    .filter((d): d is NonNullable<typeof d> => d !== null);
+  const ranks = directives.map((d) => AUTHORITY_RANK[d.authorityLevel] ?? 0);
+  const maxRank = ranks.length > 0 ? Math.max(...ranks) : 0;
+  const maxLevel = LEVEL_BY_RANK[maxRank] ?? 'viewer';
+  const requiredLevel = LEVEL_BY_RANK[maxRank + 1];
+  const deadlocked = requiredLevel === undefined;
+  const effects = directives.map((d) => d.effect);
+  const target = `${conflict.targetKind}:${conflict.targetId}`;
+
+  const rec = needsHuman('ai-disagreement', {
+    detail: `AUTHORITY_CONFLICT ${conflict.conflictId}: ${effects.join(' vs ')} on ${target} — both directives are equally valid at rank ${maxRank} (${maxLevel}) and genuinely incompatible; the target is paused.`,
+    context: {
+      conflictId: conflict.conflictId,
+      targetKind: conflict.targetKind,
+      targetId: conflict.targetId,
+      directiveIds: conflict.directiveIds.join(','),
+      maxPartyLevel: maxLevel,
+    },
+    originalCommand: directives
+      .map((d) => `${d.principalId} (${d.authorityLevel}): ${d.effect} ${d.instruction}`.trim())
+      .join(' ; '),
+    impactScope: `target ${target} is paused until a higher-ranked human decides`,
+    stoppedActions: [`${target} — paused by AUTHORITY_CONFLICT ${conflict.conflictId}`],
+    suggestion: deadlocked
+      ? `No rank above ${maxLevel} exists: this conflict cannot be resolved in-band; a human with out-of-band authority must intervene.`
+      : `A strictly higher-ranked human (${requiredLevel}) must decide via POST /api/authority/conflicts/${conflict.conflictId}/resolve.`,
+  });
+
+  return {
+    id: rec.id,
+    reason: rec.reason,
+    reasonZh: rec.reasonZh,
+    severity: rec.severity,
+    source: `authority-conflict:${conflict.conflictId}`,
+    recipient: null,
+    requiredDeciderLevel: deadlocked ? maxLevel : requiredLevel,
+    detailJson: JSON.stringify({
+      conflictId: conflict.conflictId,
+      target,
+      directiveIds: conflict.directiveIds,
+      incompatibleEffects: effects,
+      maxPartyRank: maxRank,
+      maxPartyLevel: maxLevel,
+      deadlocked,
+      suggestion: rec.suggestion,
+    }),
+    contextJson: JSON.stringify(rec.context ?? {}),
+    raisedAt: Date.now(),
+    status: 'open',
+    resolvedAt: null,
+    resolvedBy: null,
+    resolution: null,
+  };
+}
+
+function createRegistry(db: FactoryDatabase | null): AuthorityConflictRegistry {
+  return new AuthorityConflictRegistry({
+    audit: (e) => pendingAudit.push(e),
+    // §81 emission (Batch 36): only when a database is wired (server
+    // boot). Pre-boot the registry works exactly as before — pure
+    // memory, storage-agnostic, no manufactured emissions.
+    ...(db
+      ? {
+          onConflictOpened: (conflict: AuthorityConflict) => {
+            pendingUpgrades.push(buildUpgradeRecord(conflict, registry));
+          },
+        }
+      : {}),
+  });
+}
+
+let registry: AuthorityConflictRegistry = createRegistry(null);
+
+/**
+ * Boot wiring (Batch 36): re-create the registry with the §81 emission
+ * hook so freshly-opened conflicts write needsHuman upgrade records to
+ * fdb. Called once at server boot; before boot the registry works
+ * exactly as before (no emission, storage-agnostic).
+ */
+export function initAuthorityRoutes(db: FactoryDatabase): void {
+  needsHumanDb = db;
+  registry = createRegistry(db);
+}
+
+function flushNeedsHuman(ctx: RouteContext): void {
+  if (pendingUpgrades.length === 0) return;
+  const db = needsHumanDb;
+  for (const row of pendingUpgrades.splice(0)) {
+    if (!db) {
+      // Should not happen post-boot; audit loudly rather than dropping.
+      ctx.audit.record('system', 'NEEDS_HUMAN_PERSIST_FAILED', 'needs-human', row.id, {
+        reason: 'no database wired',
+        source: row.source,
+      });
+      continue;
+    }
+    try {
+      db.needsHuman.submit(row);
+      ctx.audit.record('system', 'NEEDS_HUMAN_RAISED', 'needs-human', row.id, {
+        reason: row.reason,
+        source: row.source,
+        requiredDeciderLevel: row.requiredDeciderLevel,
+      });
+    } catch (err) {
+      ctx.audit.record('system', 'NEEDS_HUMAN_PERSIST_FAILED', 'needs-human', row.id, {
+        error: err instanceof Error ? err.message : String(err),
+        source: row.source,
+      });
+    }
+  }
+}
 
 function flushAudit(ctx: RouteContext): void {
   for (const e of pendingAudit.splice(0)) {
@@ -69,6 +219,11 @@ export async function handleAuthorityRoutes(
         instruction: typeof instruction === 'string' ? instruction : '',
       });
       flushAudit(ctx);
+      // §81 emission (Batch 36): an OPEN conflict just raised a
+      // needsHuman upgrade. Write-through happens here, after the
+      // conflict response is committed — failures are audited, never
+      // rolled back.
+      flushNeedsHuman(ctx);
       ctx.json(res, 200, {
         directive,
         conflict,

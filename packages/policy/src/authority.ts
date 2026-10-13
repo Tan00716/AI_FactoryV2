@@ -111,6 +111,15 @@ export interface AuthorityRegistryHooks {
   audit?: (e: AuthorityAuditEvent) => void;
   now?: () => number;
   newId?: () => string;
+  /**
+   * Fired exactly once, synchronously, when registerDirective creates an
+   * OPEN conflict (equal-rank, genuinely incompatible directives). Never
+   * fired for auto-resolved rank-difference conflicts, for attach-to-open
+   * directives, or for supersedes — no emission is manufactured.
+   * The registry never interprets it: the server wires it to the
+   * needsHuman upgrade store (§81, Batch 36). Keep it non-throwing.
+   */
+  onConflictOpened?: (conflict: AuthorityConflict) => void;
 }
 
 /**
@@ -328,6 +337,10 @@ export class AuthorityConflictRegistry {
         rank: rankNew,
         escalation: 'requires strictly higher-ranked human decision',
       });
+      // §81 emission point (Batch 36): the only needsHuman emitter in the
+      // server. Fires synchronously; keep the handler non-throwing so a
+      // failed emission can never roll back the conflict record itself.
+      this.hooks.onConflictOpened?.(conflict);
       return { directive, conflict, superseded };
     }
 

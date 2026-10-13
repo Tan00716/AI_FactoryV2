@@ -24,10 +24,12 @@
  * in memory, fresh objects from JSON in SQLite).
  *
  * NOT in scope (stated honestly, not invented): the §81
- * `needsHuman` escalation shape (packages/autonomy) has no server
- * emission point and no store anywhere — this store does NOT absorb
- * it. The §48.2 "escalations" entity that was "in process memory" is
- * the dispute-adjudication escalation, which is what this persists.
+ * `needsHuman` escalation shape (packages/autonomy) is NOT emitted
+ * by adjudication — it has its own store (needs-human-upgrades.ts)
+ * and its own emission point (AUTHORITY_CONFLICT entering OPEN,
+ * Batch 36). This store does NOT absorb it. The §48.2 "escalations"
+ * entity that was "in process memory" is the dispute-adjudication
+ * escalation, which is what this persists.
  */
 import { DatabaseSync } from 'node:sqlite';
 

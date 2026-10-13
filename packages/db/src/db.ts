@@ -42,6 +42,7 @@ import { SqliteDelegationStore } from './delegations';
 import { SqliteProjectKnowledgeStore } from './project-knowledge';
 import { SqliteProjectTemplateDbStore } from './project-templates';
 import { SqliteEscalationStore } from './escalations';
+import { SqliteNeedsHumanStore } from './needs-human-upgrades';
 import { SqliteProposalStore } from './proposals';
 import { SqliteManagementReportStore } from './management-reports';
 import { SqliteOrgGraphStore } from './organization-relationships';
@@ -1112,6 +1113,14 @@ export class FactoryDatabase {
    */
   readonly escalations: SqliteEscalationStore;
   /**
+   * §81 (Batch 36) — durable human-exception-handler upgrade records:
+   * append-only log of needsHuman upgrades raised by real server paths.
+   * Currently the only emitter is AUTHORITY_CONFLICT entering OPEN
+   * (the §81 'ai-disagreement' trigger). Terminal records once raised;
+   * nothing auto-resolves them; open rows hydrate as-is.
+   */
+  readonly needsHuman: SqliteNeedsHumanStore;
+  /**
    * §59 / §48.2 (Batch 33) — durable self-modification proposals:
    * the proposal decision for every POST /api/workforce/proposals.
    * Statuses are terminal at decision time (auto-approved / denied /
@@ -1208,6 +1217,7 @@ export class FactoryDatabase {
     this.projectKnowledge = new SqliteProjectKnowledgeStore(this.db);
     this.projectTemplates = new SqliteProjectTemplateDbStore(this.db);
     this.escalations = new SqliteEscalationStore(this.db);
+    this.needsHuman = new SqliteNeedsHumanStore(this.db);
     this.proposals = new SqliteProposalStore(this.db);
     this.managementReports = new SqliteManagementReportStore(this.db);
     this.policyVersions = new SqlitePolicyVersionStore(this.db);

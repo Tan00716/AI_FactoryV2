@@ -888,6 +888,34 @@ CREATE TABLE IF NOT EXISTS escalations (
 CREATE INDEX IF NOT EXISTS idx_escalations_dispute
   ON escalations(dispute_id);
 
+-- §81 needsHuman upgrade records (Batch 36): the append-only log of
+-- human-exception-handler upgrades raised by real server paths.
+-- Currently the only emitter is AUTHORITY_CONFLICT (§8.1, Batch 32)
+-- entering OPEN — two equally-valid, incompatible directives from
+-- same-rank principals — which maps to the §81 trigger
+-- 'ai-disagreement'. The other seven §81 triggers have no server
+-- emission point (stated honestly, not invented). Rows are terminal
+-- records once raised: NOTHING auto-resolves them; a human marks
+-- 'acknowledged'/'resolved' explicitly. Open rows hydrate as-is.
+CREATE TABLE IF NOT EXISTS needs_human_upgrades (
+  id TEXT PRIMARY KEY,
+  reason TEXT NOT NULL,
+  reason_zh TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  source TEXT NOT NULL,
+  recipient TEXT,
+  required_decider_level TEXT NOT NULL,
+  detail_json TEXT NOT NULL,
+  context_json TEXT NOT NULL,
+  raised_at INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  resolved_at INTEGER,
+  resolved_by TEXT,
+  resolution TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_needs_human_status
+  ON needs_human_upgrades(status);
+
 -- Organization graph (§48.2 Organization domain, §9, Batch 34):
 -- organization_nodes + organization_relationships. The edge table is
 -- authoritative (§9: the edge table is authoritative; parent_agent/

@@ -210,3 +210,54 @@ the build record rather than the HTTP surface, because there was no
 builds surface (`GET /api/builds` + `GET /api/builds/:id`, viewer-readable;
 see `apps/server/tests/builds-read.test.ts`, which watches a real build
 land over pure HTTP).
+
+## Walkthrough (fourth edition, Batch 36)
+
+`apps/server/tests/first-run-walkthrough-b36.test.ts` — the B31–B35
+governance + persistence chains, real server, temp DB, one SIGKILL.
+Run with `npm run demo:e2e-v4`.
+
+| Chain | What is walked | What the run asserts |
+|---|---|---|
+| P1 | `POST /api/pipelines` (QUEUED, 12 stages) → honest mid-run row-shape write → SIGKILL → boot B → `GET /api/pipelines/:id`, `POST …/run` | in-flight pipeline **INTERRUPTED** (never RUNNING), in-flight stage INTERRUPTED, `/run` → 409 `PIPELINE_NOT_REHYDRATABLE` — the persisted record is a record, not an execution |
+| B1 | merge on a real repo → poll `GET /api/builds?prId=` (pure HTTP) → `GET /api/builds/:id` | build lands `SUCCEEDED` over HTTP only, real 64-hex digest; the walkthrough F9 gap stays closed |
+| A1 | `POST /api/authority/directives` (mgr-a BLOCK) → (mgr-b ALLOW) → `GET /api/authority/targets/task/:id` → resolve via manager → resolve via owner | equal-rank incompatible directives open `AUTHORITY_CONFLICT` (OPEN) and pause the target; **same-rank escalation is refused (400)**; a strictly-higher owner resolves and the pause lifts |
+| D1 | `POST /api/workforce/employees` (covering taskScope) → (empty taskScope) | 201 within scope; 403 `grant-exceeds-task-scope` under an empty scope, and the refusal is audited as `TASK_SCOPE_CEILING_DENIED` |
+| G1 | `POST /api/delegations` → `…/activate` (ACTIVE); `PUT /api/gates/definitions/…` → `POST …/evaluate`; `POST /api/workforce/proposals`; `POST /api/disputes` (no-evidence verdicts) | delegation ACTIVE; gate verdict **PASSED** with `evidence_source: caller-supplied`; proposal decision recorded (201); dispute **ESCALATED** with an escalation id |
+| R1 | `POST /api/projects` (§6.1 fields) → `PUT /api/projects/:id/knowledge` → bad category | full record persisted (`organization_id`, `lifecycle_state`); knowledge upsert 200; unknown category → 400 |
+| P1/G1/R1 (boot B) | re-read everything after the SIGKILL | delegation **INTERRUPTED** (mutation 409), gate definition + PASSED evaluation survive, proposal history + escalation survive, §6.1 record + knowledge entry survive |
+| A2 | `GET /api/audit?limit=2000` + `AuditLog(fdb.audit).verify()` | actions present: `PIPELINE_REHYDRATED`, `BUILD_SUCCEEDED`, `AUTHORITY_DIRECTIVE_REGISTERED`, `AUTHORITY_CONFLICT_DETECTED`, `AUTHORITY_CONFLICT_HUMAN_RESOLVED`, `TASK_SCOPE_CEILING_DENIED`, `EMPLOYEE_CREATED`, `DELEGATION_CREATED`, `DELEGATION_INTERRUPTED_ON_RESTART`, `GATE_EVALUATED`, `SELF_MODIFICATION_PROPOSED`, `PROJECT_KNOWLEDGE_UPSERTED`; hash chain verifies |
+
+## Findings (fourth edition)
+
+**F10 — Low (test-harness note, same as the pipeline test header).**
+The mid-run pipeline chain is not a pure-real kill: `/run`'s stage
+handlers complete in milliseconds, so a true SIGKILL cannot land
+mid-run over HTTP. The script writes exactly the row shape a mid-run
+kill would leave (through the same table columns the server's own
+write-through writes) and kills — the hydrate-and-demote logic is real,
+the row shape is honestly labeled a simulation in the file header.
+A pure-real QUEUED chain (create → kill → still QUEUED, `/run` 409s) is
+also walked in the same script.
+
+**F11 — Low (read-view note, no product-code change).**
+While the process lives, `GET /api/pipelines/:id` prefers the live
+in-memory record — a direct look at the DB file may show different
+statuses than the HTTP surface. An operator watching a running
+pipeline over HTTP always sees the live view; the persisted view only
+becomes authoritative after a restart. This is the designed "live
+records win on id clashes" convention, not drift.
+
+**F12 — Low (honest boundary, no product-code change).**
+The authority-conflict registry is in-memory (same as `/api/disputes`):
+an OPEN conflict that survives a SIGKILL is lost. The walkthrough
+resolves the conflict *before* the kill on purpose — an operator must
+know that un-resolved conflicts do not survive a restart. The pause
+state of an un-resolved conflict is the known §8.1 gap item.
+
+**F13 — Info (walkthrough hygiene).**
+The walkthrough's covering task scope was first written too narrow
+(`permission:filesystem.read` only) and the real `Walk Engineer`
+template requested six permissions — the server's 403 named exactly
+which permissions exceeded the scope. The error is the documentation:
+the scope contract is enforced, not approximated.

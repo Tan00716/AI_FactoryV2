@@ -19,9 +19,9 @@
  * actions are the human's problem, not this process's state), so
  * hydrate is read-only: persisted rows merge with live coordinator
  * records on read, no demotion, no re-activation. The §81
- * needsHuman escalation shape is NOT covered here — it has no
- * server emission point and no store anywhere (see packages/db
- * escalations.ts).
+ * needsHuman escalation shape is NOT emitted by disputes — it is
+ * emitted by AUTHORITY_CONFLICT entering OPEN (Batch 36, see
+ * routes/authority.ts) and stored in fdb.needsHuman.
  */
 import type { IncomingMessage, ServerResponse } from 'http';
 import {

@@ -9,6 +9,7 @@
   "version": "0.1.0",
   "dependencies": {
     "@ai-factory/approvals": "0.1.0",
+    "@ai-factory/autonomy": "0.1.0",
     "@ai-factory/cicd": "0.1.0",
     "@ai-factory/core": "0.1.0",
     "@ai-factory/dashboard": "0.1.0",
