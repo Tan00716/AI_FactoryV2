@@ -18,6 +18,7 @@
     "@ai-factory/events": "0.1.0",
     "@ai-factory/factory-control": "0.1.0",
     "@ai-factory/git": "0.1.0",
+    "@ai-factory/worktrees": "0.1.0",
     "@ai-factory/incidents": "0.1.0",
     "@ai-factory/knowledge": "0.1.0",
     "@ai-factory/leases": "0.1.0",

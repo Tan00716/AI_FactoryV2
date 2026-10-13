@@ -1,10 +1,15 @@
 /**
- * TerminalPanel — spec §64 (integrated terminal).
+ * TerminalPanel — spec §50.1 (integrated terminal: xterm.js + 受控 PTY).
  *
- * xterm.js rendering + fit addon. Prototype execution model: each line is
- * POSTed once to /api/exec (routes/exec.ts) and the output is echoed back
- * into the terminal — no real PTY. `cd` is handled client-side by tracking
- * the cwd that is sent with every request.
+ * Batch 19 rewired this panel from the emulated model (one POST
+ * /api/exec per line, no real PTY) to a REAL interactive session:
+ * on mount it opens POST /api/terminal/sessions (principal 'human'),
+ * streams output over the SSE endpoint with fetch (so the
+ * Authorization header keeps working — EventSource cannot send
+ * headers), forwards every keystroke to /input, and reports terminal
+ * resizes to /resize (the server SIGWINCHes the pty). Backspace,
+ * Ctrl+C, job control etc. are all handled by the real pty now —
+ * nothing is emulated client-side anymore.
  */
 import { useEffect, useRef } from 'react';
 import { authHeaders } from '../api';
@@ -14,20 +19,26 @@ import 'xterm/css/xterm.css';
 
 const API_BASE = 'http://localhost:3100/api';
 
-function writeLines(term: Terminal, text: string) {
-  for (const chunk of text.split('\n')) {
-    term.write(chunk.replace(/\r/g, ''));
-    term.write('\r\n');
-  }
+interface SseFrame {
+  event: string;
+  data: string;
+}
+
+function b64ToText(b64: string): string {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
 }
 
 export function TerminalPanel() {
   const hostRef = useRef<HTMLDivElement>(null);
-  const cwdRef = useRef('.');
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    let disposed = false;
+    let sessionId: string | null = null;
 
     const term = new Terminal({
       cursorBlink: true,
@@ -42,112 +53,168 @@ export function TerminalPanel() {
     fit.fit();
     term.focus();
 
+    term.writeln('AI Factory integrated terminal (§50.1) — interactive PTY session, human principal.');
+    term.writeln('Connecting…');
+
+    const post = async (path: string, body: unknown): Promise<Response> =>
+      fetch(`${API_BASE}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(body),
+      });
+
+    const streamSession = async (id: string): Promise<void> => {
+      const res = await fetch(`${API_BASE}/terminal/sessions/${id}/stream`, {
+        headers: { ...authHeaders(), Accept: 'text/event-stream' },
+      });
+      if (!res.ok || !res.body) {
+        term.writeln(`\r\n\x1b[31mstream failed: HTTP ${res.status}\x1b[0m`);
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      const handleFrame = (frame: SseFrame): void => {
+        if (frame.event === 'output') {
+          try {
+            term.write(b64ToText((JSON.parse(frame.data) as { b64: string }).b64));
+          } catch {
+            /* malformed frame — ignore */
+          }
+        } else if (frame.event === 'denied') {
+          try {
+            const d = JSON.parse(frame.data) as { line: string; reason: string };
+            term.write(`\r\n\x1b[33m[denied] ${d.reason}: ${d.line}\x1b[0m\r\n`);
+          } catch {
+            /* ignore */
+          }
+        } else if (frame.event === 'close') {
+          try {
+            const c = JSON.parse(frame.data) as { exitCode: number | null; signal: string | null };
+            term.writeln(`\r\n\x1b[33m[session closed: exit=${c.exitCode ?? '?'} signal=${c.signal ?? '-'}]\x1b[0m`);
+          } catch {
+            term.writeln('\r\n\x1b[33m[session closed]\x1b[0m');
+          }
+        }
+      };
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || disposed) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx: number;
+          while ((idx = buf.indexOf('\n\n')) >= 0) {
+            const raw = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            let event = 'message';
+            const dataLines: string[] = [];
+            for (const line of raw.split('\n')) {
+              if (line.startsWith(':')) continue;
+              if (line.startsWith('event:')) event = line.slice(6).trim();
+              else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+            }
+            if (dataLines.length > 0 || event === 'close') {
+              handleFrame({ event, data: dataLines.join('\n') });
+            }
+          }
+        }
+      } catch {
+        if (!disposed) term.writeln('\r\n\x1b[31mstream interrupted\x1b[0m');
+      } finally {
+        try {
+          reader.releaseLock();
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
+    const boot = async (): Promise<void> => {
+      try {
+        const res = await post('/terminal/sessions', {
+          principal: 'human',
+          cols: term.cols || 80,
+          rows: term.rows || 24,
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          term.writeln(`\r\n\x1b[31msession refused: ${body.error ?? `HTTP ${res.status}`}\x1b[0m`);
+          return;
+        }
+        const created = (await res.json()) as { id: string };
+        if (disposed) {
+          // Panel went away during boot — close the orphaned session.
+          await fetch(`${API_BASE}/terminal/sessions/${created.id}`, {
+            method: 'DELETE',
+            headers: authHeaders(),
+          }).catch(() => {});
+          return;
+        }
+        sessionId = created.id;
+        term.writeln(`\x1b[32mconnected: session ${created.id.slice(0, 8)}…\x1b[0m`);
+        await streamSession(created.id);
+      } catch (e) {
+        if (!disposed) {
+          term.writeln(`\r\n\x1b[31msession failed: ${e instanceof Error ? e.message : String(e)}\x1b[0m`);
+        }
+      }
+    };
+
+    // Every keystroke goes to the real pty (the line discipline echoes).
+    const dataDispose = term.onData((data) => {
+      if (!sessionId) return;
+      post(`/terminal/sessions/${sessionId}/input`, { data }).catch(() => {});
+    });
+
+    // Terminal resize → server resize (SIGWINCH), debounced.
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastCols = 0;
+    let lastRows = 0;
     const ro = new ResizeObserver(() => {
       try {
         fit.fit();
       } catch {
-        /* host hidden */
+        return;
       }
+      if (!sessionId) return;
+      if (term.cols === lastCols && term.rows === lastRows) return;
+      lastCols = term.cols;
+      lastRows = term.rows;
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (sessionId && !disposed) {
+          post(`/terminal/sessions/${sessionId}/resize`, {
+            cols: term.cols,
+            rows: term.rows,
+          }).catch(() => {});
+        }
+      }, 300);
     });
     ro.observe(host);
 
-    let line = '';
-    let busy = false;
-    const prompt = () => {
-      term.write(`\r\n\x1b[1;32mai-factory\x1b[0m:\x1b[1;34m${cwdRef.current}\x1b[0m$ `);
-    };
-
-    term.writeln('AI Factory integrated terminal (§64) — type a command, Enter to run.');
-    term.writeln('Whitelisted read-only/build commands only (ls, cat, pwd, echo, git, npm, node…). `cd` changes the directory.');
-    prompt();
-
-    term.onData(async (data) => {
-      if (busy) return;
-      const code = data.charCodeAt(0);
-
-      if (data === '\r') {
-        // Enter — execute
-        const command = line.trim();
-        line = '';
-        if (!command) {
-          prompt();
-          return;
-        }
-        busy = true;
-        // local `cd` handling
-        if (command === 'cd' || command.startsWith('cd ')) {
-          cwdRef.current = command.slice(2).trim() || '.';
-          busy = false;
-          prompt();
-          return;
-        }
-        try {
-          const res = await fetch(`${API_BASE}/exec`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({ command, cwd: cwdRef.current }),
-          });
-          const body = (await res.json()) as {
-            output?: string;
-            error?: string;
-            exitCode?: number;
-            truncated?: boolean;
-          };
-          term.write('\r\n');
-          if (!res.ok) {
-            writeLines(term, `\x1b[31mrefused: ${body.error ?? `HTTP ${res.status}`}\x1b[0m`);
-          } else {
-            const out = (body.output ?? '').replace(/\s+$/, '');
-            if (out) writeLines(term, out);
-            if (body.exitCode) {
-              term.write(`\x1b[31m[exit ${body.exitCode}]\x1b[0m\r\n`);
-            }
-            if (body.truncated) term.write('\x1b[33m[output truncated]\x1b[0m\r\n');
-          }
-        } catch (e) {
-          term.write(`\r\n\x1b[31mexec failed: ${e instanceof Error ? e.message : String(e)}\x1b[0m\r\n`);
-        } finally {
-          busy = false;
-          prompt();
-        }
-        return;
-      }
-      if (code === 127) {
-        // Backspace
-        if (line.length > 0) {
-          line = line.slice(0, -1);
-          term.write('\b \b');
-        }
-        return;
-      }
-      if (code === 3) {
-        // Ctrl+C — cancel line
-        line = '';
-        term.write('^C');
-        prompt();
-        return;
-      }
-      if (code === 12) {
-        // Ctrl+L — clear screen
-        term.clear();
-        term.write(line);
-        return;
-      }
-      if (code < 32) return; // ignore other control keys
-      line += data;
-      term.write(data);
-    });
+    void boot();
 
     return () => {
+      disposed = true;
+      dataDispose.dispose();
       ro.disconnect();
+      if (resizeTimer) clearTimeout(resizeTimer);
+      const id = sessionId;
       term.dispose();
+      if (id) {
+        // Best-effort: don't leak server-side sessions when the tab closes.
+        fetch(`${API_BASE}/terminal/sessions/${id}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+        }).catch(() => {});
+      }
     };
   }, []);
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)' }}>
-        <b>Terminal</b> <span className="muted">§64 · controlled execution via /api/exec</span>
+        <b>Terminal</b> <span className="muted">§50.1 · interactive PTY session (human)</span>
       </div>
       <div ref={hostRef} style={{ flex: 1, minHeight: 0, padding: 4 }} />
     </div>

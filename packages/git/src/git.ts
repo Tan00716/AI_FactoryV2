@@ -345,6 +345,84 @@ export class GitRepo {
     opts.audit?.('GIT_PULL', { repo: this.path, remote, branch: branch ?? null });
   }
 
+  /**
+   * True when `path` is inside a git working tree. Used by the
+   * worktree allocator to decide git-worktree vs. dir-copy (§22.1).
+   */
+  async isGitRepository(): Promise<boolean> {
+    try {
+      const out = await this.run(['rev-parse', '--is-inside-work-tree']);
+      return out.trim() === 'true';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Absolute paths of all registered worktrees of this repository
+   * (porcelain output; includes the main worktree as first entry).
+   */
+  async worktreeList(): Promise<string[]> {
+    const out = await this.run(['worktree', 'list', '--porcelain']);
+    return out
+      .split('\n')
+      .filter((l) => l.startsWith('worktree '))
+      .map((l) => l.slice('worktree '.length).trim())
+      .filter(Boolean);
+  }
+
+  /**
+   * Create a worktree at `path` for `branch`.
+   *
+   * When `branch` does not exist it is created from `base` (default
+   * HEAD); when it already exists the worktree is attached to it
+   * (the allocator must not create the same branch twice).
+   */
+  async worktreeAdd(
+    path: string,
+    opts: { branch: string; base?: string; audit?: GitAuditHook } = {
+      branch: '',
+    },
+  ): Promise<void> {
+    const { all } = await this.branches();
+    if (all.includes(opts.branch)) {
+      await this.run(['worktree', 'add', path, opts.branch]);
+    } else {
+      await this.run([
+        'worktree',
+        'add',
+        path,
+        '-b',
+        opts.branch,
+        opts.base ?? 'HEAD',
+      ]);
+    }
+    opts.audit?.('GIT_WORKTREE_ADD', {
+      repo: this.path,
+      path,
+      branch: opts.branch,
+    });
+  }
+
+  /** Remove the worktree at `path` (registered working tree only). */
+  async worktreeRemove(
+    path: string,
+    opts: { force?: boolean; audit?: GitAuditHook } = {},
+  ): Promise<void> {
+    await this.run(
+      opts.force
+        ? ['worktree', 'remove', '--force', path]
+        : ['worktree', 'remove', path],
+    );
+    opts.audit?.('GIT_WORKTREE_REMOVE', { repo: this.path, path });
+  }
+
+  /** Prune stale worktree metadata (paths deleted outside git). */
+  async worktreePrune(opts: MutatingOptions = {}): Promise<void> {
+    await this.run(['worktree', 'prune']);
+    opts.audit?.('GIT_WORKTREE_PRUNE', { repo: this.path });
+  }
+
   /** §34 — create an annotated tag at HEAD. */
   async tag(name: string, opts: MutatingOptions = {}): Promise<void> {
     await this.run(['tag', name]);

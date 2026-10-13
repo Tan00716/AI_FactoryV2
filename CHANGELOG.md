@@ -1,5 +1,13 @@
 # Changelog
 
+## [未发布] Batch 19 — 部署持久化 / MCP 机密注入 / Worktree / 交互式 PTY 会话
+
+- **部署持久化（§41/§77）**：deploy 经 `fdb.deployments` 写透（记录 + 可重建规格；DeploymentSpec 类型无机密值字段，值在构造上无法落盘）；重启后 `/approve` 先查注册表再按 pipelineId 重建 parked job（REHYDRATED），重建前重校验归档守卫（被归档 → 409 + `DEPLOYMENT_REBUILD_REFUSED`）与 §77 回滚能力（丢失 → 410 `DEPLOYMENT_UNRECOVERABLE`，不静默）。旧的「重启即 404」升级为重建或明确不可重建并说明原因。边界：pipeline 记录与 stage 定义仍进程内存，stub `/run` 明确 409（跑空 stage 会是假成功）。
+- **MCP stdio 启动机密注入（§46.2 第二消费点）**：`POST /api/mcp/launch` 启动 stdio 服务器，`secretEnv {VAR: ref}` 的引用须先在 `credentialRefs` 中声明（未声明 403），再经 Secret Broker 短期租约解析注入子进程 env；值只在启动瞬间存在于进程内存；stdout/stderr 捕获即脱敏；缺失 ref → 403 且不启动。租约语义：rotation 只撤销 launcher 侧租约，运行中子进程保留旧值（`secretLeaseState` 标注透出）。未动 packages/mcp 内部。边界：新注册服务器默认 BLOCKED 且无信任审批 HTTP 端点，launch 对其 fail-closed 403（§46 信任流 HTTP 化为后续项）。
+- **Worktree 分配器（§22.1 / G-37）**：新包 `@ai-factory/worktrees`，每个写入任务分配独立 git worktree（分支 `task/<shortid>-<slug>` 确定性命名，task id 嵌入）；记录落库（同一 (repo,task) 只允许一个 ACTIVE，partial unique index；路径全局唯一；release 只归档）；创建走 Git Broker 新增 `worktree` 动作门（task 绑定，拒绝零副作用）；release 校验记录路径（根目录内 + 命名模式）再删。非 Git 源如实降级 `dir-copy`；git 缺失而源是 git 仓库 → fail-closed。服务端 `/api/worktrees`（读 viewer/写 operator），`FACTORY_WORKTREE_ROOT` 配置。验证中抓到并修复 3 个真 bug（并发竞态/SQLite 错误分类/路由 404 口径）。边界：worktree 共享 common dir/hooks/refs，是任务级文件隔离不是 OS 安全隔离。
+- **交互式 PTY 会话（§50.1）**：`@ai-factory/runtime` 新增 `PtySession`/`PtySessionManager`，内嵌 python3 监督进程持有真 PTY，控制管道（fd 3 JSON 行）实现真 resize（TIOCSWINSZ + SIGWINCH，补上 Batch 18 缺的通道）；服务端 `/api/terminal/*`（创建/列表/SSE 流/SSE 心跳/stdin/redo/resize/关闭）；Human/AI 独立 principal，AI 会话输入逐行过门（被拒行丢弃 + 审计 `AI_LINE_DENIED`，逐行近似不是防恶意模型的安全边界）；桌面 TerminalPanel 从仿真模式重接为真会话。控制端猝死时监督进程见 stdin EOF 即整树 SIGKILL 自杀（测试钉住）。
+- KNOWN_LIMITATIONS 新增四条、§34 条目补 credentialRefs 消费句。测试基线 2091 → 2132。并行批次在途碰撞的主线收口：修 worktrees.test.ts 的 type-stripping 不兼容泛型写法（一行）。
+
 ## [未发布] Batch 18 — 授权轴收口 / Secret Broker / 真实 PTY / Dispatch UI
 
 - **G-09 预授权票登记册**：`authorization_tickets` 落库 + `/api/authorization-tickets`（签发/列表/撤销）；POLICY 派发可引用票据，消费时校验状态/有效期/范围并留消费记录；票面类别维度以优先级表达（Task 无 task_type，G-06）。

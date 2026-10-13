@@ -23,11 +23,14 @@
  *      attached by the resume itself, DEPLOY_RESUMED / DEPLOY_SUCCEEDED
  *      on the audit record;
  *   3. rollback works AFTER the approve too;
- *   4. the restart boundary is explicit, not silent: pipelines,
- *      deployments, snapshots and parked jobs are process-memory
- *      state, so after a restart the pipeline is gone and /approve
- *      answers 404 — a parked deployment does NOT survive a restart
- *      (and is never silently dropped within the process either).
+ *   4. the restart boundary changed in Batch 19: deployments are
+ *      durable (fdb.deployments + the reconstructable spec), so after
+ *      a restart the parked job is REBUILT from its spec and /approve
+ *      completes it to SUCCEEDED — DEPLOYMENT_REHYDRATED on the audit
+ *      trail. Pipeline RECORDS and stage definitions remain process
+ *      memory: GET /api/pipelines still lists nothing after a
+ *      restart, and a pipeline with no persisted deployments keeps
+ *      its 404.
  *
  * The workspace must be built (dist/index.js), like the sibling
  * archive-guard tests.
@@ -118,7 +121,7 @@ async function stopServer(s: BootedServer): Promise<void> {
 }
 
 describe('pipeline approve resumes a parked PROD deployment (Batch 16)', () => {
-  it('deploy parks → ticket approved → separate approve request resumes to SUCCEEDED; rollback works before and after; restart boundary is an explicit 404', { timeout: 240_000 }, async () => {
+  it('deploy parks → ticket approved → separate approve request resumes to SUCCEEDED; rollback works before and after; restart rebuilds the parked job from its persisted spec (Batch 19)', { timeout: 240_000 }, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-server-cicd-resume-'));
     const dbFile = join(dir, 'factory.db');
     let server: BootedServer | undefined;
@@ -256,17 +259,17 @@ describe('pipeline approve resumes a parked PROD deployment (Batch 16)', () => {
         'ROLLED_BACK',
       );
 
-      // --- restart boundary: park one more PROD deployment, approve
-      // its ticket, then restart. The parked job is process-memory
-      // state (like the pipeline record itself), so after the restart
-      // the approve fails EXPLICITLY — 404 pipeline not found — rather
-      // than the deployment silently vanishing mid-process.
+      // --- restart boundary (Batch 19): park one more PROD deployment,
+      // approve its ticket, then restart. Deployments are durable now —
+      // the parked job is rebuilt from its persisted spec on approve,
+      // so the approve completes the deployment instead of 404ing.
       const depProd3 = await api(port, 'POST', `/api/pipelines/${pipelineId}/deploy`, {
         environment: 'PROD',
         taskId: tid,
         actor: 'deploy-bot',
       });
       assert.equal(depProd3.status, 200);
+      const prodId3 = (depProd3.body['deployment'] as Record<string, unknown>)['id'] as string;
       const approval3 = depProd3.body['approval'] as unknown as Record<string, unknown>;
       const approvalId3 = approval3['approval_id'] as string;
       const decision3 = await api(port, 'POST', `/api/approvals/${approvalId3}/decision`, {
@@ -278,13 +281,26 @@ describe('pipeline approve resumes a parked PROD deployment (Batch 16)', () => {
       await stopServer(server);
       server = await bootServer(dbFile);
       const port2 = server.port;
-      const orphan = await api(port2, 'POST', `/api/pipelines/${pipelineId}/approve`, {
+      const rebuilt = await api(port2, 'POST', `/api/pipelines/${pipelineId}/approve`, {
         approvalId: approvalId3,
       });
-      assert.equal(orphan.status, 404);
-      assert.match(orphan.body['error'] as unknown as string, /pipeline .* not found/);
+      assert.equal(rebuilt.status, 200);
+      assert.equal(
+        (rebuilt.body['deployment'] as Record<string, unknown>)['status'],
+        'SUCCEEDED',
+      );
+      assert.equal((rebuilt.body['deployment'] as Record<string, unknown>)['id'], prodId3);
+      const actions3 = (await api(port2, 'GET', '/api/audit?limit=300')).body as unknown as { action: string }[];
+      assert.ok(
+        actions3.map((r) => r.action).includes('DEPLOYMENT_REHYDRATED'),
+        'rebuild is on the audit trail',
+      );
       const listAfter = await api(port2, 'GET', '/api/pipelines');
-      assert.equal((listAfter.body as unknown as unknown[]).length, 0);
+      // The approve rebuilt a REHYDRATED stub record into memory.
+      const pipes = listAfter.body as unknown as Array<Record<string, unknown>>;
+      assert.equal(pipes.length, 1);
+      assert.equal(pipes[0]['id'], pipelineId);
+      assert.equal(pipes[0]['rehydrated'], true);
 
       await stopServer(server);
       server = undefined;

@@ -30,6 +30,8 @@ import { SqliteTaskV2StateStore } from './task-v2-state';
 import { SqliteOutboxStore } from './outbox';
 import { SqliteRetentionStore } from './retention';
 import { SqliteAuthorizationTicketStore } from './authorization-tickets';
+import { SqliteDeploymentStore } from './deployments';
+import { SqliteWorktreeStore } from './worktrees';
 
 const J = {
   parse<T>(s: string | null, fallback: T): T {
@@ -762,6 +764,20 @@ export class FactoryDatabase {
    * Rule ID string. Single-use tickets, effective expiry on read.
    */
   readonly authorizationTickets: SqliteAuthorizationTicketStore;
+  /**
+   * §41/§77 (Batch 19) — durable deployment records: the
+   * reconstructable spec for every deployment (parked jobs included),
+   * so a restarted server can REBUILD a parked job from its spec
+   * instead of 404ing it. Specs carry secret REFERENCE names only,
+   * never values (the type has no values field).
+   */
+  readonly deployments: SqliteDeploymentStore;
+  /**
+   * §22.1 (G-37, Batch 19) — worktree allocation records: one ACTIVE
+   * worktree per (repo, task) at a time (partial unique index), paths
+   * globally unique, RELEASED rows retained as history.
+   */
+  readonly worktrees: SqliteWorktreeStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -791,6 +807,8 @@ export class FactoryDatabase {
     this.outbox = new SqliteOutboxStore(this.db);
     this.retention = new SqliteRetentionStore(this.db);
     this.authorizationTickets = new SqliteAuthorizationTicketStore(this.db);
+    this.deployments = new SqliteDeploymentStore(this.db);
+    this.worktrees = new SqliteWorktreeStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------

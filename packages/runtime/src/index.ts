@@ -15,11 +15,14 @@
  *               checkpoints, step-intent store, disk safe-mode
  *  - pty        concrete shell execution: pipe mode + real PTY mode        [§33, §50.1]
  *               (python3 supervisor backend), createShellTool ToolImpl
+ *  - pty-session interactive PTY sessions (human/ai principals, resize   [§50.1]
+ *               over a control pipe, AI line-gated input), PtySessionManager
  */
 export * from './types';
 export * from './loop';
 export * from './harness';
 export * from './pty';
+export * from './pty-session';
 export * from './adapters';
 export * from './adapter-contract';
 export * from './runner';

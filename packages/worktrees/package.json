@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/db":"0.1.0","@ai-factory/git":"0.1.0"},"description":"Worktree allocator (§22.1): one isolated git worktree (or labeled dir-copy for non-Git sources) per writing task, records persisted, broker-gated","main":"dist/src/index.js","name":"@ai-factory/worktrees","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

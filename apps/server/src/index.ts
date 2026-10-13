@@ -73,6 +73,7 @@ import { CheckpointLog, OperationLedger } from '@ai-factory/runtime';
 import type { StepIntentStore, TargetLedgerQuery } from '@ai-factory/runtime';
 import type { RouteContext } from './routes/context';
 import { handleGitRoutes } from './routes/git';
+import { handleWorktreeRoutes } from './routes/worktrees';
 import { handleQaRoutes } from './routes/qa';
 import { handleApprovalRoutes } from './routes/approvals';
 import { handleCicdRoutes } from './routes/cicd';
@@ -106,6 +107,7 @@ import { handleReviewRoutes } from './routes/review';
 import { handleReleaseRoutes } from './routes/releases';
 import { handlePolicyRoutes } from './routes/policy';
 import { handleExecRoutes } from './routes/exec';
+import { handleTerminalRoutes } from './routes/terminal';
 import { handleSecretRoutes } from './routes/secrets';
 import { handleFileRoutes } from './routes/files';
 import { handleChangesRoutes } from './routes/changes';
@@ -655,6 +657,7 @@ const server = createServer(async (req, res) => {
       secretBroker: secretBrokerSetup.broker,
     };
     if (await handleGitRoutes(req, res, url, routeCtx)) return;
+    if (await handleWorktreeRoutes(req, res, url, routeCtx)) return;
     if (await handleQaRoutes(req, res, url, routeCtx)) return;
     if (await handleApprovalRoutes(req, res, url, routeCtx)) return;
     if (await handleCicdRoutes(req, res, url, routeCtx)) return;
@@ -674,6 +677,7 @@ const server = createServer(async (req, res) => {
     if (await handleReleaseRoutes(req, res, url, routeCtx)) return;
     if (await handlePolicyRoutes(req, res, url, routeCtx)) return;
     if (await handleExecRoutes(req, res, url, routeCtx)) return;
+    if (await handleTerminalRoutes(req, res, url, routeCtx)) return;
     if (await handleSecretRoutes(req, res, url, routeCtx)) return;
     if (await handleFileRoutes(req, res, url, routeCtx)) return;
     if (await handleChangesRoutes(req, res, url, routeCtx)) return;

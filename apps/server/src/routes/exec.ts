@@ -158,6 +158,123 @@ function resolveCwd(raw: string | undefined): string {
   return abs;
 }
 
+/** Re-exported for the interactive terminal sessions (routes/terminal.ts). */
+export const resolveExecCwd = resolveCwd;
+
+/**
+ * The execution safety policy as a reusable check (Batch 19): deny
+ * patterns on the raw line + binary whitelist on the first token.
+ * Returns the tokenized argv. Throws ExecPolicyDenied (with `reason`)
+ * when the line is refused — the SAME policy /api/exec enforces.
+ */
+export class ExecPolicyDenied extends Error {
+  readonly reason: string;
+  constructor(reason: string, message: string) {
+    super(message);
+    this.name = 'ExecPolicyDenied';
+    this.reason = reason;
+  }
+}
+
+export function checkCommandPolicy(command: string): string[] {
+  for (const re of DENY_PATTERNS) {
+    if (re.test(command)) {
+      throw new ExecPolicyDenied(
+        `matched deny pattern ${re.source}`,
+        `command refused: blocked by the execution safety policy (${re.source})`,
+      );
+    }
+  }
+  const tokens = tokenize(command);
+  if (tokens.length === 0) {
+    throw new ExecPolicyDenied('empty command', 'command is required');
+  }
+  const binary = tokens[0] as string;
+  if (!ALLOWED_BINARIES.has(binary)) {
+    throw new ExecPolicyDenied(
+      `binary '${binary}' not in whitelist`,
+      `command refused: '${binary}' is not in the allowed command list (${[...ALLOWED_BINARIES].sort().join(', ')})`,
+    );
+  }
+  return tokens;
+}
+
+/**
+ * §4.1 control-plane guard as a reusable check: true when the cwd or
+ * any argument touches the control-plane data directory.
+ */
+export function commandHitsControlDir(cwd: string, tokens: string[]): boolean {
+  const hitsForbidden = (p: string): boolean => {
+    if (p.includes(CONTROL_DATA_DIR)) return true;
+    const r = resolve(cwd, p);
+    return r === CONTROL_DATA_DIR || r.startsWith(CONTROL_DATA_DIR + sep);
+  };
+  return hitsForbidden(cwd) || tokens.slice(1).some(hitsForbidden);
+}
+
+/** Structured error from secret-env resolution (HTTP-mappable). */
+export class SecretEnvError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly detail: Record<string, unknown>;
+  constructor(status: number, code: string, message: string, detail: Record<string, unknown> = {}) {
+    super(message);
+    this.name = 'SecretEnvError';
+    this.status = status;
+    this.code = code;
+    this.detail = detail;
+  }
+}
+
+/**
+ * §46.2 Secret Broker consumption as a reusable helper (Batch 19):
+ * resolves { ENV_VAR: "secret-name" } in-process. Values go only into
+ * the returned env map — never into logs or audit records. Throws
+ * SecretEnvError carrying the HTTP status the caller should answer.
+ */
+export async function resolveSecretEnvRefs(
+  secretEnv: unknown,
+  ctx: RouteContext,
+  actor: string,
+  purpose: string,
+): Promise<{ env: Record<string, string>; values: string[] }> {
+  const injectedEnv: Record<string, string> = {};
+  const injectedValues: string[] = [];
+  if (secretEnv === undefined) return { env: injectedEnv, values: injectedValues };
+  if (typeof secretEnv !== 'object' || secretEnv === null || Array.isArray(secretEnv)) {
+    throw new SecretEnvError(400, 'BAD_SECRET_ENV', 'secretEnv must be an object mapping ENV_VAR -> secret name');
+  }
+  const entries = Object.entries(secretEnv as Record<string, unknown>);
+  for (const [varName, ref] of entries) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName) || typeof ref !== 'string' || !ref) {
+      throw new SecretEnvError(
+        400,
+        'BAD_SECRET_ENV',
+        `secretEnv entries must map a valid env var name to a secret name (bad entry: ${varName})`,
+      );
+    }
+  }
+  if (entries.length === 0) return { env: injectedEnv, values: injectedValues };
+  if (!ctx.secretBroker) {
+    throw new SecretEnvError(503, 'SECRET_BROKER_UNAVAILABLE', 'secret broker is not configured on this server');
+  }
+  for (const [varName, ref] of entries) {
+    try {
+      const value = await ctx.secretBroker.resolve(ref as string, { actor, purpose });
+      injectedEnv[varName] = value;
+      injectedValues.push(value);
+    } catch (e) {
+      if (e instanceof SecretNotFoundError) {
+        throw new SecretEnvError(403, e.code, e.message, { ref: e.ref, envVar: varName });
+      }
+      throw new SecretEnvError(500, 'SECRET_BACKEND_ERROR', 'secret resolution failed', {
+        error: (e as Error).name,
+      });
+    }
+  }
+  return { env: injectedEnv, values: injectedValues };
+}
+
 function truncate(output: string): { text: string; truncated: boolean } {
   if (output.length <= MAX_OUTPUT_CHARS) return { text: output, truncated: false };
   const head = Math.ceil(MAX_OUTPUT_CHARS * 0.7);
@@ -209,40 +326,25 @@ export async function handleExecRoutes(
     return true;
   }
 
-  // 1) deny patterns on the raw command line
-  for (const re of DENY_PATTERNS) {
-    if (re.test(command)) {
-      ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
-        reason: `matched deny pattern ${re.source}`,
-      });
-      ctx.json(res, 403, {
-        error: `command refused: blocked by the execution safety policy (${re.source})`,
-      });
-      return true;
-    }
-  }
-
-  // 2) binary whitelist on the first token
-  const tokens = tokenize(command);
-  if (tokens.length === 0) {
-    ctx.json(res, 400, { error: 'command is required' });
+  // 1)+2) the execution safety policy (deny patterns + whitelist),
+  // shared with the interactive terminal sessions (Batch 19).
+  let tokens: string[];
+  try {
+    tokens = checkCommandPolicy(command);
+  } catch (err) {
+    const denied = err as ExecPolicyDenied;
+    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
+      reason: denied.reason,
+    });
+    ctx.json(res, 403, { error: denied.message });
     return true;
   }
   const binary = tokens[0] as string;
-  if (!ALLOWED_BINARIES.has(binary)) {
-    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
-      reason: `binary '${binary}' not in whitelist`,
-    });
-    ctx.json(res, 403, {
-      error: `command refused: '${binary}' is not in the allowed command list (${[...ALLOWED_BINARIES].sort().join(', ')})`,
-    });
-    return true;
-  }
 
   // 3) cwd confinement
   let cwd: string;
   try {
-    cwd = resolveCwd(body['cwd'] as string | undefined);
+    cwd = resolveExecCwd(body['cwd'] as string | undefined);
   } catch (err) {
     ctx.json(res, 403, { error: (err as Error).message });
     return true;
@@ -251,12 +353,7 @@ export async function handleExecRoutes(
   // 3b) §4.1 — the control-plane data dir is off-limits: neither the cwd
   // nor any argument may resolve inside it (or even name it — catches
   // `node -e` DB reads, `cat data/factory.db`, absolute paths, etc.).
-  const hitsForbidden = (p: string): boolean => {
-    if (p.includes(CONTROL_DATA_DIR)) return true;
-    const r = resolve(cwd, p);
-    return r === CONTROL_DATA_DIR || r.startsWith(CONTROL_DATA_DIR + sep);
-  };
-  if (hitsForbidden(cwd) || tokens.slice(1).some(hitsForbidden)) {
+  if (commandHitsControlDir(cwd, tokens)) {
     ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
       reason: 'control-plane data directory is off-limits',
     });
@@ -274,61 +371,23 @@ export async function handleExecRoutes(
   // the captured output below) the returned stdout/stderr. A missing
   // ref refuses the whole command with the broker's uniform
   // not-found error; nothing runs half-injected.
-  const injectedEnv: Record<string, string> = {};
-  const injectedValues: string[] = [];
+  let injectedEnv: Record<string, string> = {};
+  let injectedValues: string[] = [];
   const secretEnv = body['secretEnv'];
-  if (secretEnv !== undefined) {
-    if (typeof secretEnv !== 'object' || secretEnv === null || Array.isArray(secretEnv)) {
-      ctx.json(res, 400, { error: 'secretEnv must be an object mapping ENV_VAR -> secret name' });
-      return true;
+  try {
+    const resolved = await resolveSecretEnvRefs(secretEnv, ctx, actor, 'exec env injection');
+    injectedEnv = resolved.env;
+    injectedValues = resolved.values;
+  } catch (err) {
+    const se = err as SecretEnvError;
+    if (se.status !== 400) {
+      ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
+        reason: se.code,
+        ...se.detail,
+      });
     }
-    const entries = Object.entries(secretEnv as Record<string, unknown>);
-    for (const [varName, ref] of entries) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName) || typeof ref !== 'string' || !ref) {
-        ctx.json(res, 400, {
-          error: `secretEnv entries must map a valid env var name to a secret name (bad entry: ${varName})`,
-        });
-        return true;
-      }
-    }
-    if (entries.length > 0) {
-      if (!ctx.secretBroker) {
-        ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
-          reason: 'SECRET_BROKER_UNAVAILABLE',
-        });
-        ctx.json(res, 503, {
-          error: 'secret broker is not configured on this server',
-          code: 'SECRET_BROKER_UNAVAILABLE',
-        });
-        return true;
-      }
-      for (const [varName, ref] of entries) {
-        try {
-          const value = await ctx.secretBroker.resolve(ref as string, {
-            actor,
-            purpose: 'exec env injection',
-          });
-          injectedEnv[varName] = value;
-          injectedValues.push(value);
-        } catch (e) {
-          if (e instanceof SecretNotFoundError) {
-            ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
-              reason: 'SECRET_NOT_FOUND',
-              ref: e.ref,
-              envVar: varName,
-            });
-            ctx.json(res, 403, { error: e.message, code: e.code });
-            return true;
-          }
-          ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
-            reason: 'SECRET_BACKEND_ERROR',
-            error: (e as Error).name,
-          });
-          ctx.json(res, 500, { error: 'secret resolution failed', code: 'SECRET_BACKEND_ERROR' });
-          return true;
-        }
-      }
-    }
+    ctx.json(res, se.status, { error: se.message, code: se.code });
+    return true;
   }
 
   // 3d) opt-in real PTY (Batch 18) — identical policy, argv, secret

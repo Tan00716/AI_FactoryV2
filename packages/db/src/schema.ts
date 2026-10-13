@@ -502,6 +502,29 @@ CREATE TABLE IF NOT EXISTS retention_tombstones (
 -- New table: CREATE TABLE IF NOT EXISTS covers old databases on open.
 -- §17.2 (G-09, Batch 18) — Operational pre-authorization ticket
 -- registry. A ticket is the recorded pre-authorization a POLICY
+-- Worktree allocation records — §22.1 (G-37, Batch 19). One writable
+-- workspace per task: at most one ACTIVE allocation per (repo, task),
+-- enforced by the partial unique index below (RELEASED rows keep
+-- history). worktree_path is globally unique so a leaked path can
+-- never be silently reassigned. kind is 'git-worktree' (real
+-- git worktree add) or 'dir-copy' (non-Git source, §22.1's
+-- snapshot/working-copy clause — an honest, labeled downgrade).
+CREATE TABLE IF NOT EXISTS worktrees (
+  id TEXT PRIMARY KEY,
+  repo_path TEXT NOT NULL,
+  branch TEXT,
+  worktree_path TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL DEFAULT 'git-worktree',
+  task_id TEXT NOT NULL,
+  project_id TEXT,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  created_at TEXT NOT NULL,
+  released_at TEXT,
+  release_note TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS worktrees_active_task
+  ON worktrees(repo_path, task_id) WHERE status = 'ACTIVE';
+
 -- dispatch consumes: it names the triggering policy + Rule ID (the
 -- spec's requirement), the scope it covers (project / task priorities
 -- / actions), its issuer and validity window, and — once consumed —
@@ -522,4 +545,27 @@ CREATE TABLE IF NOT EXISTS authorization_tickets (
   revoke_reason TEXT,
   consumptions TEXT NOT NULL DEFAULT '[]'
 );
+
+-- Deployments (Batch 19): durable deployment records (§41/§77).
+-- The spec_json column is the RECONSTRUCTABLE spec (environment,
+-- rollback method, §41 approval descriptor + policy snapshot, §77
+-- snapshot id/label/data, task binding, actor, secret REFERENCE
+-- names only — the DeploymentSpec type has no values field, so no
+-- secret value can ever be stored here by construction).
+CREATE TABLE IF NOT EXISTS deployments (
+  id            TEXT PRIMARY KEY,
+  pipeline_id   TEXT NOT NULL,
+  task_id       TEXT,
+  project_id    TEXT,
+  environment   TEXT NOT NULL,
+  status        TEXT NOT NULL,
+  spec_json     TEXT NOT NULL,
+  approval_id   TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  ended_at      TEXT,
+  error         TEXT,
+  rehydrated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_deployments_pipeline ON deployments (pipeline_id);
 `;

@@ -19,7 +19,7 @@
 import { randomUUID } from 'node:crypto';
 import { nowIso } from '@ai-factory/core';
 import type { ActionEvaluation, ApprovalLevel } from '@ai-factory/approvals';
-import { approvalActionFor, evaluateApprovalPolicy } from './environments';
+import { approvalActionFor, evaluateApprovalPolicy, getEnvironment } from './environments';
 import type {
   Deployment,
   Environment,
@@ -62,6 +62,20 @@ export class DeploymentNotPendingError extends Error {
   }
 }
 
+/**
+ * Thrown when a persisted deployment cannot be rebuilt after a
+ * restart: its spec is corrupt, its rollback capability is gone, or
+ * it was never parked. The server maps this to 410
+ * DEPLOYMENT_UNRECOVERABLE and audits it — the deployment is not
+ * silently dropped, it is declared unrecoverable with the reason.
+ */
+export class DeploymentUnrecoverableError extends Error {
+  constructor(id: string, reason: string) {
+    super(`Deployment ${id} cannot be rebuilt after restart: ${reason}`);
+    this.name = 'DeploymentUnrecoverableError';
+  }
+}
+
 /** In-memory snapshot store (spec §77). */
 export class SnapshotStore {
   private readonly map = new Map<string, Snapshot>();
@@ -88,6 +102,18 @@ export class SnapshotStore {
 
   list(): Snapshot[] {
     return [...this.map.values()];
+  }
+
+  /**
+   * Re-install a snapshot that was persisted elsewhere (e.g. a §77
+   * pre-deploy snapshot whose row survived a restart). Idempotent:
+   * an existing id is kept untouched.
+   */
+  restore(snap: Snapshot): Snapshot {
+    const existing = this.map.get(snap.id);
+    if (existing) return existing;
+    this.map.set(snap.id, { ...snap });
+    return snap;
   }
 }
 
@@ -136,6 +162,16 @@ export interface DeployFnResult {
 
 export interface DeployOptions {
   pipelineId: string;
+  /** Task binding, captured into the job so the persisted spec can re-derive it. */
+  taskId?: string;
+  /** Initiating actor, captured into the persisted spec. */
+  actor?: string;
+  /**
+   * Secret REFERENCE names the deploy execution may resolve at run
+   * time — names only, never values (rebuilder resolves them through
+   * the Secret Broker at resume time).
+   */
+  secretRefs?: string[];
   environment: Environment;
   store: SnapshotStore;
   /**
@@ -169,6 +205,41 @@ export interface StoredJob {
   smokeFn: NonNullable<DeployOptions['smokeFn']>;
   evidence: EvidenceFn;
   audit: AuditFn;
+  /**
+   * The §41 approval descriptor handed back when this job parked (kept
+   * for the reconstructable spec — it names the action/level/reason the
+   * parked deployment is waiting on).
+   */
+  pendingApproval: PendingApprovalDescriptor | null;
+  /** true when rebuilt from a persisted spec after a process restart. */
+  rehydrated: boolean;
+  /** Budget/policy context captured at park time (may be null). */
+  policySnapshot: unknown;
+  /** Task the deployment is bound to. */
+  taskId: string | null;
+  /** Actor that initiated the deploy. */
+  actor: string | null;
+  /** Secret REFERENCE names only — never values. */
+  secretRefs: string[];
+}
+
+/**
+ * The reconstructable deployment spec: everything needed to REBUILD a
+ * parked job after a process restart, minus the in-memory closures.
+ * Serializable (JSON-safe) by construction; secretRefs holds reference
+ * NAMES only — there is no field for secret values.
+ */
+export interface DeploymentRehydrationSpec {
+  deployment: Deployment;
+  environmentName: EnvironmentName;
+  rollbackMethod: string;
+  snapshot: Snapshot;
+  pendingApproval: PendingApprovalDescriptor | null;
+  policySnapshot: unknown;
+  preDeployState: unknown;
+  taskId: string | null;
+  actor: string | null;
+  secretRefs: string[];
 }
 
 /**
@@ -264,6 +335,19 @@ export class DeploymentService {
       label: snapshot.label,
     });
 
+    const descriptor: PendingApprovalDescriptor | null =
+      evaluation.requiresApproval && !opts.approvalId
+        ? {
+            deploymentId: deployment.id,
+            environment: env.name,
+            action: approvalActionFor(env.name),
+            level: evaluation.level,
+            requiresApproval: evaluation.requiresApproval,
+            reason: evaluation.reason,
+            evaluation,
+          }
+        : null;
+
     const job: StoredJob = {
       deployment,
       environment: env,
@@ -277,10 +361,16 @@ export class DeploymentService {
         (async () => ({ logs: [`[${env.name}] simulated smoke test OK`] })),
       evidence: opts.evidence ?? this.evidence,
       audit: opts.audit ?? this.audit,
+      pendingApproval: descriptor,
+      rehydrated: false,
+      policySnapshot: evaluation,
+      taskId: opts.taskId ?? null,
+      actor: opts.actor ?? null,
+      secretRefs: opts.secretRefs ?? [],
     };
     this.jobs.set(deployment.id, job);
 
-    if (evaluation.requiresApproval && !opts.approvalId) {
+    if (descriptor) {
       deployment.status = 'AWAITING_APPROVAL';
       this.emit('APPROVAL_REQUIRED', deployment, {
         action: approvalActionFor(env.name),
@@ -293,21 +383,107 @@ export class DeploymentService {
         level: evaluation.level,
         reason: evaluation.reason,
       });
-      return {
-        deployment,
-        pendingApproval: {
-          deploymentId: deployment.id,
-          environment: env.name,
-          action: approvalActionFor(env.name),
-          level: evaluation.level,
-          requiresApproval: evaluation.requiresApproval,
-          reason: evaluation.reason,
-          evaluation,
-        },
-      };
+      return { deployment, pendingApproval: descriptor };
     }
 
     return this.execute(job);
+  }
+
+  /**
+   * The reconstructable spec for a parked (or any) job — the
+   * serializable half the server persists so a restarted process can
+   * rebuild the job. The closures (deployFn/smokeFn/evidence/audit)
+   * are NOT captured; the rebuilder re-injects host functions.
+   */
+  specOf(deploymentId: string): DeploymentRehydrationSpec {
+    const job = this.jobs.get(deploymentId);
+    if (!job) throw new DeploymentNotFoundError(deploymentId);
+    return {
+      deployment: { ...job.deployment },
+      environmentName: job.environment.name,
+      rollbackMethod: job.environment.rollbackMethod,
+      snapshot: { ...job.snapshot },
+      pendingApproval: job.pendingApproval
+        ? { ...job.pendingApproval, evaluation: job.pendingApproval.evaluation }
+        : null,
+      policySnapshot: job.policySnapshot,
+      preDeployState: null,
+      taskId: job.taskId,
+      actor: job.actor,
+      secretRefs: [...job.secretRefs],
+    };
+  }
+
+  /**
+   * Rebuild a parked job from a persisted spec after a process
+   * restart. The returned job is marked rehydrated and re-validates
+   * the §77 rollback capability; the caller (server) re-validates the
+   * archive guard against CURRENT state before resuming. Host
+   * functions are injected, never reconstructed — a job whose spec
+   * fails validation throws DeploymentUnrecoverableError instead of
+   * running with invented state.
+   */
+  rehydrate(
+    spec: DeploymentRehydrationSpec,
+    opts: {
+      evidence?: EvidenceFn;
+      audit?: AuditFn;
+      deployFn?: NonNullable<DeployOptions['deployFn']>;
+      smokeFn?: NonNullable<DeployOptions['smokeFn']>;
+    } = {},
+  ): StoredJob {
+    const id = spec?.deployment?.id ?? '<unknown>';
+    if (!spec || typeof spec !== 'object' || !spec.deployment) {
+      throw new DeploymentUnrecoverableError(id, 'persisted spec is missing or corrupt');
+    }
+    if (spec.deployment.status !== 'AWAITING_APPROVAL') {
+      throw new DeploymentUnrecoverableError(
+        id,
+        `persisted status is ${spec.deployment.status}, not AWAITING_APPROVAL — only parked jobs are rehydratable`,
+      );
+    }
+    if (!spec.rollbackMethod || String(spec.rollbackMethod).trim() === '') {
+      throw new DeploymentUnrecoverableError(
+        id,
+        'rollback capability is gone — spec §77 forbids the deploy',
+      );
+    }
+    if (!spec.snapshot || !spec.snapshot.id) {
+      throw new DeploymentUnrecoverableError(id, 'the §77 pre-deploy snapshot did not survive');
+    }
+    // Clone the shared static environment — getEnvironment returns
+    // the singleton from ENVIRONMENTS and must never be mutated.
+    const environment: Environment = {
+      ...getEnvironment(spec.environmentName),
+      rollbackMethod: spec.rollbackMethod,
+    };
+    const job: StoredJob = {
+      deployment: { ...spec.deployment },
+      environment,
+      snapshot: { ...spec.snapshot },
+      store: new SnapshotStore(),
+      deployFn:
+        opts.deployFn ??
+        (async (env) => ({ logs: [`[${env.name}] simulated deploy OK (rehydrated)`] })),
+      smokeFn:
+        opts.smokeFn ??
+        (async (env) => ({ logs: [`[${env.name}] simulated smoke test OK (rehydrated)`] })),
+      evidence: opts.evidence ?? this.evidence,
+      audit: opts.audit ?? this.audit,
+      pendingApproval: spec.pendingApproval,
+      rehydrated: true,
+      policySnapshot: spec.policySnapshot,
+      taskId: spec.taskId,
+      actor: spec.actor,
+      secretRefs: Array.isArray(spec.secretRefs) ? [...spec.secretRefs] : [],
+    };
+    job.store.restore(job.snapshot);
+    this.jobs.set(job.deployment.id, job);
+    this.emit('DEPLOYMENT_REHYDRATED', job.deployment, {
+      environment: job.environment.name,
+      rehydrated: true,
+    });
+    return job;
   }
 
   /**
@@ -325,6 +501,7 @@ export class DeploymentService {
     job.deployment.approvalId = input.approvalId;
     this.emit('DEPLOY_RESUMED', job.deployment, {
       approvalId: input.approvalId,
+      ...(job.rehydrated ? { rehydrated: true } : {}),
     });
     return this.execute(job);
   }

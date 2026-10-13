@@ -38,6 +38,8 @@ export type GitAction =
   | 'rebase'
   | 'tag'
   | 'stash'
+  | 'worktree' // §22.1 (Batch 19): git worktree add / remove — a working
+  // tree (and usually its task branch) created or deleted for one task.
   | 'remote'; // remote management (add / remove / set-url)
 
 /** Every action category the broker can classify. */
@@ -51,6 +53,7 @@ export const GIT_ACTIONS: readonly GitAction[] = [
   'rebase',
   'tag',
   'stash',
+  'worktree',
   'remote',
 ];
 
@@ -111,7 +114,13 @@ export interface GitBrokerPolicy {
   ) => string | null | Promise<string | null>;
 }
 
-const DEFAULT_TASK_REQUIRED: readonly GitAction[] = ['push', 'merge', 'remote'];
+const DEFAULT_TASK_REQUIRED: readonly GitAction[] = [
+  'push',
+  'merge',
+  'remote',
+  'worktree', // worktrees are always task-owned (§22.1); a taskless
+  // worktree creation is refused by the package default.
+];
 
 /** The package default: every category allowed, task binding required
  *  for push/merge/remote. Hosts tighten `allowedActions` to taste. */

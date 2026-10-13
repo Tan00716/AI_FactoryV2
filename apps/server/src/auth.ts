@@ -388,6 +388,13 @@ export function requiredRoleFor(method: string, path: string): ApiRole | null {
   if (path === '/api/authorization-tickets' || path.startsWith('/api/authorization-tickets/')) {
     return method === 'GET' ? 'viewer' : 'admin';
   }
+  // MCP stdio launch with secret injection (Batch 19, §46.2):
+  // spawning a child process with credential values is
+  // credential-adjacent — admin, like the secret mutations above.
+  // Reads of the launch table and redacted logs are viewer.
+  if (path === '/api/mcp/launch' && method === 'POST') return 'admin';
+  if (path.startsWith('/api/mcp/launches/') && path.endsWith('/stop') && method === 'POST') return 'admin';
+  if ((path === '/api/mcp/launches' || path.startsWith('/api/mcp/launches/')) && method === 'GET') return 'viewer';
   return method === 'GET' ? 'viewer' : 'operator';
 }
 
