@@ -23,10 +23,21 @@
  * RBAC: viewer (see requiredRoleFor in src/auth.ts). RBAC is enforced
  * by the coordinator's pre-dispatch gate; this module only implements
  * the read surface.
+ *
+ * Batch 39 — attestation file status: attestationRef is the raw path
+ * the build runner wrote (null when no attestation exists; dangling
+ * when retention swept the file — builds rows are insert-only and
+ * are never rewritten). When attestationRef is non-null this surface
+ * additionally reports `attestationFile: 'present' | 'missing'` so a
+ * reader never has to guess whether the file survived: 'missing'
+ * means the file is gone (e.g. retained away), never a fabrication
+ * of presence. When attestationRef is null the field is absent —
+ * absence stays absent.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { existsSync, statSync } from 'node:fs';
 import type { RouteContext } from './context';
-import type { BuildRecordStatus } from '@ai-factory/db';
+import type { BuildRecordStatus, StoredBuildRecord } from '@ai-factory/db';
 
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
@@ -40,12 +51,31 @@ function isValidStatus(s: string): s is BuildRecordStatus {
   return (VALID_STATUSES as readonly string[]).includes(s);
 }
 
+/**
+ * Batch 39 — serialize a build record for the read surface.
+ * attestationRef keeps its exact stored semantics (raw path or
+ * null); when it is non-null we add the honest file-status signal
+ * `attestationFile: 'present' | 'missing'`.
+ */
+function serializeBuild(record: StoredBuildRecord): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...record };
+  if (record.attestationRef !== null) {
+    let present = false;
+    try {
+      present = existsSync(record.attestationRef) && statSync(record.attestationRef).isFile();
+    } catch {
+      present = false;
+    }
+    out['attestationFile'] = present ? 'present' : 'missing';
+  }
+  return out;
+}
+
 function parsePositiveInt(
   raw: string | null,
   name: string,
   max: number | null,
-): { ok: true; value: number } | { ok: false; error: string } {
-  if (raw === null) return { ok: true, value: name === 'limit' ? DEFAULT_LIMIT : 0 };
+): { ok: true; value: number } | { ok: false; error: string } {  if (raw === null) return { ok: true, value: name === 'limit' ? DEFAULT_LIMIT : 0 };
   if (!/^\d+$/.test(raw)) {
     return { ok: false, error: `${name} must be a non-negative integer, got ${JSON.stringify(raw)}` };
   }
@@ -109,7 +139,9 @@ export async function handleBuildsRoutes(
     if (revisionParam !== null) records = records.filter((r) => r.revision === revisionParam);
 
     const total = records.length;
-    const items = records.slice(offsetParsed.value, offsetParsed.value + limitParsed.value);
+    const items = records
+      .slice(offsetParsed.value, offsetParsed.value + limitParsed.value)
+      .map(serializeBuild);
     json(res, 200, {
       items,
       total,
@@ -128,6 +160,6 @@ export async function handleBuildsRoutes(
     json(res, 404, { error: 'build record not found' });
     return true;
   }
-  json(res, 200, { build: record });
+  json(res, 200, { build: serializeBuild(record) });
   return true;
 }

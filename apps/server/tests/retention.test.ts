@@ -213,6 +213,7 @@ describe('retention + legal hold (§47)', () => {
         runtime_runs: 0,
         backups: 0,
         sboms: 0, // Batch 26: new retention category, still keep-forever here
+        attestations: 0, // Batch 39: new retention category, still keep-forever here
       });
       assert.equal(count(world, 'runtime_runs'), 1);
       assert.equal(count(world, 'step_intents'), 1);

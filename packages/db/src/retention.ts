@@ -64,6 +64,10 @@ export const RETENTION_CATEGORIES = [
   'checkpoints',
   'backups',
   'sboms',
+  // Batch 39 — attestation-<buildId>.json files live in the same
+  // directory the build runner writes SBOMs to; they get their own
+  // category so their policy is independent of the SBOM one.
+  'attestations',
 ] as const;
 export type RetentionCategory = (typeof RETENTION_CATEGORIES)[number];
 
@@ -81,15 +85,17 @@ export interface RetentionPolicy {
   retentionDays: number | null;
   /**
    * Batch 20 — keep newest N regardless of age; null = no count
-   * limit. Only the 'backups' and 'sboms' categories evaluate this
-   * column (the server route rejects it for the DB categories).
+   * limit. Only the 'backups', 'sboms', and 'attestations' categories
+   * evaluate this column (the server route rejects it for the DB
+   * categories).
    */
   keepCount: number | null;
   /**
-   * Batch 26 — sboms only: when true, enforcement also deletes
-   * sbom-*.json files that no builds record references (orphans).
-   * Default false: an unassociated file might belong to an in-flight
-   * build, so retention never sweeps it unless the operator opts in.
+   * Batch 26 — sboms only (Batch 39: sboms and attestations): when
+   * true, enforcement also deletes sbom-*.json / attestation-*.json
+   * files that no builds record references (orphans). Default false:
+   * an unassociated file might belong to an in-flight build, so
+   * retention never sweeps it unless the operator opts in.
    */
   deleteOrphans: boolean;
   updatedAt: string | null;
@@ -190,11 +196,12 @@ export class SqliteRetentionStore {
   /**
    * retentionDays null or 0 both mean keep-forever; stored verbatim.
    * keepCount (Batch 20) is the "keep newest N" axis for the
-   * filesystem categories ('backups', 'sboms'); the server route
-   * rejects it for the DB categories, so this store simply persists
-   * it. deleteOrphans (Batch 26) is the sboms-only orphan sweep
-   * opt-in; persisted verbatim for every category but only the
-   * sboms evaluation reads it.
+   * filesystem categories ('backups', 'sboms', 'attestations'); the
+   * server route rejects it for the DB categories, so this store
+   * simply persists it. deleteOrphans (Batch 26; Batch 39 extends it
+   * to attestations) is the orphan sweep opt-in; persisted verbatim
+   * for every category but only the sboms/attestations evaluations
+   * read it.
    */
   setPolicy(
     category: RetentionCategory,

@@ -66,6 +66,7 @@ import {
   ENVIRONMENTS,
   PipelineRunner,
   SnapshotStore,
+  assessRisk,
   getEnvironment,
   rollback,
   type Deployment,
@@ -75,16 +76,21 @@ import {
   type Pipeline,
   type PipelineStage,
   type PipelineStatus,
+  type RiskAssessment,
+  type RiskInput,
+  type RiskLevel,
   type StageName,
   type StageStatus,
 } from '@ai-factory/cicd';
 import type {
   DeploymentSpec,
+  NeedsHumanDbRecord,
   PersistedDeployment,
   PersistedPipeline,
   PersistedPipelineStatus,
   PersistedStageStatus,
 } from '@ai-factory/db';
+import { needsHuman } from '@ai-factory/autonomy';
 import type { ApprovalLevel } from '@ai-factory/approvals';
 import { nowIso } from '@ai-factory/core';
 import { ApprovalManager } from '@ai-factory/approvals';
@@ -578,6 +584,197 @@ function approvalManager(ctx: RouteContext): ApprovalManager {
   });
 }
 
+/**
+ * §81 'high-risk-deployment' emission (Batch 39).
+ *
+ * SPEC v2 §41.1: assessRisk computes an un-lowerable risk floor from hard
+ * signals; unknown risk is raised, never lowered. The deploy route used to
+ * mint the parked-approval ticket with a hardcoded risk_level 'HIGH' — a
+ * label with no evaluation behind it. Now the ticket carries the ASSESSED
+ * level, and a HIGH/CRITICAL assessment additionally raises a §81 upgrade
+ * record (insert-only, recipient null, requiredDeciderLevel 'manager').
+ *
+ * RiskInput derivation — honest defaults, nothing invented:
+ *  - The request may carry an optional `risk` object with any subset of
+ *    the RiskInput signals; types are validated strictly (400 on garbage).
+ *  - Anything not provided defaults per assessRisk's own strictness
+ *    contract: booleans false, changeType '', blastRadius 'unknown'
+ *    (neutral in assessRisk's rule set — strictness comes from the
+ *    readiness signals, e.g. recoveryReady=false → HIGH "no verified
+ *    recovery path (unknown → strict)"). A deploy with no risk signals
+ *    therefore assesses HIGH for documented, computed reasons — the same
+ *    level as the old hardcode, but earned rather than asserted.
+ *  - The DEPLOYMENT_RISK_ASSESSED audit records exactly which signals
+ *    were caller-provided vs defaulted.
+ */
+const DEPLOY_RISK_LEVELS: ReadonlyArray<RiskLevel> = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+
+const DEPLOY_RISK_BOOL_KEYS = [
+  'securityDataImpact',
+  'hasMigration',
+  'externalSideEffects',
+  'recoveryReady',
+  'observabilityReady',
+  'testIndependence',
+  'environmentDrift',
+  'businessCritical',
+] as const;
+
+export function parseDeployRiskInput(
+  raw: unknown,
+): { input: RiskInput; provided: string[] } | { error: string } {
+  const input: RiskInput = {
+    changeType: '',
+    blastRadius: 'unknown',
+    securityDataImpact: false,
+    hasMigration: false,
+    externalSideEffects: false,
+    recoveryReady: false,
+    observabilityReady: false,
+    testIndependence: false,
+    environmentDrift: false,
+    businessCritical: false,
+  };
+  const provided: string[] = [];
+  if (raw === undefined || raw === null) return { input, provided };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { error: 'risk must be an object carrying RiskInput signals' };
+  }
+  const o = raw as Record<string, unknown>;
+  for (const k of ['changeType', 'blastRadius'] as const) {
+    const v = o[k];
+    if (v === undefined) continue;
+    if (typeof v !== 'string') return { error: `risk.${k} must be a string` };
+    input[k] = v;
+    provided.push(k);
+  }
+  for (const k of DEPLOY_RISK_BOOL_KEYS) {
+    const v = o[k];
+    if (v === undefined) continue;
+    if (typeof v !== 'boolean') return { error: `risk.${k} must be a boolean` };
+    input[k] = v;
+    provided.push(k);
+  }
+  const lvl = o['llmProposedLevel'];
+  if (lvl !== undefined) {
+    if (typeof lvl !== 'string' || !DEPLOY_RISK_LEVELS.includes(lvl as RiskLevel)) {
+      return { error: 'risk.llmProposedLevel must be LOW|MEDIUM|HIGH|CRITICAL' };
+    }
+    input.llmProposedLevel = lvl as RiskLevel;
+    provided.push('llmProposedLevel');
+  }
+  const rat = o['llmRationale'];
+  if (rat !== undefined) {
+    if (typeof rat !== 'string') return { error: 'risk.llmRationale must be a string' };
+    input.llmRationale = rat;
+    provided.push('llmRationale');
+  }
+  return { input, provided };
+}
+
+/** §81 emission predicate: only a real HIGH/CRITICAL assessment emits. */
+export function isHighRiskDeployment(level: RiskLevel): boolean {
+  return level === 'HIGH' || level === 'CRITICAL';
+}
+
+/**
+ * Build the §81 'high-risk-deployment' upgrade record for a parked
+ * deployment whose real risk assessment came back HIGH/CRITICAL.
+ *
+ * recipient is null: the server has coarse-grained token RBAC with no
+ * named human accounts, so we record the required level instead of
+ * inventing a person. requiredDeciderLevel is 'manager' — the §8 role
+ * template's human-approver level above the daily-work 'operator'
+ * (§41.1: HIGH needs human + specialist verification; the deployment
+ * approval ticket is the in-band adjudication path).
+ */
+export function buildDeployUpgradeRecord(args: {
+  deploymentId: string;
+  pipelineId: string;
+  environment: string;
+  taskId: string;
+  actor: string;
+  assessment: RiskAssessment;
+}): NeedsHumanDbRecord {
+  const rec = needsHuman('high-risk-deployment', {
+    detail:
+      `deployment ${args.deploymentId} → ${args.environment} assessed ` +
+      `${args.assessment.level} (floor ${args.assessment.floor}, authorization ` +
+      `${args.assessment.authorization.kind}): ${args.assessment.reasons.join('; ')}. ` +
+      `Requested by ${args.actor}; parked at AWAITING_APPROVAL.`,
+    context: {
+      deploymentId: args.deploymentId,
+      pipelineId: args.pipelineId,
+      environment: args.environment,
+      taskId: args.taskId,
+      level: args.assessment.level,
+      floor: args.assessment.floor,
+      authorization: args.assessment.authorization.kind,
+    },
+    impactScope:
+      `deployment ${args.deploymentId} to ${args.environment} is parked ` +
+      `(AWAITING_APPROVAL); pipeline ${args.pipelineId} makes no further progress until adjudicated`,
+    stoppedActions: [
+      `deployment ${args.deploymentId} → ${args.environment} — parked pending high-risk adjudication`,
+    ],
+    suggestion:
+      'Review the assessed risk reasons, then approve or reject the deployment ' +
+      'ticket via the Approvals panel. Mark this upgrade resolved via ' +
+      'POST /api/needs-human/:id/resolve.',
+  });
+  return {
+    id: rec.id,
+    reason: rec.reason,
+    reasonZh: rec.reasonZh,
+    severity: rec.severity,
+    source: `cicd-deploy:${args.deploymentId}`,
+    recipient: null,
+    requiredDeciderLevel: 'manager',
+    detailJson: JSON.stringify({
+      deploymentId: args.deploymentId,
+      pipelineId: args.pipelineId,
+      environment: args.environment,
+      taskId: args.taskId,
+      actor: args.actor,
+      level: args.assessment.level,
+      floor: args.assessment.floor,
+      reasons: args.assessment.reasons,
+      authorization: args.assessment.authorization,
+      llmRationaleNoted: args.assessment.llmRationaleNoted ?? null,
+      suggestion: rec.suggestion,
+    }),
+    contextJson: JSON.stringify(rec.context ?? {}),
+    raisedAt: Date.now(),
+    status: 'open',
+    resolvedAt: null,
+    resolvedBy: null,
+    resolution: null,
+  };
+}
+
+/**
+ * Write-through for deploy-risk §81 upgrades (Batch 39): insert-only
+ * into fdb.needsHuman, audited NEEDS_HUMAN_RAISED. A failed
+ * write-through is audited NEEDS_HUMAN_PERSIST_FAILED — it never rolls
+ * back the already-parked deployment or its approval ticket. Same
+ * contract as emitRunNeedsHuman (routes/runtime.ts).
+ */
+export function emitDeployNeedsHuman(ctx: RouteContext, record: NeedsHumanDbRecord): void {
+  try {
+    ctx.fdb.needsHuman.submit(record);
+    ctx.audit.record('system', 'NEEDS_HUMAN_RAISED', 'needs-human', record.id, {
+      reason: record.reason,
+      source: record.source,
+      requiredDeciderLevel: record.requiredDeciderLevel,
+    });
+  } catch (err) {
+    ctx.audit.record('system', 'NEEDS_HUMAN_PERSIST_FAILED', 'needs-human', record.id, {
+      error: err instanceof Error ? err.message : String(err),
+      source: record.source,
+    });
+  }
+}
+
 function serializePipeline(r: PipelineRecord) {
   return { ...r.pipeline, taskId: r.taskId, deployments: r.deployments, rehydrated: r.rehydrated };
 }
@@ -832,15 +1029,45 @@ export async function handleCicdRoutes(
       }
       // Parked on approval → mint a real approval ticket so the Approvals
       // panel becomes the human gate (spec §41 Mode A).
+      // Batch 39 — §41.1 real risk assessment replaces the hardcoded
+      // risk_level 'HIGH': the ticket carries the ASSESSED level, and a
+      // HIGH/CRITICAL assessment additionally raises a §81 upgrade.
       let approval: unknown = null;
       if (outcome.pendingApproval) {
+        const parsed = parseDeployRiskInput(body['risk']);
+        if ('error' in parsed) {
+          return ctx.json(res, 400, { error: parsed.error }), true;
+        }
+        const assessment = assessRisk(parsed.input);
+        ctx.audit.record(actor, 'DEPLOYMENT_RISK_ASSESSED', 'deployment', outcome.deployment.id, {
+          level: assessment.level,
+          floor: assessment.floor,
+          reasons: assessment.reasons,
+          authorization: assessment.authorization.kind,
+          providedSignals: parsed.provided,
+          environment: env.name,
+          taskId,
+        });
         const manager = approvalManager(ctx);
         approval = manager.request({
           action: outcome.pendingApproval.action,
           requester: actor,
           task_id: taskId,
-          risk_level: 'HIGH',
+          risk_level: assessment.level,
         });
+        if (isHighRiskDeployment(assessment.level)) {
+          emitDeployNeedsHuman(
+            ctx,
+            buildDeployUpgradeRecord({
+              deploymentId: outcome.deployment.id,
+              pipelineId: record.pipeline.id,
+              environment: env.name,
+              taskId,
+              actor,
+              assessment,
+            }),
+          );
+        }
       }
       return ctx.json(res, 200, {
         deployment: outcome.deployment,
