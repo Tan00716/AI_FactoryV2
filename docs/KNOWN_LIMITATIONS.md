@@ -83,12 +83,12 @@
 > `gap-audit/SPEC_COVERAGE_BATCH31.md`。零代码改动；全部符号经 grep + 源码对读确认。
 
 - **§8.1/INV-31 多人指令冲突仲裁缺失**：全库无 `AUTHORITY_CONFLICT` 符号。两个同等有效且不兼容的指令应"暂停相关动作并升级、不按最后发言获胜"——该机制未实现；`/api/disputes` 只处理 verdict 分歧（§15/§37），不覆盖指令冲突。纯代码可关闭候选。
-- **§5 相对权限上限缺失**：`packages/employee-factory/src/governance.ts` 的 `enforcePolicy` 只有绝对上限检查（children/depth/allow-lists/budget），无"请求者相对上限"检查——AI 仍可能申请其自身上限内但超出委托者可授予范围的权限（§8.2 的委托不超集检查只在 scope.ts 的任务范围维度）。纯代码可关闭候选。
-- **§6.1 项目记录 13 字段缺 11 个**：projects 表只有 id/name/description/path/created_at/updated_at + data_classification；organization_id、profile_version、repository_refs、workspace_refs、instruction_refs、policy_version、default_manager_id、workflow_version、environment_refs、lifecycle_state 在全库无处定义。
+- **§5 相对权限上限已关闭（Batch 32）**：`enforcePolicy` 在 §19 绝对上限检查之外新增 §8.2 相对上限检查（"委托不能超过委托者可授予集合"）。`CreationRequest.granterAgentId` 标识委托者（`createEmployee` 把 `requestedBy` 映射为 granter）；grant 的 tools/permissions 必须是 granter 自身 tools/permissions 的子集，越级时抛 `grant-exceeds-granter` 并在抛之前经注入的审计 sink 写 `RELATIVE_CEILING_DENIED`（与 approvals 的 EXCEPTION_GRANT_DENIED 同模式），服务端 `/api/workforce/employees` 把该事件写入哈希链审计。平级/降级通过；绝对检查顺序与口径不变（绝对先行，有效权限为交集）。边界：① granter 不在注册表时（如 human）无可比集合，相对检查跳过、绝不编造上限（绝对检查仍全量生效）；② requestedBy 目前来自请求 body 的声明值——相对检查只在声明值命中注册表 agent 时生效，调用者身份未做独立服务端绑定（workforce 路由既有信任模型，本批未改）；③ §8.2 的"任务范围"维度仍只在 scope.ts 的任务范围维度检查，未并入本检查。
+- **§6.1 项目记录 13 字段缺 11 个**：projects 表只有 id/name/description/path/status/archived_at/created_at/updated_at（`data_classification` 是 memory_entries 的列）；organization_id、profile_version、repository_refs、workspace_refs、instruction_refs、policy_version、default_manager_id、workflow_version、environment_refs、lifecycle_state 在全库无处定义。
 - **§6.1 Clone Repository 入口缺失**：四个项目入口中只有 Existing Folder / Template / New+discover 落地，无 clone 入口函数与路由。
 - **§6.1 模板不可扩展**：`packages/projects/src/templates.ts` 为硬编码 `Record<ProjectTemplateName, ProjectTemplate>`，无 registerTemplate 插件机制——与规格明文"模板不是全部内置，必须可扩展"矛盾。
 - **§6.4 项目知识 9 类无结构**：全库无 ProjectKnowledge 类型；Product Requirements、Architecture、Tech Stack、Coding/Test/Security Standards、Deployment Rules、Known Bugs/Constraints、Decisions、Lessons 九类在 knowledge/projects 包均无对应结构；来源文件版本/Hash 引用无实现。
-- **§48.2 实体集合未落库清单**：management_reports、delegations、escalations、proposals、organization_relationships、policy_versions、gate_definitions/gate_evaluations 只有进程内存或引擎内实现，无 DB 表——重启丢失。这是诚实的"未做"记录，不是要求全部落库；落库优先级应按 §51"不能丢 Task/Gate/Approval/Lease/Budget"先排 gates/delegations。纯代码可关闭候选。
+- **§48.2 实体集合未落库清单**：management_reports、escalations、proposals、organization_relationships、policy_versions 只有进程内存或引擎内实现，无 DB 表——重启丢失。这是诚实的"未做"记录，不是要求全部落库。**delegations 与 gate_definitions/gate_evaluations 已于 Batch 32 落库**（`delegations` / `gate_definitions` / `gate_evaluations` 表；delegations 每次 mutation 写透，重启时 ACTIVE 行降为 INTERRUPTED 并审计，DRAFT/COMPLETED/CANCELLED 原样；gate 评估是同步终局的无在途降级；`/api/delegations` 与 `/api/gates` 读写面已接审计路径）。纯代码可关闭候选。
 
 ## 数据与团队
 

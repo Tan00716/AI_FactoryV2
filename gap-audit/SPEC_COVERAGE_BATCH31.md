@@ -14,7 +14,7 @@
 | §3 产品范围与自主权 | **部分** | 顶层票 + dispatch=true + 授权动作 UI（DispatchPanel）+ WAITING_HUMAN_DISPATCH（Batch 17）均已真实现；**远程项目（真实远程项目支持）未做**（`packages/projects/src` 无 remote 代码；远程 Host 本体未做，已记在"数据与团队"） | `apps/server/src/index.ts:1042`（dispatch 路由） |
 | §4 架构 | **部分** | A 方案落地：控制面/执行面分离、单机单写 SQLite、Outbox、事件投影；B 远程 Host **未做**、C 不作为首发（规格本意）；多人经共享 SQLite 文件是规格明确禁止的快捷方式，未做（PostgreSQL 未做，已记） | `docs/KNOWN_LIMITATIONS.md#数据与团队` |
 | §5 模块边界与责任 | **部分** | §5"通知内容不泄露秘密"已落地（`redactSecrets` 为通知引擎 choke point，`packages/notifications/src/engine.ts:14-25` + engine.test.ts 钉住——group-a 的"部分"已关闭）；"AI 不得提高自身/下属权限上限"仍只有绝对上限检查，**无相对上限检查**（`packages/employee-factory/src/governance.ts`）——**未做**，已补入 KNOWN_LIMITATIONS（本批） | `packages/notifications/tests/engine.test.ts:82` |
-| §6 Project | **部分** | 自动发现（diagnostics、detected-vs-verified、容器/VM/README/docs/.ai 检测——group-a 缺口已关闭）、创建（非空目录守卫 §6.3，`create.ts:144`，group-a 的"缺失"已关闭）、项目归档（Batch 14）、archived 守卫均有；剩余：**项目记录 13 字段缺 11 个**（schema 只有 id/name/description/path/created_at/updated_at + data_classification）、**Clone Repository 入口无**、**模板硬编码无扩展注册**、**项目知识 9 类无结构**——均未做，已补入 KNOWN_LIMITATIONS（本批） | `packages/projects/src/discover.ts:415`、`packages/projects/src/create.ts:144`、`packages/db/src/schema.ts:178` |
+| §6 Project | **部分** | 自动发现（diagnostics、detected-vs-verified、容器/VM/README/docs/.ai 检测——group-a 缺口已关闭）、创建（非空目录守卫 §6.3，`create.ts:144`，group-a 的"缺失"已关闭）、项目归档（Batch 14）、archived 守卫均有；剩余：**项目记录 13 字段缺 11 个**（projects 表只有 id/name/description/path/status/archived_at/created_at/updated_at；`data_classification` 是 memory_entries 的列）、**Clone Repository 入口无**、**模板硬编码无扩展注册**、**项目知识 9 类无结构**——均未做，已补入 KNOWN_LIMITATIONS（本批） | `packages/projects/src/discover.ts:415`、`packages/projects/src/create.ts:144`、`packages/db/src/schema.ts:178` |
 | §7 Workspace 与隔离 | **部分（环境依赖）** | 完整 Shell（真 PTY Batch 18、交互式会话 Batch 19、逐行安全门）、路径边界（大小写/Unicode/UNC/设备路径/Junction/Symlink，isolation.ts）、fail-closed（CONFINEMENT_UNAVAILABLE 有单测）均有；**无真实隔离 Host**（本机直跑，非合规后端）——已记环境项；TOCTOU/替换路径/hardlink 仍是代码注释承认的开放点 | `docs/KNOWN_LIMITATIONS.md#隔离与安全` |
 | §8 Human Identity | **部分** | Custom Roles + RBAC（Batch 15：viewer/operator/admin）、委托不超上限（scope.ts）、撤销停止发放新 Capability + 执行点拒绝已撤销 grant（tools/executor.ts:409）均有；**AUTHORITY_CONFLICT 仲裁缺失**（§8.1，如 §2 所述） | `packages/core/src/scope.ts` |
 | §9 Organization Graph | **部分** | 图模型（org-graph.ts：节点/边类型/方向约定/MANAGES 投影）、默认模板、周期传播 dedup+hop limit 均有；**组织关系与委托链只在进程内存**（Map），重启丢失；图变更事务化/版本化、环校验、tombstone 引用保留**未做** | `packages/squads/src/org-graph.ts:120-121`（Map）、`docs/AT_MAPPING.md` AT-057 blocked |
@@ -75,7 +75,7 @@
 
 1. **§8.1/INV-31 多人指令冲突仲裁缺失**：全库无 `AUTHORITY_CONFLICT` 符号；两个同等有效且不兼容的指令进入暂停并升级的机制未实现（`/api/disputes` 只处理 verdict 分歧）。
 2. **§5 相对权限上限缺失**：`employee-factory/governance.ts` 的 `enforcePolicy` 只有绝对上限检查（children/depth/allow-lists/budget），无"请求者相对上限"检查——AI 仍可能请求自身上限内的权限但超出委托者可授予范围（§8.2 的委托不超集检查只在 scope.ts 的任务范围维度）。
-3. **§6.1 项目记录字段缺 11 个**：projects 表只有 id/name/description/path/created_at/updated_at + data_classification；organization_id、profile_version、repository_refs、workspace_refs、instruction_refs、policy_version、default_manager_id、workflow_version、environment_refs、lifecycle_state 无处定义。
+3. **§6.1 项目记录字段缺 11 个**：projects 表只有 id/name/description/path/status/archived_at/created_at/updated_at（`data_classification` 是 memory_entries 的列）；organization_id、profile_version、repository_refs、workspace_refs、instruction_refs、policy_version、default_manager_id、workflow_version、environment_refs、lifecycle_state 无处定义。
 4. **§6.1 Clone Repository 入口缺失**：四个项目入口只有 Existing/Template/New+discover，无 clone 入口函数与路由。
 5. **§6.1 模板不可扩展**：`templates.ts` 为硬编码 Record，无 registerTemplate 插件机制（规格明文"模板不是全部内置，必须可扩展"）。
 6. **§6.4 项目知识 9 类无结构**：全库无 ProjectKnowledge 类型；Product Requirements…Lessons 九类在 knowledge/projects 包均无对应结构；来源版本/Hash 引用无实现。
@@ -96,6 +96,6 @@
 
 ## 收敛结论
 
-- 59 章中：**已落地 26 章、部分 27 章**（"大部分已落地"计入部分）、环境依赖/Tan专属穿插于部分章节；**未做 0 整章**（未做的是章内子项）。
+- 59 章中：**已落地 27 章、部分 32 章**（"大部分已落地"计入部分）、环境依赖/Tan专属穿插于部分章节；**未做 0 整章**（未做的是章内子项）。
 - 本次扫荡发现的"规格要求但文档未记录"缺口共 **7 项**（A 节），全部已补入 KNOWN_LIMITATIONS；发现的"文档说没做但实际已做"滞后共 **6 项**（B 节），实现均经源码确认。
-- 剩余真实大项与 Batch 30 扫荡结论一致：pipeline stage 落盘、真实隔离 Host、非 Codex 适配器、MCP 真实握手、远程 DB 驱动、桌面真人验收；另加本批新发现的 AUTHORITY_CONFLICT 仲裁、项目记录字段/知识/模板扩展、实体落库清单——其中 AUTHORITY_CONFLICT 与 gates/delegations 落库是**纯代码可关闭**的候选，建议排进 Batch 32。
+- 剩余真实大项与 Batch 30 扫荡结论一致：pipeline stage 可执行恢复/可重跑、真实隔离 Host、非 Codex 适配器、MCP 真实握手、远程 DB 驱动、桌面真人验收；另加本批新发现的 AUTHORITY_CONFLICT 仲裁、项目记录字段/知识/模板扩展、实体落库清单——其中 AUTHORITY_CONFLICT 与 gates/delegations 落库是**纯代码可关闭**的候选，建议排进 Batch 32。

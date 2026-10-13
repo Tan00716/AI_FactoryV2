@@ -10,9 +10,11 @@
  *  - policies    parseProjectPolicy / parseOrganizationPolicy — parse +
  *                validate project.yaml (§98) / organization.yaml (§99)
  *  - permissions checkCapability — full §44 capability permission engine
+ *  - authority   AuthorityConflictRegistry — §8.1 / INV-31 directive conflict arbitration
  */
 export * from './types';
 export * from './yaml';
 export * from './store';
 export * from './policies';
 export * from './permissions';
+export * from './authority';

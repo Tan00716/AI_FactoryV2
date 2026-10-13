@@ -411,4 +411,28 @@ export class DelegationManager {
     }
     return d;
   }
+
+  /**
+   * Load a persisted snapshot WITHOUT re-running creation validation
+   * (Batch 32): hydration is *remembering*, not re-authorizing. Records
+   * with a missing/empty delegation_id are skipped (reported in the
+   * result); later records overwrite earlier ones on id collision.
+   * No invariant is checked here — create()/createRoot() remain the
+   * only validated entry points for new delegations.
+   */
+  loadSnapshot(records: Delegation[]): { loaded: number; skipped: string[] } {
+    let loaded = 0;
+    const skipped: string[] = [];
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i];
+      const id = r?.delegation_id;
+      if (typeof id !== 'string' || id.length === 0) {
+        skipped.push(`record#${i}`);
+        continue;
+      }
+      this.store.set(id, { ...r });
+      loaded++;
+    }
+    return { loaded, skipped };
+  }
 }

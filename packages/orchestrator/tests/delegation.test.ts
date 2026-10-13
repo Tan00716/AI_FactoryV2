@@ -259,3 +259,32 @@ describe('guard rails', () => {
     expectCode(() => m.create(childInput('nope', { delegation_id: 'x' })), 'DELEGATION_NOT_FOUND');
   });
 });
+
+describe('loadSnapshot (Batch 32 — hydration without re-validation)', () => {
+  it('loads persisted records as-is; skips corrupt rows; later rows win on id collision', () => {
+    const m = new DelegationManager();
+    const good = m.createRoot(rootInput({ delegation_id: 'snap-1' }));
+    const activated = m.activate('snap-1');
+    const mgr2 = new DelegationManager();
+    const res = mgr2.loadSnapshot([
+      good,
+      activated,
+      { delegation_id: '', delegator: 'x' } as never,
+      null as never,
+    ]);
+    assert.equal(res.loaded, 2);
+    assert.deepEqual(res.skipped, ['record#2', 'record#3']);
+    // later record overwrote the earlier one: status is ACTIVE
+    assert.equal(mgr2.get('snap-1').status, 'ACTIVE');
+    // rules still enforced on new mutations after hydration
+    assert.throws(
+      () => mgr2.activate('snap-1'),
+      (e: unknown) => e instanceof DelegationError && e.code === 'INVALID_STATE',
+    );
+  });
+
+  it('an empty snapshot loads nothing and reports nothing skipped', () => {
+    const m = new DelegationManager();
+    assert.deepEqual(m.loadSnapshot([]), { loaded: 0, skipped: [] });
+  });
+});

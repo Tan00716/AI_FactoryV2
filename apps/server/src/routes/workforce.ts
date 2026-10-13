@@ -111,6 +111,24 @@ export async function handleWorkforceRoutes(
               : undefined,
         },
         FACTORY_POLICY,
+        {
+          // §8.2 relative ceiling: denials are audited here before the
+          // 403 below (the package throws GovernanceError after the
+          // sink runs).
+          audit: (intent) =>
+            ctx.audit.record(
+              intent.actor,
+              'RELATIVE_CEILING_DENIED',
+              'agent',
+              intent.details.granterAgentId,
+              {
+                requestedTools: intent.details.requestedTools,
+                requestedPermissions: intent.details.requestedPermissions,
+                exceededTools: intent.details.exceededTools,
+                exceededPermissions: intent.details.exceededPermissions,
+              },
+            ),
+        },
       );
       ctx.audit.record(requestedBy, 'EMPLOYEE_CREATED', 'agent', agent.id, {
         jobTitle: agent.jobTitle,

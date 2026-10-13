@@ -10,11 +10,26 @@
 
 import type { Agent, AgentRegistry, Permission } from '@ai-factory/core';
 import { defaultPermissionsFor } from '@ai-factory/core';
-import { enforcePolicy, type FactoryPolicy } from './governance';
+import {
+  enforcePolicy,
+  type FactoryPolicy,
+  type GovernanceAuditSink,
+} from './governance';
 
 /** Injectable clock for deterministic timestamps. */
 export interface Clock {
   now: () => number;
+}
+
+/** createEmployee context: clock + optional governance audit sink. */
+export interface CreateEmployeeContext {
+  clock?: Clock;
+  /**
+   * Receives RELATIVE_CEILING_DENIED intents from the §8.2 check.
+   * The server wires this to the audit log; without it the denial
+   * still throws (403) but is not separately audited.
+   */
+  audit?: GovernanceAuditSink;
 }
 
 export interface EmployeeSpec {
@@ -127,6 +142,10 @@ function slugify(title: string): string {
  *
  *  1. Template-generate mission/instructions/skills/rules/tools/model from `specialty`.
  *  2. Enforce the factory policy — GovernanceError on any violation.
+ *     `requestedBy` is recorded as the granter for the §8.2 relative
+ *     ceiling check (the grant may not exceed the delegator's own
+ *     grantable set); a non-agent requester (e.g. 'human') skips the
+ *     relative check but never the absolute (§19) checks.
  *  3. Register in the registry, parented under `spec.parentId`.
  */
 export function createEmployee(
@@ -134,7 +153,7 @@ export function createEmployee(
   requestedBy: string,
   spec: EmployeeSpec,
   policy: FactoryPolicy,
-  ctx?: { clock?: Clock },
+  ctx?: CreateEmployeeContext,
 ): Agent {
   if (!spec.jobTitle?.trim()) {
     throw new Error('EmployeeSpec.jobTitle is required');
@@ -149,12 +168,14 @@ export function createEmployee(
     registry,
     {
       parentAgentId: spec.parentId ?? null,
+      granterAgentId: requestedBy,
       jobTitle: spec.jobTitle,
       model,
       tools,
       permissions,
     },
     policy,
+    { audit: ctx?.audit },
   );
 
   const name = slugify(spec.jobTitle);
@@ -173,7 +194,5 @@ export function createEmployee(
     permissions,
     autonomyLevel: 2,
   });
-  void requestedBy;
-  void ctx;
   return agent;
 }

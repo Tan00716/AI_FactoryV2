@@ -96,6 +96,8 @@ import {
   setRuntimeRunStore,
 } from './routes/runtime';
 import { handleOrchestratorRoutes } from './routes/orchestrator';
+import { handleDelegationRoutes, initDelegationRoutes } from './routes/delegations';
+import { handleGateRoutes } from './routes/gates';
 import { handleWorkforceRoutes } from './routes/workforce';
 import { handleMcpRoutes } from './routes/mcp';
 import { handleKnowledgeRoutes } from './routes/knowledge';
@@ -137,6 +139,7 @@ import { handleQuotaRoutes } from './routes/quota';
 import { handleWatchdogRoutes } from './routes/watchdog';
 import { handleTakeoverRoutes } from './routes/takeover';
 import { handleDisputeRoutes } from './routes/disputes';
+import { handleAuthorityRoutes } from './routes/authority';
 import { handleReportRoutes } from './routes/reports';
 import { handleV2TransitionRoutes } from './routes/v2-transitions';
 import { handleDashboardRoutes } from './routes/dashboard';
@@ -473,6 +476,15 @@ initBackupService(resolveBackupConfig(DB_PATH));
 initMcpPersistence(fdb);
 
 /**
+ * Delegation durability (§12.2, Batch 32): every delegation mutation is
+ * written through to fdb.delegations, and the live DelegationManager is
+ * rebuilt here at boot. Rows that were ACTIVE when the owning process
+ * died are demoted to INTERRUPTED (write-back + DELEGATION_INTERRUPTED_ON_RESTART
+ * audit) — never presented as still supervised, never auto-resumed.
+ */
+initDelegationRoutes(fdb, audit);
+
+/**
  * Backup schedules (§47, Batch 20) — the in-process scheduler runs
  * the same createBackup() the manual endpoint uses, on a 30s tick.
  * Schedules are durable rows: boot() reconciles plans whose slot
@@ -797,6 +809,8 @@ const server = createServer(async (req, res) => {
     if (await handleModelRouterRoutes(req, res, url, routeCtx)) return;
     if (await handleRuntimeRoutes(req, res, url, routeCtx)) return;
     if (await handleOrchestratorRoutes(req, res, url, routeCtx)) return;
+    if (await handleDelegationRoutes(req, res, url, routeCtx)) return;
+    if (await handleGateRoutes(req, res, url, routeCtx)) return;
     if (await handleWorkforceRoutes(req, res, url, routeCtx)) return;
     if (await handleMcpRoutes(req, res, url, routeCtx)) return;
     if (await handleKnowledgeRoutes(req, res, url, routeCtx)) return;
@@ -828,6 +842,7 @@ const server = createServer(async (req, res) => {
     if (await handleWatchdogRoutes(req, res, url, routeCtx)) return;
     if (await handleTakeoverRoutes(req, res, url, routeCtx)) return;
     if (await handleDisputeRoutes(req, res, url, routeCtx)) return;
+    if (await handleAuthorityRoutes(req, res, url, routeCtx)) return;
     if (await handleReportRoutes(req, res, url, routeCtx)) return;
     if (await handleV2TransitionRoutes(req, res, url, routeCtx)) return;
     if (await handleDashboardRoutes(req, res, url, routeCtx)) return;

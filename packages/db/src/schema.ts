@@ -797,4 +797,60 @@ CREATE TABLE IF NOT EXISTS mcp_launch_records (
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_launches_server
   ON mcp_launch_records(name, version);
+
+-- Gate definitions (§39.3, Batch 32): one row per gate_id holding the
+-- full GateDefinitionV2 JSON. Definitions have no lifecycle — they
+-- hydrate as-is. Updating a definition never rewrites past
+-- evaluations (those are sealed history in gate_evaluations).
+CREATE TABLE IF NOT EXISTS gate_definitions (
+  gate_id TEXT PRIMARY KEY,
+  definition_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Gate evaluations (§39.3, Batch 32): append-only verdict log. The
+-- verdict is computed by the deterministic evaluator in
+-- @ai-factory/core — this table never invents one. Evaluations are
+-- synchronous and terminal, so there is no in-flight state to demote
+-- on restart. evidence_source records where the evaluated evidence
+-- came from (never blank — provenance is part of the record).
+CREATE TABLE IF NOT EXISTS gate_evaluations (
+  evaluation_id TEXT PRIMARY KEY,
+  gate_id TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  reason_code TEXT,
+  missing_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  evidence_source TEXT NOT NULL,
+  evaluator_id TEXT NOT NULL,
+  evaluated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_gate_evaluations_gate
+  ON gate_evaluations(gate_id, evaluated_at DESC);
+
+-- Delegation records (§12.2, Batch 32): one row per delegation_id
+-- holding the full Delegation JSON plus indexable projections.
+-- Statuses mirror the orchestrator vocabulary plus INTERRUPTED — the
+-- honest post-restart state for rows that were ACTIVE when the owning
+-- process died (no supervision is held anymore, real-world fate
+-- UNKNOWN, never auto-resumed). The demotion is a record-layer stamp
+-- (rehydrated_at), not a delegation decision — version is untouched.
+CREATE TABLE IF NOT EXISTS delegations (
+  delegation_id TEXT PRIMARY KEY,
+  parent_delegation_id TEXT,
+  delegator TEXT NOT NULL,
+  delegatee TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  record_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  rehydrated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_delegations_status
+  ON delegations(status);
+CREATE INDEX IF NOT EXISTS idx_delegations_task
+  ON delegations(task_id);
 `;

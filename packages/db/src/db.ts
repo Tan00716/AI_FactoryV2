@@ -37,6 +37,8 @@ import { SqliteDeploymentStore } from './deployments';
 import { SqlitePipelineRecordStore } from './pipelines';
 import { SqliteWorktreeStore } from './worktrees';
 import { SqliteMcpServerStore } from './mcp-servers';
+import { SqliteGateStore } from './gates';
+import { SqliteDelegationStore } from './delegations';
 
 const J = {
   parse<T>(s: string | null, fallback: T): T {
@@ -942,6 +944,20 @@ export class FactoryDatabase {
    */
   readonly mcpServers: SqliteMcpServerStore;
   /**
+   * §39.3 (Batch 32) — durable gate definitions + append-only
+   * evaluation log. Verdicts are computed by the deterministic
+   * evaluator in @ai-factory/core; this store never invents one.
+   */
+  readonly gates: SqliteGateStore;
+  /**
+   * §12.2 (Batch 32) — durable delegation records: one row per
+   * delegation_id with the full Delegation JSON. Rows that were
+   * ACTIVE when the owning process died are demoted to INTERRUPTED
+   * on hydrate (honest: no supervision is held, fate UNKNOWN, never
+   * auto-resumed).
+   */
+  readonly delegations: SqliteDelegationStore;
+  /**
    * §40 (Batch 23) — build records: one row per landed merge. The
    * record is deliberately NOT a fake build — merges never run a
    * build, so status is NOT_EXECUTED and digest/definition/sbom_ref/
@@ -993,6 +1009,8 @@ export class FactoryDatabase {
       new SqliteMergeQueueDrainLock(this.db),
     );
     this.mcpServers = new SqliteMcpServerStore(this.db);
+    this.gates = new SqliteGateStore(this.db);
+    this.delegations = new SqliteDelegationStore(this.db);
     this.builds = new SqliteBuildRecordStore(this.db);
   }
 
