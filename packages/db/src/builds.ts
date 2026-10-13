@@ -163,6 +163,13 @@ export interface BuildRecordStore {
       definitionNote: string;
       sbomRef: string | null;
       sbomNote: string;
+      /**
+       * Attestation file reference — Batch 38: set by the build runner
+       * when a dev attestation was created and signed (FACTORY_ATTESTATION_KEY
+       * present and digest locked). Optional: existing callers leave it
+       * absent and the row keeps null (records absence).
+       */
+      attestationRef?: string | null;
       exitCode: number;
       completedAt?: string;
     },
@@ -253,6 +260,7 @@ export class MemoryBuildRecordStore implements BuildRecordStore {
       definitionNote: string;
       sbomRef: string | null;
       sbomNote: string;
+      attestationRef?: string | null;
       exitCode: number;
       completedAt?: string;
     },
@@ -265,6 +273,7 @@ export class MemoryBuildRecordStore implements BuildRecordStore {
     next.definitionNote = result.definitionNote;
     next.sbomRef = result.sbomRef;
     next.sbomNote = result.sbomNote;
+    next.attestationRef = result.attestationRef ?? null;
     next.exitCode = result.exitCode;
     next.completedAt = result.completedAt ?? nowIso();
     this.rows.set(id, next);
@@ -429,6 +438,7 @@ export class SqliteBuildRecordStore implements BuildRecordStore {
       definitionNote: string;
       sbomRef: string | null;
       sbomNote: string;
+      attestationRef?: string | null;
       exitCode: number;
       completedAt?: string;
     },
@@ -440,7 +450,8 @@ export class SqliteBuildRecordStore implements BuildRecordStore {
       .prepare(
         `UPDATE builds SET status = 'SUCCEEDED', digest = ?, digest_note = ?,
           definition_json = ?, definition_note = ?, sbom_ref = ?,
-          sbom_note = ?, exit_code = ?, completed_at = ? WHERE id = ?`,
+          sbom_note = ?, attestation_ref = ?, exit_code = ?,
+          completed_at = ? WHERE id = ?`,
       )
       .run(
         result.digest,
@@ -449,6 +460,7 @@ export class SqliteBuildRecordStore implements BuildRecordStore {
         result.definitionNote,
         result.sbomRef,
         result.sbomNote,
+        result.attestationRef ?? null,
         result.exitCode,
         completedAt,
         id,

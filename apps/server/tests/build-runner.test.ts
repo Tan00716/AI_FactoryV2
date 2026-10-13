@@ -23,9 +23,9 @@ import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync, existsSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { FactoryDatabase } from '@ai-factory/db';
-import { lockBuild } from '@ai-factory/cicd';
+import { lockBuild, verifyDevAttestation } from '@ai-factory/cicd';
 import {
   buildRunnerConfigFromEnv,
   DEFAULT_BUILD_TIMEOUT_MS,
@@ -388,6 +388,96 @@ describe('§40 post-merge build execution (Batch 24)', () => {
         (p) => p.name === 'ai-factory:sbom:provenance',
       );
       assert.ok(prov, 'SBOM says what it is (declared deps, not an installed-tree scan)');
+    } finally {
+      s?.child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(workRoot, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('a successful build with FACTORY_ATTESTATION_KEY records a verifiable dev attestation (Batch 38)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'buildrun-attest-'));
+    const repo = makeRepoWithDeps();
+    const dbFile = join(dir, 'factory.db');
+    const workRoot = mkdtempSync(join(tmpdir(), 'buildwork-'));
+    const sbomDir = join(dir, 'sboms');
+    const buildCmd = `node -e "require('fs').writeFileSync('built.txt','ok')"`;
+    const seed = randomBytes(32).toString('hex');
+    let s: { child: ChildProcess; port: number } | null = null;
+    try {
+      s = await bootServer(dbFile, join(dir, 'secrets'), {
+        FACTORY_BUILD_COMMAND: buildCmd,
+        FACTORY_BUILD_WORK_ROOT: workRoot,
+        FACTORY_BUILD_TIMEOUT_MS: '30000',
+        FACTORY_SBOM_DIR: sbomDir,
+        FACTORY_BUILD_CONFIG_FILES: 'package-lock.json',
+        FACTORY_ATTESTATION_KEY: seed,
+      });
+      const { prId } = await mergeOne(s.port, repo, 'feat');
+      const row = await waitForTerminal(dbFile, prId);
+      assert.ok(row, 'build record reached a terminal state');
+      assert.equal(row.status, 'SUCCEEDED');
+      assert.ok(row.digest, 'digest locked — attestation has a subject');
+      // The record points at a real attestation file under the SBOM dir.
+      assert.ok(row.attestationRef, 'attestationRef set when key configured');
+      assert.ok(
+        (row.attestationRef as string).startsWith(sbomDir),
+        `attestationRef under FACTORY_SBOM_DIR, got ${row.attestationRef}`,
+      );
+      assert.match(
+        (row.attestationRef as string).split('/').pop() ?? '',
+        /^attestation-[0-9a-f-]{36}\.json$/,
+        'attestation filename shape pinned',
+      );
+      assert.ok(existsSync(row.attestationRef as string), 'attestation file really on disk');
+      const envelope = JSON.parse(readFileSync(row.attestationRef as string, 'utf8'));
+      // The envelope verifies with its own embedded key, is plaintext
+      // dev-only, and its subject is the row's real §40 digest.
+      assert.equal(verifyDevAttestation(envelope), true, 'dev attestation verifies');
+      assert.equal(
+        envelope.statement.predicate.devOnly,
+        true,
+        'dev-only label is plaintext in the statement',
+      );
+      assert.equal(envelope.statement.predicate.signer, 'dev-only');
+      assert.deepEqual(
+        envelope.statement.subject,
+        [{ name: 'build-digest', digest: { sha256: row.digest } }],
+        'attestation subject is the real §40 digest',
+      );
+    } finally {
+      s?.child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(workRoot, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('without FACTORY_ATTESTATION_KEY the record honestly keeps attestationRef null (Batch 38)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'buildrun-attestnone-'));
+    const repo = makeRepoWithDeps();
+    const dbFile = join(dir, 'factory.db');
+    const workRoot = mkdtempSync(join(tmpdir(), 'buildwork-'));
+    const buildCmd = `node -e "require('fs').writeFileSync('built.txt','ok')"`;
+    let s: { child: ChildProcess; port: number } | null = null;
+    try {
+      s = await bootServer(dbFile, join(dir, 'secrets'), {
+        FACTORY_BUILD_COMMAND: buildCmd,
+        FACTORY_BUILD_WORK_ROOT: workRoot,
+        FACTORY_BUILD_TIMEOUT_MS: '30000',
+        FACTORY_BUILD_CONFIG_FILES: 'package-lock.json',
+        // No FACTORY_ATTESTATION_KEY on purpose.
+      });
+      const { prId } = await mergeOne(s.port, repo, 'feat');
+      const row = await waitForTerminal(dbFile, prId);
+      assert.ok(row, 'build record reached a terminal state');
+      assert.equal(row.status, 'SUCCEEDED');
+      assert.equal(
+        row.attestationRef,
+        null,
+        'no key → attestationRef null (absence, not a placeholder)',
+      );
     } finally {
       s?.child.kill('SIGKILL');
       rmSync(dir, { recursive: true, force: true });

@@ -126,6 +126,14 @@ export interface RunResult {
   handoffs: string[];
   trace: TraceStep[];
   reason?: string;
+  /**
+   * Machine-readable terminal reason code (Batch 38): the FactoryError.code
+   * when the run's terminal state came from a thrown FactoryError
+   * ('BUDGET_EXCEEDED', 'LOOP_STAGNATION'), null otherwise. The server
+   * classifies §81 needsHuman emissions on this code — determinately —
+   * instead of matching on the human-readable reason message.
+   */
+  reasonCode?: string | null;
   /** §25 (G-51) — extended-budget consumption for this run, when a
    *  BudgetTracker was wired (runAgent's default path always wires one). */
   budgetUsage?: {

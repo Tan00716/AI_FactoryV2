@@ -6,9 +6,16 @@
  *   POST /api/needs-human/:id/resolve                          human marks
  *        {resolution: 'acknowledged'|'resolved', resolvedBy?, note?} (operator)
  *
- * Rows are raised by real server paths — currently only AUTHORITY_CONFLICT
- * entering OPEN (the §81 'ai-disagreement' trigger; the other seven §81
- * triggers have no emitter). NOTHING auto-resolves a row: resolving the
+ * Rows are raised by real server paths:
+ *   - AUTHORITY_CONFLICT entering OPEN → §81 'ai-disagreement' (Batch 36)
+ *   - a runtime run terminating with reasonCode BUDGET_EXCEEDED →
+ *     §81 'budget-exceeded' (Batch 38)
+ *   - a runtime run terminating with reasonCode LOOP_STAGNATION →
+ *     §81 'repeated-failure' (Batch 38)
+ * The remaining five §81 triggers (requirement-ambiguity,
+ * policy-violation, high-risk-deployment, security-issue,
+ * irrecoverable-env-error) have no determinate emitter — see
+ * docs/needs-human-triggers.md. NOTHING auto-resolves a row: resolving the
  * underlying authority conflict does not touch this table. A human marks
  * the resolution explicitly, which is the only way a row leaves 'open'.
  * Open rows hydrate as-is across restarts (nothing to demote).

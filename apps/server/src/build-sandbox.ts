@@ -1,5 +1,5 @@
 /**
- * Bubblewrap sandbox for the post-merge build runner — SPEC v2 §40 (Batch 37).
+ * Bubblewrap sandbox for the post-merge build runner — SPEC v2 §7 SANDBOX STRATEGY (Batch 37).
  *
  * What this is, honestly:
  *

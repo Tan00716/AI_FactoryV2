@@ -17,6 +17,7 @@ import {
   BudgetExceeded,
   Clock,
   EvidenceRecord,
+  FactoryError,
   LoopPhase,
   LoopStagnation,
   PhaseResult,
@@ -316,13 +317,18 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
     trace.push(...harness.drainTrace());
     evidence.push(...harness.drainEvidence());
     const steps = loop.snapshot.totalSteps;
+    // Batch 38 — carry the machine-readable error code through so the
+    // server can classify §81 emissions determinately (BUDGET_EXCEEDED →
+    // 'budget-exceeded', LOOP_STAGNATION → 'repeated-failure') instead of
+    // matching on the human-readable message.
+    const reasonCode = err instanceof FactoryError ? err.code : null;
     // §25: stagnation auto-escalates instead of failing the run.
     if (err instanceof LoopStagnation) {
       pushTrace('RUNNER', 'auto-escalate', err.message);
-      return { outcome: 'escalated', steps, evidence, handoffs, trace, reason: err.message, budgetUsage: tracker.usage, intentSummary: intentSummary() };
+      return { outcome: 'escalated', steps, evidence, handoffs, trace, reason: err.message, reasonCode, budgetUsage: tracker.usage, intentSummary: intentSummary() };
     }
     const reason = err instanceof Error ? err.message : String(err);
     pushTrace('RUNNER', 'run failed', reason);
-    return { outcome: 'failed', steps, evidence, handoffs, trace, reason, budgetUsage: tracker.usage, intentSummary: intentSummary() };
+    return { outcome: 'failed', steps, evidence, handoffs, trace, reason, reasonCode, budgetUsage: tracker.usage, intentSummary: intentSummary() };
   }
 }

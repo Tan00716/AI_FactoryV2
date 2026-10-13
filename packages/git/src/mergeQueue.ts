@@ -722,6 +722,12 @@ export class MergeQueue {
     // (audited) instead of double-draining. ---
     if (drain) {
       holderId = randomUUID();
+      // Batch 38: read the current lock row BEFORE acquiring so a stale
+      // takeover can audit WHOSE lock was reclaimed. Read-only: the
+      // takeover decision itself stays inside acquireDrain's atomic
+      // conditional UPDATE, so a torn read here can only misattribute
+      // the audit's previousHolderId, never grant the lock wrongly.
+      const prevLock = drain.drainState(this.repoPath);
       const acquired = drain.acquireDrain(
         this.repoPath,
         holderId,
@@ -742,6 +748,20 @@ export class MergeQueue {
       // entries other processes enqueued and rows peers finished.
       this.refreshFromPersistence();
       if (acquired === 'takeover') {
+        // Batch 38: the lock-layer event — a heartbeat-expired lease was
+        // reclaimed. Distinct from MERGE_QUEUE_DRAIN_TAKEOVER below, which
+        // is the queue-layer recovery (re-hydration + demotion). The
+        // reclaim is audited BEFORE the takeover recovery runs, with the
+        // dead holder named, so "who died" is answerable from the audit
+        // log alone.
+        audit?.('MERGE_LOCK_STALE_RECLAIMED', {
+          repo: this.repoPath,
+          previousHolderId: prevLock?.holderId ?? null,
+          previousHeartbeatAt: prevLock?.heartbeatAt ?? null,
+          newHolderId: holderId,
+          staleAfterMs: this.drainLockTtlMs,
+          note: 'drain lock heartbeat expired; previous holder presumed dead or wedged — lock reclaimed by new holder',
+        });
         audit?.('MERGE_QUEUE_DRAIN_TAKEOVER', {
           repo: this.repoPath,
           holderId,

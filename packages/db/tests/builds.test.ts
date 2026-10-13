@@ -242,6 +242,61 @@ describe('build records (§40, Batch 23)', () => {
     }
   });
 
+  it('markSucceeded records attestationRef on both implementations (Batch 38)', () => {
+    // attestationRef is optional: set → persisted and read back on both
+    // stores; absent → null (records absence, like every other §40 field).
+    const dir = mkdtempSync(join(tmpdir(), 'builds-attest-'));
+    try {
+      const fdb = new FactoryDatabase(join(dir, 'a.db'));
+      const stores: Array<{ label: string; store: BuildRecordStore }> = [
+        { label: 'memory', store: new MemoryBuildRecordStore() },
+        { label: 'sqlite', store: fdb.builds },
+      ];
+      for (const { label, store } of stores) {
+        const withAtt = store.record(makeInput({ prId: `p-att-${label}` }));
+        const done = store.markSucceeded(withAtt.id, {
+          digest: 'd'.repeat(64),
+          digestNote: '',
+          definition: '{"revision":"x"}',
+          definitionNote: '',
+          sbomRef: '/sboms/sbom-x.json',
+          sbomNote: '',
+          attestationRef: '/sboms/attestation-x.json',
+          exitCode: 0,
+        });
+        assert.equal(
+          done.attestationRef,
+          '/sboms/attestation-x.json',
+          `${label}: attestationRef recorded`,
+        );
+        assert.equal(
+          store.get(withAtt.id)?.attestationRef,
+          '/sboms/attestation-x.json',
+          `${label}: attestationRef read back`,
+        );
+
+        const withoutAtt = store.record(makeInput({ prId: `p-noatt-${label}` }));
+        const done2 = store.markSucceeded(withoutAtt.id, {
+          digest: 'e'.repeat(64),
+          digestNote: '',
+          definition: null,
+          definitionNote: 'missing',
+          sbomRef: null,
+          sbomNote: SBOM_NO_LOCKFILE_NOTE,
+          exitCode: 0,
+        });
+        assert.equal(
+          done2.attestationRef,
+          null,
+          `${label}: absent attestationRef stays null (absence, not placeholder)`,
+        );
+      }
+      fdb.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('transitions are one-way: terminal rows and missing ids refuse loudly', () => {
     const dir = mkdtempSync(join(tmpdir(), 'builds-trans-'));
     try {

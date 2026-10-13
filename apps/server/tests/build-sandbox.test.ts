@@ -101,13 +101,20 @@ describe('buildSandboxArgv', () => {
 });
 
 describe('probeSandbox', () => {
-  it('returns a well-formed result; available when running as root', async () => {
+  it('returns a well-formed result (availability is environment-dependent)', async () => {
     resetSandboxProbeCache();
     const p = await probeSandbox('bwrap', 15000);
     assert.equal(typeof p.available, 'boolean');
     if (p.available) assert.equal(p.reason, null);
     else assert.ok(p.reason && p.reason.length > 0);
-    if (IS_ROOT) assert.equal(p.available, true);
+    // NOTE (Batch 38 closeout): availability depends on bwrap being INSTALLED,
+    // not merely on running as root. A root container without bwrap must not
+    // fail this test — the sandbox-dependent tests below skip loudly instead.
+    if (IS_ROOT && !p.available) {
+      console.log(
+        `[build-sandbox-test] NOTE: running as root but bwrap unavailable (${p.reason}); sandbox tests will skip loudly`,
+      );
+    }
   });
   it('bogus binary probes unavailable with a reason', async () => {
     resetSandboxProbeCache();

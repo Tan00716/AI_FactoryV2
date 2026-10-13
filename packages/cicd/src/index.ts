@@ -27,6 +27,7 @@ export * from './release';
 export * from './ci-results';
 export * from './build';
 export * from './sbom';
+export * from './attestation';
 export * from './risk';
 export * from './reversibility';
 export * from './predeploy';

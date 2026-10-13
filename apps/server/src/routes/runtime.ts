@@ -129,9 +129,11 @@ import {
 } from '@ai-factory/runtime';
 import type { Agent, Permission, Task } from '@ai-factory/core';
 import { effectiveAuthorizationStatus } from '@ai-factory/core';
+import { needsHuman } from '@ai-factory/autonomy';
 import {
   InMemoryRunManifestStore,
   InMemoryRuntimeRunStore,
+  type NeedsHumanDbRecord,
   type RunManifest,
   type RunManifestBudgetUsage,
   type RunManifestStatus,
@@ -427,6 +429,102 @@ export function completeRunManifest(
       lastStep: positions.length > 0 ? Math.max(...positions) : null,
     },
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* §81 emission (Batch 38) — run-terminal needsHuman upgrades          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Build the §81 upgrade record for a run that terminated on a determinate
+ * trigger: reasonCode 'BUDGET_EXCEEDED' → 'budget-exceeded',
+ * 'LOOP_STAGNATION' → 'repeated-failure'. The reasonCode is the
+ * machine-readable FactoryError.code carried through RunResult by
+ * runAgent (Batch 38) — classification never matches on the
+ * human-readable message.
+ *
+ * recipient is null: the server has coarse-grained token RBAC with no
+ * named human accounts, so we record the required level instead of
+ * inventing a person. 'operator' is the API role that does daily run
+ * work (tasks, runs, approvals) — the honest minimum level that can
+ * re-budget, fix, or abandon the run.
+ */
+export function buildRunUpgradeRecord(args: {
+  runId: string;
+  taskId: string;
+  agentId: string;
+  reasonCode: 'BUDGET_EXCEEDED' | 'LOOP_STAGNATION';
+  reason: string | undefined;
+  steps: number;
+}): NeedsHumanDbRecord {
+  const trigger =
+    args.reasonCode === 'BUDGET_EXCEEDED' ? 'budget-exceeded' : 'repeated-failure';
+  const what =
+    args.reasonCode === 'BUDGET_EXCEEDED'
+      ? `run ${args.runId} exhausted its execution budget after ${args.steps} steps`
+      : `run ${args.runId} stagnated: the same error repeated with no progress for ${args.steps} steps`;
+  const rec = needsHuman(trigger, {
+    detail: `${what} (agent ${args.agentId}, task ${args.taskId}). ${args.reason ?? 'no reason recorded'}`,
+    context: {
+      runId: args.runId,
+      taskId: args.taskId,
+      agentId: args.agentId,
+      reasonCode: args.reasonCode,
+      steps: String(args.steps),
+    },
+    impactScope: `run ${args.runId} is terminal; task ${args.taskId} made no further progress`,
+    stoppedActions: [`run ${args.runId} — terminated on ${args.reasonCode}`],
+    suggestion:
+      args.reasonCode === 'BUDGET_EXCEEDED'
+        ? 'Raise the run budgets (maxSteps/timeMs/maxRetries) and re-run, revise the task, or abandon it. Mark this upgrade resolved via POST /api/needs-human/:id/resolve.'
+        : 'Inspect the run trace for the repeating error signature, fix the underlying cause, then re-run. Mark this upgrade resolved via POST /api/needs-human/:id/resolve.',
+  });
+  return {
+    id: rec.id,
+    reason: rec.reason,
+    reasonZh: rec.reasonZh,
+    severity: rec.severity,
+    source: `runtime-run:${args.runId}`,
+    recipient: null,
+    requiredDeciderLevel: 'operator',
+    detailJson: JSON.stringify({
+      runId: args.runId,
+      taskId: args.taskId,
+      agentId: args.agentId,
+      reasonCode: args.reasonCode,
+      steps: args.steps,
+      reason: args.reason ?? null,
+      suggestion: rec.suggestion,
+    }),
+    contextJson: JSON.stringify(rec.context ?? {}),
+    raisedAt: Date.now(),
+    status: 'open',
+    resolvedAt: null,
+    resolvedBy: null,
+    resolution: null,
+  };
+}
+
+/**
+ * Write-through for run-terminal §81 upgrades (Batch 38): insert-only
+ * into fdb.needsHuman, audited NEEDS_HUMAN_RAISED. A failed
+ * write-through is audited NEEDS_HUMAN_PERSIST_FAILED — it never rolls
+ * back the already-committed run record.
+ */
+export function emitRunNeedsHuman(ctx: RouteContext, record: NeedsHumanDbRecord): void {
+  try {
+    ctx.fdb.needsHuman.submit(record);
+    ctx.audit.record('system', 'NEEDS_HUMAN_RAISED', 'needs-human', record.id, {
+      reason: record.reason,
+      source: record.source,
+      requiredDeciderLevel: record.requiredDeciderLevel,
+    });
+  } catch (err) {
+    ctx.audit.record('system', 'NEEDS_HUMAN_PERSIST_FAILED', 'needs-human', record.id, {
+      error: err instanceof Error ? err.message : String(err),
+      source: record.source,
+    });
+  }
 }
 
 /**
@@ -1082,6 +1180,28 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
         },
         'runtime',
       );
+      // §81 emission (Batch 38): the run terminated on a determinate
+      // trigger — 'BUDGET_EXCEEDED' → 'budget-exceeded',
+      // 'LOOP_STAGNATION' → 'repeated-failure'. The reasonCode is the
+      // machine-readable FactoryError.code from runAgent, never a
+      // message match. Write-through failures are audited, never
+      // rolled back — the run record above is already committed.
+      if (
+        result.reasonCode === 'BUDGET_EXCEEDED' ||
+        result.reasonCode === 'LOOP_STAGNATION'
+      ) {
+        emitRunNeedsHuman(
+          ctx,
+          buildRunUpgradeRecord({
+            runId: id,
+            taskId,
+            agentId,
+            reasonCode: result.reasonCode,
+            reason: result.reason,
+            steps: result.steps,
+          }),
+        );
+      }
     } catch (e) {
       rec.status = 'FAILED';
       rec.error = e instanceof Error ? e.message : String(e);

@@ -43,6 +43,17 @@
  *     parsable lockfile → sbomRef null + named reason. SBOM generation
  *     failing never flips a SUCCEEDED build — it is audited and the
  *     record keeps sbomRef null with the failure named.
+ *  8b. DEV ATTESTATION (Batch 38). On a SUCCEEDED build WITH a locked
+ *     digest, when FACTORY_ATTESTATION_KEY is configured, the runner
+ *     creates a dev-only in-toto attestation (subject = the §40 digest,
+ *     Ed25519-signed; see @ai-factory/cicd attestation.ts) and writes it
+ *     as attestation-<buildId>.json next to the SBOM; the record's
+ *     attestationRef points at the file. No key, or no digest → the
+ *     reference stays null (records absence). Attestation creation
+ *     failing never flips a SUCCEEDED build — it is audited as
+ *     BUILD_ATTESTATION_FAILED and the record keeps attestationRef
+ *     null. The attestation is plaintext-marked dev-only and is NEVER a
+ *     production signature (production key management is Tan's call).
  *  9. ORPHAN RECONCILE (Batch 27). A SIGKILL between `git worktree add`
  *     and the finally-block cleanup leaves a detached worktree on disk,
  *     still registered in the source repo. Each workspace gets a
@@ -86,6 +97,8 @@ import {
   assembleBuildDefinition,
   generateSbom,
   lockBuild,
+  attestationKeyFromEnv,
+  createDevAttestation,
   type BuildDefinition,
 } from '@ai-factory/cicd';
 import {
@@ -708,6 +721,39 @@ export class BuildRunner {
           reason: (err as Error).message,
         });
       }
+      // Dev attestation (Batch 38): only when there is a digest to
+      // attest to AND a dev key is configured. Either missing →
+      // attestationRef stays null (records absence). A failure here
+      // never flips a SUCCEEDED build — it is audited, like SBOM.
+      let attestationRef: string | null = null;
+      if (digest) {
+        const attestKey = attestationKeyFromEnv();
+        if (attestKey) {
+          try {
+            const envelope = createDevAttestation(attestKey, {
+              buildId,
+              revision: rec.revision,
+              digest,
+              prId: rec.prId,
+              sourceBranch: rec.sourceBranch,
+              targetBranch: rec.targetBranch,
+              exitCode: result.exitCode ?? 0,
+              sbomRef,
+            });
+            const attPath = join(
+              this.config.sbomDir,
+              `attestation-${buildId}.json`,
+            );
+            writeFileSync(attPath, JSON.stringify(envelope, null, 2) + '\n', 'utf8');
+            attestationRef = attPath;
+          } catch (err) {
+            audit.record('system', 'BUILD_ATTESTATION_FAILED', 'build', buildId, {
+              revision: rec.revision,
+              reason: (err as Error).message,
+            });
+          }
+        }
+      }
       fdb.builds.markSucceeded(buildId, {
         digest,
         digestNote,
@@ -715,6 +761,7 @@ export class BuildRunner {
         definitionNote,
         sbomRef,
         sbomNote,
+        attestationRef,
         exitCode: result.exitCode ?? 0,
       });
       audit.record('system', 'BUILD_SUCCEEDED', 'build', buildId, {
