@@ -313,6 +313,32 @@ function bootServer(
   return child;
 }
 
+/**
+ * Poll GET /api/health until 200 (same pattern as scripts/boot-smoke.mjs).
+ * Never a fixed sleep: server boot takes ~2.5s on this box, so a fixed
+ * 2500ms wait had zero margin under load and would ECONNREFUSED. Bounded
+ * deadline + loud failure instead of infinite waiting.
+ */
+async function waitForHealthy(child: ChildProcess, port: number, label: string): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    if (child.exitCode !== null) {
+      throw new Error(`${label} exited early (code=${child.exitCode}) before /api/health ever returned 200`);
+    }
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/health`);
+      if (res.ok) return;
+    } catch {
+      // not up yet (ECONNREFUSED)
+    }
+    if (Date.now() > deadline) {
+      child.kill('SIGKILL');
+      throw new Error(`${label}: /api/health never returned 200 within 30000ms`);
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+}
+
 describe('orphan reconcile e2e (SIGKILL mid-build → reboot cleans)', () => {
   it('reaps the orphaned worktree on the next boot, audited, never replayed', async () => {
     const root = track(mkdtempSync(join(tmpdir(), 'orphan-e2e-')));
@@ -342,8 +368,7 @@ describe('orphan reconcile e2e (SIGKILL mid-build → reboot cleans)', () => {
     // Boot A, merge, wait for the worktree, then SIGKILL mid-build.
     const serverA = bootServer(port, dbFile, secretsDir, workRoot);
     try {
-      await new Promise((r) => setTimeout(r, 2500));
-      assert.equal((await api(port, 'GET', '/api/health')).status, 200);
+      await waitForHealthy(serverA, port, 'serverA');
       const project = await api(port, 'POST', '/api/projects', { name: 'ORPHANE2E' });
       const task = await api(port, 'POST', '/api/tasks', {
         projectId: project.body.id,
@@ -395,8 +420,7 @@ describe('orphan reconcile e2e (SIGKILL mid-build → reboot cleans)', () => {
       // Boot B on the SAME db + work root: the startup reconcile reaps it.
       const serverB = bootServer(port, dbFile, secretsDir, workRoot);
       try {
-        await new Promise((r) => setTimeout(r, 3000));
-        assert.equal((await api(port, 'GET', '/api/health')).status, 200);
+        await waitForHealthy(serverB, port, 'serverB');
         for (let i = 0; i < 15 && existsSync(orphanDir); i++) {
           await new Promise((r) => setTimeout(r, 1000));
         }

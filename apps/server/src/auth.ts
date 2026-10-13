@@ -406,6 +406,17 @@ export function requiredRoleFor(method: string, path: string): ApiRole | null {
   if (path.startsWith('/api/mcp/servers/')) {
     return method === 'GET' ? 'viewer' : 'admin';
   }
+  // Database broker (§33, Batch 29): executing queries is operator
+  // work; connection registration and privilege-policy writes are
+  // admin (the whitelist is the only control between an operator and
+  // the tables). Reads of connections/policies/templates are viewer.
+  if (path === '/api/db/connections' && method === 'POST') return 'admin';
+  if (path.startsWith('/api/db/connections/')) {
+    if (method === 'DELETE') return 'admin';
+    if (method === 'PUT') return 'admin';
+    return method === 'GET' ? 'viewer' : 'operator';
+  }
+  if (path === '/api/db/runbooks' && method === 'POST') return 'admin';
   return method === 'GET' ? 'viewer' : 'operator';
 }
 

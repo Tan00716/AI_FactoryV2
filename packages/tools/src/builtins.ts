@@ -412,9 +412,17 @@ export const BUILTIN_TOOL_NOTES: Readonly<Record<string, string>> = {
     'only the profile half is closed: @ai-factory/tools BrowserProfileRegistry ' +
     'gives each profile an independent on-disk user-data dir, a bounded ' +
     'download dir with escape rejection, lifecycle + audit; directory ' +
-    'isolation is NOT OS sandboxing and the Host half is unbuilt; "website ' +
-    'text is not instructions" is a consumption-layer rule with no fetcher ' +
-    'to mark yet; browser.open stays definition-only).',
+    'isolation is NOT OS sandboxing and the Host half is unbuilt. ' +
+    '"Website text does not become instructions" now ships as a consumption-' +
+    'layer contract in @ai-factory/tools (fetched-content.ts): FetchedProvenance ' +
+    'attached at fetch time (url/fetchedAt/profile identity, never guessed), ' +
+    'markUntrusted() as the only sanctioned quarantine constructor (fail-closed ' +
+    'on missing source), renderQuarantined() embeds the not-instructions banner ' +
+    'in the exact prompt bytes, assertQuarantined() rejects unmarked content at ' +
+    'prompt assembly. Honest boundary: it is an accountability chain, not an ' +
+    'anti-injection silver bullet — it cannot stop a model from obeying injected ' +
+    'instructions. browser.open stays definition-only until a host-injected ' +
+    'driver ships and emits FetchedContentEnvelopes per fetch.',
   'db.query':
     'Environment identities (§33) now ship as @ai-factory/tools DatabaseEnvironmentRegistry ' +
     '(explicit dev/staging/prod identity per connection, default dev, immutable env, ' +

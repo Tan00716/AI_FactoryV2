@@ -162,6 +162,8 @@ import {
   TICK_MS,
 } from './routes/backup-scheduler';
 import { handleAuthorizationTicketRoutes } from './routes/authorization-tickets';
+import { handleDbRoutes } from './routes/db';
+import { createDbBrokerService } from './db-broker';
 import { EventBus } from '@ai-factory/events';
 import {
   API_TOKEN_ENV,
@@ -292,6 +294,26 @@ try {
   });
 } catch (e) {
   console.error(`[ai-factory] refusing to start: secret broker setup failed: ${(e as Error).message}`);
+  process.exit(1);
+}
+/**
+ * §33 (Batch 29) — server-side database broker: the registry +
+ * DbBroker from @ai-factory/tools with a host-injected SQLite engine
+ * over this server's own database. The 'factory' connection is
+ * registered with the environment identity from
+ * FACTORY_DB_ENVIRONMENT (default dev); an invalid value refuses to
+ * start (fail-closed). No privilege policy is bound by default, so
+ * ad-hoc execution is refused until an admin binds one.
+ */
+let dbBrokerService: ReturnType<typeof createDbBrokerService>;
+try {
+  dbBrokerService = createDbBrokerService(fdb, audit);
+  console.log(
+    `[ai-factory] database broker (§33): enabled, 'factory' connection registered ` +
+      `(${dbBrokerService.registry.getConnection('factory')?.environment ?? 'unknown'})`,
+  );
+} catch (e) {
+  console.error(`[ai-factory] refusing to start: database broker setup failed: ${(e as Error).message}`);
   process.exit(1);
 }
 if (pendingRestoreApplied.applied) {
@@ -760,6 +782,9 @@ const server = createServer(async (req, res) => {
       // when FACTORY_BUILD_COMMAND is explicitly configured; otherwise
       // build records honestly stay NOT_EXECUTED.
       ...(buildRunner ? { buildRunner } : {}),
+      // §33 (Batch 29) — database broker: host-injected SQLite engine
+      // over this server's own database.
+      dbBroker: dbBrokerService,
     };
     if (await handleGitRoutes(req, res, url, routeCtx)) return;
     if (await handleWorktreeRoutes(req, res, url, routeCtx)) return;
@@ -812,6 +837,7 @@ const server = createServer(async (req, res) => {
     if (await handleBackupScheduleRoutes(req, res, url, routeCtx)) return;
     if (await handleRetentionRoutes(req, res, url, routeCtx)) return;
     if (await handleAuthorizationTicketRoutes(req, res, url, routeCtx)) return;
+    if (await handleDbRoutes(req, res, url, routeCtx)) return;
 
     // Projects
     if (path === '/api/projects' && method === 'GET') {

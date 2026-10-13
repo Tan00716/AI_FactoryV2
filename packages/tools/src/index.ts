@@ -30,6 +30,17 @@
  *                destroy + orphan cleanup, all audited. Directory isolation
  *                on one machine — NOT OS sandboxing/container isolation;
  *                no browser driver ships, browser.open stays definition-only
+ *  - fetched-content
+ *                SPEC v2 §33 "website text does not become instructions":
+ *                the CONSUMPTION-layer contract. FetchedProvenance attached
+ *                at fetch time (url/fetchedAt/profile identity, never
+ *                guessed); markUntrusted() is the only sanctioned
+ *                quarantine constructor (fail-closed on missing source);
+ *                renderQuarantined() embeds the not-instructions banner in
+ *                the exact prompt bytes; assertQuarantined() rejects
+ *                lookalike literals at prompt assembly. Accountability
+ *                chain, NOT an anti-injection silver bullet — it cannot
+ *                stop a model from obeying injected instructions.
  */
 export * from './types';
 export * from './schema';
@@ -40,3 +51,4 @@ export * from './executor';
 export * from './database';
 export * from './db-broker';
 export * from './browser';
+export * from './fetched-content';

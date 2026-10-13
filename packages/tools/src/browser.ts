@@ -34,7 +34,12 @@
  *    The "Host" half of SPEC's "isolated Profile/Host" is not built here.
  *  - "Website text does not become instructions" is a consumption-layer
  *    (prompt-injection) rule that applies where fetched website text is
- *    handed to a model — no fetcher exists yet, so there is nothing to mark.
+ *    handed to a model — no fetcher exists yet, so there is nothing to
+ *    mark TODAY. The contract the future fetcher must honor already ships
+ *    in ./fetched-content.ts: every fetch must emit its text via
+ *    markUntrusted() with FetchedProvenance (url/fetchedAt/profile
+ *    identity), and prompt assemblers must route external text through
+ *    assertQuarantined()/renderQuarantined() before adapter.invoke.
  *  - Registry metadata is in-memory; profile directories survive restarts.
  *    Unknown-but-valid profile dirs under the root are treated as orphans
  *    by `cleanupOrphanedProfiles` (deleted + audited), never silently

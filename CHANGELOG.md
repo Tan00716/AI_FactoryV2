@@ -1,5 +1,13 @@
 # Changelog
 
+## [未发布] Batch 29（在途）
+
+- **Batch 28 独立复核（29-1）**：三项实质声明全部成立（`gap-audit/REAUDIT_BATCH28.md`，零产品代码改动）：removeServer 原子化、DbBroker/Runbook、Browser Profile 均亲跑复验。诚实备注：removeServer 原子性是同进程 SQLite 事务 + `BEGIN IMMEDIATE` 写锁串行跨进程，边界仍是"同一 DB 文件多进程"。
+- **孤儿清理 e2e 启动等待改为轮询（29-2）**：Batch 28 发现的测试抖动已修。`build-orphan-reconcile.test.ts` 的两个裸 sleep 启动等待（2500ms/3000ms）改为 `waitForHealthy` 轮询 `GET /api/health`（与 boot-smoke 同模式：30s 有界 deadline、超时大声失败、永不无限等待）。全仓库审计：这是 repo 内最后一处裸 sleep 启动等待，其余 spawn-server 测试本来就是轮询式。连续 3 遍 7/7。零产品代码改动。
+- **「网站文本不成为指令」消费层契约（29-4）**：SPEC_V2 §33 的一句话给了规则没给机制。先审计确认：今天模型唯一的入口是 `@ai-factory/runtime` 的 `adapter.invoke`，prompt 只由可信字段组装——**今天没有任何外部文本能到达模型**。新建 `packages/tools/src/fetched-content.ts`：`FetchedProvenance`（URL/抓取时间/profile 身份，抓取时刻附带永不猜测）；`markUntrusted()` 是唯一的隔离构造函数（缺 URL 直接拒绝）；`QuarantinedContent` 运行时品牌 + `assertQuarantined()` 同时检查 instanceof 与 own-property 品牌（对抗测试钉住原型伪造）；`renderQuarantined()` 把中英双语"不是指令"横幅写进 prompt 字节；`buildPromptFromBlocks()` 是 prompt 组装的 choke point（未隔离的外部内容 fail-closed）。诚实边界：① 这是问责链不是防注入银弹——不能阻止模型执行隔离块内的注入指令；② 只覆盖网站文本来源域；③ 仍无抓取器（`browser.open` definition-only），契约是未来 driver 与组装方的硬性要求。测试：`packages/tools/tests/fetched-content.test.ts` 11/11。
+- **db.query 服务端接线——Broker 上线（29-3）**：28-3 的包内 DbBroker 接入服务端 HTTP 面（`apps/server/src/routes/db.ts` 新建 + `apps/server/src/db-broker.ts` 新建宿主接线）。`POST /api/db/query`（ad-hoc）与 `POST /api/db/runbooks/run` 按 `authorizeQuery` 门 → 白名单 → 引擎链执行；连接注册（`POST /api/db/connections`，带环境身份 + credential 引用名）与白名单绑定（`PUT /api/db/connections/:name/policy`）、模板注册（`POST /api/db/runbooks`）为 admin，执行为 operator（RBAC 中央门控 `auth.ts`）。启动时注册 `factory` 连接（环境身份来自 `FACTORY_DB_ENVIRONMENT`，默认 dev，非法值拒绝启动）并注入基于本机 SQLite 的真实 `SqliteDbQueryEngine`（`:slot` 具名参数由 node:sqlite 绑定，broker 永不拼接；引擎内参数二次标量校验，防御纵深）。**默认不绑任何白名单**——执行 opt-in，未绑策略时 ad-hoc 响亮拒绝；无引擎的连接响亮拒绝（503 `NO_ENGINE`，绝不冒充）。每种结局写哈希链审计（DB_CONNECTION_REGISTERED / DB_BROKER_POLICY_SET / DB_BROKER_EXECUTED / DB_BROKER_DENIED / DB_BROKER_NO_ENGINE / DB_BROKER_EXECUTION_FAILED / DB_PROD_WRITE_ATTEMPT / DB_PROD_WRITE_DENIED / DB_RUNBOOK_*），SQL 只带占位符、绑定值永不进审计（真 server e2e 哨兵值断言）。行数上限 200、列数上限 50（截断必标注）；多语句 400 拒绝。`db.query` 工具仍 definition-only（implementationGate 未动，继续 DENY——刻意分层）。测试：`apps/server/tests/db-broker.test.ts` 7/7（真 server e2e：无策略拒绝→RBAC→白名单执行/拒绝→无引擎503→prod写确认门→runbook→审计链+哨兵值不在审计中）。测试基线（主线亲验）：构建 0 错误；包套件 2293 → 2304（+11：tools fetched-content）；服务端全套 267 → 274（+7：db-broker）；desktop tsc 0；smoke:boot OK。
+- KNOWN_LIMITATIONS：Browser 条目新增网站文本隔离契约。
+
 ## [未发布] Batch 28（在途）
 
 - **Batch 27 独立复核（28-1）**：三项实质声明全部真实（`gap-audit/REAUDIT_BATCH27.md`，零产品代码改动）。附带发现一项测试时序抖动（e2e 启动等待固定 2500ms 与 server 实际启动 2.5s 零裕量，机器稍有负载就超），产品侧无回归；建议下一批把 e2e 启动等待改为轮询 `/api/health` 直到就绪（与 boot-smoke 同模式）。

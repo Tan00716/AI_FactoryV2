@@ -99,6 +99,14 @@ export interface RouteContext {
    * injects it.
    */
   buildRunner?: import('../build-runner').BuildRunner;
+  /**
+   * SPEC v2 §33 (Batch 29) — server-side database broker: the
+   * DatabaseEnvironmentRegistry + DbBroker from @ai-factory/tools with a
+   * host-injected SQLite engine over this server's own database.
+   * Optional so embedders without a database get an honest 503; the
+   * coordinator's own server always injects it.
+   */
+  dbBroker?: import('../db-broker').DbBrokerService;
   /** System Event Bus — spec §91, shared singleton created in index.ts. */
   bus: EventBus;
   json(res: ServerResponse, status: number, body: unknown): void;
