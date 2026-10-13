@@ -445,24 +445,212 @@ export const TEMPLATE_NAMES: readonly ProjectTemplateName[] = [
 export function listTemplates(): Array<
   Pick<ProjectTemplate, 'name' | 'description' | 'language' | 'framework' | 'packageManager'>
 > {
-  return TEMPLATE_NAMES.map((name) => {
-    const t = templates[name];
-    return {
-      name: t.name,
-      description: t.description,
-      language: t.language,
-      framework: t.framework,
-      packageManager: t.packageManager,
-    };
-  });
+  return defaultTemplateRegistry.list().map((e) => ({
+    name: e.name,
+    description: e.description,
+    language: e.language,
+    framework: e.framework,
+    packageManager: e.packageManager,
+  }));
 }
 
-export function getTemplate(name: string): ProjectTemplate {
-  const t = (templates as Record<string, ProjectTemplate | undefined>)[name];
-  if (!t) {
-    throw new Error(
-      `unknown template '${name}'; available: ${TEMPLATE_NAMES.join(', ')}`,
+// ---------------------------------------------------------------------------
+// Extensible template registry (spec §6.1, Batch 33).
+//
+// §6.1: "模板不是全部内置，必须可扩展" — the five skeletons above stay
+// pinned as builtins, and ProjectTemplateRegistry adds register/unregister
+// for custom templates. Templates are structured data (name → files),
+// never code: registering a template cannot execute anything.
+// ---------------------------------------------------------------------------
+
+/** A caller-supplied template definition for registration. */
+export interface ProjectTemplateRegistration {
+  /** Lowercase slug, e.g. 'godot-2d'. Must not collide with a builtin. */
+  name: string;
+  description: string;
+  language: string;
+  framework: string;
+  packageManager: string;
+  /** Relative path → file contents. Paths are validated (no '..', no absolute). */
+  files: Record<string, string>;
+}
+
+export interface ProjectTemplateListEntry {
+  name: string;
+  description: string;
+  language: string;
+  framework: string;
+  packageManager: string;
+  /** True for the five pinned builtins; false for registered ones. */
+  builtin: boolean;
+}
+
+export class TemplateRegistrationError extends Error {
+  readonly code: 'TEMPLATE_EXISTS' | 'TEMPLATE_NOT_FOUND' | 'TEMPLATE_BUILTIN' | 'TEMPLATE_INVALID';
+  constructor(code: TemplateRegistrationError['code'], message: string) {
+    super(message);
+    this.name = 'TemplateRegistrationError';
+    this.code = code;
+  }
+}
+
+const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const MAX_FILES = 500;
+const MAX_TOTAL_BYTES = 2 * 1024 * 1024;
+
+function validateFilePath(rel: string): void {
+  if (typeof rel !== 'string' || rel.length === 0 || rel.length > 260) {
+    throw new TemplateRegistrationError('TEMPLATE_INVALID', `invalid template file path: ${JSON.stringify(rel)}`);
+  }
+  const parts = rel.split('/');
+  for (const p of parts) {
+    if (!p || p === '.' || p === '..') {
+      throw new TemplateRegistrationError(
+        'TEMPLATE_INVALID',
+        `template file path must be a relative path without '..': ${JSON.stringify(rel)}`,
+      );
+    }
+  }
+  if (rel.startsWith('/') || rel.includes('\\')) {
+    throw new TemplateRegistrationError(
+      'TEMPLATE_INVALID',
+      `template file path must be relative (no absolute paths, no backslashes): ${JSON.stringify(rel)}`,
     );
   }
-  return t;
+}
+
+/** Validate a registration definition; throws TemplateRegistrationError. */
+export function validateTemplateRegistration(def: ProjectTemplateRegistration): void {
+  if (!def || typeof def !== 'object') {
+    throw new TemplateRegistrationError('TEMPLATE_INVALID', 'template definition must be an object');
+  }
+  if (!NAME_RE.test(def.name ?? '')) {
+    throw new TemplateRegistrationError(
+      'TEMPLATE_INVALID',
+      `template name must match ${NAME_RE.source}; got ${JSON.stringify(def.name)}`,
+    );
+  }
+  for (const f of ['description', 'language', 'framework', 'packageManager'] as const) {
+    const v = def[f];
+    if (typeof v !== 'string' || v.length === 0 || v.length > 200) {
+      throw new TemplateRegistrationError(
+        'TEMPLATE_INVALID',
+        `template ${f} must be a non-empty string (<=200 chars)`,
+      );
+    }
+  }
+  if (!def.files || typeof def.files !== 'object' || Array.isArray(def.files)) {
+    throw new TemplateRegistrationError('TEMPLATE_INVALID', 'template files must be a relative-path → contents map');
+  }
+  const entries = Object.entries(def.files);
+  if (entries.length === 0 || entries.length > MAX_FILES) {
+    throw new TemplateRegistrationError(
+      'TEMPLATE_INVALID',
+      `template must define 1–${MAX_FILES} files; got ${entries.length}`,
+    );
+  }
+  let total = 0;
+  for (const [rel, content] of entries) {
+    validateFilePath(rel);
+    if (typeof content !== 'string') {
+      throw new TemplateRegistrationError(
+        'TEMPLATE_INVALID',
+        `template file contents must be strings: ${JSON.stringify(rel)}`,
+      );
+    }
+    total += Buffer.byteLength(content, 'utf8');
+  }
+  if (total > MAX_TOTAL_BYTES) {
+    throw new TemplateRegistrationError(
+      'TEMPLATE_INVALID',
+      `template too large: ${total} bytes > ${MAX_TOTAL_BYTES} bytes`,
+    );
+  }
+}
+
+export class ProjectTemplateRegistry {
+  private readonly custom = new Map<string, ProjectTemplateRegistration>();
+
+  /** Register a custom template. Builtins are pinned and cannot be shadowed. */
+  register(def: ProjectTemplateRegistration): void {
+    validateTemplateRegistration(def);
+    if ((TEMPLATE_NAMES as readonly string[]).includes(def.name)) {
+      throw new TemplateRegistrationError(
+        'TEMPLATE_EXISTS',
+        `template '${def.name}' is a builtin and cannot be overridden`,
+      );
+    }
+    if (this.custom.has(def.name)) {
+      throw new TemplateRegistrationError(
+        'TEMPLATE_EXISTS',
+        `template '${def.name}' is already registered; unregister it first to replace it`,
+      );
+    }
+    this.custom.set(def.name, structuredClone(def));
+  }
+
+  /** Remove a registered custom template. Builtins cannot be unregistered. */
+  unregister(name: string): void {
+    if ((TEMPLATE_NAMES as readonly string[]).includes(name)) {
+      throw new TemplateRegistrationError(
+        'TEMPLATE_BUILTIN',
+        `builtin template '${name}' cannot be unregistered`,
+      );
+    }
+    if (!this.custom.delete(name)) {
+      throw new TemplateRegistrationError('TEMPLATE_NOT_FOUND', `template '${name}' is not registered`);
+    }
+  }
+
+  /** Full template incl. files (builtin or registered). */
+  get(name: string): ProjectTemplate {
+    const builtin = (templates as Record<string, ProjectTemplate | undefined>)[name];
+    if (builtin) return builtin;
+    const custom = this.custom.get(name);
+    if (!custom) {
+      const available = [...TEMPLATE_NAMES, ...this.custom.keys()].join(', ');
+      throw new TemplateRegistrationError(
+        'TEMPLATE_NOT_FOUND',
+        `unknown template '${name}'; available: ${available}`,
+      );
+    }
+    return structuredClone(custom) as ProjectTemplate;
+  }
+
+  has(name: string): boolean {
+    return (TEMPLATE_NAMES as readonly string[]).includes(name) || this.custom.has(name);
+  }
+
+  /** Metadata for every template, builtins first (files excluded). */
+  list(): ProjectTemplateListEntry[] {
+    const entries: ProjectTemplateListEntry[] = TEMPLATE_NAMES.map((name) => {
+      const t = templates[name];
+      return {
+        name: t.name,
+        description: t.description,
+        language: t.language,
+        framework: t.framework,
+        packageManager: t.packageManager,
+        builtin: true,
+      };
+    });
+    for (const c of this.custom.values()) {
+      entries.push({
+        name: c.name,
+        description: c.description,
+        language: c.language,
+        framework: c.framework,
+        packageManager: c.packageManager,
+        builtin: false,
+      });
+    }
+    return entries;
+  }
+}
+
+/** Default registry: the five builtins, nothing else. */
+export const defaultTemplateRegistry = new ProjectTemplateRegistry();
+
+export function getTemplate(name: string): ProjectTemplate {
+  return defaultTemplateRegistry.get(name);
 }

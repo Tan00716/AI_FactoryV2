@@ -102,7 +102,7 @@ import { handleWorkforceRoutes } from './routes/workforce';
 import { handleMcpRoutes } from './routes/mcp';
 import { handleKnowledgeRoutes } from './routes/knowledge';
 import { handleEvaluationRoutes } from './routes/evaluation';
-import { handleProjectsRoutes } from './routes/projects';
+import { handleProjectsRoutes, initProjectsRoutes } from './routes/projects';
 import { handleFinalReportRoutes } from './routes/final-report';
 import { handleProjectIoRoutes } from './routes/project-io';
 import {
@@ -138,7 +138,7 @@ import { handleIncidentsRoutes } from './routes/incidents';
 import { handleQuotaRoutes } from './routes/quota';
 import { handleWatchdogRoutes } from './routes/watchdog';
 import { handleTakeoverRoutes } from './routes/takeover';
-import { handleDisputeRoutes } from './routes/disputes';
+import { handleDisputeRoutes, initDisputesPersistence } from './routes/disputes';
 import { handleAuthorityRoutes } from './routes/authority';
 import { handleReportRoutes } from './routes/reports';
 import { handleV2TransitionRoutes } from './routes/v2-transitions';
@@ -483,6 +483,22 @@ initMcpPersistence(fdb);
  * audit) — never presented as still supervised, never auto-resumed.
  */
 initDelegationRoutes(fdb, audit);
+
+/**
+ * Project templates (§6.1, Batch 33): boot-load persisted custom template
+ * definitions into the server's registry. Corrupted rows are skipped
+ * loudly (TEMPLATE_RELOAD_SKIPPED audit), never silently.
+ */
+initProjectsRoutes(fdb, audit);
+
+/**
+ * Escalation record durability (§48.2, Batch 33): hydrate the
+ * persisted dispute-escalation rows into the disputes route's
+ * read-back history. Rows are terminal records (no demotion, no
+ * re-activation); the §81 needsHuman shape is deliberately not
+ * covered — it has no server emission point.
+ */
+initDisputesPersistence(fdb, audit);
 
 /**
  * Backup schedules (§47, Batch 20) — the in-process scheduler runs
@@ -876,14 +892,61 @@ const server = createServer(async (req, res) => {
     if (path === '/api/projects' && method === 'POST') {
       const b = await readBody(req);
       if (!b['name']) return json(res, 400, { error: 'name is required' });
-      const p = fdb.createProject({
-        id: randomUUID(),
-        name: String(b['name']),
-        description: String(b['description'] ?? ''),
-        path: String(b['path'] ?? ''),
-      });
-      audit.record('human', 'PROJECT_CREATED', 'project', p.id, { name: p.name });
-      return json(res, 201, p);
+      // §6.1 (Batch 33) — the spec's project-record fields are accepted
+      // verbatim: scalars as strings, ref collections as string arrays.
+      // Wrong shapes are 400; nothing is fabricated — absent fields
+      // stay null/[] in the record.
+      try {
+        const scalar = (key: string): string | undefined => {
+          const v = b[key];
+          if (v === undefined || v === null) return undefined;
+          if (typeof v !== 'string') throw new Error(`"${key}" must be a string`);
+          return v;
+        };
+        const refs = (key: string): string[] | undefined => {
+          const v = b[key];
+          if (v === undefined || v === null) return undefined;
+          if (!Array.isArray(v) || !v.every((e) => typeof e === 'string')) {
+            throw new Error(`"${key}" must be an array of strings`);
+          }
+          return v as string[];
+        };
+        const p = fdb.createProject({
+          id: randomUUID(),
+          name: String(b['name']),
+          description: String(b['description'] ?? ''),
+          path: String(b['path'] ?? ''),
+          organization_id: scalar('organization_id'),
+          profile_version: scalar('profile_version'),
+          repository_refs: refs('repository_refs'),
+          workspace_refs: refs('workspace_refs'),
+          instruction_refs: refs('instruction_refs'),
+          policy_version: scalar('policy_version'),
+          default_manager_id: scalar('default_manager_id'),
+          workflow_version: scalar('workflow_version'),
+          environment_refs: refs('environment_refs'),
+          data_classification: scalar('data_classification'),
+          lifecycle_state: scalar('lifecycle_state'),
+        });
+        audit.record('human', 'PROJECT_CREATED', 'project', p.id, { name: p.name });
+        return json(res, 201, p);
+      } catch (err) {
+        return json(res, 400, { error: (err as Error).message });
+      }
+    }
+
+    // §6.1 (Batch 33) — project record detail. The read surface returns
+    // the FULL record (all spec fields, nulls/empty arrays where never
+    // recorded). Sits after the route modules above so /api/projects/
+    // templates, discover, create, exec, clone and the knowledge/import
+    // subpaths keep their handlers; those modules answer before this
+    // bare-id block is reached.
+    const projectDetail = method === 'GET' && path.match(/^\/api\/projects\/([^/]+)$/);
+    if (projectDetail) {
+      const projectId = decodeURIComponent(projectDetail[1]);
+      const p = fdb.getProject(projectId);
+      if (!p) return json(res, 404, { error: `project not found: ${projectId}` });
+      return json(res, 200, { project: p });
     }
 
     // Project lifecycle (Batch 14): POST /api/projects/:id/archive|unarchive.

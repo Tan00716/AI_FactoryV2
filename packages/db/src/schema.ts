@@ -13,7 +13,22 @@ CREATE TABLE IF NOT EXISTS projects (
   status TEXT NOT NULL DEFAULT 'active',
   archived_at TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  -- §6.1 (Batch 33) — the spec's project-record fields. JSON ref
+  -- collections are stored as TEXT (JSON arrays, parsed on read);
+  -- every column is nullable so an upgrade never fabricates a value
+  -- for a project that never had one recorded.
+  organization_id TEXT,
+  profile_version TEXT,
+  repository_refs TEXT,
+  workspace_refs TEXT,
+  instruction_refs TEXT,
+  policy_version TEXT,
+  default_manager_id TEXT,
+  workflow_version TEXT,
+  environment_refs TEXT,
+  data_classification TEXT,
+  lifecycle_state TEXT
 );
 
 CREATE TABLE IF NOT EXISTS agents (
@@ -853,4 +868,73 @@ CREATE INDEX IF NOT EXISTS idx_delegations_status
   ON delegations(status);
 CREATE INDEX IF NOT EXISTS idx_delegations_task
   ON delegations(task_id);
-`;
+
+-- Dispute-escalation records (§48.2, Batch 33): the append-only log of
+-- escalations the independent adjudicator creates when it cannot
+-- resolve a dispute and asks a human. Terminal records (no in-flight
+-- state): no update API on the store, no demotion on hydrate — the
+-- record is a historical fact, a human's decision on the pending
+-- actions would be recorded as a NEW artifact, never an edit here.
+-- The §81 needsHuman escalation shape is NOT in this table (it has no
+-- server emission point and no store anywhere).
+CREATE TABLE IF NOT EXISTS escalations (
+  escalation_id TEXT PRIMARY KEY,
+  dispute_id TEXT NOT NULL,
+  reasons_json TEXT NOT NULL,
+  pending_human_actions_json TEXT NOT NULL,
+  evidence_by_side_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_escalations_dispute
+  ON escalations(dispute_id);
+
+-- Self-modification proposals (§59, §48.2, Batch 33): one insert-only
+-- row per §59 proposal decision (POST /api/workforce/proposals).
+-- Statuses are terminal at decision time — needs-review is a flag for
+-- humans, not system state this factory advances; no review endpoint
+-- exists, so no restart demotion is needed or invented.
+CREATE TABLE IF NOT EXISTS proposals (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  target TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  requested_by TEXT NOT NULL,
+  status TEXT NOT NULL,
+  decided_by TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  decided_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proposals_status
+  ON proposals(status);
+
+
+-- Project knowledge entries (§6.4, Batch 33): one row per
+-- (project_id, category, title); upsert in place, updated_at moves.
+-- content is the indexed summary; source_* carry the §6.4 provenance
+-- (source file kept, index references version/hash).
+CREATE TABLE IF NOT EXISTS project_knowledge (
+  entry_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  source_path TEXT,
+  source_version TEXT,
+  source_hash TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(project_id, category, title)
+);
+CREATE INDEX IF NOT EXISTS idx_project_knowledge_project
+  ON project_knowledge(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_knowledge_category
+  ON project_knowledge(project_id, category);
+
+-- Registered project template definitions (§6.1, Batch 33): custom
+-- templates only; the five builtins stay pinned in @ai-factory/projects.
+CREATE TABLE IF NOT EXISTS project_templates (
+  name TEXT PRIMARY KEY,
+  definition_json TEXT NOT NULL,
+  registered_at TEXT NOT NULL
+);
+`

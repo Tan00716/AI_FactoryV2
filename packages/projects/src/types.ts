@@ -2,6 +2,7 @@
  * Shared types for @ai-factory/projects — local project execution,
  * discovery and scaffolding (spec §6, §31–§33).
  */
+import type { ProjectTemplateRegistry } from './templates';
 
 /** Workspace permissions from spec §6. */
 export type WorkspacePermission =
@@ -174,7 +175,12 @@ export type ProjectTemplateName =
 
 /** A runnable-minimal project skeleton. */
 export interface ProjectTemplate {
-  name: ProjectTemplateName;
+  /**
+   * Template slug. The five builtins keep the ProjectTemplateName
+   * literals; registered templates (Batch 33) may use any valid slug,
+   * so this is string, not the builtin union.
+   */
+  name: string;
   description: string;
   language: string;
   framework: string;
@@ -186,7 +192,11 @@ export interface ProjectTemplate {
 export interface CreateProjectOptions {
   /** Directory-safe project name. */
   name: string;
-  template?: ProjectTemplateName;
+  /**
+   * Template slug: a builtin ProjectTemplateName or a name registered
+   * on the registry (Batch 33 widened this from the builtin union).
+   */
+  template?: string;
   /** Target parent dir or full path; defaults to the current working dir. */
   dir?: string;
   /**
@@ -195,13 +205,19 @@ export interface CreateProjectOptions {
    * @default false — a non-empty target throws DirectoryNotEmptyError.
    */
   force?: boolean;
+  /**
+   * Registry the template name is resolved against. Defaults to
+   * defaultTemplateRegistry (the five builtins). The server passes its
+   * own registry so registered templates work in /api/projects/create.
+   */
+  registry?: ProjectTemplateRegistry;
 }
 
 export interface CreatedProject {
   /** Absolute path of the new project. */
   dir: string;
   name: string;
-  template: ProjectTemplateName | null;
+  template: string | null;
   /** Relative paths of every file written (sorted). */
   files: string[];
   /** True when `git init` ran successfully. */

@@ -39,6 +39,10 @@ import { SqliteWorktreeStore } from './worktrees';
 import { SqliteMcpServerStore } from './mcp-servers';
 import { SqliteGateStore } from './gates';
 import { SqliteDelegationStore } from './delegations';
+import { SqliteProjectKnowledgeStore } from './project-knowledge';
+import { SqliteProjectTemplateDbStore } from './project-templates';
+import { SqliteEscalationStore } from './escalations';
+import { SqliteProposalStore } from './proposals';
 
 const J = {
   parse<T>(s: string | null, fallback: T): T {
@@ -713,6 +717,86 @@ export interface ProjectRow {
   archived_at: string | null;
   created_at: string;
   updated_at: string;
+  // §6.1 (Batch 33) — spec project-record fields. Ref collections are
+  // string arrays (stored JSON in SQLite). Scalars are null when never
+  // recorded — an old row backfills nothing; only reads surface null.
+  organization_id: string | null;
+  profile_version: string | null;
+  repository_refs: string[];
+  workspace_refs: string[];
+  instruction_refs: string[];
+  policy_version: string | null;
+  default_manager_id: string | null;
+  workflow_version: string | null;
+  environment_refs: string[];
+  data_classification: string | null;
+  lifecycle_state: string | null;
+}
+
+/** New §6.1 columns for migrateProjectsTable — name only; all added nullable. */
+const PROJECT_V2_COLUMNS: readonly string[] = [
+  'organization_id',
+  'profile_version',
+  'repository_refs',
+  'workspace_refs',
+  'instruction_refs',
+  'policy_version',
+  'default_manager_id',
+  'workflow_version',
+  'environment_refs',
+  'data_classification',
+  'lifecycle_state',
+];
+
+/**
+ * Parse a raw projects row into a ProjectRow. JSON ref columns are
+ * parsed; a corrupted refs column fails LOUDLY (never guessed) —
+ * same contract as the pipeline stage rows (Batch 31).
+ */
+export function rowToProject(raw: Record<string, unknown>): ProjectRow {
+  const refs = (col: string): string[] => {
+    const v = raw[col];
+    if (v === null || v === undefined || v === '') return [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(String(v));
+    } catch {
+      throw new Error(
+        `corrupted projects row: column ${col} is not valid JSON for project ${String(raw['id'] ?? '?')}`,
+      );
+    }
+    if (!Array.isArray(parsed) || !parsed.every((e) => typeof e === 'string')) {
+      throw new Error(
+        `corrupted projects row: column ${col} is not a string array for project ${String(raw['id'] ?? '?')}`,
+      );
+    }
+    return parsed as string[];
+  };
+  const scalar = (col: string): string | null => {
+    const v = raw[col];
+    return v === null || v === undefined ? null : String(v);
+  };
+  return {
+    id: String(raw['id']),
+    name: String(raw['name'] ?? ''),
+    description: String(raw['description'] ?? ''),
+    path: String(raw['path'] ?? ''),
+    status: (raw['status'] as ProjectStatus) ?? 'active',
+    archived_at: scalar('archived_at'),
+    created_at: String(raw['created_at'] ?? ''),
+    updated_at: String(raw['updated_at'] ?? ''),
+    organization_id: scalar('organization_id'),
+    profile_version: scalar('profile_version'),
+    repository_refs: refs('repository_refs'),
+    workspace_refs: refs('workspace_refs'),
+    instruction_refs: refs('instruction_refs'),
+    policy_version: scalar('policy_version'),
+    default_manager_id: scalar('default_manager_id'),
+    workflow_version: scalar('workflow_version'),
+    environment_refs: refs('environment_refs'),
+    data_classification: scalar('data_classification'),
+    lifecycle_state: scalar('lifecycle_state'),
+  };
 }
 
 export interface ListProjectsOptions {
@@ -782,6 +866,16 @@ export function migrateProjectsTable(db: DatabaseSync): void {
   if (!cols.has('archived_at')) {
     db.exec(`ALTER TABLE projects ADD COLUMN archived_at TEXT`);
   }
+  // §6.1 (Batch 33) — spec project-record fields. Plain nullable
+  // columns, no defaults: an upgrade must not fabricate an
+  // organization, a policy version or a lifecycle state for a project
+  // that never had one recorded. New rows get their values from the
+  // creator (null when the creator supplies nothing).
+  for (const col of PROJECT_V2_COLUMNS) {
+    if (!cols.has(col)) {
+      db.exec(`ALTER TABLE projects ADD COLUMN ${col} TEXT`);
+    }
+  }
 }
 
 /**
@@ -825,6 +919,49 @@ export function migrateTasksTable(db: DatabaseSync): void {
   }
 }
 
+  // -- projects -------------------------------------------------------------
+/**
+ * §6.1 (Batch 33) — project-record input. Old callers keep passing the
+ * minimal shape {id, name, description, path}; the §6.1 fields are
+ * optional and stay null/[] when the creator supplies nothing. Nothing
+ * is fabricated: the record stores exactly what the caller asserted,
+ * and lifecycle fields (status/archived_at) are owned by the archive
+ * lifecycle, not by this call.
+ */
+export type CreateProjectInput = Omit<
+  ProjectRow,
+  | 'created_at'
+  | 'updated_at'
+  | 'status'
+  | 'archived_at'
+  | 'organization_id'
+  | 'profile_version'
+  | 'repository_refs'
+  | 'workspace_refs'
+  | 'instruction_refs'
+  | 'policy_version'
+  | 'default_manager_id'
+  | 'workflow_version'
+  | 'environment_refs'
+  | 'data_classification'
+  | 'lifecycle_state'
+> &
+  Partial<
+    Pick<
+      ProjectRow,
+      | 'organization_id'
+      | 'profile_version'
+      | 'repository_refs'
+      | 'workspace_refs'
+      | 'instruction_refs'
+      | 'policy_version'
+      | 'default_manager_id'
+      | 'workflow_version'
+      | 'environment_refs'
+      | 'data_classification'
+      | 'lifecycle_state'
+    >
+  >;
 export class FactoryDatabase {
   readonly db: DatabaseSync;
   readonly tasks: SqliteTaskStore;
@@ -957,6 +1094,26 @@ export class FactoryDatabase {
    * auto-resumed).
    */
   readonly delegations: SqliteDelegationStore;
+  /** Project knowledge entries (§6.4, Batch 33). */
+  readonly projectKnowledge: SqliteProjectKnowledgeStore;
+  /** Registered template definitions (§6.1, Batch 33). */
+  readonly projectTemplates: SqliteProjectTemplateDbStore;
+  /**
+   * §48.2 (Batch 33) — durable dispute-escalation records: the
+   * append-only log of escalations adjudication created when it
+   * could not resolve a dispute and asked a human. Terminal records
+   * (no in-flight state to demote); hydrate as-is. The §81
+   * needsHuman escalation shape is NOT covered — it has no server
+   * emission point and no store anywhere.
+   */
+  readonly escalations: SqliteEscalationStore;
+  /**
+   * §59 / §48.2 (Batch 33) — durable self-modification proposals:
+   * the proposal decision for every POST /api/workforce/proposals.
+   * Statuses are terminal at decision time (auto-approved / denied /
+   * needs-review is a human flag, not system state); hydrate as-is.
+   */
+  readonly proposals: SqliteProposalStore;
   /**
    * §40 (Batch 23) — build records: one row per landed merge. The
    * record is deliberately NOT a fake build — merges never run a
@@ -1011,18 +1168,47 @@ export class FactoryDatabase {
     this.mcpServers = new SqliteMcpServerStore(this.db);
     this.gates = new SqliteGateStore(this.db);
     this.delegations = new SqliteDelegationStore(this.db);
+    this.projectKnowledge = new SqliteProjectKnowledgeStore(this.db);
+    this.projectTemplates = new SqliteProjectTemplateDbStore(this.db);
+    this.escalations = new SqliteEscalationStore(this.db);
+    this.proposals = new SqliteProposalStore(this.db);
     this.builds = new SqliteBuildRecordStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------
-  createProject(
-    p: Omit<ProjectRow, 'created_at' | 'updated_at' | 'status' | 'archived_at'>,
-  ): ProjectRow {
+  createProject(p: CreateProjectInput): ProjectRow {
     const now = new Date().toISOString();
+    const refs = (v: string[] | undefined): string =>
+      JSON.stringify(Array.isArray(v) ? v.filter((e) => typeof e === 'string') : []);
     this.db.prepare(
-      'INSERT INTO projects (id, name, description, path, status, archived_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
-    ).run(p.id, p.name, p.description, p.path, 'active', null, now, now);
-    return { ...p, status: 'active', archived_at: null, created_at: now, updated_at: now };
+      `INSERT INTO projects (
+         id, name, description, path, status, archived_at, created_at, updated_at,
+         organization_id, profile_version, repository_refs, workspace_refs,
+         instruction_refs, policy_version, default_manager_id, workflow_version,
+         environment_refs, data_classification, lifecycle_state
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      p.id,
+      p.name,
+      p.description,
+      p.path,
+      'active',
+      null,
+      now,
+      now,
+      p.organization_id ?? null,
+      p.profile_version ?? null,
+      refs(p.repository_refs),
+      refs(p.workspace_refs),
+      refs(p.instruction_refs),
+      p.policy_version ?? null,
+      p.default_manager_id ?? null,
+      p.workflow_version ?? null,
+      refs(p.environment_refs),
+      p.data_classification ?? null,
+      p.lifecycle_state ?? null,
+    );
+    return this.getProject(p.id) as ProjectRow;
   }
 
   /**
@@ -1031,21 +1217,27 @@ export class FactoryDatabase {
    * back in explicitly (includeArchived, or an exact status filter).
    */
   listProjects(opts: ListProjectsOptions = {}): ProjectRow[] {
-    if (opts.status) {
+    const rows = ((): Record<string, unknown>[] => {
+      if (opts.status) {
+        return this.db
+          .prepare('SELECT * FROM projects WHERE status = ? ORDER BY created_at')
+          .all(opts.status) as unknown as Record<string, unknown>[];
+      }
+      if (opts.includeArchived) {
+        return this.db.prepare('SELECT * FROM projects ORDER BY created_at').all() as unknown as Record<string, unknown>[];
+      }
       return this.db
-        .prepare('SELECT * FROM projects WHERE status = ? ORDER BY created_at')
-        .all(opts.status) as unknown as ProjectRow[];
-    }
-    if (opts.includeArchived) {
-      return this.db.prepare('SELECT * FROM projects ORDER BY created_at').all() as unknown as ProjectRow[];
-    }
-    return this.db
-      .prepare("SELECT * FROM projects WHERE status = 'active' ORDER BY created_at")
-      .all() as unknown as ProjectRow[];
+        .prepare("SELECT * FROM projects WHERE status = 'active' ORDER BY created_at")
+        .all() as unknown as Record<string, unknown>[];
+    })();
+    return rows.map(rowToProject);
   }
 
   getProject(id: string): ProjectRow | undefined {
-    return this.db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined;
+    const raw = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return raw ? rowToProject(raw) : undefined;
   }
 
   /**

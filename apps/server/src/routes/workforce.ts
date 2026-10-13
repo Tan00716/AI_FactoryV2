@@ -4,6 +4,10 @@
  *  POST /api/workforce/employees   {jobTitle, specialty?, parentId?,
  *                                   requestedBy?} → createEmployee (governed)
  *  POST /api/workforce/proposals   {kind, target, rationale, requestedBy?}
+ *                                    (decision written through to fdb.proposals,
+ *                                     §59/§48.2 Batch 33)
+ *  GET  /api/workforce/proposals   proposal decision history (newest-first)
+ *  GET  /api/workforce/proposals/:id  one proposal decision
  *  GET  /api/workforce/squads      active + archived squads
  *  POST /api/workforce/squads      {taskId, candidateIds?} → assemble
  *  POST /api/workforce/squads/:taskId/archive
@@ -175,7 +179,44 @@ export async function handleWorkforceRoutes(
       proposal.id,
       { kind, target, status: proposal.status },
     );
+    // §59/§48.2 (Batch 33): the decision used to live only in this
+    // response. Write it through to fdb.proposals; a write failure
+    // audits PROPOSAL_PERSIST_FAILED loudly but does not roll back
+    // the decision that was just made.
+    try {
+      ctx.fdb.proposals.save({
+        id: proposal.id,
+        kind: proposal.kind,
+        target: proposal.target,
+        rationale: proposal.rationale,
+        requestedBy: proposal.requestedBy,
+        status: proposal.status,
+        decidedBy: proposal.decidedBy,
+        reason: proposal.reason,
+        decidedAt: proposal.decidedAt,
+      });
+    } catch (e) {
+      ctx.audit.record('system', 'PROPOSAL_PERSIST_FAILED', 'proposal', proposal.id, {
+        error: e instanceof Error ? e.message : 'proposal persist failed',
+        kind,
+        target,
+      });
+    }
     return ctx.json(res, 201, proposal), true;
+  }
+
+  if (method === 'GET' && path === '/api/workforce/proposals') {
+    const status = url.searchParams.get('status') ?? undefined;
+    const items = ctx.fdb.proposals.list(status);
+    return ctx.json(res, 200, { items, total: items.length }), true;
+  }
+
+  if (method === 'GET' && path.startsWith('/api/workforce/proposals/')) {
+    const id = path.slice('/api/workforce/proposals/'.length);
+    if (!id) return ctx.json(res, 400, { error: 'proposal id is required' }), true;
+    const record = ctx.fdb.proposals.get(id);
+    if (!record) return ctx.json(res, 404, { error: 'proposal not found' }), true;
+    return ctx.json(res, 200, { proposal: record }), true;
   }
 
   if (method === 'GET' && path === '/api/workforce/squads') {

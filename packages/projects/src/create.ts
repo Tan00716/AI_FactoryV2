@@ -8,11 +8,10 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { getTemplate } from './templates';
+import { defaultTemplateRegistry, type ProjectTemplateRegistry } from './templates';
 import type {
   CreateProjectOptions,
   CreatedProject,
-  ProjectTemplateName,
 } from './types';
 
 /**
@@ -56,7 +55,7 @@ function validateName(name: string): void {
 
 function projectYaml(opts: {
   name: string;
-  template: ProjectTemplateName | null;
+  template: string | null;
   language: string | null;
   framework: string | null;
 }): string {
@@ -92,7 +91,7 @@ function policyYaml(name: string): string {
   ].join('\n');
 }
 
-function readmeFor(name: string, template: ProjectTemplateName | null): string {
+function readmeFor(name: string, template: string | null): string {
   return [
     `# ${name}`,
     '',
@@ -148,13 +147,14 @@ export function createProject(opts: CreateProjectOptions): CreatedProject {
 
   mkdirSync(dir, { recursive: true });
 
-  let template: ProjectTemplateName | null = null;
+  let template: string | null = null;
   let language: string | null = null;
   let framework: string | null = null;
   const files: string[] = [];
 
   if (opts.template) {
-    const t = getTemplate(opts.template);
+    const registry: ProjectTemplateRegistry = opts.registry ?? defaultTemplateRegistry;
+    const t = registry.get(opts.template);
     template = t.name;
     language = t.language;
     framework = t.framework;
