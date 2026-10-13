@@ -1,5 +1,13 @@
 # Changelog
 
+## [未发布] Batch 24 — 真实构建执行 / Batch 23 独立复核 / 缺口收敛确认 / 可售清单复验
+
+- **真实构建执行（§40 闭环）**：审计先行——"执行一次真实构建"在 merge 上下文里的五个问题全部诚实回答（报告 `gap-audit/AUDIT_BUILD_EXECUTION_24.md`）：命令唯一诚实来源是显式运维配置 `FACTORY_BUILD_COMMAND`（未配置 = 功能关闭，记录保持 `NOT_EXECUTED`；仓库内容/HTTP 输入永不作为命令来源）；`git worktree add --detach` 钉住 revision 的干净工作区（`FACTORY_BUILD_WORK_ROOT`，默认系统临时目录）；走与 `/api/exec` 完全相同的命令策略；超时默认 10 分钟杀整个进程树；成功失败都删工作区。`packages/db`：builds 状态机 `NOT_EXECUTED → SUCCEEDED | FAILED`（单向，终端行不可改写）；`definition` 改为锁定的 JSON；新增 `exit_code`/`failure_reason`/`completed_at` 列 + 老库原地迁移。`apps/server/src/build-runner.ts`（新建）：后台 FIFO 串行 runner，成功→真 digest（`lockBuild` 重算，revision/lockfile/toolchain/命令哈希/配置哈希全部真实来源，缺项点名不编造）+ `BUILD_SUCCEEDED` 审计 + digest 为真时回填 merge 证据的 `artifactDigest`；失败/超时/策略拒绝→`markFailed` + `BUILD_FAILED`。两条 merge 路径 fire-and-forget `enqueue`（merge 响应永不阻塞）。e2e：成功路径 digest 与独立 `lockBuild` 重算逐字一致、证据绑定、`'no artifact'` 移除、工作区清理；失败（exit 3）→ FAILED + 原因；策略拒绝（`rm`）→ FAILED 且未执行；未配置时保持 `NOT_EXECUTED`。关键边界：构建命令执行仓库控制的代码，**不是沙箱**，只对信任仓库启用（文档化的运维决策）；SBOM/attestation 仍 null；多机/分布式构建未做。
+- **Batch 23 独立复核**：三项实质声明全部成立（`gap-audit/REAUDIT_BATCH23.md`）：builds 双实现对拍/老库迁移/merge 落记录亲跑成立；drain 租约原子性（INSERT 抢锁 + takeover CAS）与争用让路/接管/失锁中止亲验成立，双真进程测试多次稳定；23-2 与 23-4 在同一文件的并行收敛无重复实现、无冲突导出。
+- **缺口收敛确认**：按"真实使用影响"排序的三个头号候选（模型路由无视 availability、工具空结果未建模、v1 迁移无生产调用）经独立重验**全部已关闭**，零代码改动——旧提案的候选在 17 个批次中被逐个关闭，缺口清单在收敛。剩余多为环境依赖（Windows 真机、真实隔离 Host、Codex 登录）、刻意设计选择或大功能项。
+- **SELLABLE_CHECKLIST 全面复验**：逐项对照基线重验——A4 关键数据持久勾选（全部跨 SIGKILL 保真）；A1/A2 仍 BLOCKED（Codex 登录、桌面分发待 Tan）；A3 走查 API 层全绿但无真机桌面点验；B 高影响项关闭、剩余缺口列明；C 测试项通过、文档补两处缺口（本批已补：CHANGELOG Batch 20 小节、KNOWN_LIMITATIONS 第 41 条改写）；D 许可证/定价/署名待 Tan（备料完成，未替他定）。
+- KNOWN_LIMITATIONS：builds 条目更新为"构建执行已真实落地"、MCP 条目中 merge queue 单实例假设的过时引用已改写。测试基线：包套件 2186 → 2194（db builds 状态机 + cicd 构建组装），服务端全套 237 → 244（+7 build-runner）。
+
 ## [未发布] Batch 23 — 构建记录表 / Merge Queue 跨进程互斥 / Batch 22 独立复核
 
 - **构建记录表（§40 最小闭环第一步）**：新建 `builds` 表（digest、构建定义、revision→commit 映射、SBOM/attestation 引用；memory/SQLite 双实现对拍；老库自动建表），每次合并（直接 + 队列）经 `buildRecordInputForMerge()` 落一条记录。但合并从不执行真实构建，故 `status` 恒为 `'NOT_EXECUTED'`，digest/definition/SBOM/attestation 全为 null 且每个 null 带 pinned 原因注记（`NO_BUILD_DIGEST_NOTE` 等，测试逐字钉住）——记录缺失而非占位；candidateSha 缺失时记 `BUILD_RECORD_SKIPPED` 审计，绝不用 targetSha 冒充 revision。merge 证据的 `artifactDigest` 仍是 null + `'no artifact'`（Batch 22-3 口径不变）。边界：无真实构建执行、无新增 HTTP 端点；真正闭环还需"真实构建执行 → 状态流转 → digest 回填 → 与证据绑定"。
@@ -14,6 +22,14 @@
 - **§40 → §36 审计结论（不接线）**：产品中不存在真实可绑定的构建产物——`lockBuild()` 纯函数生产零调用、无 builds 表、合并从不触发构建、`merge_queue_entries.artifact_digest` 永远 null。`artifactDigest` 保持 null + `'no artifact'` 注记是唯一诚实状态；硬调 `lockBuild` 填 digest 等于编造，故零代码改动，仅审计报告（`gap-audit/AUDIT_BUILD_DIGEST_40_TO_36.md`）。后续路线：Batch 23+ 立项"构建记录最小闭环"（真实构建执行 → builds 表 → 绑定）。
 - **F7 收口**：`GET /api/tasks/:id/outbox` HTTP 形状与 DB 列 `event_type` 词汇未对齐——审计发现该列纯写（`append` 用 `eventTypeOf(intent)` 写入，`rowToStored` 不读回，无产品代码读它）。最小诚实修复：`eventTypeOf` 导出为列写入规则单源，`outboxView` 加 `eventType: eventTypeOf(e)`（确定性投影非第二事实）；core 接口未动。测试：db 121/121（+1）、server 234/234（+1）；11 步 transition + finalize 后 HTTP 返回 11 个 `WORKFLOW_TRANSITIONED` + 1 个 `WORKFLOW_FINALIZED`，与 DB 列逐字一致。顺带补了三处路由头注释文档缺口（`/api/mcp/launch` 端点行、`/api/backups` 的 `backupId` 字段名、SSE 终端 base64 帧格式）。
 - KNOWN_LIMITATIONS 新增四条。测试基线：包套件 2164 → 2165（+1），服务端全套 233 → 234（+1）。
+
+## [未发布] Batch 20 — §46 信任流 HTTP 化 / Merge Queue 落库 / 备份调度 / Manager 页签
+
+- **§46 MCP 信任流 HTTP 化**：`GET /api/mcp/servers/{name}@{version}/trust`（viewer：呈现信任评估或 null + 下一步）、`POST …/trust/approve`（admin，仅 BLOCKED 可批，目标策略限 AUTO/AI_REVIEW/HUMAN_APPROVAL）、`…/trust/deny`（记原因、保持 BLOCKED）、`…/trust/revoke`（信任降 LOW + 策略回 BLOCKED + 卸载 + SIGTERM 运行中的 launch，返回 `stoppedLaunches`）；非法迁移 409。`POST /api/mcp/launch` 对 BLOCKED 的 403 改为 `MCP_TRUST_NOT_APPROVED` 并指向信任端点。包层 `assessTrust` 早已存在，本批只做 HTTP 接线。边界：注册表与信任状态仍进程内（重启丢失，Batch 21 关闭）。
+- **Merge Queue + PR Store 持久化**：`pull_requests` / `merge_queue_entries` 表写透；`hydrate()` 恢复 QUEUED、中断的 VERIFYING 降回 QUEUED（记 `MERGE_QUEUE_REHYDRATED`，旧验证结论只展示不信任）；同一 PR 活跃条目内存 + partial unique index 双层防重；`decisionAuditRef` 回填终端审计事件；真 SIGKILL e2e。边界：多进程同时 drain 同一 repo 的并发互斥未做（单实例假设，Batch 23 关闭）。
+- **备份调度 + Retention（§47）**：`backup_schedules` 表落库；进程内调度器（自写 5 字段 cron、UTC 分钟精度、时钟可注入）到点复用同一 `createBackup`（manifest kind `scheduled`）；宕机错过记 `BACKUP_SCHEDULE_MISSED` 不补跑；失败记 failed 不自动重试。`retention_policies` 新增 `keepCount`（仅 backups，与 days 轴取并集，legal hold 最终绝对豁免）。旧库迁移有测试。
+- **Manager 桌面页签**：12 阶段管理循环卡片，只用真实端点（无全局聚合数据的阶段显示"无数据"）；按 agent 分组任务/run/待审批；瓶颈提示用标注过的本地阈值（非规格公式）；零新增服务端端点。
+- 主线收口修复：`backup-scheduler.ts` 的 `.ts` 后缀 import（TS5097）、桌面备份 kind 放宽到 `scheduled`。测试基线 2132 → 2146。
 
 ## [未发布] Batch 21 — 工具执行面统一 / MCP 注册表落库 / §36 证据五字段 / 走查重跑
 

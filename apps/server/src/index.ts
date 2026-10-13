@@ -72,6 +72,10 @@ import { createSecretBrokerFromEnv } from '@ai-factory/secrets';
 import { CheckpointLog, OperationLedger } from '@ai-factory/runtime';
 import type { StepIntentStore, TargetLedgerQuery } from '@ai-factory/runtime';
 import type { RouteContext } from './routes/context';
+import {
+  BuildRunner,
+  buildRunnerConfigFromEnv,
+} from './build-runner';
 import { handleGitRoutes } from './routes/git';
 import { handleWorktreeRoutes } from './routes/worktrees';
 import { handleQaRoutes } from './routes/qa';
@@ -234,6 +238,25 @@ const fdb = new FactoryDatabase(DB_PATH);
 const tasks = new TaskManager(fdb.tasks);
 const evidence = new EvidenceEngine(fdb.evidence);
 const audit = new AuditLog(fdb.audit);
+/**
+ * §40 post-merge build execution (Batch 24). The runner is
+ * constructed exactly once, here, from explicit operator
+ * configuration. No FACTORY_BUILD_COMMAND → no runner → build
+ * records honestly stay NOT_EXECUTED (never a silent downgrade:
+ * the absence is the documented default, and BUILD_STARTED never
+ * fires without it).
+ */
+const buildRunnerConfig = buildRunnerConfigFromEnv();
+const buildRunner = buildRunnerConfig
+  ? new BuildRunner({ fdb, audit, evidence }, buildRunnerConfig)
+  : null;
+if (buildRunnerConfig) {
+  console.log(
+    `[ai-factory] post-merge builds (§40): enabled, command=${JSON.stringify(
+      buildRunnerConfig.command.slice(0, 80),
+    )}, timeoutMs=${buildRunnerConfig.timeoutMs}`,
+  );
+}
 /**
  * §46.2 Secret Broker (Batch 18; see @ai-factory/secrets).
  * FACTORY_SECRETS_BACKEND selects the primary backend (file vault by
@@ -699,6 +722,10 @@ const server = createServer(async (req, res) => {
       // §46.2 (Batch 18) — the Secret Broker for /api/secrets and for
       // consumption points (exec secretEnv injection).
       secretBroker: secretBrokerSetup.broker,
+      // §40 (Batch 24) — post-merge build runner. Only constructed
+      // when FACTORY_BUILD_COMMAND is explicitly configured; otherwise
+      // build records honestly stay NOT_EXECUTED.
+      ...(buildRunner ? { buildRunner } : {}),
     };
     if (await handleGitRoutes(req, res, url, routeCtx)) return;
     if (await handleWorktreeRoutes(req, res, url, routeCtx)) return;

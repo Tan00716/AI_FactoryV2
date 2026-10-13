@@ -28,12 +28,18 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 
 /**
- * Build execution status. Only NOT_EXECUTED exists today: the record
- * marks that a merge landed and no build was executed for it. A real
- * build executor (future batch) extends this union (e.g. SUCCEEDED /
- * FAILED) and fills digest/definition then — never retroactively.
+ * Build execution status.
+ *  - NOT_EXECUTED: the merge landed and no build ran (the Batch 23 state).
+ *  - SUCCEEDED: a real build executed for this record (Batch 24). The
+ *    digest is the §40 lockBuild digest over real inputs when all inputs
+ *    were assemblable, else null with a note naming the missing inputs.
+ *  - FAILED: a real build was attempted but failed (non-zero exit,
+ *    timeout, or policy refusal). digest stays null with the reason.
+ * Transitions are one-way: NOT_EXECUTED → SUCCEEDED | FAILED. A future
+ * batch that re-runs builds must add an explicit re-run transition —
+ * silently overwriting a terminal row would misrepresent history.
  */
-export type BuildRecordStatus = 'NOT_EXECUTED';
+export type BuildRecordStatus = 'NOT_EXECUTED' | 'SUCCEEDED' | 'FAILED';
 
 /** Exact note stored on every record whose digest is null. Pinned by tests. */
 export const NO_BUILD_DIGEST_NOTE =
@@ -62,22 +68,29 @@ export interface StoredBuildRecord {
   sourceBranch: string;
   targetBranch: string;
   status: BuildRecordStatus;
-  /** Build digest — null until a real build executes. */
+  /** Build digest — the §40 lockBuild digest over real inputs once a
+   *  real build SUCCEEDED and all lock inputs were assemblable; null
+   *  otherwise (never fabricated). */
   digest: string | null;
-  /** Why digest is null (always NO_BUILD_DIGEST_NOTE today). */
+  /** Why digest is null (always set when digest is null). */
   digestNote: string;
   /**
-   * Serialized BuildDefinition — null until a real build locks one.
-   * Typed as null (not unknown) so a future executor must extend the
-   * shape deliberately instead of smuggling values through.
+   * Serialized BuildDefinition JSON — set when a real build locked one.
+   * Null until then (never a placeholder).
    */
-  definition: null;
-  /** Why definition is null (always NO_BUILD_DEFINITION_NOTE today). */
+  definition: string | null;
+  /** Why definition is null (always set when definition is null). */
   definitionNote: string;
   /** SBOM reference — null: no SBOM exists without a build. */
   sbomRef: string | null;
   /** Attestation reference — null: no attestation exists without a build. */
   attestationRef: string | null;
+  /** Build process exit code — set once a real build ran. */
+  exitCode: number | null;
+  /** Why a build FAILED (or why the digest could not be locked). */
+  failureReason: string | null;
+  /** When the build finished (ISO-8601) — set on SUCCEEDED/FAILED. */
+  completedAt: string | null;
   /** Who triggered the merge that this record was written for. */
   builtBy: string;
   /** When the merge landed (ISO-8601). Not a build timestamp. */
@@ -115,6 +128,31 @@ export interface BuildRecordStore {
   listByPr(prId: string): StoredBuildRecord[];
   /** Records for one revision, oldest first. */
   listByRevision(revision: string): StoredBuildRecord[];
+  /**
+   * Transition a NOT_EXECUTED record to SUCCEEDED after a real build.
+   * Throws when the record is missing or not NOT_EXECUTED — terminal
+   * rows are history and are never overwritten.
+   */
+  markSucceeded(
+    id: string,
+    result: {
+      digest: string | null;
+      digestNote: string;
+      definition: string | null;
+      definitionNote: string;
+      exitCode: number;
+      completedAt?: string;
+    },
+  ): StoredBuildRecord;
+  /**
+   * Transition a NOT_EXECUTED record to FAILED after a real build
+   * attempt failed (non-zero exit, timeout, policy refusal). Same
+   * one-way guard as markSucceeded.
+   */
+  markFailed(
+    id: string,
+    result: { reason: string; exitCode?: number | null; completedAt?: string },
+  ): StoredBuildRecord;
 }
 
 function nowIso(): string {
@@ -149,6 +187,9 @@ function toRecord(input: RecordBuildInput): StoredBuildRecord {
     attestationRef: null,
     builtBy: input.builtBy,
     builtAt: nowIso(),
+    exitCode: null,
+    failureReason: null,
+    completedAt: null,
   };
 }
 
@@ -178,6 +219,65 @@ export class MemoryBuildRecordStore implements BuildRecordStore {
   listByRevision(revision: string): StoredBuildRecord[] {
     return this.list().filter((r) => r.revision === revision);
   }
+
+  markSucceeded(
+    id: string,
+    result: {
+      digest: string | null;
+      digestNote: string;
+      definition: string | null;
+      definitionNote: string;
+      exitCode: number;
+      completedAt?: string;
+    },
+  ): StoredBuildRecord {
+    const r = this.rows.get(id);
+    const next = transition(r, id, 'SUCCEEDED');
+    next.digest = result.digest;
+    next.digestNote = result.digestNote;
+    next.definition = result.definition;
+    next.definitionNote = result.definitionNote;
+    next.exitCode = result.exitCode;
+    next.completedAt = result.completedAt ?? nowIso();
+    this.rows.set(id, next);
+    return copyRecord(next);
+  }
+
+  markFailed(
+    id: string,
+    result: { reason: string; exitCode?: number | null; completedAt?: string },
+  ): StoredBuildRecord {
+    const r = this.rows.get(id);
+    const next = transition(r, id, 'FAILED');
+    next.failureReason = result.reason;
+    next.exitCode = result.exitCode ?? null;
+    next.completedAt = result.completedAt ?? nowIso();
+    this.rows.set(id, next);
+    return copyRecord(next);
+  }
+}
+
+/**
+ * One-way transition guard shared by both stores: only a NOT_EXECUTED
+ * row may move, and only to a terminal state. Returns a fresh copy so
+ * callers fill the terminal fields before persisting.
+ */
+function transition(
+  r: StoredBuildRecord | undefined,
+  id: string,
+  to: 'SUCCEEDED' | 'FAILED',
+): StoredBuildRecord {
+  if (!r) {
+    throw new Error(`builds row ${id} not found — refusing to transition a missing record`);
+  }
+  if (r.status !== 'NOT_EXECUTED') {
+    throw new Error(
+      `builds row ${id} has status ${r.status} — transitions are one-way from NOT_EXECUTED; refusing to overwrite terminal history`,
+    );
+  }
+  const next = copyRecord(r);
+  next.status = to;
+  return next;
 }
 
 function rowToRecord(r: Record<string, unknown>): StoredBuildRecord {
@@ -189,7 +289,7 @@ function rowToRecord(r: Record<string, unknown>): StoredBuildRecord {
   // design because hydrate() re-verifies them; build rows are pure
   // history with no re-verification step, so there is nothing safe to
   // fall back to.)
-  if (status !== 'NOT_EXECUTED') {
+  if (status !== 'NOT_EXECUTED' && status !== 'SUCCEEDED' && status !== 'FAILED') {
     throw new Error(
       `builds row ${r['id']} has unknown status ${JSON.stringify(status)} — refusing to misread it`,
     );
@@ -205,15 +305,18 @@ function rowToRecord(r: Record<string, unknown>): StoredBuildRecord {
     taskId: (r['task_id'] as string | null) ?? null,
     sourceBranch: r['source_branch'] as string,
     targetBranch: r['target_branch'] as string,
-    status: 'NOT_EXECUTED' as BuildRecordStatus,
+    status: status as BuildRecordStatus,
     digest: (r['digest'] as string | null) ?? null,
     digestNote: r['digest_note'] as string,
-    definition: null,
+    definition: (r['definition_json'] as string | null) ?? null,
     definitionNote: r['definition_note'] as string,
     sbomRef: (r['sbom_ref'] as string | null) ?? null,
     attestationRef: (r['attestation_ref'] as string | null) ?? null,
     builtBy: r['built_by'] as string,
     builtAt: r['built_at'] as string,
+    exitCode: (r['exit_code'] as number | null) ?? null,
+    failureReason: (r['failure_reason'] as string | null) ?? null,
+    completedAt: (r['completed_at'] as string | null) ?? null,
   };
 }
 
@@ -282,5 +385,53 @@ export class SqliteBuildRecordStore implements BuildRecordStore {
       .prepare('SELECT * FROM builds WHERE revision = ? ORDER BY rowid')
       .all(revision) as unknown as Record<string, unknown>[];
     return rows.map((r) => copyRecord(rowToRecord(r)));
+  }
+
+  markSucceeded(
+    id: string,
+    result: {
+      digest: string | null;
+      digestNote: string;
+      definition: string | null;
+      definitionNote: string;
+      exitCode: number;
+      completedAt?: string;
+    },
+  ): StoredBuildRecord {
+    const current = this.get(id);
+    transition(current, id, 'SUCCEEDED');
+    const completedAt = result.completedAt ?? nowIso();
+    this.db
+      .prepare(
+        `UPDATE builds SET status = 'SUCCEEDED', digest = ?, digest_note = ?,
+          definition_json = ?, definition_note = ?, exit_code = ?,
+          completed_at = ? WHERE id = ?`,
+      )
+      .run(
+        result.digest,
+        result.digestNote,
+        result.definition,
+        result.definitionNote,
+        result.exitCode,
+        completedAt,
+        id,
+      );
+    return this.get(id) as StoredBuildRecord;
+  }
+
+  markFailed(
+    id: string,
+    result: { reason: string; exitCode?: number | null; completedAt?: string },
+  ): StoredBuildRecord {
+    const current = this.get(id);
+    transition(current, id, 'FAILED');
+    const completedAt = result.completedAt ?? nowIso();
+    this.db
+      .prepare(
+        `UPDATE builds SET status = 'FAILED', failure_reason = ?,
+          exit_code = ?, completed_at = ? WHERE id = ?`,
+      )
+      .run(result.reason, result.exitCode ?? null, completedAt, id);
+    return this.get(id) as StoredBuildRecord;
   }
 }

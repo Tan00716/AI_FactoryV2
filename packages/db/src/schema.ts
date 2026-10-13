@@ -679,7 +679,10 @@ CREATE TABLE IF NOT EXISTS builds (
   sbom_ref TEXT,
   attestation_ref TEXT,
   built_by TEXT NOT NULL DEFAULT '',
-  built_at TEXT NOT NULL
+  built_at TEXT NOT NULL,
+  exit_code INTEGER,
+  failure_reason TEXT,
+  completed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_builds_pr
   ON builds(pr_id);

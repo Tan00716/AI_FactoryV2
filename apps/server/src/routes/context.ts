@@ -78,6 +78,14 @@ export interface RouteContext {
    * nothing falls back to reading process env directly.
    */
   secretBroker?: SecretBroker;
+  /**
+   * §40 post-merge build execution (Batch 24) — background runner that
+   * executes FACTORY_BUILD_COMMAND for landed merges. Optional: when
+   * omitted (or when the command is unconfigured) build records
+   * honestly stay NOT_EXECUTED. The coordinator's own server always
+   * injects it.
+   */
+  buildRunner?: import('../build-runner').BuildRunner;
   /** System Event Bus — spec §91, shared singleton created in index.ts. */
   bus: EventBus;
   json(res: ServerResponse, status: number, body: unknown): void;

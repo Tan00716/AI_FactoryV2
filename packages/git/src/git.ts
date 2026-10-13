@@ -404,6 +404,24 @@ export class GitRepo {
     });
   }
 
+  /**
+   * Create a detached worktree at `path` pinned at `revision`
+   * (Batch 24 — build runner: builds run against the exact merged
+   * revision, never against a moving branch tip).
+   */
+  async worktreeAddDetached(
+    path: string,
+    revision: string,
+    opts: { audit?: GitAuditHook } = {},
+  ): Promise<void> {
+    await this.run(['worktree', 'add', '--detach', path, revision]);
+    opts.audit?.('GIT_WORKTREE_ADD_DETACHED', {
+      repo: this.path,
+      path,
+      revision,
+    });
+  }
+
   /** Remove the worktree at `path` (registered working tree only). */
   async worktreeRemove(
     path: string,

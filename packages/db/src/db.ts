@@ -663,6 +663,31 @@ export interface ListProjectsOptions {
 }
 
 /**
+ * Batch 24 columns on the builds table (Batch 23 created it without
+ * execution fields). Same in-place migration pattern: only the missing
+ * columns are added. Pre-existing NOT_EXECUTED rows read back with
+ * exitCode/failureReason/completedAt null — exactly the semantics they
+ * always had, nothing backfilled.
+ */
+export function migrateBuildsTable(db: DatabaseSync): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(builds)').all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
+  if (!cols.has('exit_code')) {
+    db.exec(`ALTER TABLE builds ADD COLUMN exit_code INTEGER`);
+  }
+  if (!cols.has('failure_reason')) {
+    db.exec(`ALTER TABLE builds ADD COLUMN failure_reason TEXT`);
+  }
+  if (!cols.has('completed_at')) {
+    db.exec(`ALTER TABLE builds ADD COLUMN completed_at TEXT`);
+  }
+}
+
+/**
  * Pre-Batch-14 databases lack the lifecycle columns. Same in-place
  * migration as migrateEvidenceTable: only the missing columns are added.
  * The status column carries a constant DEFAULT, so SQLite fills every
@@ -865,6 +890,7 @@ export class FactoryDatabase {
     migrateAuditTable(this.db);
     migrateRetentionTable(this.db);
     migrateMergeQueueTable(this.db);
+    migrateBuildsTable(this.db);
     this.tasks = new SqliteTaskStore(this.db);
     this.evidence = new SqliteEvidenceStore(this.db);
     this.agents = new SqliteAgentStore(this.db);

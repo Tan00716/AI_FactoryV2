@@ -550,7 +550,13 @@ export async function handleGitRoutes(
         builtBy: actor,
       });
       if (buildInput) {
-        ctx.fdb.builds.record(buildInput);
+        const buildRecord = ctx.fdb.builds.record(buildInput);
+        // Batch 24 (§40): hand the landed record to the background
+        // build runner. Fire-and-forget by design — the merge response
+        // never blocks on a build. When no runner is injected (or no
+        // FACTORY_BUILD_COMMAND is configured) the record honestly
+        // stays NOT_EXECUTED.
+        ctx.buildRunner?.enqueue(buildRecord.id);
       } else {
         ctx.audit.record(actor, 'BUILD_RECORD_SKIPPED', 'pr', pr.id, {
           reason: 'no candidate SHA available from the merge result',
@@ -642,7 +648,10 @@ export async function handleGitRoutes(
             builtBy: actor,
           });
           if (buildInput) {
-            ctx.fdb.builds.record(buildInput);
+            const buildRecord = ctx.fdb.builds.record(buildInput);
+            // Batch 24 (§40): same background hand-off as the direct
+            // merge path above.
+            ctx.buildRunner?.enqueue(buildRecord.id);
           } else {
             ctx.audit.record(actor, 'BUILD_RECORD_SKIPPED', 'pr', mergedPr.id, {
               reason: 'no candidate SHA on the merged queue entry',
