@@ -41,7 +41,11 @@
  *     host is the operator's job — this module does not install it.
  */
 
-import { runCommandPipe, type ShellRunResult } from '@ai-factory/runtime';
+import {
+  runCommandPipe,
+  SandboxUnavailableError,
+  type ShellRunResult,
+} from '@ai-factory/runtime';
 
 export const BUILD_SANDBOX_ENV = 'FACTORY_BUILD_SANDBOX';
 export const BUILD_SANDBOX_NETWORK_ENV = 'FACTORY_BUILD_SANDBOX_NETWORK';
@@ -160,6 +164,22 @@ export function probeSandbox(
     probeCache = { bin, probe: doProbe(bin, timeoutMs) };
   }
   return probeCache.probe;
+}
+
+/**
+ * Strict form of the probe (Batch 40): throws SandboxUnavailableError
+ * (code ENV_SANDBOX_UNAVAILABLE) when bwrap is not usable. The default
+ * runBuildCommand path keeps the honest fallback (audit
+ * SANDBOX_UNAVAILABLE + run unsandboxed) — this is for callers that
+ * REQUIRE the sandbox and want a deterministic machine-readable signal
+ * that flows through RunResult.reasonCode. Signal layer only: nothing
+ * auto-emits needsHuman on this code.
+ */
+export async function assertSandboxAvailable(bin: string = 'bwrap'): Promise<void> {
+  const probe = await probeSandbox(bin);
+  if (!probe.available) {
+    throw new SandboxUnavailableError(probe.reason ?? 'probe failed');
+  }
 }
 
 export interface SandboxRunOptions {

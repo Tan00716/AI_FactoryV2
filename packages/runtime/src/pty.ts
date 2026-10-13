@@ -49,7 +49,7 @@
  *     gate, the server's exec policy). Nothing here grants permission.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { FactoryError } from './types';
+import { FactoryError, MissingBinaryError } from './types';
 import type { ToolImpl } from './harness';
 
 /* ------------------------------------------------------------------ */
@@ -445,7 +445,18 @@ export async function runCommandPipe(argv: string[], opts: ShellRunOptions = {})
   if (opts.stdin !== undefined) child.stdin?.end(opts.stdin);
   else child.stdin?.end();
   const exit = await supervise(child, o.timeoutMs);
-  if (exit.spawnError) throw exit.spawnError;
+  if (exit.spawnError) {
+    // Batch 40 — deterministic environment signal: the OS told us the
+    // binary does not exist (spawn ENOENT), so say so with a
+    // machine-readable code instead of a bare Error. Still an Error, so
+    // existing catch behavior is unchanged; runAgent's reasonCode bridge
+    // picks up the code. Other spawn failures keep their original error.
+    const se = exit.spawnError as NodeJS.ErrnoException;
+    if (se.code === 'ENOENT') {
+      throw new MissingBinaryError(argv[0] as string, se.message);
+    }
+    throw exit.spawnError;
+  }
   return {
     mode: 'pipe',
     exitCode: exit.code,

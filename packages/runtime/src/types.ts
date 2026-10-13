@@ -204,6 +204,40 @@ export class PermissionDenied extends FactoryError {
   }
 }
 
+/**
+ * Batch 40 — environment failure: a required sandbox (bwrap) is unavailable.
+ * Deterministic machine-readable signal (OS probe result), NOT a heuristic
+ * classification — the first half of the 39-4 precondition for ever wiring
+ * §81 'irrecoverable-env-error'. The SANDBOX_UNAVAILABLE audit semantics
+ * stay as-is; this is the throwable form for callers that REQUIRE the
+ * sandbox. Signal layer only: nothing auto-emits needsHuman on this code.
+ */
+export class SandboxUnavailableError extends FactoryError {
+  readonly probeReason: string;
+  constructor(probeReason: string) {
+    super('ENV_SANDBOX_UNAVAILABLE', `Sandbox unavailable: ${probeReason}`);
+    this.probeReason = probeReason;
+  }
+}
+
+/**
+ * Batch 40 — environment failure: a binary the environment must provide is
+ * missing. Deterministic (spawn ENOENT from the OS), not a heuristic guess.
+ * Thrown by runCommandPipe when the child cannot be spawned because the
+ * binary does not exist. Signal layer only: nothing auto-emits needsHuman
+ * on this code.
+ */
+export class MissingBinaryError extends FactoryError {
+  readonly binary: string;
+  constructor(binary: string, detail?: string) {
+    super(
+      'ENV_BINARY_MISSING',
+      `Required binary '${binary}' is missing${detail ? `: ${detail}` : ''}`,
+    );
+    this.binary = binary;
+  }
+}
+
 /** §26 — a path resolved outside the harness's allowed roots. */
 export class FilesystemBoundary extends FactoryError {
   constructor(resolvedPath: string) {

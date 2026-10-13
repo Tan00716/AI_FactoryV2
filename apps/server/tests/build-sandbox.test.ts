@@ -21,6 +21,7 @@ import { createServer } from 'node:net';
 import {
   sandboxConfigFromEnv,
   probeSandbox,
+  assertSandboxAvailable,
   resetSandboxProbeCache,
   buildSandboxArgv,
   runSandboxedCommand,
@@ -122,6 +123,21 @@ describe('probeSandbox', () => {
     assert.equal(p.available, false);
     assert.ok(p.reason && p.reason.length > 0);
     resetSandboxProbeCache();
+  });
+  it('assertSandboxAvailable throws SandboxUnavailableError with code ENV_SANDBOX_UNAVAILABLE (Batch 40 signal)', async () => {
+    resetSandboxProbeCache();
+    await assert.rejects(() => assertSandboxAvailable('/nonexistent/bwrap-xyz-40'), (err: unknown) => {
+      const e = err as { code?: string; probeReason?: string; name?: string };
+      assert.equal(e.code, 'ENV_SANDBOX_UNAVAILABLE');
+      assert.ok(e.probeReason && e.probeReason.length > 0);
+      assert.match(String(e.name), /SandboxUnavailableError/);
+      return true;
+    });
+    resetSandboxProbeCache();
+  });
+  it('assertSandboxAvailable resolves when the probe succeeds', async () => {
+    if (skipUnlessSandboxed('assertSandboxAvailable success path')) return;
+    await assertSandboxAvailable('bwrap');
   });
 });
 
