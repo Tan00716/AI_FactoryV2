@@ -358,6 +358,36 @@ export class ReportLog {
     return list.length ? list[list.length - 1] : undefined;
   }
 
+  /**
+   * Restart hydration (Batch 34): restore previously persisted reports
+   * into a fresh ReportLog. Rows hydrate AS-IS — reports are historical
+   * records, not executions, so a SUBMITTED_FOR_REVIEW row still means
+   * "submitted, no decision recorded yet" after the restart (decisions
+   * only ever flow through decideReport, which is also written
+   * through, so no liveness claim needs demoting). The critical part
+   * is rebuilding lastSequence: without it, a stale report could be
+   * re-submitted after reboot, violating sequence monotonicity.
+   *
+   * The input is trusted as already-validated (it was validated on
+   * submit); system objects are re-frozen to keep the read-only
+   * guarantee. Malformed entries throw loudly — the caller skips
+   * corrupt rows and audits them, never guessing.
+   */
+  loadSnapshot(reports: ManagementReport[]): void {
+    this.reports.clear();
+    this.lastSequence.clear();
+    for (const r of reports) {
+      if (typeof r.report_id !== 'string' || !r.report_id) {
+        throw new Error('loadSnapshot: report without report_id');
+      }
+      this.reports.set(r.report_id, { ...r, system: Object.freeze({ ...r.system }) });
+      const last = this.lastSequence.get(r.task_id);
+      if (last === undefined || r.report_sequence > last) {
+        this.lastSequence.set(r.task_id, r.report_sequence);
+      }
+    }
+  }
+
   size(): number {
     return this.reports.size;
   }

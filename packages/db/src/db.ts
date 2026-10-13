@@ -43,6 +43,9 @@ import { SqliteProjectKnowledgeStore } from './project-knowledge';
 import { SqliteProjectTemplateDbStore } from './project-templates';
 import { SqliteEscalationStore } from './escalations';
 import { SqliteProposalStore } from './proposals';
+import { SqliteManagementReportStore } from './management-reports';
+import { SqliteOrgGraphStore } from './organization-relationships';
+import { SqlitePolicyVersionStore } from './policy-versions';
 
 const J = {
   parse<T>(s: string | null, fallback: T): T {
@@ -1115,12 +1118,36 @@ export class FactoryDatabase {
    */
   readonly proposals: SqliteProposalStore;
   /**
+   * §14 / §48.2 (Batch 34) — durable management reports: one row per
+   * submitted report_id (full validated JSON + projections).
+   * SUBMITTED_FOR_REVIEW rows hydrate as-is (records, not executions);
+   * the per-task sequence guard is rebuilt at boot.
+   */
+  readonly managementReports: SqliteManagementReportStore;
+  /**
+   * §48.2 (Batch 34) — versioned policy documents (Authorization
+   * domain: policy_documents / policy_versions). Append-only: every
+   * registerPolicyVersion call publishes the next per-policy version.
+   * Published versions are immutable — CURRENT is derived, never
+   * written back to an old row.
+   */
+  readonly policyVersions: SqlitePolicyVersionStore;
+  /**
    * §40 (Batch 23) — build records: one row per landed merge. The
    * record is deliberately NOT a fake build — merges never run a
    * build, so status is NOT_EXECUTED and digest/definition/sbom_ref/
    * attestation_ref are null with notes explaining the absence.
    */
   readonly builds: SqliteBuildRecordStore;
+  /**
+   * §48.2 Organization domain + §9 (Batch 34) — durable org graph:
+   * organization_nodes + the authoritative organization_relationships
+   * edge table. Nodes are needed so edges stay resolvable across a
+   * restart (an edge without its endpoints is meaningless). Edges
+   * with valid_to = NULL are ongoing relationships, not in-flight
+   * process state — hydrate as-is, nothing to demote.
+   */
+  readonly orgGraph: SqliteOrgGraphStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -1172,7 +1199,10 @@ export class FactoryDatabase {
     this.projectTemplates = new SqliteProjectTemplateDbStore(this.db);
     this.escalations = new SqliteEscalationStore(this.db);
     this.proposals = new SqliteProposalStore(this.db);
+    this.managementReports = new SqliteManagementReportStore(this.db);
+    this.policyVersions = new SqlitePolicyVersionStore(this.db);
     this.builds = new SqliteBuildRecordStore(this.db);
+    this.orgGraph = new SqliteOrgGraphStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------

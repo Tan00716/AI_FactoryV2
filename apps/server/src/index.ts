@@ -98,6 +98,7 @@ import {
 import { handleOrchestratorRoutes } from './routes/orchestrator';
 import { handleDelegationRoutes, initDelegationRoutes } from './routes/delegations';
 import { handleGateRoutes } from './routes/gates';
+import { handlePolicyVersionRoutes } from './routes/policy-versions';
 import { handleWorkforceRoutes } from './routes/workforce';
 import { handleMcpRoutes } from './routes/mcp';
 import { handleKnowledgeRoutes } from './routes/knowledge';
@@ -139,8 +140,9 @@ import { handleQuotaRoutes } from './routes/quota';
 import { handleWatchdogRoutes } from './routes/watchdog';
 import { handleTakeoverRoutes } from './routes/takeover';
 import { handleDisputeRoutes, initDisputesPersistence } from './routes/disputes';
+import { handleOrgGraphRoutes, initOrgGraphRoutes } from './routes/org-graph';
 import { handleAuthorityRoutes } from './routes/authority';
-import { handleReportRoutes } from './routes/reports';
+import { handleReportRoutes, initReportsPersistence } from './routes/reports';
 import { handleV2TransitionRoutes } from './routes/v2-transitions';
 import { handleDashboardRoutes } from './routes/dashboard';
 import { handleNotificationRoutes } from './routes/notifications';
@@ -501,6 +503,25 @@ initProjectsRoutes(fdb, audit);
 initDisputesPersistence(fdb, audit);
 
 /**
+ * Organization graph durability (§48.2 + §9, Batch 34): nodes and the
+ * authoritative organization_relationships edge table persist in
+ * fdb.orgGraph. Boot sanity-loads the rows (corrupt rows are skipped
+ * loudly — ORG_NODE_CORRUPT / ORG_EDGE_ORPHANED); ongoing edges
+ * hydrate as-is, nothing is demoted.
+ */
+initOrgGraphRoutes(fdb, audit);
+
+/**
+ * Management-report durability (§14, §48.2, Batch 34): hydrate the
+ * persisted report rows into the reports route's ReportLog. Rows are
+ * historical records, not executions — SUBMITTED_FOR_REVIEW hydrates
+ * as-is ("submitted, no decision recorded yet"); the per-task
+ * sequence monotonicity guard is rebuilt, so stale reports stay
+ * rejected after a restart.
+ */
+initReportsPersistence(fdb, audit);
+
+/**
  * Backup schedules (§47, Batch 20) — the in-process scheduler runs
  * the same createBackup() the manual endpoint uses, on a 30s tick.
  * Schedules are durable rows: boot() reconciles plans whose slot
@@ -827,6 +848,7 @@ const server = createServer(async (req, res) => {
     if (await handleOrchestratorRoutes(req, res, url, routeCtx)) return;
     if (await handleDelegationRoutes(req, res, url, routeCtx)) return;
     if (await handleGateRoutes(req, res, url, routeCtx)) return;
+    if (await handlePolicyVersionRoutes(req, res, url, routeCtx)) return;
     if (await handleWorkforceRoutes(req, res, url, routeCtx)) return;
     if (await handleMcpRoutes(req, res, url, routeCtx)) return;
     if (await handleKnowledgeRoutes(req, res, url, routeCtx)) return;
@@ -858,6 +880,7 @@ const server = createServer(async (req, res) => {
     if (await handleWatchdogRoutes(req, res, url, routeCtx)) return;
     if (await handleTakeoverRoutes(req, res, url, routeCtx)) return;
     if (await handleDisputeRoutes(req, res, url, routeCtx)) return;
+    if (await handleOrgGraphRoutes(req, res, url, routeCtx)) return;
     if (await handleAuthorityRoutes(req, res, url, routeCtx)) return;
     if (await handleReportRoutes(req, res, url, routeCtx)) return;
     if (await handleV2TransitionRoutes(req, res, url, routeCtx)) return;

@@ -888,6 +888,46 @@ CREATE TABLE IF NOT EXISTS escalations (
 CREATE INDEX IF NOT EXISTS idx_escalations_dispute
   ON escalations(dispute_id);
 
+-- Organization graph (§48.2 Organization domain, §9, Batch 34):
+-- organization_nodes + organization_relationships. The edge table is
+-- authoritative (§9: the edge table is authoritative; parent_agent/
+-- children are display projections). Upsert semantics on both tables;
+-- saveEdge upsert is how a retired node's PRIMARY_REPORTS_TO edge gets
+-- its valid_to closed. An edge with valid_to = NULL is an *ongoing
+-- relationship*, not an in-flight process — rows hydrate as-is, there
+-- is nothing to demote (unlike delegations, Batch 32). The §9.4
+-- versioned snapshot history stays in memory: only the CURRENT graph
+-- (all nodes + all edges) is durable.
+CREATE TABLE IF NOT EXISTS organization_nodes (
+  node_id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  identity_json TEXT,
+  version INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  tombstone INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_organization_nodes_org
+  ON organization_nodes(org_id);
+CREATE TABLE IF NOT EXISTS organization_relationships (
+  edge_id TEXT PRIMARY KEY,
+  source_node_id TEXT NOT NULL,
+  target_node_id TEXT NOT NULL,
+  relationship_type TEXT NOT NULL,
+  project_scope TEXT,
+  authority_scope TEXT NOT NULL,
+  valid_from TEXT NOT NULL,
+  valid_to TEXT,
+  version INTEGER NOT NULL,
+  created_by TEXT NOT NULL,
+  policy_ref TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_organization_relationships_source
+  ON organization_relationships(source_node_id);
+CREATE INDEX IF NOT EXISTS idx_organization_relationships_target
+  ON organization_relationships(target_node_id);
+
 -- Self-modification proposals (§59, §48.2, Batch 33): one insert-only
 -- row per §59 proposal decision (POST /api/workforce/proposals).
 -- Statuses are terminal at decision time — needs-review is a flag for
@@ -906,6 +946,23 @@ CREATE TABLE IF NOT EXISTS proposals (
 );
 CREATE INDEX IF NOT EXISTS idx_proposals_status
   ON proposals(status);
+
+-- Versioned policy documents (§48.2 Authorization domain, Batch 34):
+-- one append-only row per published policy version. (policy_id,
+-- version) is the natural key; version is a per-policy monotonic
+-- integer starting at 1. No update/delete ever touches a published
+-- row — "CURRENT" is derived (highest version), never stored.
+-- Integrity note: content_hash is sha256 over the exact content_json
+-- bytes, so a reader can verify a version was not altered.
+CREATE TABLE IF NOT EXISTS policy_versions (
+  policy_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  content_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (policy_id, version)
+);
 
 
 -- Project knowledge entries (§6.4, Batch 33): one row per
@@ -937,4 +994,25 @@ CREATE TABLE IF NOT EXISTS project_templates (
   definition_json TEXT NOT NULL,
   registered_at TEXT NOT NULL
 );
+
+-- §14 management reports (§48.2, Batch 34): one row per submitted
+-- report_id, storing the full validated ManagementReport JSON plus
+-- projection columns. Decision is a conditional full-row replace
+-- (only SUBMITTED_FOR_REVIEW rows may be rewritten). Restart
+-- semantics: reports are historical records, not executions — a row
+-- left SUBMITTED_FOR_REVIEW at kill time means "submitted, no
+-- decision recorded yet", which stays exactly as true after the
+-- restart (decisions only flow through ReportLog.decideReport, also
+-- written through). Rows hydrate as-is; the per-task sequence
+-- monotonicity guard is rebuilt by ReportLog.loadSnapshot.
+CREATE TABLE IF NOT EXISTS management_reports (
+  report_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  report_sequence INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  report_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_management_reports_task
+  ON management_reports(task_id);
 `
