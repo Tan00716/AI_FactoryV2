@@ -1,5 +1,13 @@
 # Changelog
 
+## [未发布] Batch 30 — Batch29 独立复核 / 可售清单复验 / walkthrough 第三版 / 缺口收敛扫荡
+
+- **Batch 29 独立复核（30-1）**：四项实质声明全部成立（`gap-audit/REAUDIT_BATCH29.md`，零产品代码改动）：db-broker 服务端接线（7/7 真 server e2e）、fetched-content 隔离契约（11/11）、29-2 轮询化稳定（7/7）。附带构建稳定性观察：`npm run build` 四遍中第一遍真实失败（apps/desktop vite build 失败，exit 2），后三遍全过——桌面构建偶发抖动，留观察记录（产物可用，测试针对亲构建产物全绿）。
+- **可售清单全面复验（30-2）**：上次复验是 Batch 24，中间走了 5 批。`gap-audit/SELLABLE_REVERIFY_BATCH30.md`：A（真实可用）——模型回路仍 BLOCKED（卡 Codex 登录）、桌面分发部分（Linux 验证/Win/Mac 需真机/签名待采购）、首次运行走查保持 1/1、关键数据持久保持勾选（覆盖扩大）；B（规格完整度）——Batch 24–29 新关闭高影响项列明，剩余 9 项真实缺口逐项诚实；C（质量与可信）——全量测试全绿、文档与实现一致**翻绿**（两处文档缺口已补）、独立复核追加 Batch 25–28；D（商业化）——版本 0.1.0 保持、许可证/定价仍待 Tan。零产品代码改动。
+- **first-run walkthrough 第三版扩展（30-3）**：新走查脚本 `apps/server/tests/first-run-walkthrough-b30.test.ts`——B21–B29 数据面链路真实走查（真 server + 临时 DB + SIGKILL 重启）：D1–D5（db broker：无策略拒绝→无引擎 503→白名单执行/拒绝→runbook→审计链+哨兵值不在审计中）、B1（构建 SBOM：真实 digest + 落盘 CycloneDX）、R1（保留评估 dry-run：零删除）、M1/M2（MCP launch：SIGKILL 后 history 显示 ORPHANED + 信任批准保留）、A1（审计全链 verify 通过）。连续三次 1/1。`docs/FIRST_RUN_WALKTHROUGH.md` 新增第三版章节（含 F8/F9 两个 Low findings；F9：后台构建完成后纯 HTTP 消费者没有 `/api/builds` 只读端点可观察构建落地——真实读面缺口，已记录不改产品）。`package.json` 新增 `demo:e2e-v3`。
+- **缺口收敛扫荡（30-4）**：按"真实使用影响"重排扫描（排除 Tan 专属项）。结论：三个最接近"可售"的候选（账号状态接线、§40→§36 构建↔证据绑定、merge queue drain 并发）**全部早已真实关闭**——问题是文档滞后于实现，已修正四处过时条目（KNOWN_LIMITATIONS + SELLABLE_CHECKLIST），零产品代码改动。真实存在的大项（按影响排序）：pipeline stage 落盘 → 真实隔离 Host → 非 Codex 模型适配器 → MCP 真实服务器握手 → 远程数据库驱动 → 桌面真人点击验收（含 Win/Mac 真机、签名证书）。`gap-audit/GAP_SWEEP_BATCH30.md`。
+- 测试基线（主线亲验）：构建 0 错误；包套件 2304/2304（Batch 29 基线不变）；服务端全套 274 → 275（+1：first-run-walkthrough-b30）；desktop tsc 0；smoke:boot OK。
+
 ## [未发布] Batch 29（在途）
 
 - **Batch 28 独立复核（29-1）**：三项实质声明全部成立（`gap-audit/REAUDIT_BATCH28.md`，零产品代码改动）：removeServer 原子化、DbBroker/Runbook、Browser Profile 均亲跑复验。诚实备注：removeServer 原子性是同进程 SQLite 事务 + `BEGIN IMMEDIATE` 写锁串行跨进程，边界仍是"同一 DB 文件多进程"。

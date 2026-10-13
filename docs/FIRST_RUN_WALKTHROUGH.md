@@ -163,3 +163,50 @@ stored fact, so the HTTP value and the DB column cannot drift.
 Pinned by tests at both layers (`packages/db/tests/outbox.test.ts`
 rule↔column agreement; `apps/server/tests/v2-outbox.test.ts` HTTP
 shape including the `WORKFLOW_FINALIZED` finalize event).
+
+---
+
+# First-Run Walkthrough, third edition — verified 2026-10-13 (Batch 30-3)
+
+Extends the second edition with the B21–B29 "data plane" chains: the
+database broker (`/api/db/*`), build SBOM, SBOM retention, and MCP
+launch persistence. Automated as
+`apps/server/tests/first-run-walkthrough-b30.test.ts` (run with
+`npm run demo:e2e-v3`; requires a prior root `npm run build`). Two boots
+of the real compiled server (boot A → SIGKILL → boot B) share one temp
+DB file, a temp build work root, a temp `FACTORY_SBOM_DIR`, and hermetic
+`FACTORY_SECRETS_DIR`. 1/1 green on the first run; the failure chains
+are walked, not described.
+
+## The script and what actually happened
+
+| # | Step (HTTP only) | Result |
+|---|---|---|
+| D1 | `GET /api/db/connections` | 200; `factory` registered at boot, `environment: dev`, `kind: sqlite` |
+| D2 | `POST /api/db/query` (`factory`, `SELECT …`) before any policy | **403 `PRIVILEGE_DENIED`**, reason names the missing least-privilege policy — execution is opt-in, never open |
+| D3 | `POST /api/db/connections` (`analytics`, staging, postgres) → `PUT …/policy` (`read`, `*`) → `POST /api/db/query` | **503 `NO_ENGINE`**, reason says the broker refuses to pretend — the refusal is about the engine, not privilege |
+| D4 | `PUT /api/db/connections/factory/policy` (`read`, [`tasks`]) → whitelisted `SELECT` → named-param `SELECT :v AS v` → `SELECT` on `audit_logs` | 200 `OK` with real rows; param binds and returns; **403 `PRIVILEGE_DENIED`** off-whitelist |
+| D5 | `POST /api/db/runbooks` (template `task-ids-by-title`, slot `title`) → `POST /api/db/runbooks/run` | 201, then 200 `OK` — broker executes the registered template text, never an interpolated string |
+| B1 | project → task → `POST /api/git/pr` → `POST …/merge` on a real repo with a lockfile | build record `NOT_EXECUTED → SUCCEEDED` with a real 64-hex digest; `sbomRef` under `FACTORY_SBOM_DIR`, file really on disk, CycloneDX 1.5, contains `left-pad@1.3.0` / `@scope/right-pad@2.0.1`, and the `ai-factory:sbom:provenance` property stating declared-deps-only semantics |
+| R1 | `POST /api/retention/evaluate` (no policy) → `PUT /api/retention/policies` (`sboms`: days 3650, keepCount 1000, deleteOrphans false) → evaluate again | 0 candidates both times; the live SBOM stays referenced and the file is still on disk after the dry run — **nothing was deleted, only evaluated** |
+| M1 | `POST /api/mcp/register` → `…/trust/approve` (`HIGH`, `AUTO`) → `POST /api/mcp/install` → `POST /api/mcp/launch` (sleeper) | 201s; `GET /api/mcp/launches?history=true` shows the sleeper `RUNNING` |
+| M2 | SIGKILL → boot B → `GET /api/mcp/launches`, `GET /api/mcp/launches?history=true`, `GET /api/mcp/servers/w30sleeper@1.0.0/trust` | live table honestly empty; sleeper `ORPHANED` with the "fate is unknown" note; trust decision still approved |
+| B2 | build record re-read from the DB file | still `SUCCEEDED`; `sbomRef` file still on disk |
+| A1 | `GET /api/audit?limit=2000` + `AuditLog(fdb.audit).verify()` over the file | actions present: `DB_CONNECTION_REGISTERED`, `DB_BROKER_DENIED`, `DB_BROKER_NO_ENGINE`, `DB_BROKER_EXECUTED`, `DB_RUNBOOK_REGISTERED`, `DB_RUNBOOK_EXECUTED`, `BUILD_SUCCEEDED`, `RETENTION_POLICY_UPDATED`, `MCP_SERVER_LAUNCH`; the bound-param sentinel appears **nowhere** in the audit dump; hash chain verifies |
+
+## Findings (third edition)
+
+**F8 — Low (already-known semantic, no product-code change needed).**
+The retention `evaluate` report counts candidates per category, not
+files — the `sboms` category aggregates the per-file candidacy into a
+count with `sampleIds`. An operator auditing exactly *which* files are
+at risk must also read the per-category evaluation detail. Same shape
+as every other category; consistent, just not file-enumerating.
+
+**F9 — Low (script-harness note).** The background build runner's
+queue is FIFO and asynchronous: the walkthrough polls the DB file for
+the build record rather than the HTTP surface, because there is no
+`/api/builds/:prId` read route in the product. The DB read is honest
+(the record is the system of record), but an operator with only HTTP
+access has no way to watch a build land. *Fix direction: a read-only
+builds listing endpoint when the build surface gets one.*
