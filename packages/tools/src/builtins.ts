@@ -264,7 +264,16 @@ export const BUILTIN_TOOLS: readonly ToolMetadata[] = [
     source: 'builtin',
     category: 'Database',
     implementationStatus: 'definition-only',
-    inputSchema: { sql: { type: 'string', required: true } },
+    inputSchema: {
+      sql: { type: 'string', required: true },
+      // SPEC v2 §33: database connections carry explicit environment
+      // identity. The gate (DatabaseEnvironmentRegistry) requires a
+      // registered connection name; omitted here means the future
+      // implementation must default to 'dev', never guess prod.
+      connectionName: { type: 'string', required: false },
+      // Required literally true for writes against a 'prod' connection.
+      prodWriteConfirmed: { type: 'boolean', required: false },
+    },
     outputSchema: { rows: { type: 'array' } },
     capabilities: ['database.query'],
     sideEffect: 'read',
@@ -401,7 +410,12 @@ export const BUILTIN_TOOL_NOTES: Readonly<Record<string, string>> = {
   'browser.open':
     'No browser tool ships; §33 additionally requires an isolated profile/host and a bounded download directory, neither of which exists yet.',
   'db.query':
-    'No database tool ships; §33 additionally requires separate DEV/UAT/PROD identities and brokered production writes, which do not exist yet.',
+    'Environment identities (§33) now ship as @ai-factory/tools DatabaseEnvironmentRegistry ' +
+    '(explicit dev/staging/prod identity per connection, default dev, immutable env, ' +
+    'prod writes need literal prodWriteConfirmed + audit, switches audited). ' +
+    'Still missing: any query engine and the §33 least-privilege Broker/Runbook for ' +
+    'production writes — confirmation here is a fail-closed gate, not the broker. ' +
+    'db.query stays definition-only.',
   'ci.pipeline': 'Real pipeline execution in @ai-factory/cicd (stages, gates, snapshots) behind the server cicd routes.',
   'deploy.run':
     'Real DeploymentService in @ai-factory/cicd (park/approve/resume across requests since Batch 16).',

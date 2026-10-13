@@ -43,6 +43,18 @@
  *     parsable lockfile → sbomRef null + named reason. SBOM generation
  *     failing never flips a SUCCEEDED build — it is audited and the
  *     record keeps sbomRef null with the failure named.
+ *  9. ORPHAN RECONCILE (Batch 27). A SIGKILL between `git worktree add`
+ *     and the finally-block cleanup leaves a detached worktree on disk,
+ *     still registered in the source repo. Each workspace gets a
+ *     `.factory-build-runner.json` ownership marker (buildId, repo,
+ *     owner PID + PID start time). At startup index.ts calls
+ *     startReconcile() and pump() awaits the reconcile promise before
+ *     the first build: dead-PID orphans (marker, or name-pattern +
+ *     build record for the pre-marker window) are unregistered from git
+ *     and deleted — audited BUILD_ORPHAN_CLEANED, never replayed;
+ *     live-PID workspaces and unattributable directories are left
+ *     alone. The reconcile never touches directories that don't match
+ *     `build-<uuid>`, never creates the work root, and never throws.
  *
  * SECURITY BOUNDARY (stated plainly): the build command is operator
  * configuration, but it EXECUTES REPO-CONTROLLED CODE (e.g. `npm run
@@ -54,7 +66,15 @@
 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+} from 'node:fs';
 import { GitRepo } from '@ai-factory/git';
 import {
   assembleBuildDefinition,
@@ -157,6 +177,249 @@ export interface BuildRunnerDeps {
 
 const OUTPUT_EXCERPT_CHARS = 2000;
 
+/**
+ * Batch 27 — orphaned build workspace reconcile.
+ *
+ * The runner deletes every worktree in a finally block (success or
+ * failure), but a SIGKILL between `git worktree add --detach` and that
+ * cleanup leaves a detached worktree on disk — still registered in the
+ * source repo's worktree list, pinning the revision, occupying disk
+ * forever. On the next boot the reconcile below reaps them.
+ *
+ * Rules, in order, for each directory directly under workRoot:
+ *
+ *  1. The name must match `build-<uuid>` (the exact shape runOne uses).
+ *     Anything else is never touched — not our directory, not our call.
+ *  2. A missing workRoot is a no-op (never created by the reconcile).
+ *  3. `.factory-build-runner.json` marker, when present and valid, is
+ *     the authority: it carries the buildId, source repo, and the PID
+ *     that owned the build.
+ *     - PID still alive (see isPidAlive) → SKIP, audited
+ *       BUILD_ORPHAN_SKIPPED. A build whose process survived the server
+ *       (its parent died, it didn't) must never be deleted from under it.
+ *     - PID dead → orphan: remove the git worktree registration first
+ *       (`git worktree remove --force`, then prune), then rmSync the
+ *       directory. Audited BUILD_ORPHAN_CLEANED with an explicit note
+ *       that this is cleanup, not a build replay.
+ *  4. No marker (the pre-marker window: worktree added, marker not yet
+ *     written): the builds record is the fallback authority. A record
+ *     with this id exists → it is ours, clean it. No marker AND no
+ *     record → SKIP, audited BUILD_ORPHAN_SKIPPED ('not ours') — we
+ *     never delete a directory we cannot attribute.
+ *  5. Non-directory entries and unreadable markers are skipped, never
+ *     guessed.
+ *
+ * PID reuse is handled by recording the owner's process start time
+ * (Linux /proc; null elsewhere) in the marker and comparing it at
+ * reconcile time — a recycled PID with a different start time is
+ * treated as dead.
+ */
+export const BUILD_WORKSPACE_MARKER = '.factory-build-runner.json';
+const WORKSPACE_DIR_RE =
+  /^build-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export interface BuildWorkspaceMarker {
+  marker: 'ai-factory-build-workspace';
+  buildId: string;
+  repo: string;
+  revision: string;
+  pid: number;
+  /** Linux process start time (epoch ms); null when unavailable. */
+  pidStartMs: number | null;
+  createdAt: string;
+}
+
+/** Process start time in epoch ms via /proc (Linux only, null otherwise). */
+export function procStartMs(pid: number): number | null {
+  if (process.platform !== 'linux') return null;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const afterComm = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+    const startTicks = Number(afterComm[19]); // field 22 (starttime)
+    if (!Number.isFinite(startTicks)) return null;
+    const btimeLine = readFileSync('/proc/stat', 'utf8')
+      .split('\n')
+      .find((l) => l.startsWith('btime '));
+    const btime = Number(btimeLine?.split(/\s+/)[1]);
+    if (!Number.isFinite(btime)) return null;
+    let clkTck = 100;
+    try {
+      const out = execFileSync('getconf', ['CLK_TCK'], { encoding: 'utf8' }).trim();
+      const n = Number(out);
+      if (Number.isFinite(n) && n > 0) clkTck = n;
+    } catch {
+      /* default 100 */
+    }
+    return Math.floor(btime * 1000 + (startTicks * 1000) / clkTck);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when the pid refers to a live process. EPERM (exists, not
+ * signalable) counts as alive — conservative. When an expected start
+ * time is available it must match, otherwise a recycled PID would
+ * look alive.
+ */
+export function isPidAlive(pid: number, expectedStartMs: number | null): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ESRCH') return false;
+    return true; // EPERM or anything else: process exists — don't touch
+  }
+  if (expectedStartMs == null) return true;
+  const actual = procStartMs(pid);
+  if (actual == null) return true; // cannot verify identity — conservative
+  return actual === expectedStartMs;
+}
+
+/**
+ * Write the ownership marker into a fresh build workspace. Never
+ * throws — on failure it audits BUILD_MARKER_WRITE_FAILED and the
+ * reconcile falls back to name-pattern + build-record attribution.
+ */
+export function writeWorkspaceMarker(
+  workDir: string,
+  buildId: string,
+  repo: string,
+  revision: string,
+  hooks: { audit: (action: string, details: Record<string, unknown>) => void },
+): void {
+  try {
+    const marker: BuildWorkspaceMarker = {
+      marker: 'ai-factory-build-workspace',
+      buildId,
+      repo,
+      revision,
+      pid: process.pid,
+      pidStartMs: procStartMs(process.pid),
+      createdAt: new Date().toISOString(),
+    };
+    writeFileSync(join(workDir, BUILD_WORKSPACE_MARKER), JSON.stringify(marker) + '\n', 'utf8');
+  } catch (err) {
+    hooks.audit('BUILD_MARKER_WRITE_FAILED', {
+      workDir,
+      error: (err as Error).message,
+    });
+  }
+}
+
+function readWorkspaceMarker(workDir: string): BuildWorkspaceMarker | null {
+  try {
+    const parsed = JSON.parse(
+      readFileSync(join(workDir, BUILD_WORKSPACE_MARKER), 'utf8'),
+    ) as Partial<BuildWorkspaceMarker>;
+    if (
+      parsed?.marker === 'ai-factory-build-workspace' &&
+      typeof parsed.buildId === 'string' &&
+      typeof parsed.pid === 'number'
+    ) {
+      return parsed as BuildWorkspaceMarker;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export interface OrphanReconcileResult {
+  scanned: number;
+  cleaned: string[];
+  skippedAlive: string[];
+  skippedUnknown: string[];
+  errors: Array<{ workDir: string; error: string }>;
+}
+
+function emptyReconcileResult(): OrphanReconcileResult {
+  return { scanned: 0, cleaned: [], skippedAlive: [], skippedUnknown: [], errors: [] };
+}
+
+export async function reconcileBuildWorkspaces(
+  workRoot: string,
+  opts: {
+    fdb: FactoryDatabase;
+    audit: BuildRunnerDeps['audit'];
+  },
+): Promise<OrphanReconcileResult> {
+  const result = emptyReconcileResult();
+  let entries: string[];
+  try {
+    entries = readdirSync(workRoot);
+  } catch {
+    return result; // missing root: nothing to do, never created here
+  }
+  for (const name of entries) {
+    if (!WORKSPACE_DIR_RE.test(name)) continue;
+    const workDir = join(workRoot, name);
+    let isDir = false;
+    try {
+      isDir = statSync(workDir).isDirectory();
+    } catch {
+      continue;
+    }
+    if (!isDir) continue;
+    result.scanned++;
+    const buildId = name.slice('build-'.length);
+    const marker = readWorkspaceMarker(workDir);
+    if (marker && isPidAlive(marker.pid, marker.pidStartMs)) {
+      result.skippedAlive.push(workDir);
+      opts.audit.record('system', 'BUILD_ORPHAN_SKIPPED', 'build', buildId, {
+        workDir,
+        reason: 'build process still alive — not touching a live workspace',
+        pid: marker.pid,
+      });
+      continue;
+    }
+    let rec: { repo: string } | undefined;
+    try {
+      rec = opts.fdb.builds.get(buildId) ?? undefined;
+    } catch {
+      rec = undefined;
+    }
+    if (!marker && !rec) {
+      result.skippedUnknown.push(workDir);
+      opts.audit.record('system', 'BUILD_ORPHAN_SKIPPED', 'build', buildId, {
+        workDir,
+        reason: 'no marker and no build record — unattributable, leaving alone',
+      });
+      continue;
+    }
+    const repo = marker?.repo ?? rec?.repo;
+    // Remove the git worktree registration FIRST (the repo still lists
+    // this path as a detached worktree), then the directory itself.
+    try {
+      if (repo) {
+        const g = new GitRepo(repo);
+        await g.worktreeRemove(workDir, { force: true }).catch(() => undefined);
+        await g.worktreePrune().catch(() => undefined);
+      }
+    } catch {
+      /* best effort — fall through to rmSync */
+    }
+    try {
+      rmSync(workDir, { recursive: true, force: true });
+      result.cleaned.push(workDir);
+      opts.audit.record('system', 'BUILD_ORPHAN_CLEANED', 'build', buildId, {
+        workDir,
+        repo: repo ?? null,
+        hadMarker: marker !== null,
+        note: 'orphan workspace from a previous boot (server died mid-build) — cleaned, never replayed',
+      });
+    } catch (err) {
+      result.errors.push({ workDir, error: (err as Error).message });
+      opts.audit.record('system', 'BUILD_ORPHAN_CLEANUP_FAILED', 'build', buildId, {
+        workDir,
+        error: (err as Error).message,
+      });
+    }
+  }
+  return result;
+}
+
 function excerpt(s: string): string {
   return s.length > OUTPUT_EXCERPT_CHARS
     ? s.slice(0, OUTPUT_EXCERPT_CHARS) + `…[truncated ${s.length - OUTPUT_EXCERPT_CHARS} chars]`
@@ -171,6 +434,7 @@ export class BuildRunner {
   private readonly queue: string[] = [];
   private pumping = false;
   private closed = false;
+  private reconcilePromise: Promise<OrphanReconcileResult> | null = null;
 
   constructor(
     private readonly deps: BuildRunnerDeps,
@@ -189,6 +453,18 @@ export class BuildRunner {
     this.closed = true;
   }
 
+  /**
+   * Kick off the startup orphan reconcile (called once from index.ts).
+   * Fire-and-forget by design: pump() awaits the reconcile promise
+   * before running any build, so no build can start before the orphan
+   * scan finished — without needing top-level await in index.ts.
+   */
+  startReconcile(): void {
+    if (!this.reconcilePromise) {
+      this.reconcilePromise = this.reconcileOrphans();
+    }
+  }
+
   /** For tests: wait until the queue is drained. */
   async drain(): Promise<void> {
     while (this.pumping || this.queue.length > 0) {
@@ -196,10 +472,43 @@ export class BuildRunner {
     }
   }
 
+  /**
+   * Startup reconcile (Batch 27): clean orphaned build workspaces left
+   * behind by a previous boot that died mid-build (SIGKILL between
+   * `git worktree add` and the finally-block cleanup). Never throws —
+   * a reconcile failure is audited, never fatal to startup. See
+   * reconcileBuildWorkspaces for the exact rules.
+   */
+  async reconcileOrphans(): Promise<OrphanReconcileResult> {
+    try {
+      const r = await reconcileBuildWorkspaces(this.config.workRoot, {
+        fdb: this.deps.fdb,
+        audit: this.deps.audit,
+      });
+      if (r.cleaned.length > 0 || r.errors.length > 0 || r.skippedAlive.length > 0) {
+        console.log(
+          `[ai-factory] build workspace reconcile: ${r.cleaned.length} orphan(s) cleaned, ` +
+            `${r.skippedAlive.length} skipped (build still alive), ${r.errors.length} error(s)`,
+        );
+      }
+      return r;
+    } catch (err) {
+      this.deps.audit.record('system', 'BUILD_ORPHAN_RECONCILE_FAILED', 'build', 'startup', {
+        workRoot: this.config.workRoot,
+        error: (err as Error).message,
+      });
+      return { scanned: 0, cleaned: [], skippedAlive: [], skippedUnknown: [], errors: [] };
+    }
+  }
+
   private async pump(): Promise<void> {
     if (this.pumping) return;
     this.pumping = true;
     try {
+      // The startup orphan reconcile (if started) completes before any
+      // build runs — a live workspace is never cleaned from under a
+      // build this boot is about to start.
+      if (this.reconcilePromise) await this.reconcilePromise;
       while (this.queue.length > 0) {
         const id = this.queue.shift() as string;
         try {
@@ -259,6 +568,15 @@ export class BuildRunner {
             audit.record('system', action, 'git', rec.repo, details),
         });
         worktreeAdded = true;
+        // Marker BEFORE any build work: if the server dies from here on
+        // (SIGKILL mid-build), the startup reconcile can identify this
+        // directory as ours and clean it — never silently orphaned. The
+        // write never throws: a missing marker only degrades cleanup to
+        // the name-pattern + build-record fallback.
+        writeWorkspaceMarker(workDir, buildId, rec.repo, rec.revision, {
+          audit: (action, details) =>
+            audit.record('system', action, 'build', buildId, details),
+        });
       } catch (err) {
         fail(`worktree setup failed: ${(err as Error).message}`);
         return;

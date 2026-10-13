@@ -258,6 +258,14 @@ if (buildRunnerConfig) {
       buildRunnerConfig.command.slice(0, 80),
     )}, timeoutMs=${buildRunnerConfig.timeoutMs}`,
   );
+  /**
+   * Batch 27 — orphan workspace reconcile: a previous boot that died
+   * mid-build (SIGKILL between `git worktree add` and cleanup) leaves
+   * detached worktrees on disk. Reap them now. Fire-and-forget here —
+   * pump() awaits the reconcile promise before the first build runs,
+   * so ordering is still guaranteed (no top-level await allowed).
+   */
+  buildRunner?.startReconcile();
 }
 /**
  * §46.2 Secret Broker (Batch 18; see @ai-factory/secrets).

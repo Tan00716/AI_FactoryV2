@@ -1,5 +1,13 @@
 # Changelog
 
+## [未发布] Batch 27 — Batch26 独立复核 / install 并发审计 / 构建孤儿清理 / Database 三环境身份
+
+- **Batch 26 独立复核（27-1）**：三项实质声明全部成立（`gap-audit/REAUDIT_BATCH26.md`，零产品代码改动）：SBOM 保留语义、MCP launch 落库、enqueue position 碰撞均亲跑复验。
+- **MCP install 表并发写语义审计（27-2）**：真跑（两真实进程各 800 次 install/uninstall 交错写入共享 DB）从未出现混合行——`saveInstall` 是单语句 UPSERT、`removeInstall` 是单语句 DELETE，语句级原子，语义即"最后一个完整写入胜出"。按规则未套用意图模式（不承诺解决不存在的问题），只补 `packages/db/tests/mcp-install-concurrency.test.ts` 钉住（5/5）。相邻观察：`removeServer` 是两条 DELETE（理论接缝，6 轮×20000 次真跑未命中），已记录 KNOWN_LIMITATIONS 建议下一批包进事务。
+- **构建工作区孤儿清理（27-3）**：此前 server 在 `git worktree add` 与 finally 清理之间被 SIGKILL 会留下永久孤儿工作区（真跑复现：目录残留 + `git worktree list` 悬空注册）。现每次构建写 `.factory-build-runner.json` 归属标记（buildId、revision、owner PID + PID 启动时间），启动时 reconcile 扫描 workRoot：死 PID 孤儿（或 pre-marker 窗口兜底）先解除 git 注册再删除，审计 `BUILD_ORPHAN_CLEANED`（明注"清理非重放"），构建记录保持 `NOT_EXECUTED`；活 PID 工作区（PID 复用防护：比对 /proc 启动时间；kill EPERM 按存活）与不可归属目录一律不动；非 `build-<uuid>` 永不碰；reconcile 永不抛。边界：仅 FACTORY_BUILD_COMMAND 启用时运行；workRoot 变更后旧 root 不在扫描范围；只覆盖单机。
+- **Database 三环境身份（27-4）**：规格依据 SPEC_V2 §33「Database 分开 DEV/UAT/PROD 身份；生产写仅经最小权限 Broker/Runbook」——本批只做前半句。`packages/tools/src/database.ts`（新建）：`DatabaseEnvironmentRegistry`——连接注册必须带环境身份（省略默认 `dev`，永不猜 prod；身份不可变，同名换 env 拒绝注册，防止 dev→prod 静默翻转）；prod 写必须调用时字面 `prodWriteConfirmed === true`（'yes'/1 不算），否则 DENIED；切换可审计（`DB_CONNECTION_SWITCHED`）；prod 写尝试/确认/拒绝全审计；只存 credential 引用名（secret 值永不接受、永不落盘）。语句分类保守（未知语句按写处理，fail-closed）。`db.query` 内置定义加可选 `connectionName`/`prodWriteConfirmed` 输入字段，gap 注释如实更新（身份层已存在，查询引擎与 Broker 仍缺，definition-only 不变）。边界：① 这是 fail-closed 确认门，不是最小权限 Broker/Runbook——生产写 Broker 仍未做；② 无查询引擎；③ 无物理隔离，身份是逻辑标签。
+- KNOWN_LIMITATIONS：新增 install 并发审计结论、Database 三环境身份、构建孤儿清理条目；Batch 17 的"仍未做"口径已更新。测试基线（主线亲验）：构建 0 错误；包套件 2217 → 2243（+26：tools database 21、db install-concurrency 5）；服务端全套 259 → 266（+7：build-orphan-reconcile）；desktop tsc 0；smoke:boot OK。
+
 ## [未发布] Batch 26 — Batch25 独立复核 / SBOM 保留策略 / MCP launch 记录落库 / enqueue position 碰撞
 
 - **Batch 25 独立复核（26-1）**：实质声明全部成立。审计真跑验证：MCP op 协议下过期进程的健康写不再撤销批准（旧路径对照证实 bug 真实存在且修复是实质的）、SBOM 从仓库真实 lockfile 派生 386 个真实组件、taskId-null 补线在树上。`gap-audit/REAUDIT_BATCH25.md`（零产品代码改动）。
