@@ -179,6 +179,16 @@ export interface MergeQueueEntryPersistence {
    * When absent, cross-process drain stays unsafe (documented).
    */
   drainLock?: MergeQueueDrainLock;
+  /**
+   * Highest position currently stored for a repo (Batch 26, optional).
+   * Used by enqueue()'s position-collision retry to re-read the true
+   * max from the backing instead of trusting this instance's (possibly
+   * stale) nextPosition counter. Return null when the backing cannot
+   * answer (e.g. empty repo). Backings without this method keep a
+   * degraded retry: blind +1 bumps, bounded attempts, then a loud
+   * error — no entry is ever dropped.
+   */
+  maxPosition?(repoPath: string): number | null;
 }
 
 /**
@@ -274,6 +284,27 @@ export const DEFAULT_CLAIM_TTL_MS = 5 * 60 * 1000;
 
 /** Default drain-lock heartbeat TTL (Batch 23). */
 export const DEFAULT_DRAIN_LOCK_TTL_MS = 2 * 60 * 1000;
+
+/**
+ * Marker for a (repo_path, position) unique-index violation (Batch 26).
+ * Thrown by persist() when another process grabbed the position this
+ * instance computed from its own stale nextPosition counter. Caught
+ * only by enqueue()'s retry loop — never surfaces to callers.
+ */
+class PositionCollisionError extends Error {
+  constructor(
+    readonly repo: string,
+    readonly position: number,
+  ) {
+    super(
+      `merge queue position collision: repo ${repo} already has an entry at position ${position}`,
+    );
+    this.name = 'PositionCollisionError';
+  }
+}
+
+/** Bounded retries for enqueue()'s position-collision loop. */
+const ENQUEUE_POSITION_RETRIES = 8;
 
 export class MergeQueue {
   /** Repository path this queue serializes merges for. */
@@ -402,6 +433,15 @@ export class MergeQueue {
    * A duplicate-active-entry rejection from the backing (partial
    * unique index) surfaces as the same domain error as the in-memory
    * check, so cross-process double-enqueue answers identically.
+   * A (repo_path, position) violation is NOT a duplicate PR — it means
+   * another process grabbed the position this instance computed from
+   * its own stale counter, and surfaces as PositionCollisionError for
+   * enqueue()'s retry loop. Any other unique violation is rethrown raw:
+   * mislabeling it as a duplicate PR would be a lie.
+   *
+   * NOTE: SQLite names the violated *columns* in the message
+   * ("…repo_path, ….position"), not the index, so the patterns below
+   * match column lists.
    */
   private persist(entry: MergeQueueEntry): void {
     if (!this.persistence) return;
@@ -409,9 +449,14 @@ export class MergeQueue {
       this.persistence.save(structuredClone(entry));
     } catch (e) {
       if (e instanceof Error && /UNIQUE constraint failed/i.test(e.message)) {
-        throw new Error(
-          `PR ${entry.prId} is already in the merge queue (entry ${entry.id})`,
-        );
+        if (/\.repo_path,\s*[a-z_.]*\.position/i.test(e.message)) {
+          throw new PositionCollisionError(entry.repo, entry.position);
+        }
+        if (/\.pr_id/i.test(e.message)) {
+          throw new Error(
+            `PR ${entry.prId} is already in the merge queue (entry ${entry.id})`,
+          );
+        }
       }
       throw e;
     }
@@ -472,9 +517,44 @@ export class MergeQueue {
     // Persist BEFORE the in-memory push: a cross-process duplicate is
     // rejected by the backing's partial unique index and must surface
     // as a 409, not as a row this process already believes it owns.
-    // nextPosition advances only on success, so a rejected duplicate
-    // does not burn a position number.
-    this.persist(entry);
+    //
+    // Cross-process position allocation (Batch 26): two processes can
+    // compute the same nextPosition from a stale view. The
+    // (repo_path, position) unique index is the arbiter — on collision
+    // re-read the true max from the backing and retry with a fresh
+    // position. nextPosition advances only on success, so a rejected
+    // attempt does not burn a position number and no entry is ever
+    // dropped. Bounded: a persistent collision means something is
+    // deeply wrong, so fail loudly rather than spin.
+    let positionAttempts = 0;
+    for (;;) {
+      try {
+        this.persist(entry);
+        break;
+      } catch (e) {
+        if (
+          e instanceof PositionCollisionError &&
+          positionAttempts < ENQUEUE_POSITION_RETRIES
+        ) {
+          positionAttempts += 1;
+          const freshMax =
+            this.persistence?.maxPosition?.(this.repoPath) ?? null;
+          // The collision proves a row exists at entry.position, so
+          // freshMax >= entry.position whenever the backing can answer.
+          entry.position =
+            freshMax === null ? entry.position + 1 : freshMax + 1;
+          this.hooks.audit?.('GIT_MERGE_QUEUE_POSITION_RETRY', {
+            repo: this.repoPath,
+            entryId: entry.id,
+            prId: pr.id,
+            attempt: positionAttempts,
+            position: entry.position,
+          });
+          continue;
+        }
+        throw e;
+      }
+    }
     this.nextPosition = entry.position + 1;
     this.entries.push(entry);
     this.hooks.audit?.('GIT_MERGE_QUEUE_ENQUEUED', {

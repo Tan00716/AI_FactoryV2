@@ -124,6 +124,20 @@ export interface McpLaunchOptions {
   now?: () => number;
 }
 
+/**
+ * Write-through observer for launch-record history (Batch 26).
+ * The launcher stays storage-agnostic: it emits lifecycle events,
+ * and the server layer (mcp-persistence.ts) persists them.
+ */
+export interface McpLaunchRecordSink {
+  /** Fired right after the child is spawned (status RUNNING). */
+  launched(rec: McpLaunchRecord & { command: string; args: string[]; cwd?: string }): void;
+  /** Fired when the child exits on its own (status EXITED). */
+  launchEnded(id: string, outcome: { exitCode: number | null; signal: string | null }): void;
+  /** Fired when the operator stops it via /stop (status STOPPED). */
+  launchStopped(id: string): void;
+}
+
 export class McpServerLauncher {
   private readonly launches = new Map<string, {
     record: McpLaunchRecord;
@@ -131,7 +145,14 @@ export class McpServerLauncher {
     leases: SecretLease[];
     values: string[];
     log: string;
+    endedEmitted: boolean;
   }>();
+  private sink: McpLaunchRecordSink | null = null;
+
+  /** Attach the write-through observer (Batch 26). Set after hydrate. */
+  setSink(sink: McpLaunchRecordSink | null): void {
+    this.sink = sink;
+  }
 
   /** Launch a stdio MCP server with secret injection. Throws McpLaunchError. */
   async launch(opts: McpLaunchOptions): Promise<McpLaunchRecord> {
@@ -230,6 +251,7 @@ export class McpServerLauncher {
       leases: SecretLease[];
       values: string[];
       log: string;
+      endedEmitted: boolean;
     } = {
       record: {
         id, server: server.name, version: server.version,
@@ -240,9 +262,33 @@ export class McpServerLauncher {
         leasesLive: true, logTruncated: false,
       },
       child, leases, values, log: '',
+      endedEmitted: false,
     };
     this.launches.set(id, entry);
+    // The child is already spawned: a persistence failure here must
+    // not turn into a lying 500 (the launch happened) nor leak
+    // silently — audit it loudly and keep the in-memory record as
+    // the authority for the live launch.
+    try {
+      this.sink?.launched({
+        ...entry.record,
+        command: resolved,
+        args,
+        cwd: opts.cwd,
+      });
+    } catch (err) {
+      audit.record('system', 'MCP_LAUNCH_RECORD_WRITE_FAILED', 'mcp_server', idBase, {
+        launchId: id,
+        error: (err as Error).name,
+        detail: (err as Error).message.slice(0, 200),
+      });
+    }
 
+    const emitEnded = (code: number | null, signal: string | null) => {
+      if (entry.endedEmitted) return;
+      entry.endedEmitted = true;
+      this.sink?.launchEnded(id, { exitCode: code, signal });
+    };
     const onData = (chunk: Buffer) => {
       const redacted = redactSecretValues(chunk.toString('utf8'), entry.values);
       entry.log += redacted;
@@ -257,12 +303,14 @@ export class McpServerLauncher {
       entry.record.alive = false;
       entry.record.exitCode = code;
       entry.record.signal = signal;
+      emitEnded(code, signal);
       audit.record('system', 'MCP_SERVER_EXIT', 'mcp_server', idBase, {
         launchId: id, exitCode: code, signal,
       });
     });
     child.on('error', (err) => {
       entry.record.alive = false;
+      emitEnded(null, null);
       audit.record('system', 'MCP_SERVER_EXIT', 'mcp_server', idBase, {
         launchId: id, error: err.name, detail: err.message.slice(0, 200),
       });
@@ -302,6 +350,7 @@ export class McpServerLauncher {
     if (!entry) return false;
     audit.record(actor, 'MCP_SERVER_STOPPED', 'mcp_server',
       `${entry.record.server}@${entry.record.version}`, { launchId: id });
+    this.sink?.launchStopped(id);
     try { entry.child.kill('SIGTERM'); } catch { /* already gone */ }
     setTimeout(() => { try { entry.child.kill('SIGKILL'); } catch { /* gone */ } }, 2_000).unref();
     return true;

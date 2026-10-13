@@ -300,6 +300,20 @@ export class SqliteMergeQueueEntryStore implements MergeQueueEntryPersistence {
     return rows.map((r) => structuredClone(rowToEntry(r)));
   }
 
+  /**
+   * Highest stored position for a repo (Batch 26): the arbiter input
+   * for enqueue()'s position-collision retry. Null when the repo has
+   * no rows.
+   */
+  maxPosition(repoPath: string): number | null {
+    const row = this.db
+      .prepare(
+        'SELECT MAX(position) AS m FROM merge_queue_entries WHERE repo_path = ?',
+      )
+      .get(repoPath) as { m: number | null };
+    return row.m;
+  }
+
   /** One entry by id (a copy), or undefined. */
   get(id: string): MergeQueueEntry | undefined {
     const r = this.db

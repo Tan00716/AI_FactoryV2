@@ -79,6 +79,17 @@ export const BUILD_SBOM_DIR_ENV = 'FACTORY_SBOM_DIR';
 
 export const DEFAULT_BUILD_TIMEOUT_MS = 600_000;
 
+/**
+ * Batch 26 — the SBOM directory, shared between the build runner
+ * (which writes sbom-<buildId>.json files there) and the retention
+ * routes (which sweep them). Same default in both places so a
+ * server that never configures FACTORY_BUILD_COMMAND still
+ * evaluates the directory the runner would use.
+ */
+export function sbomDirFromEnv(env: NodeJS.ProcessEnv = process.env): string {
+  return (env[BUILD_SBOM_DIR_ENV] ?? '').trim() || join(process.cwd(), 'data', 'sboms');
+}
+
 export interface BuildRunnerConfig {
   /** The exact command to run. Unset (empty) = feature off. */
   command: string;
@@ -116,7 +127,7 @@ export function buildRunnerConfigFromEnv(
     toolchain: (env[BUILD_TOOLCHAIN_ENV] ?? '').trim() || undefined,
     configFiles,
     workRoot: (env[BUILD_WORK_ROOT_ENV] ?? '').trim() || join(tmpdir(), 'factory-builds'),
-    sbomDir: (env[BUILD_SBOM_DIR_ENV] ?? '').trim() || join(process.cwd(), 'data', 'sboms'),
+    sbomDir: (env[BUILD_SBOM_DIR_ENV] ?? '').trim() || sbomDirFromEnv(env),
   };
 }
 

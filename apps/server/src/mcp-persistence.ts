@@ -18,14 +18,17 @@
  * stale on hydrate and NOT loaded into the live registry. A restart
  * must not pretend a fresh health check happened (health: null means
  * "never checked by this process", per the existing summarize()).
- * Launches are and stay process-local (Batch 19) — only registrations,
- * trust, assessments and install records survive.
+ * Launches: the live process table stays process-local (Batch 19),
+ * but the launch RECORDS (who/what/when, Batch 26) survive — a
+ * restart marks still-RUNNING rows ORPHANED ("owning launcher gone,
+ * child fate unknown") instead of forgetting them.
  */
 import type {
   FactoryDatabase,
   McpServerDbRecord,
   McpInstallDbRecord,
   McpServerStore,
+  McpLaunchDbRecord,
 } from '@ai-factory/db';
 import {
   McpRegistry,
@@ -37,6 +40,8 @@ import {
   type TrustAssessment,
   type InstallRecord,
 } from '@ai-factory/mcp';
+import type { McpServerLauncher, McpLaunchRecordSink } from './mcp-launcher';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Deep-clone a server record with any smuggled secret VALUES removed.
@@ -284,6 +289,130 @@ export function removeMcpServerRecord(
   version: string,
 ): boolean {
   return store.removeServer(name, version);
+}
+
+/**
+ * One server boot = one boot id (randomUUID). Launch rows carry it so
+ * hydration can tell "mine" from "a previous boot's".
+ */
+export function newMcpBootId(): string {
+  return randomUUID();
+}
+
+export interface LaunchHydrateResult {
+  /** RUNNING rows from other boots marked ORPHANED. */
+  orphanedLaunches: number;
+}
+
+/**
+ * Launch-record hydration (Batch 26): every still-RUNNING row owned by
+ * a DIFFERENT boot is marked ORPHANED — the launcher that spawned it
+ * is gone, so the child process's real fate is unknown and this
+ * server does not manage it. This runs BEFORE the sink is attached,
+ * so the replay itself doesn't rewrite rows mid-flight.
+ *
+ * Honest boundary: in a shared-DB multi-process deployment, a newly
+ * booted server also orphans the other (possibly still alive)
+ * servers' RUNNING rows — liveness is only authoritative in the
+ * owning process (the live GET /api/mcp/launches list).
+ */
+export function hydrateMcpLaunches(deps: {
+  store: McpServerStore;
+  bootId: string;
+}): LaunchHydrateResult {
+  const orphanedLaunches = deps.store.orphanRunningLaunches(deps.bootId);
+  if (orphanedLaunches > 0) {
+    console.log(
+      `[ai-factory] mcp launches hydrated: ${orphanedLaunches} ` +
+        `orphaned (owning launcher gone — child fate unknown, not managed)`,
+    );
+  }
+  return { orphanedLaunches };
+}
+
+function launchRecordToRow(
+  rec: Parameters<McpLaunchRecordSink['launched']>[0],
+  bootId: string,
+): McpLaunchDbRecord {
+  const launchedAt = new Date(rec.launchedAt).toISOString();
+  return {
+    id: rec.id,
+    name: rec.server,
+    version: rec.version,
+    bootId,
+    pid: rec.pid,
+    command: rec.command,
+    argsJson: JSON.stringify(rec.args ?? []),
+    cwd: rec.cwd ?? null,
+    credentialRefsJson: JSON.stringify(rec.credentialRefs ?? []),
+    secretEnvVarsJson: JSON.stringify(rec.secretEnvVars ?? []),
+    status: 'RUNNING',
+    launchedAt,
+    endedAt: null,
+    exitCode: null,
+    signal: null,
+    orphanNote: null,
+    updatedAt: launchedAt,
+  };
+}
+
+/**
+ * Attach the launch-record write-through sink AFTER hydration.
+ * launched → RUNNING row; natural exit → EXITED (exit code/signal);
+ * /stop → STOPPED. A STOPPED row is an operator decision and is never
+ * overwritten by the later exit event — only RUNNING rows move to
+ * EXITED.
+ */
+export function attachLaunchPersistence(deps: {
+  launcher: McpServerLauncher;
+  store: McpServerStore;
+  bootId: string;
+  audit?: { record: (actor: string, action: string, kind: string, name: string, detail?: Record<string, unknown>) => void };
+}): void {
+  const { launcher, store, bootId, audit } = deps;
+  const loud = (id: string, err: unknown) => {
+    console.error(`[ai-factory] mcp launch record write failed for ${id}: ${(err as Error)?.message ?? err}`);
+    audit?.record('system', 'MCP_LAUNCH_RECORD_WRITE_FAILED', 'mcp_launch', id, {
+      error: (err as Error)?.name,
+    });
+  };
+  launcher.setSink({
+    launched: (rec) => {
+      try {
+        store.saveLaunch(launchRecordToRow(rec, bootId));
+      } catch (err) {
+        loud(rec.id, err);
+      }
+    },
+    launchEnded: (id, outcome) => {
+      try {
+        const current = store.getLaunch(id);
+        if (!current) return; // defensive: never fabricate a row
+        if (current.status !== 'RUNNING') return; // STOPPED wins over the exit event
+        store.updateLaunch(id, {
+          status: 'EXITED',
+          endedAt: new Date().toISOString(),
+          exitCode: outcome.exitCode,
+          signal: outcome.signal,
+        });
+      } catch (err) {
+        loud(id, err);
+      }
+    },
+    launchStopped: (id) => {
+      try {
+        const current = store.getLaunch(id);
+        if (!current) return;
+        if (current.status !== 'RUNNING') return;
+        store.updateLaunch(id, {
+          status: 'STOPPED',
+          endedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        loud(id, err);
+      }
+    },
+  });
 }
 
 export type { McpServerStore };

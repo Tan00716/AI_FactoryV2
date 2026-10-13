@@ -75,7 +75,9 @@ import type { RouteContext } from './routes/context';
 import {
   BuildRunner,
   buildRunnerConfigFromEnv,
+  sbomDirFromEnv,
 } from './build-runner';
+import { SBOM_FILE_RE } from '@ai-factory/cicd';
 import { handleGitRoutes } from './routes/git';
 import { handleWorktreeRoutes } from './routes/worktrees';
 import { handleQaRoutes } from './routes/qa';
@@ -712,6 +714,30 @@ const server = createServer(async (req, res) => {
         dir: backupDirPath,
         list: listBackupManifests,
         stagedRestoreBackupId,
+      },
+      // Batch 26 — SBOM file access for the retention 'sboms'
+      // category. Same directory the build runner writes to; wired
+      // even when no build command is configured (the directory may
+      // still hold files from an earlier configuration).
+      sbomAccess: {
+        dir: () => sbomDirFromEnv(),
+        list: () => {
+          const dir = sbomDirFromEnv();
+          let entries: string[];
+          try {
+            entries = fs.readdirSync(dir);
+          } catch {
+            return [];
+          }
+          return entries.filter((name) => {
+            if (!SBOM_FILE_RE.test(name)) return false;
+            try {
+              return fs.statSync(`${dir}/${name}`).isFile();
+            } catch {
+              return false;
+            }
+          });
+        },
       },
       // Batch 14 — the archive guard evaluator for the route modules
       // that cannot import project-guard directly (see context.ts).

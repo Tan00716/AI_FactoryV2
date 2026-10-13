@@ -470,8 +470,11 @@ CREATE TABLE IF NOT EXISTS retention_policies (
   category TEXT PRIMARY KEY,
   retention_days INTEGER,
   -- Batch 20: keep newest N backups regardless of age (only the
-  -- 'backups' category evaluates this column; NULL = no count limit).
+  -- 'backups' and 'sboms' categories evaluate this column; NULL = no count limit).
   keep_count INTEGER,
+  -- Batch 26: sboms-only orphan sweep opt-in (1 = delete sbom-*.json
+  -- files no builds record references). Default off.
+  delete_orphans INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL
 );
@@ -732,4 +735,34 @@ CREATE TABLE IF NOT EXISTS mcp_installs (
   last_used_version TEXT,
   PRIMARY KEY (name, version)
 );
+
+-- Launch-record history (Batch 26): one row per spawned stdio MCP
+-- server process. Only metadata — server identity, launch parameters
+-- (ref NAMES only, never secret values), lifecycle state. Status is
+-- RUNNING while the spawning launcher owns it, STOPPED when the
+-- operator stops it via /stop, EXITED when the child exits on its
+-- own, ORPHANED when the owning launcher process is gone (server
+-- restart): the child's real fate is then UNKNOWN and no server
+-- manages it. ORPHANED is terminal; a relaunch writes a new row.
+CREATE TABLE IF NOT EXISTS mcp_launch_records (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  boot_id TEXT NOT NULL,
+  pid INTEGER,
+  command TEXT NOT NULL,
+  args_json TEXT NOT NULL DEFAULT '[]',
+  cwd TEXT,
+  credential_refs_json TEXT NOT NULL DEFAULT '[]',
+  secret_env_vars_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'RUNNING',
+  launched_at TEXT NOT NULL,
+  ended_at TEXT,
+  exit_code INTEGER,
+  signal TEXT,
+  orphan_note TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_launches_server
+  ON mcp_launch_records(name, version);
 `;

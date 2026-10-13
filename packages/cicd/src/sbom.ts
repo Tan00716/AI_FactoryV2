@@ -42,6 +42,15 @@ export const SBOM_TOOL_NAME = 'ai-factory-sbom-generator';
 export const SBOM_TOOL_VERSION = '0.1.0';
 /** Hard cap on components per document — bounds memory and file size. */
 export const MAX_SBOM_COMPONENTS = 20_000;
+/**
+ * Batch 26 — filenames the build runner writes: sbom-<buildId>.json
+ * where buildId is a randomUUID. Retention only ever touches files
+ * matching this shape; anything else in the directory is left alone
+ * (retention never deletes blind). Tight on purpose: if buildId
+ * formats ever change, old files are kept, never swept.
+ */
+export const SBOM_FILE_RE =
+  /^sbom-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/;
 
 export interface SbomComponent {
   type: 'library';

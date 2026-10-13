@@ -30,6 +30,14 @@
  *    run → project mapping, so the run's leftover intents/checkpoints
  *    keep resolving (and keep honoring that project's holds) instead
  *    of becoming permanent orphans; true orphans stay exempt.
+ *    For SBOMs (Batch 26) the association is verified first too: a
+ *    file is deleted only when a builds record's sbomRef points at
+ *    it and that record is expired, or when it is an orphan AND the
+ *    policy explicitly opts into orphan sweeping (deleteOrphans) —
+ *    an unassociated file might belong to an in-flight build, so it
+ *    is kept by default. Deleting an SBOM file leaves the builds
+ *    record's sbomRef dangling BY DESIGN: builds rows are
+ *    insert-only history and are never rewritten.
  *  - Live state is never eligible: RUNNING runs and PENDING step
  *    intents (a dead process's unreconciled intents, §28.3) are
  *    excluded by the candidate queries themselves.
@@ -38,6 +46,10 @@
  *    counts and sample ids. Policy changes and hold set/release are
  *    likewise audited (RETENTION_POLICY_UPDATED, LEGAL_HOLD_SET,
  *    LEGAL_HOLD_RELEASED).
+ *  - SBOMs (Batch 26): like backups, ANY active legal hold exempts
+ *    every SBOM deletion (they may describe held project data);
+ *    keepCount keeps the newest N by record age regardless of the
+ *    days axis.
  *
  * Excluded categories (reported in every evaluation, never deletable
  * through this module):
@@ -58,6 +70,7 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { SBOM_FILE_RE } from '@ai-factory/cicd';
 import {
   RETENTION_CATEGORIES,
   type CategoryEvaluation,
@@ -97,14 +110,26 @@ interface CategoryReport {
   /** Effective policy in days; null = keep forever. */
   retentionDays: number | null;
   /**
-   * Batch 20 — backups only: keep newest N regardless of age;
+   * Batch 20 — backups and sboms: keep newest N regardless of age;
    * null = no count limit.
    */
   keepCount: number | null;
+  /**
+   * Batch 26 — sboms only: whether the policy opts into deleting
+   * orphan sbom-*.json files (no builds record references them).
+   */
+  deleteOrphans: boolean;
   candidates: number;
   sampleIds: string[];
   heldExempt: number;
   unknownRefExempt: number;
+  /**
+   * Batch 26 — sboms only: sbom-*.json files present in the directory
+   * that no builds record references AND that were not deleted
+   * (deleteOrphans off, or a hold is active). The operator sees the
+   * accumulation instead of it happening silently.
+   */
+  orphanFiles?: number;
   note?: string;
 }
 
@@ -133,21 +158,27 @@ function evaluateAll(ctx: RouteContext, now: Date): EvaluationReport {
   for (const category of RETENTION_CATEGORIES) {
     const policy = policies.get(category);
     const days = effectiveDays(policy?.retentionDays ?? null);
-    // Batch 20 — the count axis exists only for backups; the PUT
-    // route rejects it for other categories, so a non-null value
-    // here always belongs to 'backups'.
+    // Batch 20/26 — the count axis exists for the filesystem
+    // categories ('backups', 'sboms'); the PUT route rejects it for
+    // the DB categories, so a non-null value here always belongs to
+    // one of those two.
     const keepCount =
-      category === 'backups' &&
+      (category === 'backups' || category === 'sboms') &&
       policy?.keepCount !== null &&
       policy?.keepCount !== undefined &&
       policy.keepCount > 0
         ? policy.keepCount
         : null;
-    if (days === null && keepCount === null) {
+    // Batch 26 — sboms-only orphan sweep opt-in, read straight from
+    // the policy (default false: never sweep unassociated files
+    // unless the operator says so).
+    const deleteOrphans = category === 'sboms' && policy?.deleteOrphans === true;
+    if (days === null && keepCount === null && !deleteOrphans) {
       categories.push({
         category,
         retentionDays: policy?.retentionDays ?? null,
         keepCount: null,
+        deleteOrphans: false,
         candidates: 0,
         sampleIds: [],
         heldExempt: 0,
@@ -169,6 +200,7 @@ function evaluateAll(ctx: RouteContext, now: Date): EvaluationReport {
           category,
           retentionDays: days,
           keepCount,
+          deleteOrphans: false,
           candidates: 0,
           sampleIds: [],
           heldExempt: 0,
@@ -220,10 +252,139 @@ function evaluateAll(ctx: RouteContext, now: Date): EvaluationReport {
         category,
         retentionDays: days,
         keepCount,
+        deleteOrphans: false,
         candidates,
         sampleIds,
         heldExempt: held,
         unknownRefExempt: 0,
+        note: notes.length > 0 ? notes.join('; ') : undefined,
+      });
+      continue;
+    }
+
+    if (category === 'sboms') {
+      const access = ctx.sbomAccess;
+      if (!access) {
+        // No SBOM directory wired in this process: report honestly
+        // and delete nothing — retention never deletes blind.
+        candidateIds[category] = [];
+        categories.push({
+          category,
+          retentionDays: days,
+          keepCount,
+          deleteOrphans,
+          candidates: 0,
+          sampleIds: [],
+          heldExempt: 0,
+          unknownRefExempt: 0,
+          note: 'sbom directory not wired in this process; nothing will be deleted',
+        });
+        continue;
+      }
+      // Batch 26 — SBOM files on disk, associated to builds records
+      // via the record's sbomRef (absolute path). The association is
+      // verified BEFORE anything is a candidate: the referenced set
+      // is built from the live builds table, and a file is only ever
+      // deleted when it is (a) referenced by an expired record, or
+      // (b) an orphan AND the policy opted into orphan sweeping.
+      // Deletion axes mirror backups: a referenced SBOM is a
+      // candidate when it is BOTH (a) older than the days policy
+      // (if set) and (b) beyond the newest keepCount (if set) — OR
+      // semantics across the two axes, hold exemption applied last
+      // and absolutely. ANY active legal hold exempts every SBOM
+      // (they may describe held project data — same posture as
+      // whole-database backup snapshots).
+      //
+      // Age of an SBOM = its builds record's completedAt (falling
+      // back to builtAt for records that never ran a build — those
+      // have sbomRef null anyway, so this is defensive).
+      const dir = access.dir();
+      const referenced = new Map<string, { recordId: string; ageIso: string }>();
+      for (const rec of ctx.fdb.builds.list()) {
+        if (!rec.sbomRef) continue;
+        const abs = path.resolve(rec.sbomRef);
+        if (referenced.has(abs)) continue; // first record wins; refs are unique per build anyway
+        referenced.set(abs, {
+          recordId: rec.id,
+          ageIso: rec.completedAt ?? rec.builtAt,
+        });
+      }
+      const files = access.list(); // basenames, sbom-*.json regular files only
+      const orphanNames: string[] = [];
+      const items: { name: string; abs: string; ageIso: string }[] = [];
+      for (const name of files) {
+        if (!SBOM_FILE_RE.test(name) || name.includes('..')) continue; // never deletes blind
+        const abs = path.resolve(dir, name);
+        const ref = referenced.get(abs);
+        if (!ref) {
+          orphanNames.push(name);
+          continue;
+        }
+        items.push({ name, abs, ageIso: ref.ageIso });
+      }
+      // Newest first — keepCount protects the newest N regardless of age.
+      items.sort((a, b) => b.ageIso.localeCompare(a.ageIso));
+      const overCount = new Set<string>();
+      if (keepCount !== null) {
+        for (const it of items.slice(keepCount)) overCount.add(it.name);
+      }
+      const ids: string[] = [];
+      const sampleIds: string[] = [];
+      let held = 0;
+      let orphansKept = 0;
+      const notes: string[] = [];
+      for (const it of items) {
+        const expiredByDays = days !== null && it.ageIso < cutoffIso;
+        if (!expiredByDays && !overCount.has(it.name)) continue;
+        if (anyHold) {
+          held++;
+          continue;
+        }
+        ids.push(it.name);
+        if (sampleIds.length < SAMPLE_LIMIT) sampleIds.push(it.name);
+      }
+      // Orphans: only swept when the policy explicitly opts in, and
+      // never under a hold. Their builds record is gone (or never
+      // existed — e.g. the process died between writing the file and
+      // markSucceeded), so no age axis applies.
+      if (deleteOrphans && !anyHold) {
+        for (const name of orphanNames) {
+          ids.push(name);
+          if (sampleIds.length < SAMPLE_LIMIT) sampleIds.push(name);
+        }
+      } else {
+        orphansKept = orphanNames.length;
+      }
+      candidateIds[category] = ids;
+      if (anyHold) {
+        notes.push(
+          'any active legal hold exempts all sbom deletions (they may describe held project data)',
+        );
+      }
+      if (keepCount !== null) {
+        notes.push(`keeping newest ${keepCount} sbom(s) regardless of age`);
+      }
+      if (deleteOrphans) {
+        notes.push('orphan sbom files (no builds record references them) are swept');
+      } else if (orphanNames.length > 0) {
+        notes.push(
+          `${orphanNames.length} orphan sbom file(s) kept: deleteOrphans is off (unknown references block cleanup, §47)`,
+        );
+      }
+      // NOTE: deleting an SBOM file leaves the builds record's
+      // sbomRef dangling by design — builds rows are insert-only
+      // history and are never rewritten. Readers must treat a
+      // missing file as "retained away", not as corruption.
+      categories.push({
+        category,
+        retentionDays: days,
+        keepCount,
+        deleteOrphans,
+        candidates: ids.length,
+        sampleIds,
+        heldExempt: held,
+        unknownRefExempt: 0,
+        orphanFiles: orphansKept > 0 ? orphansKept : undefined,
         note: notes.length > 0 ? notes.join('; ') : undefined,
       });
       continue;
@@ -240,6 +401,7 @@ function evaluateAll(ctx: RouteContext, now: Date): EvaluationReport {
       category,
       retentionDays: days,
       keepCount: null,
+      deleteOrphans: false,
       candidates: ev.candidates.length,
       sampleIds: ev.candidates.slice(0, SAMPLE_LIMIT),
       heldExempt: ev.heldExempt,
@@ -296,15 +458,22 @@ export async function handleRetentionRoutes(
     if (!policies || typeof policies !== 'object' || Array.isArray(policies)) {
       json(res, 400, {
         error:
-          'body must be { policies: { <category>: <days|null> | { days, keepCount } } }',
+          'body must be { policies: { <category>: <days|null> | { days, keepCount, deleteOrphans } } }',
       });
       return true;
     }
     const entries = Object.entries(policies as Record<string, unknown>);
-    // Batch 20 — per-category values accept the legacy <days|null>
-    // shape or { days, keepCount }; keepCount (keep newest N backups
-    // regardless of age) is only meaningful for 'backups'.
-    const parsed: { category: RetentionCategory; days: number | null; keepCount: number | null }[] = [];
+    // Batch 20/26 — per-category values accept the legacy
+    // <days|null> shape or { days, keepCount, deleteOrphans };
+    // keepCount (keep newest N regardless of age) is only meaningful
+    // for the filesystem categories 'backups' and 'sboms';
+    // deleteOrphans (sweep unreferenced sbom files) is sboms-only.
+    const parsed: {
+      category: RetentionCategory;
+      days: number | null;
+      keepCount: number | null;
+      deleteOrphans: boolean;
+    }[] = [];
     for (const [category, value] of entries) {
       if (EXCLUDED_CATEGORIES.some((e) => e.category === category)) {
         json(res, 400, {
@@ -318,9 +487,11 @@ export async function handleRetentionRoutes(
       }
       let days: unknown = value;
       let keepCount: unknown = null;
+      let deleteOrphans: unknown = false;
       if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
         days = (value as Record<string, unknown>)['days'] ?? null;
         keepCount = (value as Record<string, unknown>)['keepCount'] ?? null;
+        deleteOrphans = (value as Record<string, unknown>)['deleteOrphans'] ?? false;
       }
       if (
         days !== null &&
@@ -342,9 +513,21 @@ export async function handleRetentionRoutes(
         });
         return true;
       }
-      if (keepCount !== null && category !== 'backups') {
+      if (keepCount !== null && category !== 'backups' && category !== 'sboms') {
         json(res, 400, {
-          error: `keepCount is only supported for the 'backups' category`,
+          error: `keepCount is only supported for the 'backups' and 'sboms' categories`,
+        });
+        return true;
+      }
+      if (typeof deleteOrphans !== 'boolean') {
+        json(res, 400, {
+          error: `deleteOrphans for '${category}' must be a boolean`,
+        });
+        return true;
+      }
+      if (deleteOrphans && category !== 'sboms') {
+        json(res, 400, {
+          error: `deleteOrphans is only supported for the 'sboms' category`,
         });
         return true;
       }
@@ -352,18 +535,23 @@ export async function handleRetentionRoutes(
         category: category as RetentionCategory,
         days: days as number | null,
         keepCount: keepCount as number | null,
+        deleteOrphans: deleteOrphans as boolean,
       });
     }
     const actor = actorOf(b);
     const nowIso = new Date().toISOString();
     const updated = parsed.map((p) =>
-      store.setPolicy(p.category, p.days, actor, nowIso, p.keepCount),
+      store.setPolicy(p.category, p.days, actor, nowIso, p.keepCount, p.deleteOrphans),
     );
     audit.record(actor, 'RETENTION_POLICY_UPDATED', 'retention_policy', 'policies', {
       policies: Object.fromEntries(
         updated.map((u) => [
           u.category,
-          { retentionDays: u.retentionDays, keepCount: u.keepCount },
+          {
+            retentionDays: u.retentionDays,
+            keepCount: u.keepCount,
+            deleteOrphans: u.deleteOrphans,
+          },
         ]),
       ),
     });
@@ -500,6 +688,31 @@ export async function handleRetentionRoutes(
       }
     }
     deleted['backups'] = backupsDeleted;
+    // Batch 26 — SBOMs: single files under the sbom dir (id validated
+    // against the same shape the build runner writes). The dir is
+    // resolved only when this request's evaluation produced sbom
+    // candidates — which already implies the accessors worked above.
+    // The builds records themselves are insert-only history and are
+    // NOT touched: their sbomRef may dangle afterwards, which
+    // readers must treat as "retained away", not corruption.
+    let sbomsDeleted = 0;
+    const sbomIds = ids['sboms'] ?? [];
+    if (sbomIds.length > 0 && ctx.sbomAccess) {
+      const dir = ctx.sbomAccess.dir();
+      for (const name of sbomIds) {
+        if (!SBOM_FILE_RE.test(name) || name.includes('..')) continue;
+        const target = path.join(dir, name);
+        try {
+          if (fs.statSync(target).isFile()) {
+            fs.rmSync(target, { force: true });
+            sbomsDeleted++;
+          }
+        } catch {
+          // Already gone (or unreadable): not a failure of the sweep.
+        }
+      }
+    }
+    deleted['sboms'] = sbomsDeleted;
     audit.record(actor, 'RETENTION_ENFORCED', 'retention', 'enforce', {
       evaluatedAt: report.evaluatedAt,
       deleted,

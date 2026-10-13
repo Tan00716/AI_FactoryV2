@@ -54,6 +54,19 @@ export interface RouteContext {
     stagedRestoreBackupId(): string | null;
   };
   /**
+   * Batch 26 — SBOM file access for the retention 'sboms' category,
+   * mirroring backupAccess. dir() is the FACTORY_SBOM_DIR directory;
+   * list() returns the basenames of regular sbom-*.json files in it
+   * (no subdirectories, no symlinks). The coordinator injects this
+   * from sbomDirFromEnv; an embedder that omits it gets the sboms
+   * category reported as unwired and nothing deleted (retention
+   * never deletes blind).
+   */
+  sbomAccess?: {
+    dir(): string;
+    list(): string[];
+  };
+  /**
    * Batch 14 — archived-project write guard, injected by the
    * coordinator (backed by routes/project-guard.ts): returns the
    * uniform 409 body when the task's project is archived, else null.

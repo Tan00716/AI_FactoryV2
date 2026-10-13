@@ -59,6 +59,47 @@ export interface McpInstallDbRecord {
   lastUsedVersion: string | null;
 }
 
+/**
+ * One row per launched MCP stdio server process — §46 launch history
+ * (Batch 26). Only metadata is persisted: server identity, launch
+ * parameters (names only — credentialRefs and secretEnvVars are ref
+ * NAMES by construction, never secret values), and lifecycle state.
+ *
+ * Lifecycle honesty: RUNNING means "this launcher spawned it and has
+ * not seen it exit". STOPPED = the operator stopped it via /stop.
+ * EXITED = the child exited on its own (exit code / signal recorded).
+ * ORPHANED = the owning launcher process is gone (server restart);
+ * the child process's real fate is UNKNOWN — it may still be running
+ * as an orphan or it may be dead. We never pretend it is still
+ * managed. ORPHANED is terminal: a new launch gets a new row.
+ */
+export type McpLaunchStatus = 'RUNNING' | 'STOPPED' | 'EXITED' | 'ORPHANED';
+
+export interface McpLaunchDbRecord {
+  id: string;
+  name: string;
+  version: string;
+  /** Server boot that owns this row (randomUUID per boot). */
+  bootId: string;
+  pid: number | null;
+  command: string;
+  /** JSON array of argv strings. */
+  argsJson: string;
+  cwd: string | null;
+  /** JSON array of credential ref NAMES (never values). */
+  credentialRefsJson: string;
+  /** JSON array of injected ENV_VAR NAMES (never values). */
+  secretEnvVarsJson: string;
+  status: McpLaunchStatus;
+  launchedAt: string;
+  endedAt: string | null;
+  exitCode: number | null;
+  signal: string | null;
+  /** Why this row is ORPHANED (honest note, never a guess at fate). */
+  orphanNote: string | null;
+  updatedAt: string;
+}
+
 export interface McpServerStore {
   saveServer(rec: McpServerDbRecord): McpServerDbRecord;
   getServer(name: string, version: string): McpServerDbRecord | undefined;
@@ -70,6 +111,36 @@ export interface McpServerStore {
   getInstall(name: string, version: string): McpInstallDbRecord | undefined;
   listInstalls(): McpInstallDbRecord[];
   removeInstall(name: string, version: string): boolean;
+  /**
+   * Launch-record history (Batch 26). One row per spawn; the row
+   * outlives the launcher process so a restart can report what was
+   * launched and mark it ORPHANED honestly instead of forgetting it.
+   */
+  saveLaunch(rec: McpLaunchDbRecord): McpLaunchDbRecord;
+  getLaunch(id: string): McpLaunchDbRecord | undefined;
+  /** Newest first (by launched_at, then rowid). */
+  listLaunches(): McpLaunchDbRecord[];
+  /**
+   * Partial update of a launch row (status transitions, exit
+   * details). Unknown ids throw loudly — a launch record is never
+   * silently dropped.
+   */
+  updateLaunch(
+    id: string,
+    patch: Partial<
+      Pick<
+        McpLaunchDbRecord,
+        'status' | 'endedAt' | 'exitCode' | 'signal' | 'orphanNote' | 'updatedAt'
+      >
+    >,
+  ): McpLaunchDbRecord;
+  /**
+   * Hydration step: every row still RUNNING from a DIFFERENT boot is
+   * marked ORPHANED — the launcher that owned it is gone, so the
+   * child's real fate is unknown and this server does not manage it.
+   * Rows owned by this boot are untouched. Returns the orphaned count.
+   */
+  orphanRunningLaunches(bootId: string): number;
   /**
    * Atomically apply a mutation to a server row (Batch 25, cross-process
    * write mutual exclusion).
@@ -102,10 +173,15 @@ function copyInstall(r: McpInstallDbRecord): McpInstallDbRecord {
   return { ...r };
 }
 
+function copyLaunch(r: McpLaunchDbRecord): McpLaunchDbRecord {
+  return { ...r };
+}
+
 /** In-memory reference implementation — the behavior pin. */
 export class MemoryMcpServerStore implements McpServerStore {
   private readonly servers = new Map<string, McpServerDbRecord>();
   private readonly installs = new Map<string, McpInstallDbRecord>();
+  private readonly launches = new Map<string, McpLaunchDbRecord>();
 
   private static key(name: string, version: string): string {
     return `${name}@${version}`;
@@ -173,6 +249,64 @@ export class MemoryMcpServerStore implements McpServerStore {
     stored.rowVersion = (current?.rowVersion ?? 0) + 1;
     this.servers.set(k, stored);
     return { applied: true, rowVersion: stored.rowVersion };
+  }
+
+  saveLaunch(rec: McpLaunchDbRecord): McpLaunchDbRecord {
+    const stored = copyLaunch({ ...rec, updatedAt: rec.updatedAt ?? nowIso() });
+    this.launches.set(rec.id, stored);
+    return copyLaunch(stored);
+  }
+
+  getLaunch(id: string): McpLaunchDbRecord | undefined {
+    const r = this.launches.get(id);
+    return r ? copyLaunch(r) : undefined;
+  }
+
+  listLaunches(): McpLaunchDbRecord[] {
+    return [...this.launches.values()]
+      .sort((a, b) => (a.launchedAt < b.launchedAt ? 1 : a.launchedAt > b.launchedAt ? -1 : 0))
+      .map(copyLaunch);
+  }
+
+  updateLaunch(
+    id: string,
+    patch: Partial<
+      Pick<
+        McpLaunchDbRecord,
+        'status' | 'endedAt' | 'exitCode' | 'signal' | 'orphanNote' | 'updatedAt'
+      >
+    >,
+  ): McpLaunchDbRecord {
+    const current = this.launches.get(id);
+    if (!current) {
+      throw new Error(`mcp: cannot update unknown launch record ${id}`);
+    }
+    const next = copyLaunch({ ...current, ...patch, updatedAt: patch.updatedAt ?? nowIso() });
+    this.launches.set(id, next);
+    return copyLaunch(next);
+  }
+
+  orphanRunningLaunches(bootId: string): number {
+    let n = 0;
+    const now = nowIso();
+    for (const [id, r] of this.launches) {
+      if (r.status === 'RUNNING' && r.bootId !== bootId) {
+        this.launches.set(
+          id,
+          copyLaunch({
+            ...r,
+            status: 'ORPHANED',
+            orphanNote:
+              'owning launcher process is gone (server restart); the child ' +
+              'process may still be running as an orphan or may be dead — ' +
+              'its real fate is unknown and this server does not manage it',
+            updatedAt: now,
+          }),
+        );
+        n++;
+      }
+    }
+    return n;
   }
 }
 
@@ -388,4 +522,142 @@ export class SqliteMcpServerStore implements McpServerStore {
       throw e;
     }
   }
+
+  saveLaunch(rec: McpLaunchDbRecord): McpLaunchDbRecord {
+    const stored = copyLaunch({ ...rec, updatedAt: rec.updatedAt ?? nowIso() });
+    this.db
+      .prepare(
+        `INSERT INTO mcp_launch_records
+           (id, name, version, boot_id, pid, command, args_json, cwd,
+            credential_refs_json, secret_env_vars_json, status,
+            launched_at, ended_at, exit_code, signal, orphan_note, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET
+           name = excluded.name,
+           version = excluded.version,
+           boot_id = excluded.boot_id,
+           pid = excluded.pid,
+           command = excluded.command,
+           args_json = excluded.args_json,
+           cwd = excluded.cwd,
+           credential_refs_json = excluded.credential_refs_json,
+           secret_env_vars_json = excluded.secret_env_vars_json,
+           status = excluded.status,
+           launched_at = excluded.launched_at,
+           ended_at = excluded.ended_at,
+           exit_code = excluded.exit_code,
+           signal = excluded.signal,
+           orphan_note = excluded.orphan_note,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        stored.id,
+        stored.name,
+        stored.version,
+        stored.bootId,
+        stored.pid,
+        stored.command,
+        stored.argsJson,
+        stored.cwd,
+        stored.credentialRefsJson,
+        stored.secretEnvVarsJson,
+        stored.status,
+        stored.launchedAt,
+        stored.endedAt,
+        stored.exitCode,
+        stored.signal,
+        stored.orphanNote,
+        stored.updatedAt,
+      );
+    return stored;
+  }
+
+  getLaunch(id: string): McpLaunchDbRecord | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM mcp_launch_records WHERE id = ?')
+      .get(id) as Record<string, unknown> | undefined;
+    return row ? launchRowToRecord(row) : undefined;
+  }
+
+  listLaunches(): McpLaunchDbRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM mcp_launch_records ORDER BY launched_at DESC, rowid DESC')
+      .all() as Record<string, unknown>[];
+    return rows.map(launchRowToRecord);
+  }
+
+  updateLaunch(
+    id: string,
+    patch: Partial<
+      Pick<
+        McpLaunchDbRecord,
+        'status' | 'endedAt' | 'exitCode' | 'signal' | 'orphanNote' | 'updatedAt'
+      >
+    >,
+  ): McpLaunchDbRecord {
+    const current = this.getLaunch(id);
+    if (!current) {
+      throw new Error(`mcp: cannot update unknown launch record ${id}`);
+    }
+    const next = copyLaunch({
+      ...current,
+      status: patch.status ?? current.status,
+      endedAt: patch.endedAt !== undefined ? patch.endedAt : current.endedAt,
+      exitCode: patch.exitCode !== undefined ? patch.exitCode : current.exitCode,
+      signal: patch.signal !== undefined ? patch.signal : current.signal,
+      orphanNote: patch.orphanNote !== undefined ? patch.orphanNote : current.orphanNote,
+      updatedAt: patch.updatedAt ?? nowIso(),
+    });
+    const changes = this.db
+      .prepare(
+        `UPDATE mcp_launch_records
+         SET status = ?, ended_at = ?, exit_code = ?, signal = ?,
+             orphan_note = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(next.status, next.endedAt, next.exitCode, next.signal, next.orphanNote, next.updatedAt, id)
+      .changes as number;
+    if (changes === 0) {
+      throw new Error(`mcp: cannot update unknown launch record ${id}`);
+    }
+    return next;
+  }
+
+  orphanRunningLaunches(bootId: string): number {
+    const now = nowIso();
+    const note =
+      'owning launcher process is gone (server restart); the child ' +
+      'process may still be running as an orphan or may be dead — ' +
+      'its real fate is unknown and this server does not manage it';
+    const res = this.db
+      .prepare(
+        `UPDATE mcp_launch_records
+         SET status = 'ORPHANED', orphan_note = ?, updated_at = ?
+         WHERE status = 'RUNNING' AND boot_id != ?`,
+      )
+      .run(note, now, bootId);
+    return Number(res.changes ?? 0);
+  }
+}
+
+function launchRowToRecord(row: Record<string, unknown>): McpLaunchDbRecord {
+  return {
+    id: row['id'] as string,
+    name: row['name'] as string,
+    version: row['version'] as string,
+    bootId: row['boot_id'] as string,
+    pid: (row['pid'] as number) ?? null,
+    command: row['command'] as string,
+    argsJson: (row['args_json'] as string) ?? '[]',
+    cwd: (row['cwd'] as string) ?? null,
+    credentialRefsJson: (row['credential_refs_json'] as string) ?? '[]',
+    secretEnvVarsJson: (row['secret_env_vars_json'] as string) ?? '[]',
+    status: row['status'] as McpLaunchStatus,
+    launchedAt: row['launched_at'] as string,
+    endedAt: (row['ended_at'] as string) ?? null,
+    exitCode: (row['exit_code'] as number) ?? null,
+    signal: (row['signal'] as string) ?? null,
+    orphanNote: (row['orphan_note'] as string) ?? null,
+    updatedAt: row['updated_at'] as string,
+  };
 }

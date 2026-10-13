@@ -45,6 +45,15 @@
  *   step_intents — terminal intents by persisted_at (epoch ms)
  *   checkpoints  — captures by captured_at (epoch ms)
  *   backups      — policy only; rows live on disk, not in this store
+ *   sboms        — policy only; SBOM files live on disk (FACTORY_SBOM_DIR),
+ *                  associated to builds records via the record's sbomRef.
+ *                  Batch 26: keepCount applies (keep newest N by
+ *                  completedAt/builtAt); deleteOrphans (opt-in, default
+ *                  off) additionally sweeps sbom-*.json files no builds
+ *                  record references. Orphans are NEVER swept by default:
+ *                  §47's "unknown references block cleanup" caution —
+ *                  a file we cannot associate might belong to an
+ *                  in-flight build whose markSucceeded has not landed.
  */
 
 import { DatabaseSync } from 'node:sqlite';
@@ -54,6 +63,7 @@ export const RETENTION_CATEGORIES = [
   'step_intents',
   'checkpoints',
   'backups',
+  'sboms',
 ] as const;
 export type RetentionCategory = (typeof RETENTION_CATEGORIES)[number];
 
@@ -71,9 +81,17 @@ export interface RetentionPolicy {
   retentionDays: number | null;
   /**
    * Batch 20 — keep newest N regardless of age; null = no count
-   * limit. Only the 'backups' category evaluates this column.
+   * limit. Only the 'backups' and 'sboms' categories evaluate this
+   * column (the server route rejects it for the DB categories).
    */
   keepCount: number | null;
+  /**
+   * Batch 26 — sboms only: when true, enforcement also deletes
+   * sbom-*.json files that no builds record references (orphans).
+   * Default false: an unassociated file might belong to an in-flight
+   * build, so retention never sweeps it unless the operator opts in.
+   */
+  deleteOrphans: boolean;
   updatedAt: string | null;
   updatedBy: string | null;
 }
@@ -139,6 +157,7 @@ export class SqliteRetentionStore {
         category,
         retentionDays: null,
         keepCount: null,
+        deleteOrphans: false,
         updatedAt: null,
         updatedBy: null,
       };
@@ -150,11 +169,15 @@ export class SqliteRetentionStore {
       // Rows from a not-yet-migrated DB have no keep_count column —
       // the SELECT would throw, so migrateRetentionTable runs at
       // open; this branch only guards a NULL value, never a missing
-      // column.
+      // column. Same for delete_orphans (Batch 26).
       keepCount:
         r['keep_count'] === null || r['keep_count'] === undefined
           ? null
           : Number(r['keep_count']),
+      deleteOrphans:
+        r['delete_orphans'] === null || r['delete_orphans'] === undefined
+          ? false
+          : Number(r['delete_orphans']) !== 0,
       updatedAt: r['updated_at'] as string,
       updatedBy: r['updated_by'] as string,
     };
@@ -166,9 +189,12 @@ export class SqliteRetentionStore {
 
   /**
    * retentionDays null or 0 both mean keep-forever; stored verbatim.
-   * keepCount (Batch 20) is the backups-only "keep newest N" axis;
-   * the server route rejects it for other categories, so this store
-   * simply persists it.
+   * keepCount (Batch 20) is the "keep newest N" axis for the
+   * filesystem categories ('backups', 'sboms'); the server route
+   * rejects it for the DB categories, so this store simply persists
+   * it. deleteOrphans (Batch 26) is the sboms-only orphan sweep
+   * opt-in; persisted verbatim for every category but only the
+   * sboms evaluation reads it.
    */
   setPolicy(
     category: RetentionCategory,
@@ -176,18 +202,20 @@ export class SqliteRetentionStore {
     actor: string,
     nowIso: string,
     keepCount: number | null = null,
+    deleteOrphans: boolean = false,
   ): RetentionPolicy {
     this.db
       .prepare(
-        `INSERT INTO retention_policies (category, retention_days, keep_count, updated_at, updated_by)
-         VALUES (?,?,?,?,?)
+        `INSERT INTO retention_policies (category, retention_days, keep_count, delete_orphans, updated_at, updated_by)
+         VALUES (?,?,?,?,?,?)
          ON CONFLICT(category) DO UPDATE SET
            retention_days = excluded.retention_days,
            keep_count = excluded.keep_count,
+           delete_orphans = excluded.delete_orphans,
            updated_at = excluded.updated_at,
            updated_by = excluded.updated_by`,
       )
-      .run(category, retentionDays, keepCount, nowIso, actor);
+      .run(category, retentionDays, keepCount, deleteOrphans ? 1 : 0, nowIso, actor);
     return this.getPolicy(category);
   }
 

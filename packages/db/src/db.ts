@@ -288,6 +288,45 @@ export function migrateMergeQueueTable(db: DatabaseSync): void {
   if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
   if (!cols.has('claimed_by')) db.exec('ALTER TABLE merge_queue_entries ADD COLUMN claimed_by TEXT');
   if (!cols.has('claimed_at')) db.exec('ALTER TABLE merge_queue_entries ADD COLUMN claimed_at TEXT');
+  // Batch 26 — (repo_path, position) is the arbiter for cross-process
+  // enqueue position allocation, so it must be unique. Pre-existing
+  // duplicates (two processes enqueueing on old code) are repaired
+  // deterministically first: keep the earliest-enqueued row at the
+  // collided position, bump the rest past the current max — relative
+  // order is preserved, no entry is dropped.
+  // NOTE: this lives here and NOT in SCHEMA — SCHEMA runs before the
+  // migrations, and a dirty old DB must be repaired before the unique
+  // index can exist.
+  const dupes = db
+    .prepare(
+      `SELECT repo_path AS repo, position FROM merge_queue_entries
+       GROUP BY repo_path, position HAVING COUNT(*) > 1`,
+    )
+    .all() as { repo: string; position: number }[];
+  if (dupes.length > 0) {
+    const maxStmt = db.prepare(
+      'SELECT MAX(position) AS m FROM merge_queue_entries WHERE repo_path = ?',
+    );
+    const rowsStmt = db.prepare(
+      `SELECT id FROM merge_queue_entries
+       WHERE repo_path = ? AND position = ?
+       ORDER BY enqueued_at ASC, id ASC`,
+    );
+    const bumpStmt = db.prepare(
+      'UPDATE merge_queue_entries SET position = ? WHERE id = ?',
+    );
+    for (const { repo, position } of dupes) {
+      const rows = rowsStmt.all(repo, position) as { id: string }[];
+      let next = (maxStmt.get(repo) as { m: number }).m;
+      for (const r of rows.slice(1)) {
+        next += 1;
+        bumpStmt.run(next, r.id);
+      }
+    }
+  }
+  db.exec(
+    'CREATE UNIQUE INDEX IF NOT EXISTS merge_queue_repo_position ON merge_queue_entries(repo_path, position)',
+  );
 }
 /**
  * Batch 25 — cross-process write mutual exclusion for MCP
@@ -527,6 +566,9 @@ export function migrateRetentionTable(db: DatabaseSync): void {
   if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
   if (!cols.has('keep_count')) {
     db.exec(`ALTER TABLE retention_policies ADD COLUMN keep_count INTEGER`);
+  }
+  if (!cols.has('delete_orphans')) {
+    db.exec(`ALTER TABLE retention_policies ADD COLUMN delete_orphans INTEGER NOT NULL DEFAULT 0`);
   }
 }
 

@@ -29,8 +29,11 @@
  * The coordinator wires this in: handleMcpRoutes(req, res, url, ctx).
  * Durability (Batch 21): registrations, trust/assessments and install
  * records are written through to fdb.mcpServers and hydrated at
- * startup (see initMcpPersistence / mcp-persistence.ts). Only
- * launches stay process-local.
+ * startup (see initMcpPersistence / mcp-persistence.ts). Launch
+ * RECORDS are also persisted (Batch 26): the live process table is
+ * still process-local, but every spawn/stop/exit lands a row, and a
+ * restart marks other boots' still-RUNNING rows ORPHANED (child fate
+ * unknown, not managed) instead of forgetting them.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
@@ -46,6 +49,9 @@ import {
   hydrateMcpRegistry,
   attachMcpPersistence,
   removeMcpServerRecord,
+  hydrateMcpLaunches,
+  attachLaunchPersistence,
+  newMcpBootId,
 } from '../mcp-persistence';
 
 const PREFIX = '/api/mcp';
@@ -66,19 +72,30 @@ const launcher = new McpServerLauncher();
 let mcpStore: McpServerStore | null = null;
 
 /**
+ * This server boot's id (Batch 26). Launch rows carry it so hydration
+ * can distinguish "mine" from "a previous boot's" and mark the
+ * latter ORPHANED instead of forgetting them.
+ */
+const mcpBootId = newMcpBootId();
+
+/**
  * Server startup: replay persisted registrations/trust/installs into
  * the in-memory registry+manager (no new history/audit events — this
- * is learning, not re-doing), then attach the write-through
- * observers so every later mutation lands in the DB.
+ * is learning, not re-doing), mark other boots' still-RUNNING launch
+ * rows ORPHANED, then attach the write-through observers so every
+ * later mutation lands in the DB.
  */
 export function initMcpPersistence(fdb: FactoryDatabase): {
   restoredServers: number;
   restoredInstalls: number;
   staleHealthMarked: number;
+  orphanedLaunches: number;
 } {
   mcpStore = fdb.mcpServers;
   const result = hydrateMcpRegistry({ registry, manager, store: mcpStore });
   attachMcpPersistence({ registry, manager, store: mcpStore });
+  const launches = hydrateMcpLaunches({ store: mcpStore, bootId: mcpBootId });
+  attachLaunchPersistence({ launcher, store: mcpStore, bootId: mcpBootId });
   if (result.restoredServers > 0 || result.restoredInstalls > 0) {
     console.log(
       `[ai-factory] mcp registry hydrated: ${result.restoredServers} server(s), ` +
@@ -88,7 +105,7 @@ export function initMcpPersistence(fdb: FactoryDatabase): {
           : ''),
     );
   }
-  return result;
+  return { ...result, ...launches };
 }
 
 // Well-known servers, registered (not installed) at boot so the
@@ -481,8 +498,13 @@ export async function handleMcpRoutes(
     }
   }
 
-  // GET /api/mcp/launches — viewer.
+  // GET /api/mcp/launches — viewer. Live process table by default;
+  // ?history=true returns the persisted launch records (RUNNING for
+  // this boot's live launches, plus STOPPED/EXITED/ORPHANED history).
   if (method === 'GET' && path === `${PREFIX}/launches`) {
+    if (url.searchParams.get('history') === 'true' && mcpStore) {
+      return ctx.json(res, 200, { launches: mcpStore.listLaunches() }), true;
+    }
     return ctx.json(res, 200, { launches: launcher.list() }), true;
   }
 
