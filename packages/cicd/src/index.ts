@@ -12,6 +12,7 @@
  *                 with health checks and auto-rollback [§40, §41, §77]
  *  - ci-results   external CI result verification (auth proof, dedup)  [v2 §40]
  *  - build        reproducible build lock + artifact promotion         [v2 §40]
+ *  - sbom         lockfile-derived SBOM (CycloneDX-lite)                [v2 §40]
  *  - risk         risk assessment with un-lowerable system floor       [v2 §41.1]
  *  - reversibility reversibility classes, fake-rollback ban           [v2 §41.2]
  *  - predeploy    §41.3 pre-deploy gate checklist + broker identity   [v2 §41.3]
@@ -25,6 +26,7 @@ export * from './deploy';
 export * from './release';
 export * from './ci-results';
 export * from './build';
+export * from './sbom';
 export * from './risk';
 export * from './reversibility';
 export * from './predeploy';

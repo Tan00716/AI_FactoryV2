@@ -677,6 +677,7 @@ CREATE TABLE IF NOT EXISTS builds (
   definition_json TEXT,
   definition_note TEXT NOT NULL,
   sbom_ref TEXT,
+  sbom_note TEXT NOT NULL,
   attestation_ref TEXT,
   built_by TEXT NOT NULL DEFAULT '',
   built_at TEXT NOT NULL,
@@ -711,6 +712,9 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
   record_json TEXT NOT NULL,
   assessment_json TEXT,
   updated_at TEXT NOT NULL,
+  -- Batch 25: optimistic-concurrency generation for cross-process
+  -- write mutual exclusion (see McpServerStore.applyServerOp).
+  row_version INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (name, version)
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_trust

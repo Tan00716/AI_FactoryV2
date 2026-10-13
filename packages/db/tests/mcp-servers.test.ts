@@ -57,6 +57,7 @@ function serverRow(name: string, version: string, trust = 'UNKNOWN', policy = 'B
     }),
     assessmentJson: null,
     updatedAt: '2026-10-13T03:00:00.000Z',
+    rowVersion: 0,
   };
 }
 
@@ -79,7 +80,8 @@ function script(store: McpServerStore): void {
   store.saveServer(a);
   const got = store.getServer('alpha', '1.0.0');
   assert.ok(got);
-  assert.deepEqual(got, a);
+  assert.equal(got.rowVersion, 1, 'first write starts the generation at 1');
+  assert.deepEqual({ ...got, rowVersion: 0 }, a);
 
   // Copy contract.
   (got as { trustLevel: string }).trustLevel = 'MUTATED';

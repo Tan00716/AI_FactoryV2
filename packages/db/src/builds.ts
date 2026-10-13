@@ -52,6 +52,25 @@ export const NO_BUILD_DEFINITION_NOTE =
   'configHash) are not assemblable from the merge context; calling ' +
   'lockBuild() here would fabricate a digest.';
 
+/** Exact sbomNote on a fresh record: no build ran, so no SBOM exists. Pinned by tests. */
+export const NO_SBOM_NOTE =
+  'no build was executed for this merge — no SBOM exists ' +
+  '(records absence, not a placeholder).';
+
+/** sbomNote when a real build ran but no lockfile yielded an inventory. */
+export const SBOM_NO_LOCKFILE_NOTE =
+  'no parsable lockfile found in the build worktree — no SBOM generated ' +
+  '(nothing honest to derive from; node_modules/package.json ranges are a weaker claim).';
+
+/** sbomNote set by markFailed: a failed build produces no SBOM. */
+export const BUILD_FAILED_NO_SBOM_NOTE =
+  'build failed — no SBOM generated (no successful build output to inventory).';
+
+/** sbomNote when SBOM generation itself threw. The reason is named, never hidden. */
+export function sbomGenerationFailedNote(reason: string): string {
+  return `SBOM generation failed: ${reason} — no SBOM recorded (the build itself still stands as SUCCEEDED).`;
+}
+
 export interface StoredBuildRecord {
   id: string;
   /** Candidate SHA — the merged branch tip that carries the change. */
@@ -83,6 +102,8 @@ export interface StoredBuildRecord {
   definitionNote: string;
   /** SBOM reference — null: no SBOM exists without a build. */
   sbomRef: string | null;
+  /** Why sbomRef is null, or '' when an SBOM was recorded. Always set. */
+  sbomNote: string;
   /** Attestation reference — null: no attestation exists without a build. */
   attestationRef: string | null;
   /** Build process exit code — set once a real build ran. */
@@ -140,6 +161,8 @@ export interface BuildRecordStore {
       digestNote: string;
       definition: string | null;
       definitionNote: string;
+      sbomRef: string | null;
+      sbomNote: string;
       exitCode: number;
       completedAt?: string;
     },
@@ -184,6 +207,7 @@ function toRecord(input: RecordBuildInput): StoredBuildRecord {
     definition: null,
     definitionNote: NO_BUILD_DEFINITION_NOTE,
     sbomRef: null,
+    sbomNote: NO_SBOM_NOTE,
     attestationRef: null,
     builtBy: input.builtBy,
     builtAt: nowIso(),
@@ -227,6 +251,8 @@ export class MemoryBuildRecordStore implements BuildRecordStore {
       digestNote: string;
       definition: string | null;
       definitionNote: string;
+      sbomRef: string | null;
+      sbomNote: string;
       exitCode: number;
       completedAt?: string;
     },
@@ -237,6 +263,8 @@ export class MemoryBuildRecordStore implements BuildRecordStore {
     next.digestNote = result.digestNote;
     next.definition = result.definition;
     next.definitionNote = result.definitionNote;
+    next.sbomRef = result.sbomRef;
+    next.sbomNote = result.sbomNote;
     next.exitCode = result.exitCode;
     next.completedAt = result.completedAt ?? nowIso();
     this.rows.set(id, next);
@@ -250,6 +278,7 @@ export class MemoryBuildRecordStore implements BuildRecordStore {
     const r = this.rows.get(id);
     const next = transition(r, id, 'FAILED');
     next.failureReason = result.reason;
+    next.sbomNote = BUILD_FAILED_NO_SBOM_NOTE;
     next.exitCode = result.exitCode ?? null;
     next.completedAt = result.completedAt ?? nowIso();
     this.rows.set(id, next);
@@ -311,6 +340,9 @@ function rowToRecord(r: Record<string, unknown>): StoredBuildRecord {
     definition: (r['definition_json'] as string | null) ?? null,
     definitionNote: r['definition_note'] as string,
     sbomRef: (r['sbom_ref'] as string | null) ?? null,
+    // Old rows (Batch 23/24) predate sbom_note — they never had SBOMs,
+    // so the absence note is exactly their semantics.
+    sbomNote: (r['sbom_note'] as string | null) ?? NO_SBOM_NOTE,
     attestationRef: (r['attestation_ref'] as string | null) ?? null,
     builtBy: r['built_by'] as string,
     builtAt: r['built_at'] as string,
@@ -331,9 +363,9 @@ export class SqliteBuildRecordStore implements BuildRecordStore {
         `INSERT INTO builds
            (id, revision, target_sha, base_sha, diff_hash, repo_path, pr_id,
             task_id, source_branch, target_branch, status, digest, digest_note,
-            definition_json, definition_note, sbom_ref, attestation_ref,
-            built_by, built_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            definition_json, definition_note, sbom_ref, sbom_note,
+            attestation_ref, built_by, built_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         rec.id,
@@ -352,6 +384,7 @@ export class SqliteBuildRecordStore implements BuildRecordStore {
         null, // definition_json: no definition exists without a build
         rec.definitionNote,
         rec.sbomRef,
+        rec.sbomNote,
         rec.attestationRef,
         rec.builtBy,
         rec.builtAt,
@@ -394,6 +427,8 @@ export class SqliteBuildRecordStore implements BuildRecordStore {
       digestNote: string;
       definition: string | null;
       definitionNote: string;
+      sbomRef: string | null;
+      sbomNote: string;
       exitCode: number;
       completedAt?: string;
     },
@@ -404,14 +439,16 @@ export class SqliteBuildRecordStore implements BuildRecordStore {
     this.db
       .prepare(
         `UPDATE builds SET status = 'SUCCEEDED', digest = ?, digest_note = ?,
-          definition_json = ?, definition_note = ?, exit_code = ?,
-          completed_at = ? WHERE id = ?`,
+          definition_json = ?, definition_note = ?, sbom_ref = ?,
+          sbom_note = ?, exit_code = ?, completed_at = ? WHERE id = ?`,
       )
       .run(
         result.digest,
         result.digestNote,
         result.definition,
         result.definitionNote,
+        result.sbomRef,
+        result.sbomNote,
         result.exitCode,
         completedAt,
         id,
@@ -429,9 +466,15 @@ export class SqliteBuildRecordStore implements BuildRecordStore {
     this.db
       .prepare(
         `UPDATE builds SET status = 'FAILED', failure_reason = ?,
-          exit_code = ?, completed_at = ? WHERE id = ?`,
+          sbom_note = ?, exit_code = ?, completed_at = ? WHERE id = ?`,
       )
-      .run(result.reason, result.exitCode ?? null, completedAt, id);
+      .run(
+        result.reason,
+        BUILD_FAILED_NO_SBOM_NOTE,
+        result.exitCode ?? null,
+        completedAt,
+        id,
+      );
     return this.get(id) as StoredBuildRecord;
   }
 }

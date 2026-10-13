@@ -321,6 +321,7 @@ describe('hydrate semantics (§46, Batch 21)', () => {
       recordJson: '{not json',
       assessmentJson: null,
       updatedAt: new Date().toISOString(),
+      rowVersion: 0,
     });
     const registry = new McpRegistry();
     const manager = new McpManager(registry);

@@ -25,6 +25,10 @@ import {
   SqliteBuildRecordStore,
   NO_BUILD_DIGEST_NOTE,
   NO_BUILD_DEFINITION_NOTE,
+  NO_SBOM_NOTE,
+  SBOM_NO_LOCKFILE_NOTE,
+  BUILD_FAILED_NO_SBOM_NOTE,
+  sbomGenerationFailedNote,
   type BuildRecordStore,
   type RecordBuildInput,
   type StoredBuildRecord,
@@ -71,6 +75,7 @@ function assertHonestShape(r: StoredBuildRecord, input: RecordBuildInput): void 
   assert.equal(r.definition, null, 'no definition without a real build');
   assert.equal(r.definitionNote, NO_BUILD_DEFINITION_NOTE, 'absence carries its reason');
   assert.equal(r.sbomRef, null, 'no SBOM without a build');
+  assert.equal(r.sbomNote, NO_SBOM_NOTE, 'SBOM absence carries its reason');
   assert.equal(r.attestationRef, null, 'no attestation without a build');
 }
 
@@ -123,7 +128,7 @@ describe('build records (§40, Batch 23)', () => {
       const file = join(dir, 'b.db');
       const raw = new DatabaseSync(file);
       raw.exec(
-        'CREATE TABLE builds (id TEXT PRIMARY KEY, revision TEXT NOT NULL, target_sha TEXT, base_sha TEXT, diff_hash TEXT, repo_path TEXT NOT NULL, pr_id TEXT NOT NULL, task_id TEXT, source_branch TEXT NOT NULL, target_branch TEXT NOT NULL, status TEXT NOT NULL DEFAULT \'NOT_EXECUTED\', digest TEXT, digest_note TEXT NOT NULL, definition_json TEXT, definition_note TEXT NOT NULL, sbom_ref TEXT, attestation_ref TEXT, built_by TEXT NOT NULL DEFAULT \'\', built_at TEXT NOT NULL)',
+        'CREATE TABLE builds (id TEXT PRIMARY KEY, revision TEXT NOT NULL, target_sha TEXT, base_sha TEXT, diff_hash TEXT, repo_path TEXT NOT NULL, pr_id TEXT NOT NULL, task_id TEXT, source_branch TEXT NOT NULL, target_branch TEXT NOT NULL, status TEXT NOT NULL DEFAULT \'NOT_EXECUTED\', digest TEXT, digest_note TEXT NOT NULL, definition_json TEXT, definition_note TEXT NOT NULL, sbom_ref TEXT, sbom_note TEXT, attestation_ref TEXT, built_by TEXT NOT NULL DEFAULT \'\', built_at TEXT NOT NULL)',
       );
       const sqlite = new SqliteBuildRecordStore(raw);
       scriptedSequence(new MemoryBuildRecordStore(), 'memory');
@@ -197,11 +202,15 @@ describe('build records (§40, Batch 23)', () => {
           digestNote: '',
           definition: '{"revision":"x"}',
           definitionNote: '',
+          sbomRef: '/sboms/sbom-x.json',
+          sbomNote: '',
           exitCode: 0,
         });
         assert.equal(done.status, 'SUCCEEDED', `${label}: status moved`);
         assert.equal(done.digest, 'd'.repeat(64));
         assert.equal(done.definition, '{"revision":"x"}');
+        assert.equal(done.sbomRef, '/sboms/sbom-x.json', `${label}: sbomRef recorded`);
+        assert.equal(done.sbomNote, '', `${label}: sbomNote empty on recorded SBOM`);
         assert.equal(done.exitCode, 0);
         assert.match(done.completedAt ?? '', /^\d{4}-\d{2}-\d{2}T/);
         assert.equal(done.failureReason, null);
@@ -219,6 +228,12 @@ describe('build records (§40, Batch 23)', () => {
         assert.equal(failed.failureReason, 'boom');
         assert.equal(failed.exitCode, 3);
         assert.equal(failed.digest, null, `${label}: failed builds carry no digest`);
+        assert.equal(failed.sbomRef, null, `${label}: failed builds carry no SBOM`);
+        assert.equal(
+          failed.sbomNote,
+          BUILD_FAILED_NO_SBOM_NOTE,
+          `${label}: failed builds name why there is no SBOM`,
+        );
         assert.match(failed.completedAt ?? '', /^\d{4}-\d{2}-\d{2}T/);
       }
       fdb.close();
@@ -238,6 +253,8 @@ describe('build records (§40, Batch 23)', () => {
         digestNote: 'missing: lockfileHash',
         definition: null,
         definitionNote: 'missing: lockfileHash',
+        sbomRef: null,
+        sbomNote: SBOM_NO_LOCKFILE_NOTE,
         exitCode: 0,
       });
       assert.throws(
@@ -252,6 +269,8 @@ describe('build records (§40, Batch 23)', () => {
             digestNote: 'x',
             definition: null,
             definitionNote: 'x',
+            sbomRef: null,
+            sbomNote: 'x',
             exitCode: 0,
           }),
         /one-way/,
@@ -293,15 +312,23 @@ describe('build records (§40, Batch 23)', () => {
       assert.equal(old?.exitCode, null, 'no invented exit code on old rows');
       assert.equal(old?.failureReason, null);
       assert.equal(old?.completedAt, null);
+      assert.equal(
+        old?.sbomNote,
+        NO_SBOM_NOTE,
+        'Batch-23 rows never had SBOMs — migration backfills the absence note',
+      );
       // …and the migrated row can transition.
       const done = fdb.builds.markSucceeded('old1', {
         digest: 'e'.repeat(64),
         digestNote: '',
         definition: '{}',
         definitionNote: '',
+        sbomRef: null,
+        sbomNote: SBOM_NO_LOCKFILE_NOTE,
         exitCode: 0,
       });
       assert.equal(done.status, 'SUCCEEDED');
+      assert.equal(done.sbomNote, SBOM_NO_LOCKFILE_NOTE);
       fdb.close();
       // Durable across reopen.
       const fdb2 = new FactoryDatabase(file);

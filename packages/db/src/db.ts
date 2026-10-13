@@ -32,7 +32,7 @@ import { SqliteRetentionStore } from './retention';
 import { SqliteBackupScheduleStore } from './backup-schedules';
 import { SqliteAuthorizationTicketStore } from './authorization-tickets';
 import { SqliteMergeQueueEntryStore, SqliteMergeQueueDrainLock, SqlitePrStore } from './merge-queue';
-import { SqliteBuildRecordStore } from './builds';
+import { NO_SBOM_NOTE, SqliteBuildRecordStore } from './builds';
 import { SqliteDeploymentStore } from './deployments';
 import { SqliteWorktreeStore } from './worktrees';
 import { SqliteMcpServerStore } from './mcp-servers';
@@ -288,6 +288,21 @@ export function migrateMergeQueueTable(db: DatabaseSync): void {
   if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
   if (!cols.has('claimed_by')) db.exec('ALTER TABLE merge_queue_entries ADD COLUMN claimed_by TEXT');
   if (!cols.has('claimed_at')) db.exec('ALTER TABLE merge_queue_entries ADD COLUMN claimed_at TEXT');
+}
+/**
+ * Batch 25 — cross-process write mutual exclusion for MCP
+ * registrations. Older databases have mcp_servers without the
+ * row_version generation column; add it in place (existing rows
+ * start at 1, which is a valid base for the first applyServerOp).
+ */
+export function migrateMcpServersTable(db: DatabaseSync): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(mcp_servers)').all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
+  if (!cols.has('row_version')) db.exec('ALTER TABLE mcp_servers ADD COLUMN row_version INTEGER NOT NULL DEFAULT 1');
 }
 /**
  * SPEC v2 §23.3 columns. Existing local DBs are migrated in place: only
@@ -668,6 +683,13 @@ export interface ListProjectsOptions {
  * columns are added. Pre-existing NOT_EXECUTED rows read back with
  * exitCode/failureReason/completedAt null — exactly the semantics they
  * always had, nothing backfilled.
+ *
+ * Batch 25 adds sbom_note: pre-existing rows never had SBOMs, so they
+ * are backfilled with the absence note — that IS their semantics, not
+ * invented history. (SQLite forbids ADD COLUMN ... NOT NULL without a
+ * default on a non-empty table, so the column is added nullable and
+ * backfilled in the same migration; rowToRecord also defaults null to
+ * the note for readers that skip the migration.)
  */
 export function migrateBuildsTable(db: DatabaseSync): void {
   const cols = new Set(
@@ -684,6 +706,13 @@ export function migrateBuildsTable(db: DatabaseSync): void {
   }
   if (!cols.has('completed_at')) {
     db.exec(`ALTER TABLE builds ADD COLUMN completed_at TEXT`);
+  }
+  if (!cols.has('sbom_note')) {
+    db.exec(`ALTER TABLE builds ADD COLUMN sbom_note TEXT`);
+    // Single-quoted literal with '' escaping — SQLite treats
+    // double quotes as identifiers.
+    const lit = `'${NO_SBOM_NOTE.replace(/'/g, "''")}'`;
+    db.exec(`UPDATE builds SET sbom_note = ${lit} WHERE sbom_note IS NULL`);
   }
 }
 
@@ -891,6 +920,7 @@ export class FactoryDatabase {
     migrateRetentionTable(this.db);
     migrateMergeQueueTable(this.db);
     migrateBuildsTable(this.db);
+    migrateMcpServersTable(this.db);
     this.tasks = new SqliteTaskStore(this.db);
     this.evidence = new SqliteEvidenceStore(this.db);
     this.agents = new SqliteAgentStore(this.db);

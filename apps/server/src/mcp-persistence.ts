@@ -30,8 +30,10 @@ import type {
 import {
   McpRegistry,
   McpManager,
+  applyMcpServerOp,
   type McpServer,
   type McpServerDefinition,
+  type McpServerOp,
   type TrustAssessment,
   type InstallRecord,
 } from '@ai-factory/mcp';
@@ -68,6 +70,9 @@ export function serverToRow(
     recordJson: JSON.stringify(stripSecretValues(server)),
     assessmentJson: assessment ? JSON.stringify(assessment) : null,
     updatedAt: new Date().toISOString(),
+    // The store assigns the real generation on write; this is only the
+    // shape filler for callers that build rows by hand (tests).
+    rowVersion: 0,
   };
 }
 
@@ -189,9 +194,63 @@ export function hydrateMcpRegistry(deps: {
 }
 
 /**
+ * Apply one registry op against the FRESH DB row (Batch 25,
+ * cross-process write mutual exclusion).
+ *
+ * The op carries only the mutation intent; the merge runs inside the
+ * store's write transaction on the current row, so a concurrent
+ * process's writes are never silently reverted by stale in-memory
+ * state. Secret values are stripped from the final record before it
+ * is serialized (same guarantee as before).
+ */
+function applyOpToStore(
+  store: McpServerStore,
+  name: string,
+  version: string,
+  op: McpServerOp,
+  assessment?: TrustAssessment,
+): void {
+  store.applyServerOp(name, version, (current) => {
+    let base: McpServer | undefined;
+    if (current) {
+      try {
+        base = JSON.parse(current.recordJson) as McpServer;
+      } catch {
+        // A corrupt row must not be "healed" by guessing: fail the
+        // mutation loudly. /remove (DELETE) still works as the
+        // recovery path, and hydrate already skips such rows loudly.
+        throw new Error(
+          `mcp: refusing to apply ${op.kind} — stored row ${name}@${version} is corrupt (remove and re-register to recover)`,
+        );
+      }
+    }
+    const next = stripSecretValues(applyMcpServerOp(name, version, base, op));
+    const isHealthWrite = op.kind === 'setFields' && 'health' in op.fields;
+    return {
+      name,
+      version,
+      trustLevel: next.trustLevel,
+      approvalPolicy: next.approvalPolicy,
+      // Only a fresh health report clears the stale flag; unrelated
+      // writes (trust, history, …) preserve it.
+      healthStale: isHealthWrite ? false : (current?.healthStale ?? false),
+      recordJson: JSON.stringify(next),
+      assessmentJson:
+        op.kind === 'setAssessment' && assessment
+          ? JSON.stringify(assessment)
+          : (current?.assessmentJson ?? null),
+      updatedAt: new Date().toISOString(),
+      // Set by the store (bumped per applied write); placeholder here.
+      rowVersion: 0,
+    };
+  });
+}
+
+/**
  * Attach the write-through observers AFTER hydration (so the replay
  * itself doesn't rewrite rows mid-flight). From here on, every
- * registry mutation, assessment and install change lands in the DB.
+ * registry mutation, assessment and install change lands in the DB —
+ * as an atomic op on the fresh row (Batch 25), not a blind upsert.
  */
 export function attachMcpPersistence(deps: {
   registry: McpRegistry;
@@ -200,10 +259,8 @@ export function attachMcpPersistence(deps: {
 }): void {
   const { registry, manager, store } = deps;
   registry.setSink({
-    onServerChanged: (server) => {
-      store.saveServer(
-        serverToRow(server, manager.getAssessment(server.name, server.version)),
-      );
+    onServerOp: (name, version, op) => {
+      applyOpToStore(store, name, version, op);
     },
   });
   manager.setDurabilityObservers({
@@ -215,8 +272,7 @@ export function attachMcpPersistence(deps: {
       }
     },
     onAssessmentChanged: (assessment, name, version) => {
-      const server = registry.get(name, version);
-      if (server) store.saveServer(serverToRow(server, assessment));
+      applyOpToStore(store, name, version, { kind: 'setAssessment', assessment }, assessment);
     },
   });
 }

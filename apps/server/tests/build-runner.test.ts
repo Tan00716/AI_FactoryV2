@@ -19,7 +19,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -103,6 +103,52 @@ function makeRepo(): string {
   git(dir, ['config', 'user.name', 'audit']);
   git(dir, ['config', 'user.email', 'audit@example.com']);
   writeFileSync(join(dir, 'package-lock.json'), '{"lockfileVersion":3,"name":"demo"}');
+  writeFileSync(join(dir, 'a.txt'), 'line1\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-qm', 'root']);
+  git(dir, ['checkout', '-qb', 'feat']);
+  writeFileSync(join(dir, 'f.txt'), 'f\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-qm', 'feat']);
+  git(dir, ['checkout', '-q', 'main']);
+  return dir;
+}
+
+/** Real repo whose lockfile carries real package entries (for SBOM tests). */
+function makeRepoWithDeps(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'git-buildsbom-'));
+  git(dir, ['init', '-b', 'main', '-q']);
+  git(dir, ['config', 'user.name', 'audit']);
+  git(dir, ['config', 'user.email', 'audit@example.com']);
+  writeFileSync(
+    join(dir, 'package-lock.json'),
+    JSON.stringify({
+      name: 'demo',
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'demo', version: '1.0.0' },
+        'node_modules/left-pad': { version: '1.3.0' },
+        'node_modules/@scope/right-pad': { version: '2.0.1' },
+      },
+    }),
+  );
+  writeFileSync(join(dir, 'a.txt'), 'line1\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-qm', 'root']);
+  git(dir, ['checkout', '-qb', 'feat']);
+  writeFileSync(join(dir, 'f.txt'), 'f\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-qm', 'feat']);
+  git(dir, ['checkout', '-q', 'main']);
+  return dir;
+}
+
+/** Real repo with no lockfile at all. */
+function makeRepoNoLockfile(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'git-buildnolock-'));
+  git(dir, ['init', '-b', 'main', '-q']);
+  git(dir, ['config', 'user.name', 'audit']);
+  git(dir, ['config', 'user.email', 'audit@example.com']);
   writeFileSync(join(dir, 'a.txt'), 'line1\n');
   git(dir, ['add', '.']);
   git(dir, ['commit', '-qm', 'root']);
@@ -303,7 +349,85 @@ describe('§40 post-merge build execution (Batch 24)', () => {
   });
 
   it('a failing build command records FAILED with the reason, digest stays null', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'buildrun-fail-'));
+
+  it('a successful build records a lockfile-derived SBOM on disk (Batch 25)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'buildrun-sbom-'));
+    const repo = makeRepoWithDeps();
+    const dbFile = join(dir, 'factory.db');
+    const workRoot = mkdtempSync(join(tmpdir(), 'buildwork-'));
+    const sbomDir = join(dir, 'sboms');
+    const buildCmd = `node -e "require('fs').writeFileSync('built.txt','ok')"`;
+    let s: { child: ChildProcess; port: number } | null = null;
+    try {
+      s = await bootServer(dbFile, join(dir, 'secrets'), {
+        FACTORY_BUILD_COMMAND: buildCmd,
+        FACTORY_BUILD_WORK_ROOT: workRoot,
+        FACTORY_BUILD_TIMEOUT_MS: '30000',
+        FACTORY_SBOM_DIR: sbomDir,
+        FACTORY_BUILD_CONFIG_FILES: 'package-lock.json',
+      });
+      const { prId } = await mergeOne(s.port, repo, 'feat');
+      const row = await waitForTerminal(dbFile, prId);
+      assert.ok(row, 'build record reached a terminal state');
+      assert.equal(row.status, 'SUCCEEDED');
+      // The record points at a real SBOM file under the configured dir.
+      assert.ok(row.sbomRef, 'sbomRef set on success with a lockfile');
+      assert.equal(row.sbomNote, '', 'clean SBOM generation leaves no note');
+      assert.ok(
+        (row.sbomRef as string).startsWith(sbomDir),
+        `sbomRef under FACTORY_SBOM_DIR, got ${row.sbomRef}`,
+      );
+      assert.ok(existsSync(row.sbomRef as string), 'SBOM file really on disk');
+      const doc = JSON.parse(readFileSync(row.sbomRef as string, 'utf8'));
+      assert.equal(doc.bomFormat, 'CycloneDX');
+      assert.equal(doc.specVersion, '1.5');
+      const names = (doc.components as Array<any>).map((c) => `${c.name}@${c.version}`);
+      assert.ok(names.includes('left-pad@1.3.0'), `left-pad in SBOM: ${names.join(',')}`);
+      assert.ok(names.includes('@scope/right-pad@2.0.1'), `scoped dep in SBOM: ${names.join(',')}`);
+      const prov = (doc.metadata.properties as Array<any>).find(
+        (p) => p.name === 'ai-factory:sbom:provenance',
+      );
+      assert.ok(prov, 'SBOM says what it is (declared deps, not an installed-tree scan)');
+    } finally {
+      s?.child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(workRoot, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('a successful build with no lockfile keeps sbomRef null with the reason named', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'buildrun-sbomnone-'));
+    const repo = makeRepoNoLockfile();
+    const dbFile = join(dir, 'factory.db');
+    const workRoot = mkdtempSync(join(tmpdir(), 'buildwork-'));
+    const sbomDir = join(dir, 'sboms');
+    let s: { child: ChildProcess; port: number } | null = null;
+    try {
+      s = await bootServer(dbFile, join(dir, 'secrets'), {
+        FACTORY_BUILD_COMMAND: `node -e "require('fs').writeFileSync('built.txt','ok')"`,
+        FACTORY_BUILD_WORK_ROOT: workRoot,
+        FACTORY_BUILD_TIMEOUT_MS: '30000',
+        FACTORY_SBOM_DIR: sbomDir,
+      });
+      const { prId } = await mergeOne(s.port, repo, 'feat');
+      const row = await waitForTerminal(dbFile, prId);
+      assert.ok(row, 'build record reached a terminal state');
+      assert.equal(row.status, 'SUCCEEDED', 'the build still stands — SBOM absence is not failure');
+      assert.equal(row.sbomRef, null, 'no lockfile → no SBOM, not invented');
+      assert.ok(
+        (row.sbomNote as string).includes('no lockfile') ||
+          (row.sbomNote as string).includes('no parsable lockfile'),
+        `gap named, got: ${row.sbomNote}`,
+      );
+      assert.ok(!existsSync(sbomDir), 'no SBOM directory created when there is nothing to write');
+    } finally {
+      s?.child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(workRoot, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });    const dir = mkdtempSync(join(tmpdir(), 'buildrun-fail-'));
     const repo = makeRepo();
     const dbFile = join(dir, 'factory.db');
     let s: { child: ChildProcess; port: number } | null = null;

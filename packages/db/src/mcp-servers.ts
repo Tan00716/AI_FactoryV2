@@ -41,6 +41,12 @@ export interface McpServerDbRecord {
   /** TrustAssessment JSON, when one was recorded. */
   assessmentJson: string | null;
   updatedAt: string;
+  /**
+   * Optimistic-concurrency generation (Batch 25). Bumped by every
+   * applied write; applyServerOp serializes writers so a version is
+   * never skipped.
+   */
+  rowVersion: number;
 }
 
 export interface McpInstallDbRecord {
@@ -64,6 +70,24 @@ export interface McpServerStore {
   getInstall(name: string, version: string): McpInstallDbRecord | undefined;
   listInstalls(): McpInstallDbRecord[];
   removeInstall(name: string, version: string): boolean;
+  /**
+   * Atomically apply a mutation to a server row (Batch 25, cross-process
+   * write mutual exclusion).
+   *
+   * The callback receives the CURRENT row (or undefined when absent) and
+   * returns the replacement record (or null for a no-op). Read, callback
+   * and write run inside one BEGIN IMMEDIATE transaction, so two
+   * processes racing on the same row serialize: the loser's callback
+   * sees the winner's committed row instead of blindly overwriting it
+   * with stale state. row_version is bumped on every applied write.
+   * A throwing callback rolls the transaction back and the error
+   * propagates loudly — mutations are never silently dropped.
+   */
+  applyServerOp(
+    name: string,
+    version: string,
+    apply: (current: McpServerDbRecord | undefined) => McpServerDbRecord | null,
+  ): { applied: boolean; rowVersion: number };
 }
 
 function nowIso(): string {
@@ -88,8 +112,11 @@ export class MemoryMcpServerStore implements McpServerStore {
   }
 
   saveServer(rec: McpServerDbRecord): McpServerDbRecord {
+    const k = MemoryMcpServerStore.key(rec.name, rec.version);
+    const prev = this.servers.get(k);
     const stored = copyServer({ ...rec, updatedAt: rec.updatedAt ?? nowIso() });
-    this.servers.set(MemoryMcpServerStore.key(rec.name, rec.version), stored);
+    stored.rowVersion = (prev?.rowVersion ?? 0) + 1;
+    this.servers.set(k, stored);
     return copyServer(stored);
   }
 
@@ -132,6 +159,21 @@ export class MemoryMcpServerStore implements McpServerStore {
   removeInstall(name: string, version: string): boolean {
     return this.installs.delete(MemoryMcpServerStore.key(name, version));
   }
+
+  applyServerOp(
+    name: string,
+    version: string,
+    apply: (current: McpServerDbRecord | undefined) => McpServerDbRecord | null,
+  ): { applied: boolean; rowVersion: number } {
+    const k = MemoryMcpServerStore.key(name, version);
+    const current = this.servers.get(k);
+    const next = apply(current ? copyServer(current) : undefined);
+    if (!next) return { applied: false, rowVersion: current?.rowVersion ?? 0 };
+    const stored = copyServer({ ...next, name, version, updatedAt: next.updatedAt ?? nowIso() });
+    stored.rowVersion = (current?.rowVersion ?? 0) + 1;
+    this.servers.set(k, stored);
+    return { applied: true, rowVersion: stored.rowVersion };
+  }
 }
 
 function serverRowToRecord(row: Record<string, unknown>): McpServerDbRecord {
@@ -144,6 +186,7 @@ function serverRowToRecord(row: Record<string, unknown>): McpServerDbRecord {
     recordJson: row['record_json'] as string,
     assessmentJson: (row['assessment_json'] as string) ?? null,
     updatedAt: row['updated_at'] as string,
+    rowVersion: (row['row_version'] as number) ?? 1,
   };
 }
 
@@ -160,7 +203,14 @@ function installRowToRecord(row: Record<string, unknown>): McpInstallDbRecord {
 
 /** SQLite implementation, pinned against the memory reference. */
 export class SqliteMcpServerStore implements McpServerStore {
-  constructor(private readonly db: DatabaseSync) {}
+  constructor(private readonly db: DatabaseSync) {
+    // Cross-process writers serialize on BEGIN IMMEDIATE below; a busy
+    // timeout (instead of fail-fast SQLITE_BUSY) keeps a contended
+    // write waiting briefly rather than erroring. It is set on the
+    // shared connection, so every store on this FactoryDatabase
+    // benefits; 5s is far above a microsecond-scale upsert.
+    this.db.exec('PRAGMA busy_timeout = 5000');
+  }
 
   saveServer(rec: McpServerDbRecord): McpServerDbRecord {
     const stored = copyServer({ ...rec, updatedAt: rec.updatedAt ?? nowIso() });
@@ -168,15 +218,16 @@ export class SqliteMcpServerStore implements McpServerStore {
       .prepare(
         `INSERT INTO mcp_servers
            (name, version, trust_level, approval_policy, health_stale,
-            record_json, assessment_json, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            record_json, assessment_json, updated_at, row_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
          ON CONFLICT (name, version) DO UPDATE SET
            trust_level = excluded.trust_level,
            approval_policy = excluded.approval_policy,
            health_stale = excluded.health_stale,
            record_json = excluded.record_json,
            assessment_json = excluded.assessment_json,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at,
+           row_version = mcp_servers.row_version + 1`,
       )
       .run(
         stored.name,
@@ -188,6 +239,10 @@ export class SqliteMcpServerStore implements McpServerStore {
         stored.assessmentJson,
         stored.updatedAt,
       );
+    const vrow = this.db
+      .prepare('SELECT row_version FROM mcp_servers WHERE name = ? AND version = ?')
+      .get(stored.name, stored.version) as { row_version: number };
+    stored.rowVersion = vrow.row_version;
     return stored;
   }
 
@@ -264,5 +319,73 @@ export class SqliteMcpServerStore implements McpServerStore {
       .prepare('DELETE FROM mcp_installs WHERE name = ? AND version = ?')
       .run(name, version).changes as number;
     return gone > 0;
+  }
+
+  applyServerOp(
+    name: string,
+    version: string,
+    apply: (current: McpServerDbRecord | undefined) => McpServerDbRecord | null,
+  ): { applied: boolean; rowVersion: number } {
+    // BEGIN IMMEDIATE takes the write lock up front: the read/callback/
+    // write below is atomic across processes. A second process blocks
+    // on the busy timeout (set in the constructor) instead of failing
+    // with SQLITE_BUSY; if the timeout expires the error propagates
+    // loudly — a mutation is never silently dropped.
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = this.db
+        .prepare('SELECT * FROM mcp_servers WHERE name = ? AND version = ?')
+        .get(name, version) as Record<string, unknown> | undefined;
+      const current = row ? serverRowToRecord(row) : undefined;
+      const next = apply(current);
+      if (!next) {
+        this.db.exec('ROLLBACK');
+        return { applied: false, rowVersion: current?.rowVersion ?? 0 };
+      }
+      const newVersion = (current?.rowVersion ?? 0) + 1;
+      const stored: McpServerDbRecord = {
+        ...copyServer(next),
+        name,
+        version,
+        updatedAt: next.updatedAt ?? nowIso(),
+        rowVersion: newVersion,
+      };
+      this.db
+        .prepare(
+          `INSERT INTO mcp_servers
+             (name, version, trust_level, approval_policy, health_stale,
+              record_json, assessment_json, updated_at, row_version)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (name, version) DO UPDATE SET
+             trust_level = excluded.trust_level,
+             approval_policy = excluded.approval_policy,
+             health_stale = excluded.health_stale,
+             record_json = excluded.record_json,
+             assessment_json = excluded.assessment_json,
+             updated_at = excluded.updated_at,
+             row_version = excluded.row_version`,
+        )
+        .run(
+          stored.name,
+          stored.version,
+          stored.trustLevel,
+          stored.approvalPolicy,
+          stored.healthStale ? 1 : 0,
+          stored.recordJson,
+          stored.assessmentJson,
+          stored.updatedAt,
+          newVersion,
+        );
+      this.db.exec('COMMIT');
+      return { applied: true, rowVersion: newVersion };
+    } catch (e) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        // Already rolled back / no transaction — the original error
+        // is what matters.
+      }
+      throw e;
+    }
   }
 }

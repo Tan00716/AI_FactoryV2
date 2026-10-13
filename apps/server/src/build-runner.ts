@@ -34,6 +34,15 @@
  *     merge evidence record for the same PR gets artifactDigest filled
  *     (replacing the honest 'no artifact' note). Best-effort: a sealed
  *     or missing evidence record is audited, never fatal.
+ *  8. SBOM. On a SUCCEEDED build, before the worktree is deleted, an
+ *     SBOM is derived from the worktree's lockfile(s) (CycloneDX-lite,
+ *     see @ai-factory/cicd sbom.ts) and written to FACTORY_SBOM_DIR
+ *     (default <cwd>/data/sboms) as sbom-<buildId>.json; the record's
+ *     sbomRef points at the file. It is an inventory of declared/
+ *     resolved dependencies, NOT a scan of installed files. No
+ *     parsable lockfile → sbomRef null + named reason. SBOM generation
+ *     failing never flips a SUCCEEDED build — it is audited and the
+ *     record keeps sbomRef null with the failure named.
  *
  * SECURITY BOUNDARY (stated plainly): the build command is operator
  * configuration, but it EXECUTES REPO-CONTROLLED CODE (e.g. `npm run
@@ -45,13 +54,18 @@
 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { GitRepo } from '@ai-factory/git';
 import {
   assembleBuildDefinition,
+  generateSbom,
   lockBuild,
   type BuildDefinition,
 } from '@ai-factory/cicd';
+import {
+  SBOM_NO_LOCKFILE_NOTE,
+  sbomGenerationFailedNote,
+} from '@ai-factory/db';
 import { runCommandPipe } from '@ai-factory/runtime';
 import type { FactoryDatabase } from '@ai-factory/db';
 import { checkCommandPolicy, commandHitsControlDir } from './routes/exec';
@@ -61,6 +75,7 @@ export const BUILD_TIMEOUT_ENV = 'FACTORY_BUILD_TIMEOUT_MS';
 export const BUILD_TOOLCHAIN_ENV = 'FACTORY_BUILD_TOOLCHAIN';
 export const BUILD_CONFIG_FILES_ENV = 'FACTORY_BUILD_CONFIG_FILES';
 export const BUILD_WORK_ROOT_ENV = 'FACTORY_BUILD_WORK_ROOT';
+export const BUILD_SBOM_DIR_ENV = 'FACTORY_SBOM_DIR';
 
 export const DEFAULT_BUILD_TIMEOUT_MS = 600_000;
 
@@ -72,6 +87,8 @@ export interface BuildRunnerConfig {
   /** Repo-relative config files feeding configHash. */
   configFiles: string[];
   workRoot: string;
+  /** Where SBOM JSON files land (sbom-<buildId>.json). */
+  sbomDir: string;
 }
 
 /**
@@ -99,6 +116,7 @@ export function buildRunnerConfigFromEnv(
     toolchain: (env[BUILD_TOOLCHAIN_ENV] ?? '').trim() || undefined,
     configFiles,
     workRoot: (env[BUILD_WORK_ROOT_ENV] ?? '').trim() || join(tmpdir(), 'factory-builds'),
+    sbomDir: (env[BUILD_SBOM_DIR_ENV] ?? '').trim() || join(process.cwd(), 'data', 'sboms'),
   };
 }
 
@@ -307,11 +325,37 @@ export class BuildRunner {
             ? `; skipped absent config files: ${assembled.skippedConfigFiles.join(', ')}`
             : '');
       }
+      // SBOM from the worktree's lockfile(s), BEFORE the worktree is
+      // deleted below. A generation/write failure is audited and the
+      // record keeps sbomRef null with the reason named — it never
+      // flips a build that really succeeded.
+      let sbomRef: string | null = null;
+      let sbomNote: string = SBOM_NO_LOCKFILE_NOTE;
+      try {
+        const sbom = generateSbom(workDir, rec.revision);
+        if (sbom.document) {
+          mkdirSync(this.config.sbomDir, { recursive: true });
+          const sbomPath = join(this.config.sbomDir, `sbom-${buildId}.json`);
+          writeFileSync(sbomPath, JSON.stringify(sbom.document, null, 2) + '\n', 'utf8');
+          sbomRef = sbomPath;
+          sbomNote = sbom.note; // '' on clean success, truncation named otherwise
+        } else {
+          sbomNote = sbom.note || SBOM_NO_LOCKFILE_NOTE;
+        }
+      } catch (err) {
+        sbomNote = sbomGenerationFailedNote((err as Error).message);
+        audit.record('system', 'BUILD_SBOM_FAILED', 'build', buildId, {
+          revision: rec.revision,
+          reason: (err as Error).message,
+        });
+      }
       fdb.builds.markSucceeded(buildId, {
         digest,
         digestNote,
         definition: definitionJson,
         definitionNote,
+        sbomRef,
+        sbomNote,
         exitCode: result.exitCode ?? 0,
       });
       audit.record('system', 'BUILD_SUCCEEDED', 'build', buildId, {
@@ -325,8 +369,7 @@ export class BuildRunner {
       // Bind the real digest to the merge evidence (replaces the
       // honest 'no artifact' note). Best-effort: sealed/missing
       // evidence is audited, never fatal to the build result.
-      if (digest && rec.taskId) {
-        try {
+      if (digest && rec.taskId) {        try {
           const candidates = evidence
             .listByTask(rec.taskId)
             .filter(
@@ -356,6 +399,10 @@ export class BuildRunner {
             reason: (err as Error).message,
           });
         }
+      } else if (digest && !rec.taskId) {
+        audit.record('system', 'BUILD_EVIDENCE_BIND_SKIPPED', 'build', buildId, {
+          reason: 'build record has no taskId — cannot locate merge evidence to bind',
+        });
       }
     } finally {
       // Never leave build worktrees behind (success or failure).
