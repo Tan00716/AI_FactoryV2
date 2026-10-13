@@ -2,13 +2,22 @@
  * Exec routes — spec §64 (integrated terminal; controlled execution
  * infrastructure shared by agents and humans with distinct identities).
  *
- *  POST /api/exec  {command, cwd?} → run one command, return its output.
+ *  POST /api/exec  {command, cwd?, pty?} → run one command, return output.
  *
- * Prototype safety model (no real PTY — one-shot execution):
+ * Safety model (one-shot execution; the SAME policy on both paths):
  *  - binary whitelist: only read-only / build-class commands may run
  *  - deny patterns: rm -rf /, curl/wget outbound, sudo, chmod, disk ops…
  *  - cwd is confined to the server workspace root (no path escape)
  *  - 30s timeout, output truncated to a fixed budget
+ *
+ * Execution device: by default the tokenized argv runs over pipes
+ * (execFile, stdout/stderr apart). With `pty: true` the SAME argv —
+ * same whitelist, same argv semantics, no shell interpretation added —
+ * runs on a real pseudo-terminal instead (@ai-factory/runtime's
+ * runCommandPty, Batch 18): the command sees a terminal (isatty,
+ * colors), and stdout/stderr arrive as one merged stream. This is a
+ * one-shot run on a PTY, not an interactive session: no stdin is
+ * forwarded and the size is the backend default (80×24).
  *
  * Wired into apps/server/src/index.ts by the coordinator:
  *   import { handleExecRoutes } from './routes/exec';
@@ -20,6 +29,8 @@ import { dirname, relative, resolve, sep } from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
 import { UnverifiedBackend } from '@ai-factory/security';
+import { PtyUnavailableError, runCommandPty } from '@ai-factory/runtime';
+import { SecretNotFoundError, redactSecretValues } from '@ai-factory/secrets';
 
 const execFileAsync = promisify(execFile);
 
@@ -255,15 +266,153 @@ export async function handleExecRoutes(
     return true;
   }
 
-  // 4) execute with timeout; collect output, truncation at the end
+  // 3c) §46.2 Secret Broker consumption: the caller may ask for
+  // secrets to be injected into the child's environment by REFERENCE
+  // ({ secretEnv: { ENV_VAR: "secret-name" } }). The broker resolves
+  // each ref in-process; the value goes only into the child env —
+  // never into the audit record, the response, or (via redaction of
+  // the captured output below) the returned stdout/stderr. A missing
+  // ref refuses the whole command with the broker's uniform
+  // not-found error; nothing runs half-injected.
+  const injectedEnv: Record<string, string> = {};
+  const injectedValues: string[] = [];
+  const secretEnv = body['secretEnv'];
+  if (secretEnv !== undefined) {
+    if (typeof secretEnv !== 'object' || secretEnv === null || Array.isArray(secretEnv)) {
+      ctx.json(res, 400, { error: 'secretEnv must be an object mapping ENV_VAR -> secret name' });
+      return true;
+    }
+    const entries = Object.entries(secretEnv as Record<string, unknown>);
+    for (const [varName, ref] of entries) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName) || typeof ref !== 'string' || !ref) {
+        ctx.json(res, 400, {
+          error: `secretEnv entries must map a valid env var name to a secret name (bad entry: ${varName})`,
+        });
+        return true;
+      }
+    }
+    if (entries.length > 0) {
+      if (!ctx.secretBroker) {
+        ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
+          reason: 'SECRET_BROKER_UNAVAILABLE',
+        });
+        ctx.json(res, 503, {
+          error: 'secret broker is not configured on this server',
+          code: 'SECRET_BROKER_UNAVAILABLE',
+        });
+        return true;
+      }
+      for (const [varName, ref] of entries) {
+        try {
+          const value = await ctx.secretBroker.resolve(ref as string, {
+            actor,
+            purpose: 'exec env injection',
+          });
+          injectedEnv[varName] = value;
+          injectedValues.push(value);
+        } catch (e) {
+          if (e instanceof SecretNotFoundError) {
+            ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
+              reason: 'SECRET_NOT_FOUND',
+              ref: e.ref,
+              envVar: varName,
+            });
+            ctx.json(res, 403, { error: e.message, code: e.code });
+            return true;
+          }
+          ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
+            reason: 'SECRET_BACKEND_ERROR',
+            error: (e as Error).name,
+          });
+          ctx.json(res, 500, { error: 'secret resolution failed', code: 'SECRET_BACKEND_ERROR' });
+          return true;
+        }
+      }
+    }
+  }
+
+  // 3d) opt-in real PTY (Batch 18) — identical policy, argv, secret
+  // injection and output redaction as the pipe path below; only the
+  // device differs. The merged terminal stream is the output (there
+  // is no separate stderr), redacted with the same injected values
+  // before truncation (§46.2 applies to every execution path).
+  if (body['pty'] === true) {
+    try {
+      const r = await runCommandPty(tokens, {
+        cwd,
+        env: injectedEnv,
+        timeoutMs: TIMEOUT_MS,
+        maxOutputBytes: 1024 * 1024,
+      });
+      const { text, truncated } = truncate(redactSecretValues(r.stdout, injectedValues));
+      const isTruncated = truncated || r.truncated;
+      if (r.timedOut) {
+        ctx.audit.record(actor, 'EXEC_TIMEOUT', 'exec', command.slice(0, 80), {
+          cwd,
+          code: r.exitCode,
+          pty: true,
+        });
+      } else {
+        ctx.audit.record(actor, 'EXEC_RUN', 'exec', command.slice(0, 80), {
+          cwd,
+          truncated: isTruncated,
+          pty: true,
+          ...(injectedValues.length
+            ? {
+                secretEnvVars: Object.keys(injectedEnv),
+                secretRefs: Object.values(secretEnv as Record<string, unknown>),
+              }
+            : {}),
+        });
+      }
+      ctx.json(res, 200, {
+        ok: r.exitCode === 0 && !r.timedOut,
+        command,
+        cwd,
+        output: text,
+        truncated: isTruncated,
+        exitCode: r.exitCode ?? -1,
+        timedOut: r.timedOut,
+        pty: true,
+      });
+      return true;
+    } catch (err) {
+      if (err instanceof PtyUnavailableError) {
+        ctx.audit.record(actor, 'EXEC_FAILED', 'exec', command.slice(0, 80), {
+          reason: err.message,
+          pty: true,
+        });
+        ctx.json(res, 500, { error: err.message, code: err.code });
+        return true;
+      }
+      throw err;
+    }
+  }
+
+  // 4) execute with timeout; collect output, truncation at the end.
+  // Injected secret values are redacted from whatever the command
+  // printed before the output is truncated or returned (§46.2:
+  // stdout/stderr 统一脱敏).
   try {
     const { stdout, stderr } = await execFileAsync(binary, tokens.slice(1), {
       cwd,
       timeout: TIMEOUT_MS,
       maxBuffer: 64 * 1024 * 1024,
+      env: { ...process.env, ...injectedEnv },
     });
-    const { text, truncated } = truncate(stdout + (stderr ? `\n[stderr]\n${stderr}` : ''));
-    ctx.audit.record(actor, 'EXEC_RUN', 'exec', command.slice(0, 80), { cwd, truncated });
+    const { text, truncated } = truncate(
+      redactSecretValues(stdout + (stderr ? `\n[stderr]\n${stderr}` : ''), injectedValues),
+    );
+    ctx.audit.record(actor, 'EXEC_RUN', 'exec', command.slice(0, 80), {
+      cwd,
+      truncated,
+      ...(injectedValues.length
+        ? {
+            secretEnvVars: Object.keys(injectedEnv),
+            secretRefs: Object.values(secretEnv as Record<string, unknown>),
+          }
+        : {}),
+    });
     ctx.json(res, 200, { ok: true, command, cwd, output: text, truncated, exitCode: 0 });
     return true;
   } catch (err) {
@@ -277,7 +426,10 @@ export async function handleExecRoutes(
     const out = `${e.stdout ?? ''}${e.stderr ? `\n[stderr]\n${e.stderr}` : ''}`;
     const timedOut = e.killed === true;
     const { text, truncated } = truncate(
-      out.trim() || (timedOut ? `command timed out after ${TIMEOUT_MS / 1000}s` : (e.message ?? 'failed')),
+      redactSecretValues(
+        out.trim() || (timedOut ? `command timed out after ${TIMEOUT_MS / 1000}s` : (e.message ?? 'failed')),
+        injectedValues,
+      ),
     );
     ctx.audit.record(actor, timedOut ? 'EXEC_TIMEOUT' : 'EXEC_FAILED', 'exec', command.slice(0, 80), {
       cwd,

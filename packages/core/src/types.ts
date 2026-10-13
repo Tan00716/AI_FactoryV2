@@ -125,6 +125,41 @@ export interface Task {
    * TaskManager.create() and the SQLite store always write a value.
    */
   authorizationStatus?: TaskAuthorizationStatus;
+  /**
+   * §17.4 (Batch 18) — the requirement version pin this task works
+   * against, in the codebase's established 'REQ-001@2' ref form (the
+   * same representation evidence rows and the v2 engine state use).
+   * Optional: most tasks are pinned through the v2 engine's state at
+   * seed time instead; this task-level field is the carrier subtask
+   * inheritance (createSubtask) copies from the root, and the value
+   * the Scope Checker compares proposals against. Absent = no
+   * task-level pin recorded — never an invented one.
+   */
+  requirementRef?: string;
+  /**
+   * §17.4 (Batch 18) — policy ceiling: the scope tokens this task's
+   * work may touch, in §12.2's capability-ceiling representation.
+   * A subtask's ceiling must be a subset of its root's (narrowing
+   * only); absent = no ceiling recorded on this task.
+   */
+  policyCeiling?: string[];
+  /**
+   * §17.4 (Batch 18) — budget envelope: dimension → cap for this
+   * task. Dimension names follow @ai-factory/resources §21.4
+   * (modelCalls, toolCalls, tokens, moneyMinor, cpuMs, memoryBytes,
+   * storageBytes, …); the map is a plain record so core stays
+   * dependency-free. A subtask's envelope may only narrow its
+   * root's, dimension by dimension; absent = no envelope recorded.
+   */
+  budgetEnvelope?: Record<string, number>;
+  /**
+   * §17.4 (Batch 18) — "每个子任务必须说明与父目标的关系": how this
+   * subtask serves its parent's goal, as stated by its creator.
+   * Absent on tasks created before the field existed and on root
+   * tasks (where it means nothing); the Scope Checker flags a
+   * subtask that carries no relation.
+   */
+  parentRelation?: string;
   status: TaskStatus;
   currentAgentId: string | null;
   assignedAgentIds: string[];

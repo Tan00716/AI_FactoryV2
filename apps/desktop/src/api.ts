@@ -87,6 +87,46 @@ export interface TaskSummary {
   currentAgentId: string | null; assignedAgentIds: string[];
   createdAt: string; updatedAt: string;
 }
+/** §17.2 任务授权状态（Task.authorizationStatus 的取值）。旧任务在
+ *  服务端读作 AUTHORIZED，但列表行可能不带该字段——调用方以 ?? 归一。 */
+export type TaskAuthorizationStatus =
+  | 'DRAFT' | 'WAITING_HUMAN_DISPATCH' | 'AUTHORIZED' | 'REVOKED' | 'EXPIRED';
+
+/** §17.2 Dispatch 页签用的任务行：GET /api/tasks 返回全量任务对象，
+ *  授权轴、创建者、项目与时间戳都在列表里，本面不逐行补拉详情。 */
+export interface DispatchTask {
+  id: string; projectId: string; title: string; priority: string;
+  status: string; creator: string;
+  authorizationStatus?: TaskAuthorizationStatus;
+  currentAgentId: string | null; assignedAgentIds: string[];
+  createdAt: string; updatedAt: string;
+}
+
+/** 派发流动作响应（五个 POST /api/tasks/:id/<action> 同一形状）：
+ *  from/to 是本次授权状态迁移，task 是动作后的服务端任务对象。 */
+export interface DispatchActionResult {
+  from: TaskAuthorizationStatus;
+  to: TaskAuthorizationStatus;
+  task: DispatchTask;
+}
+
+/** Batch 18 预授权票（GET /api/authorization-tickets，服务端 Batch 18-1）。
+ *  票面语义的宽松只读形状：本面只呈现服务端实际给出的字段，缺失即
+ *  显示「—」；端点未就绪（404）由面板如实显示未就绪，不编造票面。 */
+export interface DispatchTicket {
+  id: string;
+  policyRuleId?: string;
+  scope?: unknown;
+  status?: string;
+  issuedBy?: string;
+  issuedAt?: string;
+  createdAt?: string;
+  expiresAt?: string | null;
+  consumedByTaskId?: string | null;
+  consumedAt?: string | null;
+  [k: string]: unknown;
+}
+
 /** §87 — full AI employee record from GET /api/agents. */
 export interface AgentFull {
   id: string; name: string; displayName: string; jobTitle: string; department: string;
@@ -427,6 +467,48 @@ export const api = {
     req<{ ok: boolean; from: string; to: string; missing?: string[] }>(
       `/tasks/${id}/transition`, { method: 'POST', body: JSON.stringify({ to, actor }) },
     ),
+  /** §17.2 Dispatch 页签数据源：全部任务（不按项目过滤，授权队列是
+   *  全局的），类型取 DispatchTask（列表即全量对象）。 */
+  dispatchTasks: () => req<DispatchTask[]>('/tasks'),
+  /** §17.2 提交派发：DRAFT → WAITING_HUMAN_DISPATCH。 */
+  requestDispatch: (id: string) =>
+    req<DispatchActionResult>(
+      `/tasks/${encodeURIComponent(id)}/request-dispatch`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  /** §17.2 Human Dispatch：WAITING_HUMAN_DISPATCH → AUTHORIZED。
+   *  via=POLICY 时服务端要求 policyRuleId（缺失 400），且审计 actor
+   *  记 policy、不冒充人工点击——调用方须原样传字段。 */
+  dispatchTask: (
+    id: string,
+    input: { assigneeAgentId?: string; via?: 'HUMAN' | 'POLICY'; policyRuleId?: string },
+  ) =>
+    req<DispatchActionResult>(
+      `/tasks/${encodeURIComponent(id)}/dispatch`,
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+  /** §17.2 驳回派发：WAITING_HUMAN_DISPATCH → DRAFT（回提交前状态）。 */
+  rejectDispatch: (id: string, reason?: string) =>
+    req<DispatchActionResult>(
+      `/tasks/${encodeURIComponent(id)}/reject-dispatch`,
+      { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) },
+    ),
+  /** §17.2 撤销授权：AUTHORIZED → REVOKED（规格无出边，不可恢复）。 */
+  revokeAuthorization: (id: string, reason?: string) =>
+    req<DispatchActionResult>(
+      `/tasks/${encodeURIComponent(id)}/revoke-authorization`,
+      { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) },
+    ),
+  /** §17.2 授权过期：AUTHORIZED|WAITING → EXPIRED（规格无出边）。 */
+  expireAuthorization: (id: string, reason?: string) =>
+    req<DispatchActionResult>(
+      `/tasks/${encodeURIComponent(id)}/expire-authorization`,
+      { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) },
+    ),
+  /** Batch 18 预授权票只读面（服务端 Batch 18-1）：用 reqWithStatus——
+   *  端点未就绪（404）是面板要如实呈现的状态，不是异常。 */
+  dispatchTickets: () =>
+    reqWithStatus<{ tickets?: DispatchTicket[] } | DispatchTicket[]>('/authorization-tickets'),
   attachEvidence: (id: string, input: { type: string; title: string; payload?: object }) =>
     req<EvidenceItem>(`/tasks/${id}/evidence`, { method: 'POST', body: JSON.stringify(input) }),
   agents: () => req<AgentFull[]>('/agents'),

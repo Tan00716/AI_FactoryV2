@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   workspace TEXT DEFAULT '',
   creator TEXT DEFAULT 'human',
   authorization_status TEXT NOT NULL DEFAULT 'AUTHORIZED',
+  requirement_ref TEXT,
+  policy_ceiling TEXT,
+  budget_envelope TEXT,
+  parent_relation TEXT,
   status TEXT DEFAULT 'TODO',
   current_agent_id TEXT REFERENCES agents(id),
   assigned_agents TEXT DEFAULT '[]',
@@ -493,5 +497,29 @@ CREATE TABLE IF NOT EXISTS retention_tombstones (
   project_id TEXT NOT NULL,
   deleted_at TEXT NOT NULL,
   reason TEXT NOT NULL DEFAULT 'retention'
+);
+
+-- New table: CREATE TABLE IF NOT EXISTS covers old databases on open.
+-- §17.2 (G-09, Batch 18) — Operational pre-authorization ticket
+-- registry. A ticket is the recorded pre-authorization a POLICY
+-- dispatch consumes: it names the triggering policy + Rule ID (the
+-- spec's requirement), the scope it covers (project / task priorities
+-- / actions), its issuer and validity window, and — once consumed —
+-- the consumption record. Tickets are single-use: consumption moves
+-- ACTIVE → USED and appends to the consumptions list. scope and
+-- consumptions are JSON text (the lossless record), the columns are
+-- the indexable projection — the same mapping style as outbox_events.
+CREATE TABLE IF NOT EXISTS authorization_tickets (
+  id TEXT PRIMARY KEY,
+  policy_rule_id TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT '{}',
+  issued_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  revoked_by TEXT,
+  revoked_at TEXT,
+  revoke_reason TEXT,
+  consumptions TEXT NOT NULL DEFAULT '[]'
 );
 `;

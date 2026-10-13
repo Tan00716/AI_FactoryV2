@@ -29,6 +29,7 @@ import { SqliteRunManifestStore } from './run-manifests';
 import { SqliteTaskV2StateStore } from './task-v2-state';
 import { SqliteOutboxStore } from './outbox';
 import { SqliteRetentionStore } from './retention';
+import { SqliteAuthorizationTicketStore } from './authorization-tickets';
 
 const J = {
   parse<T>(s: string | null, fallback: T): T {
@@ -64,6 +65,28 @@ function rowToTask(r: Record<string, unknown>): Task {
     // AUTHORIZED, the behaviour they always had; migrateTasksTable adds
     // the column with that same default at open (see below).
     authorizationStatus: (r['authorization_status'] as Task['authorizationStatus']) ?? 'AUTHORIZED',
+    // §17.4 (Batch 18) — inheritance carriers. All optional on the
+    // Task type; rows from a not-yet-migrated DB (or rows that never
+    // set them) read back with the field ABSENT, never with an
+    // invented value — "not recorded" and "recorded empty" stay
+    // distinguishable, exactly like the authorization column above.
+    ...(typeof r['requirement_ref'] === 'string'
+      ? { requirementRef: r['requirement_ref'] as string }
+      : {}),
+    ...(typeof r['policy_ceiling'] === 'string'
+      ? { policyCeiling: J.parse<string[]>(r['policy_ceiling'] as string, []) }
+      : {}),
+    ...(typeof r['budget_envelope'] === 'string'
+      ? {
+          budgetEnvelope: J.parse<Record<string, number>>(
+            r['budget_envelope'] as string,
+            {},
+          ),
+        }
+      : {}),
+    ...(typeof r['parent_relation'] === 'string'
+      ? { parentRelation: r['parent_relation'] as string }
+      : {}),
     status: s('status') as Task['status'],
     currentAgentId: (r['current_agent_id'] as string) ?? null,
     assignedAgentIds: J.parse<string[]>(r['assigned_agents'] as string, []),
@@ -82,22 +105,31 @@ export class SqliteTaskStore implements TaskStore {
     this.db.prepare(
       `INSERT INTO tasks (id, project_id, parent_task_id, title, goal, description,
         priority, severity, acceptance_criteria, constraints, workspace, creator,
-        authorization_status, status, current_agent_id, assigned_agents, subtask_ids,
+        authorization_status, requirement_ref, policy_ceiling, budget_envelope,
+        parent_relation, status, current_agent_id, assigned_agents, subtask_ids,
         dependencies, risk, created_at, updated_at, completed_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET
         parent_task_id=excluded.parent_task_id, title=excluded.title, goal=excluded.goal,
         description=excluded.description, priority=excluded.priority, severity=excluded.severity,
         acceptance_criteria=excluded.acceptance_criteria, constraints=excluded.constraints,
         workspace=excluded.workspace, creator=excluded.creator,
-        authorization_status=excluded.authorization_status, status=excluded.status,
+        authorization_status=excluded.authorization_status,
+        requirement_ref=excluded.requirement_ref, policy_ceiling=excluded.policy_ceiling,
+        budget_envelope=excluded.budget_envelope, parent_relation=excluded.parent_relation,
+        status=excluded.status,
         current_agent_id=excluded.current_agent_id, assigned_agents=excluded.assigned_agents,
         subtask_ids=excluded.subtask_ids, dependencies=excluded.dependencies,
         risk=excluded.risk, updated_at=excluded.updated_at, completed_at=excluded.completed_at`,
     ).run(
       t.id, t.projectId, t.parentTaskId, t.title, t.goal, t.description,
       t.priority, t.severity, J.stringify(t.acceptanceCriteria), J.stringify(t.constraints),
-      t.workspace, t.creator, t.authorizationStatus ?? 'AUTHORIZED', t.status, t.currentAgentId,
+      t.workspace, t.creator, t.authorizationStatus ?? 'AUTHORIZED',
+      t.requirementRef ?? null,
+      t.policyCeiling !== undefined ? J.stringify(t.policyCeiling) : null,
+      t.budgetEnvelope !== undefined ? J.stringify(t.budgetEnvelope) : null,
+      t.parentRelation ?? null,
+      t.status, t.currentAgentId,
       J.stringify(t.assignedAgentIds),
       J.stringify(t.subtaskIds), J.stringify(t.dependencies), t.risk,
       t.createdAt, t.updatedAt, t.completedAt,
@@ -637,6 +669,23 @@ export function migrateTasksTable(db: DatabaseSync): void {
       `ALTER TABLE tasks ADD COLUMN authorization_status TEXT NOT NULL DEFAULT 'AUTHORIZED'`,
     );
   }
+  // §17.4 (Batch 18) — the inheritance carriers. Plain nullable
+  // columns with no default: existing rows read NULL = "never
+  // recorded", which rowToTask surfaces as the field being absent —
+  // an upgrade must not fabricate a requirement pin, a policy ceiling
+  // or a budget envelope for work that never had one recorded.
+  if (!cols.has('requirement_ref')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN requirement_ref TEXT`);
+  }
+  if (!cols.has('policy_ceiling')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN policy_ceiling TEXT`);
+  }
+  if (!cols.has('budget_envelope')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN budget_envelope TEXT`);
+  }
+  if (!cols.has('parent_relation')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN parent_relation TEXT`);
+  }
 }
 
 export class FactoryDatabase {
@@ -705,6 +754,14 @@ export class FactoryDatabase {
    * consumer drains them (drain stamps dispatched_at, never deletes).
    */
   readonly outbox: SqliteOutboxStore;
+  /**
+   * §17.2 (G-09, Batch 18) — Operational pre-authorization ticket
+   * registry; the ticket book the server's POLICY dispatch consumes
+   * from, so a pre-authorized dispatch points at a recorded ticket
+   * (policy + Rule ID + scope + consumption record) instead of a bare
+   * Rule ID string. Single-use tickets, effective expiry on read.
+   */
+  readonly authorizationTickets: SqliteAuthorizationTicketStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -733,6 +790,7 @@ export class FactoryDatabase {
     this.taskV2States = new SqliteTaskV2StateStore(this.db);
     this.outbox = new SqliteOutboxStore(this.db);
     this.retention = new SqliteRetentionStore(this.db);
+    this.authorizationTickets = new SqliteAuthorizationTicketStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------

@@ -53,8 +53,14 @@
  *   caller attestations where the server has no service to verify them
  *   yet (budgetOk / quotaOk / confinementOk default FALSE — fail-closed:
  *   an unattested gate input denies the transition, it never waves it
- *   through). Authorization is a caller-supplied snapshot, the same trust
- *   model as the rest of this local API (no auth layer exists yet).
+ *   through). Authorization combines the caller's snapshot with the
+ *   task's §17.2 authorization axis (Batch 18): the axis is a
+ *   server-side fact and overrides the snapshot whenever it is not
+ *   AUTHORIZED, so a task whose dispatch was revoked (or never
+ *   granted) cannot be talked back into authorization by a request
+ *   body; when the axis IS AUTHORIZED the caller's snapshot stands
+ *   exactly as before. Tasks recorded before the axis existed read
+ *   AUTHORIZED, so the legacy path is unchanged.
  * - DENIALS: a v2 gate denial returns 422 with the engine's reasonCode and
  *   missing list, and the DB row is NOT touched.
  * - COMPATIBILITY (§16): GateContext.compatibleEvidenceIds is filled from
@@ -107,6 +113,7 @@ import {
   TaskManager,
   WorkflowEngineV2,
   WORKFLOW_STAGES,
+  effectiveAuthorizationStatus,
 } from '@ai-factory/core';
 import type {
   ActorAuthorization,
@@ -490,25 +497,55 @@ export class V2TransitionService {
     return { taskId, events: this.engine.listOutbox(taskId) };
   }
 
+  /**
+   * §17.2 (Batch 18) — resolve the authorization the gate predicates
+   * see. The caller's snapshot is parsed exactly as before; the
+   * task's own authorization axis is then applied as the server-side
+   * fact it is: when the axis is not AUTHORIZED it overrides the
+   * snapshot (a revoked/expired/never-dispatched task cannot be
+   * re-authorized by a request body), and when the axis IS
+   * AUTHORIZED the caller's snapshot stands unchanged — including a
+   * caller reporting a lapsed actor-level authorization, which the
+   * axis (a task-level fact) says nothing about. The expiry still
+   * comes from the caller: the axis records no expiry timestamp.
+   * The gate vocabulary predates the DRAFT state; a DRAFT axis maps
+   * to WAITING_HUMAN_DISPATCH — both are "not authorized" to every
+   * predicate that reads this, and DRAFT (not yet even dispatched)
+   * is the stricter state, so the mapping never fabricates an
+   * authorization.
+   */
+  private resolveGateAuthorization(
+    task: Task,
+    body: Record<string, unknown>,
+  ): ActorAuthorization {
+    const authStatus = body['authorizationStatus'];
+    const callerStatus: ActorAuthorization['status'] =
+      authStatus === 'WAITING_HUMAN_DISPATCH' ||
+      authStatus === 'REVOKED' ||
+      authStatus === 'EXPIRED'
+        ? authStatus
+        : 'AUTHORIZED';
+    const expiresAt =
+      typeof body['authorizationExpiresAt'] === 'string'
+        ? body['authorizationExpiresAt']
+        : null;
+    const axisStatus = effectiveAuthorizationStatus(task);
+    if (axisStatus === 'AUTHORIZED') {
+      return { status: callerStatus, expiresAt };
+    }
+    return {
+      status: axisStatus === 'DRAFT' ? 'WAITING_HUMAN_DISPATCH' : axisStatus,
+      expiresAt,
+    };
+  }
+
   /** Assemble the GateContext from DB facts + explicit caller attestations. */
   private gateContext(
     task: Task,
     actor: string,
     body: Record<string, unknown>,
   ): GateContext & { idempotencyKey?: string } {
-    const authStatus = body['authorizationStatus'];
-    const authorization: ActorAuthorization = {
-      status:
-        authStatus === 'WAITING_HUMAN_DISPATCH' ||
-        authStatus === 'REVOKED' ||
-        authStatus === 'EXPIRED'
-          ? authStatus
-          : 'AUTHORIZED',
-      expiresAt:
-        typeof body['authorizationExpiresAt'] === 'string'
-          ? body['authorizationExpiresAt']
-          : null,
-    };
+    const authorization = this.resolveGateAuthorization(task, body);
     // Dependency readiness is a real server-side fact: every hard
     // dependency (depends_on / blocked_by) must point at a DONE task.
     const dependenciesReady = task.dependencies
@@ -718,8 +755,9 @@ export class V2TransitionService {
    * - pendingBlocks: the condition's blockedOn list plus every hard
    *   dependency (depends_on / blocked_by) not DONE — real DB facts,
    *   the same computation gateContext makes for dependenciesReady.
-   * - authorizationsComplete: the caller's authorization snapshot
-   *   resolves AUTHORIZED and unexpired (same parsing as gateContext),
+   * - authorizationsComplete: the resolved authorization (same
+   *   resolution as gateContext — the caller's snapshot combined with
+   *   the task's §17.2 axis, Batch 18) is AUTHORIZED and unexpired,
    *   and — when an approvals store is wired — no approval record for
    *   the task is still PENDING or lapsed EXPIRED. REJECTED records are
    *   complete (decided); the gates that needed them already judged
@@ -792,22 +830,13 @@ export class V2TransitionService {
       if (!done) pendingBlocks.push(`dependency ${d.taskId} is not DONE`);
     }
 
-    const authStatus = body['authorizationStatus'];
-    const callerStatus =
-      authStatus === 'WAITING_HUMAN_DISPATCH' ||
-      authStatus === 'REVOKED' ||
-      authStatus === 'EXPIRED'
-        ? authStatus
-        : 'AUTHORIZED';
-    const expiresAt =
-      typeof body['authorizationExpiresAt'] === 'string'
-        ? body['authorizationExpiresAt']
-        : null;
+    const authorization = this.resolveGateAuthorization(task, body);
     const callerExpired =
-      expiresAt !== null &&
-      Number.isFinite(Date.parse(expiresAt)) &&
-      Date.parse(expiresAt) <= Date.now();
-    let authorizationsComplete = callerStatus === 'AUTHORIZED' && !callerExpired;
+      authorization.expiresAt !== null &&
+      Number.isFinite(Date.parse(authorization.expiresAt)) &&
+      Date.parse(authorization.expiresAt) <= Date.now();
+    let authorizationsComplete =
+      authorization.status === 'AUTHORIZED' && !callerExpired;
     if (authorizationsComplete && this.deps.approvals) {
       const rows = this.deps.approvals.listByTask(task.id);
       if (rows.some((a) => a.status === 'PENDING' || a.status === 'EXPIRED')) {

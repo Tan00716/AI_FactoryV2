@@ -34,6 +34,7 @@
     "@ai-factory/quota": "0.1.0",
     "@ai-factory/requirements": "0.1.0",
     "@ai-factory/review": "0.1.0",
+    "@ai-factory/secrets": "0.1.0",
     "@ai-factory/runtime": "0.1.0",
     "@ai-factory/security": "0.1.0",
     "@ai-factory/skills": "0.1.0",

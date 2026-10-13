@@ -1,5 +1,15 @@
 # Changelog
 
+## [未发布] Batch 18 — 授权轴收口 / Secret Broker / 真实 PTY / Dispatch UI
+
+- **G-09 预授权票登记册**：`authorization_tickets` 落库 + `/api/authorization-tickets`（签发/列表/撤销）；POLICY 派发可引用票据，消费时校验状态/有效期/范围并留消费记录；票面类别维度以优先级表达（Task 无 task_type，G-06）。
+- **G-11 子任务继承 + Scope Checker**（core `scope.ts`）：子任务继承 root 授权/需求版本/AC/政策上限/预算且不宽于 root；run 发起前范围校验。
+- **resume 与 v2 门禁接授权轴**：§28.4 清单加 taskAuthorized；v2 transition 门禁从 Task 授权轴读真值。
+- **§46.2 Secret Broker**（新包 `@ai-factory/secrets`）：引用式机密存取，env/file-vault（AES-256-GCM 机器绑定）/OS keychain（探测式）/memory 四后端，租约 + 撤销失效 + 输出脱敏；服务端仅元数据面，值永不经 HTTP 返回；`/api/exec` 新增 `secretEnv` 注入为真实消费点。验证中修复配置变量与机密前缀撞名的真 bug。
+- **真实 PTY**（runtime `pty.ts`，G-11 部分）：内嵌 python3 监督进程分配真 PTY（尺寸预设、信号整树击杀），pipe/PTY 双模式对拍测试钉住 isatty/颜色/尺寸差异；`/api/exec` opt-in `pty: true` 且共用密钥脱敏，非旁路。无运行时 resize，仅 POSIX。
+- **Dispatch 桌面页签**：待派发队列（POLICY 派发前端先拦缺 Rule ID）、草稿提交、授权撤销/过期二次确认、预授权票只读面；409 如实提示并刷新。
+- KNOWN_LIMITATIONS 新增 Secret Broker 与 PTY 两条、§17.2 条目更新收口状态。测试基线 1999 → 2091。
+
 本文件按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格记录
 AI Factory 的变更，内容与 git 提交历史逐项对应（提交哈希附在各节标题后）。
 

@@ -8,6 +8,7 @@ export * from './run-manifests';
 export * from './task-v2-state';
 export * from './outbox';
 export * from './retention';
+export * from './authorization-tickets';
 export * from './seed';
 export * from './schema';
 export * from './constraints';

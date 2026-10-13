@@ -19,6 +19,7 @@ import type { NotificationEngine } from '@ai-factory/notifications';
 import type { BackupManifest } from './backup';
 import type { EventBus } from '@ai-factory/events';
 import type { StepIntentStore } from '@ai-factory/runtime';
+import type { SecretBroker } from '@ai-factory/secrets';
 
 export interface RouteContext {
   tasks: TaskManager;
@@ -67,6 +68,16 @@ export interface RouteContext {
   archivedTaskBody?: (
     taskId: string,
   ) => { error: string; code: 'PROJECT_ARCHIVED'; projectId: string } | null;
+  /**
+   * §46.2 Secret Broker (Batch 18) — resolves `secret://` refs to
+   * plaintext for in-process consumption points (e.g. exec env
+   * injection). Injected by the coordinator from
+   * createSecretBrokerFromEnv; its audit hook already writes to the
+   * server audit log. An embedder that omits this has no broker:
+   * /api/secrets answers 503 and exec secretEnv injection refuses —
+   * nothing falls back to reading process env directly.
+   */
+  secretBroker?: SecretBroker;
   /** System Event Bus — spec §91, shared singleton created in index.ts. */
   bus: EventBus;
   json(res: ServerResponse, status: number, body: unknown): void;

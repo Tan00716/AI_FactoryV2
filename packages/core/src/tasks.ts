@@ -12,6 +12,14 @@ import {
   TaskStatus,
   nowIso,
 } from './types';
+import {
+  ScopeViolationError,
+  budgetOverflow,
+  ceilingOverflow,
+  resolveInheritedAuthorization,
+  rootOfTask,
+  type ScopeViolation,
+} from './scope';
 
 export class TaskNotFoundError extends Error {
   constructor(id: string) {
@@ -109,6 +117,17 @@ export interface CreateTaskInput {
    * (not yet submitted).
    */
   authorizationStatus?: InitialTaskAuthorizationStatus;
+  /**
+   * §17.4 (Batch 18) — task-level requirement pin ('REQ-001@2'),
+   * policy ceiling (scope tokens) and budget envelope. On create()
+   * these are simply recorded; on createSubtask() they default to
+   * the ROOT's values and may only narrow them (see scope.ts).
+   */
+  requirementRef?: string;
+  policyCeiling?: string[];
+  budgetEnvelope?: Record<string, number>;
+  /** §17.4 (Batch 18) — how a subtask serves its parent's goal. */
+  parentRelation?: string;
 }
 
 const DEFAULT_WORKSPACE = 'C:\\AIProjects\\MyApp';
@@ -133,6 +152,22 @@ export class TaskManager {
       workspace: input.workspace ?? DEFAULT_WORKSPACE,
       creator: input.creator ?? 'human',
       authorizationStatus: input.authorizationStatus ?? 'AUTHORIZED',
+      // §17.4 (Batch 18) — recorded only when the caller supplied
+      // them; absent stays absent (never an invented pin/ceiling/
+      // envelope). Arrays/maps are copied so later caller mutation
+      // cannot rewrite the stored task.
+      ...(input.requirementRef !== undefined
+        ? { requirementRef: input.requirementRef }
+        : {}),
+      ...(input.policyCeiling !== undefined
+        ? { policyCeiling: [...input.policyCeiling] }
+        : {}),
+      ...(input.budgetEnvelope !== undefined
+        ? { budgetEnvelope: { ...input.budgetEnvelope } }
+        : {}),
+      ...(input.parentRelation !== undefined
+        ? { parentRelation: input.parentRelation }
+        : {}),
       status: 'TODO',
       currentAgentId: null,
       assignedAgentIds: [],
@@ -152,10 +187,100 @@ export class TaskManager {
     return this.get(t.id);
   }
 
-  /** §8/#95 — create a subtask linked to a parent. */
+  /** The root task of a task (topmost ancestor; see rootOfTask). */
+  rootOf(taskId: string): Task {
+    return rootOfTask((id) => this.store.get(id), this.get(taskId));
+  }
+
+  /**
+   * §8/#95 + §17.4 (Batch 18) — create a subtask linked to a parent,
+   * inheriting from the ROOT task (the topmost ancestor — §17.4 says
+   * root, so a grandchild inherits the root's facts, not whichever
+   * intermediate parent happens to be nearest):
+   *  - authorization: the root's status when unspecified (verbatim,
+   *    including REVOKED/EXPIRED — filed dead, never resurrected);
+   *    an explicit request broader than the root's is refused with
+   *    ScopeViolationError (a subtask must not be wider than its
+   *    root). The inherited state may be REVOKED/EXPIRED, which
+   *    create()'s initial-state type does not admit — inheritance
+   *    writes it directly after creation, below.
+   *  - requirement version / 相关 AC / policy ceiling / budget
+   *    envelope: the root's values when unspecified; a supplied
+   *    ceiling must be a subset of the root's and a supplied
+   *    envelope must narrow the root's dimension by dimension,
+   *    else ScopeViolationError (§12.2's subset rule). A supplied
+   *    requirement pin may diverge — that is a caller decision the
+   *    Scope Checker flags (scope.ts), not a creation error.
+   *  - the parent relation (§17.4) is recorded when supplied.
+   * Constraints are NOT inherited — §17.4's list does not name them.
+   */
   createSubtask(parentId: string, input: Omit<CreateTaskInput, 'parentTaskId' | 'projectId'>): Task {
     const parent = this.get(parentId);
-    return this.create({ ...input, projectId: parent.projectId, parentTaskId: parentId });
+    const root = this.rootOf(parentId);
+    const violations: ScopeViolation[] = [];
+
+    const auth = resolveInheritedAuthorization(
+      effectiveAuthorizationStatus(root),
+      input.authorizationStatus,
+    );
+    if ('violation' in auth) violations.push(auth.violation);
+
+    let policyCeiling = input.policyCeiling;
+    if (policyCeiling === undefined) {
+      policyCeiling = root.policyCeiling;
+    } else if (root.policyCeiling !== undefined) {
+      for (const token of ceilingOverflow(policyCeiling, root.policyCeiling)) {
+        violations.push({
+          kind: 'POLICY_CEILING',
+          detail:
+            `proposed policy ceiling token '${token}' is wider than the root's ceiling`,
+          item: token,
+        });
+      }
+    }
+
+    let budgetEnvelope = input.budgetEnvelope;
+    if (budgetEnvelope === undefined) {
+      budgetEnvelope = root.budgetEnvelope;
+    } else if (root.budgetEnvelope !== undefined) {
+      for (const o of budgetOverflow(budgetEnvelope, root.budgetEnvelope)) {
+        violations.push({
+          kind: 'BUDGET',
+          detail:
+            `budget dimension '${o.dimension}' asks ${o.requested} but the root's envelope caps it at ${o.cap}`,
+          item: o.dimension,
+        });
+      }
+    }
+
+    if (violations.length > 0) throw new ScopeViolationError(root.id, violations);
+
+    const inheritedStatus = (
+      'status' in auth ? auth.status : 'AUTHORIZED'
+    ) as TaskAuthorizationStatus;
+    const sub = this.create({
+      ...input,
+      projectId: parent.projectId,
+      parentTaskId: parentId,
+      // Initial-state type admits only the live states; a dead
+      // inherited state is applied verbatim right after creation.
+      authorizationStatus: (
+        inheritedStatus === 'REVOKED' || inheritedStatus === 'EXPIRED'
+          ? 'AUTHORIZED'
+          : inheritedStatus
+      ) as InitialTaskAuthorizationStatus,
+      requirementRef: input.requirementRef ?? root.requirementRef,
+      acceptanceCriteria: input.acceptanceCriteria ?? [...root.acceptanceCriteria],
+      policyCeiling,
+      budgetEnvelope,
+    });
+    if (inheritedStatus === 'REVOKED' || inheritedStatus === 'EXPIRED') {
+      const t = this.get(sub.id);
+      t.authorizationStatus = inheritedStatus;
+      this.store.save(t);
+      return t;
+    }
+    return sub;
   }
 
   /**

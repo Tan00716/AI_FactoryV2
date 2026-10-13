@@ -128,6 +128,7 @@ import {
   type TraceStep,
 } from '@ai-factory/runtime';
 import type { Agent, Permission, Task } from '@ai-factory/core';
+import { effectiveAuthorizationStatus } from '@ai-factory/core';
 import {
   InMemoryRunManifestStore,
   InMemoryRuntimeRunStore,
@@ -702,6 +703,12 @@ export interface ResumeChecks {
   checkpointExists: ResumeCheck & { stepPosition?: number; capturedAt?: number };
   taskExists: ResumeCheck;
   taskVersionCurrent: ResumeCheck & { expected?: string; actual?: string };
+  /**
+   * §17.2 (Batch 18) — the task's authorization axis: AUTHORIZED is
+   * the only state under which a run may (re)start. The status that
+   * was found rides along so a refusal names it.
+   */
+  taskAuthorized: ResumeCheck & { authorizationStatus?: string };
   agentRegistered: ResumeCheck;
   noPendingIntents: ResumeCheck & { pending: { id: string; tool: string }[] };
   projectNotArchived: ResumeCheck & { projectId?: string };
@@ -729,6 +736,10 @@ export interface ResumeChecks {
  *  - the task's project is not archived (the Batch 14 guard, via the
  *    coordinator-injected evaluator; an embedder that wires no guard
  *    cannot verify this and fails closed);
+ *  - the task is currently AUTHORIZED on the §17.2 axis (Batch 18 —
+ *    §28.3's "resume revalidates authorization" applied to the task
+ *    axis, so resume is not a side door around the run-creation
+ *    gate);
  *  - the run is not live in this process (isRuntimeRunLive).
  *
  * `opts.isLive` exists so tests can pin the live branch without a
@@ -752,6 +763,7 @@ export function evaluateResumeChecks(
       : { ok: false, detail: 'no checkpoint captured for this run' },
     taskExists: { ok: false, detail: 'not evaluated' },
     taskVersionCurrent: { ok: false, detail: 'not evaluated' },
+    taskAuthorized: { ok: false, detail: 'not evaluated' },
     agentRegistered: { ok: false, detail: 'not evaluated' },
     noPendingIntents: { ok: false, detail: 'not evaluated', pending: [] },
     projectNotArchived: { ok: false, detail: 'not evaluated' },
@@ -797,6 +809,38 @@ export function evaluateResumeChecks(
               `${checkpoint.taskVersion}, task is now at ${actual}`,
             expected: checkpoint.taskVersion,
             actual,
+          };
+  }
+
+  // §17.2 (Batch 18) — the task's authorization axis joins the
+  // revalidation: a resume restarts work under the task, so the task
+  // must currently be AUTHORIZED (§28.3's "resume revalidates
+  // authorization" made concrete for the task axis — run creation
+  // has refused non-AUTHORIZED tasks since Batch 17, and a resume
+  // must not be a side door around that gate). Tasks recorded
+  // before the axis existed read AUTHORIZED (core's
+  // effectiveAuthorizationStatus rule), so legacy runs are
+  // unaffected. A missing task fails here too — its authorization
+  // cannot be verified — alongside taskExists.
+  if (!task) {
+    checks.taskAuthorized = {
+      ok: false,
+      detail: 'task missing — its authorization_status cannot be verified',
+    };
+  } else {
+    const status = effectiveAuthorizationStatus(task);
+    checks.taskAuthorized =
+      status === 'AUTHORIZED'
+        ? {
+            ok: true,
+            detail: 'task authorization_status is AUTHORIZED (§17.2)',
+            authorizationStatus: status,
+          }
+        : {
+            ok: false,
+            detail:
+              `task authorization_status is ${status} — resume requires AUTHORIZED (§17.2)`,
+            authorizationStatus: status,
           };
   }
 

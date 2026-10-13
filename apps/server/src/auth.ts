@@ -376,6 +376,18 @@ export function requiredRoleFor(method: string, path: string): ApiRole | null {
     return 'admin';
   }
   if (path === '/api/autonomy/mode' && method !== 'GET') return 'admin';
+  // Secret Broker (§46.2): metadata reads are viewer (names/purpose/
+  // status only — values are never served over HTTP at all); every
+  // mutation is admin, like the other credential-adjacent surfaces.
+  if (path === '/api/secrets' || path.startsWith('/api/secrets/')) {
+    return method === 'GET' ? 'viewer' : 'admin';
+  }
+  // Authorization tickets (§17.2, Batch 18): issuing or revoking a
+  // pre-authorization ticket is policy administration — admin;
+  // reads are viewer, like the other policy surfaces above.
+  if (path === '/api/authorization-tickets' || path.startsWith('/api/authorization-tickets/')) {
+    return method === 'GET' ? 'viewer' : 'admin';
+  }
   return method === 'GET' ? 'viewer' : 'operator';
 }
 

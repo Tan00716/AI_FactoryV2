@@ -29,8 +29,10 @@
  *    DEFAULT_TOOL_PERMISSIONS (read/write/delete/shell/commit/push/
  *    pull_request → filesystem.*, shell.execute, git.*, github.*).
  *    fs.* / shell.execute below carry exactly those actions; their
- *    implementations are host-injected ToolImpls, and no concrete
- *    filesystem or shell ToolImpl ships in this repo — hence
+ *    implementations are host-injected ToolImpls. No concrete
+ *    filesystem ToolImpl ships in this repo, and while the runtime
+ *    does ship a concrete shell ToolImpl (createShellTool, Batch 18),
+ *    it is not wired as these definitions' executor — hence
  *    'definition-only' despite the action surface being real.
  *  - The server's HTTP run route registers two pure in-process tools
  *    (echo, add) — catalogued under Custom as runtime.echo/runtime.add.
@@ -110,6 +112,11 @@ export const BUILTIN_TOOLS: readonly ToolMetadata[] = [
     inputSchema: {
       command: { type: 'string', required: true },
       cwd: { type: 'string' },
+      // Run the command on a real pseudo-terminal instead of pipes
+      // (@ai-factory/runtime createShellTool, Batch 18): stdout/stderr
+      // arrive merged and the command sees a terminal (isatty, window
+      // size). Absent/false keeps the pipe behavior.
+      pty: { type: 'boolean' },
     },
     outputSchema: {
       exitCode: { type: 'number' },
@@ -381,7 +388,7 @@ export const BUILTIN_TOOL_NOTES: Readonly<Record<string, string>> = {
   'fs.write': 'Same as fs.read: the action and gate exist, no shipped implementation.',
   'fs.delete': 'Same as fs.read: the action and gate exist, no shipped implementation.',
   'shell.execute':
-    'Harness action shell.execute exists; command-spawning machinery lives in @ai-factory/projects (policy-checked executor) and @ai-factory/qa, but no agent-facing shell tool is wired to this definition.',
+    'Harness action shell.execute exists, and @ai-factory/runtime ships a concrete shell ToolImpl (createShellTool: pipe mode + real-PTY mode via a python3 supervisor, Batch 18) honoring this definition\u2019s pty option; command-spawning machinery also lives in @ai-factory/projects (policy-checked executor) and @ai-factory/qa. Status stays definition-only: the runtime ToolImpl is not registered as this definition\u2019s executor in the server tools registry.',
   'git.commit':
     'Real execFile git implementation in @ai-factory/git, gated by the Git Broker (Batch 16) on the server git routes.',
   'git.push': 'Real execFile git implementation in @ai-factory/git, broker-gated like git.commit.',

@@ -13,10 +13,13 @@
  *  - limits     extended budgets, BudgetTracker, jittered retry w/ total cap  [§25]
  *  - durable    external ops (PREPARED→…→UNKNOWN), ledger reconcile,          [§28]
  *               checkpoints, step-intent store, disk safe-mode
+ *  - pty        concrete shell execution: pipe mode + real PTY mode        [§33, §50.1]
+ *               (python3 supervisor backend), createShellTool ToolImpl
  */
 export * from './types';
 export * from './loop';
 export * from './harness';
+export * from './pty';
 export * from './adapters';
 export * from './adapter-contract';
 export * from './runner';

@@ -26,9 +26,10 @@
  *   POST /api/tasks/:id/subtasks     {title, ...}
  *   POST /api/tasks/:id/dependencies {kind, taskId}
  *   POST /api/tasks/:id/request-dispatch    (§17.2: DRAFT → WAITING_HUMAN_DISPATCH)
- *   POST /api/tasks/:id/dispatch            {actor?, assigneeAgentId?, via?, policyRuleId?}
+ *   POST /api/tasks/:id/dispatch            {actor?, assigneeAgentId?, via?, policyRuleId?, ticketId?}
  *                                           (§17.2 Human Dispatch → AUTHORIZED;
- *                                            via=POLICY requires policyRuleId)
+ *                                            via=POLICY requires policyRuleId, or a
+ *                                            registered ticket via ticketId — G-09)
  *   POST /api/tasks/:id/reject-dispatch     {actor?, reason?} (→ DRAFT)
  *   POST /api/tasks/:id/revoke-authorization {actor?, reason?} (→ REVOKED)
  *   POST /api/tasks/:id/expire-authorization {actor?, reason?} (→ EXPIRED)
@@ -46,18 +47,28 @@ import {
   AgentRegistry,
   AuditLog,
   EvidenceEngine,
+  ScopeViolationError,
   Task,
   TaskAuthorizationError,
   TaskManager,
   TaskStatus,
   WorkflowEngine,
   allowedNextStates,
+  checkSubtaskScope,
   effectiveAuthorizationStatus,
   nowIso,
   type InitialTaskAuthorizationStatus,
+  type TaskAuthorizationStatus,
 } from '@ai-factory/core';
-import { FactoryDatabase, seedIfEmpty } from '@ai-factory/db';
+import {
+  FactoryDatabase,
+  seedIfEmpty,
+  TICKET_ACTION_DISPATCH,
+  ticketCoverageGaps,
+  type AuthorizationTicket,
+} from '@ai-factory/db';
 import { NotificationEngine } from '@ai-factory/notifications';
+import { createSecretBrokerFromEnv } from '@ai-factory/secrets';
 import { CheckpointLog, OperationLedger } from '@ai-factory/runtime';
 import type { StepIntentStore, TargetLedgerQuery } from '@ai-factory/runtime';
 import type { RouteContext } from './routes/context';
@@ -95,6 +106,7 @@ import { handleReviewRoutes } from './routes/review';
 import { handleReleaseRoutes } from './routes/releases';
 import { handlePolicyRoutes } from './routes/policy';
 import { handleExecRoutes } from './routes/exec';
+import { handleSecretRoutes } from './routes/secrets';
 import { handleFileRoutes } from './routes/files';
 import { handleChangesRoutes } from './routes/changes';
 import { handleSecurityRoutes } from './routes/security';
@@ -133,6 +145,7 @@ import {
   stagedRestoreBackupId,
 } from './routes/backup';
 import { handleRetentionRoutes } from './routes/retention';
+import { handleAuthorizationTicketRoutes } from './routes/authorization-tickets';
 import { EventBus } from '@ai-factory/events';
 import {
   API_TOKEN_ENV,
@@ -211,6 +224,33 @@ const fdb = new FactoryDatabase(DB_PATH);
 const tasks = new TaskManager(fdb.tasks);
 const evidence = new EvidenceEngine(fdb.evidence);
 const audit = new AuditLog(fdb.audit);
+/**
+ * §46.2 Secret Broker (Batch 18; see @ai-factory/secrets).
+ * FACTORY_SECRETS_BACKEND selects the primary backend (file vault by
+ * default; keychain / memory / env are explicit alternatives), with
+ * the FACTORY_SECRET_* env store always behind it in the chain.
+ * Misconfiguration is fatal here — most importantly backend=keychain
+ * with no keychain tool: §46.2 forbids silently downgrading to
+ * weaker storage, so the server refuses to start instead. The audit
+ * hook records every broker event by ref; values never pass through
+ * it (the event type has no field that could carry one).
+ */
+let secretBrokerSetup: ReturnType<typeof createSecretBrokerFromEnv>;
+try {
+  secretBrokerSetup = createSecretBrokerFromEnv({
+    audit: (event) =>
+      audit.record(event.actor, event.action, 'secret', event.name, {
+        ref: event.ref,
+        backend: event.backend,
+        purpose: event.purpose,
+        ...(event.rotated !== undefined ? { rotated: event.rotated } : {}),
+        ...(event.error !== undefined ? { error: event.error } : {}),
+      }),
+  });
+} catch (e) {
+  console.error(`[ai-factory] refusing to start: secret broker setup failed: ${(e as Error).message}`);
+  process.exit(1);
+}
 if (pendingRestoreApplied.applied) {
   audit.record(
     'system',
@@ -581,6 +621,11 @@ const server = createServer(async (req, res) => {
           store: 'sqlite',
           pending: fdb.outbox.countPending(),
         },
+        secrets: {
+          backend: secretBrokerSetup.backend,
+          chain: secretBrokerSetup.chain,
+          stored: (await secretBrokerSetup.broker.list()).length,
+        },
       });
     }
 
@@ -605,6 +650,9 @@ const server = createServer(async (req, res) => {
         isTaskProjectArchived(fdb, taskId)
           ? projectArchivedBody(projectIdOfTask(fdb, taskId) as string)
           : null,
+      // §46.2 (Batch 18) — the Secret Broker for /api/secrets and for
+      // consumption points (exec secretEnv injection).
+      secretBroker: secretBrokerSetup.broker,
     };
     if (await handleGitRoutes(req, res, url, routeCtx)) return;
     if (await handleQaRoutes(req, res, url, routeCtx)) return;
@@ -626,6 +674,7 @@ const server = createServer(async (req, res) => {
     if (await handleReleaseRoutes(req, res, url, routeCtx)) return;
     if (await handlePolicyRoutes(req, res, url, routeCtx)) return;
     if (await handleExecRoutes(req, res, url, routeCtx)) return;
+    if (await handleSecretRoutes(req, res, url, routeCtx)) return;
     if (await handleFileRoutes(req, res, url, routeCtx)) return;
     if (await handleChangesRoutes(req, res, url, routeCtx)) return;
     if (await handleSecurityRoutes(req, res, url, routeCtx)) return;
@@ -652,6 +701,7 @@ const server = createServer(async (req, res) => {
     if (await handleActivityRoutes(req, res, url, routeCtx)) return;
     if (await handleBackupRoutes(req, res, url, routeCtx)) return;
     if (await handleRetentionRoutes(req, res, url, routeCtx)) return;
+    if (await handleAuthorizationTicketRoutes(req, res, url, routeCtx)) return;
 
     // Projects
     if (path === '/api/projects' && method === 'GET') {
@@ -766,6 +816,28 @@ const server = createServer(async (req, res) => {
         constraints: Array.isArray(b['constraints']) ? (b['constraints'] as string[]) : [],
         creator: 'human',
         authorizationStatus: initialAuthorization,
+        // §17.4 (Batch 18) — the inheritance carriers are recordable
+        // at creation: a root's requirement pin, policy ceiling and
+        // budget envelope are what subtask inheritance copies and
+        // the Scope Checker judges against, so they must be settable
+        // through the same API that creates the root. Malformed
+        // values are ignored (the fields stay unrecorded) rather
+        // than coerced into a scope the caller never stated.
+        ...(typeof b['requirementRef'] === 'string' && b['requirementRef']
+          ? { requirementRef: b['requirementRef'] }
+          : {}),
+        ...(Array.isArray(b['policyCeiling']) &&
+        (b['policyCeiling'] as unknown[]).every((e) => typeof e === 'string')
+          ? { policyCeiling: b['policyCeiling'] as string[] }
+          : {}),
+        ...(typeof b['budgetEnvelope'] === 'object' &&
+        b['budgetEnvelope'] !== null &&
+        !Array.isArray(b['budgetEnvelope']) &&
+        Object.values(b['budgetEnvelope'] as Record<string, unknown>).every(
+          (v) => typeof v === 'number' && Number.isFinite(v),
+        )
+          ? { budgetEnvelope: b['budgetEnvelope'] as Record<string, number> }
+          : {}),
       });
       audit.record('human', 'TASK_CREATED', 'task', t.id, { title: t.title });
       // §17.2 — a task created straight into AUTHORIZED at the caller's
@@ -859,8 +931,79 @@ const server = createServer(async (req, res) => {
             return json(res, 200, { from, to: t.authorizationStatus, task: taskView(id) });
           }
           if (suffix === '/dispatch') {
-            const policyRuleId =
+            let policyRuleId =
               typeof b['policyRuleId'] === 'string' && b['policyRuleId'] ? b['policyRuleId'] : undefined;
+            const ticketId =
+              typeof b['ticketId'] === 'string' && b['ticketId'] ? b['ticketId'] : undefined;
+            // §17.2 (Batch 18, G-09) — a POLICY dispatch may consume a
+            // registered pre-authorization ticket instead of presenting
+            // a bare Rule ID. The ticket is validated BEFORE anything
+            // mutates (exists → effective status ACTIVE → Rule ID
+            // agrees with the body → scope covers this task); every
+            // refusal is a 400 with the reason in the audit trail, the
+            // task is not dispatched and the ticket is not consumed.
+            // Consumption itself is recorded only after the dispatch
+            // commits, so a dispatch the state machine refuses (409
+            // below) never burns a ticket.
+            let ticket: AuthorizationTicket | undefined;
+            if (ticketId !== undefined) {
+              const rejectTicket = (
+                error: string,
+                details: Record<string, unknown>,
+              ) => {
+                audit.record(actor, 'AUTHORIZATION_TICKET_REJECTED', 'authorization_ticket', ticketId, {
+                  ticketId,
+                  taskId: id,
+                  ...details,
+                });
+                return json(res, 400, {
+                  error,
+                  code: 'AUTHORIZATION_TICKET_INVALID',
+                  ticketId,
+                  ...details,
+                });
+              };
+              if (via !== 'POLICY') {
+                return rejectTicket(
+                  'ticketId is only meaningful when via is POLICY (a ticket is an operational pre-authorization)',
+                  { reason: 'via_not_policy' },
+                );
+              }
+              const found = fdb.authorizationTickets.get(ticketId);
+              if (!found) {
+                return rejectTicket('authorization ticket not found', {
+                  reason: 'not_found',
+                });
+              }
+              if (found.status !== 'ACTIVE') {
+                return rejectTicket(
+                  `authorization ticket is ${found.status}, not ACTIVE`,
+                  { reason: 'not_active', status: found.status },
+                );
+              }
+              if (policyRuleId !== undefined && policyRuleId !== found.policyRuleId) {
+                return rejectTicket(
+                  `policyRuleId ${policyRuleId} does not match the ticket's Rule ID ${found.policyRuleId}`,
+                  { reason: 'rule_id_mismatch', ticketPolicyRuleId: found.policyRuleId },
+                );
+              }
+              const taskForScope = tasks.get(id);
+              const gaps = ticketCoverageGaps(
+                found,
+                { projectId: taskForScope.projectId, priority: taskForScope.priority },
+                TICKET_ACTION_DISPATCH,
+              );
+              if (gaps.length > 0) {
+                return rejectTicket(
+                  `authorization ticket scope does not cover this task: ${gaps.join('; ')}`,
+                  { reason: 'scope_gap', gaps },
+                );
+              }
+              // The ticket's Rule ID is the recorded trigger — it
+              // satisfies (and supersedes) the bare-Rule-ID requirement.
+              policyRuleId = found.policyRuleId;
+              ticket = found;
+            }
             if (via === 'POLICY' && !policyRuleId) {
               return json(res, 400, {
                 error: 'policyRuleId is required when via is POLICY (§17.2: a pre-authorization records its triggering policy and Rule ID)',
@@ -871,11 +1014,24 @@ const server = createServer(async (req, res) => {
                 ? b['assigneeAgentId']
                 : undefined;
             const t = tasks.dispatch(id, { assigneeAgentId });
+            if (ticket) {
+              fdb.authorizationTickets.recordConsumption(ticket.id, {
+                taskId: id,
+                action: TICKET_ACTION_DISPATCH,
+                consumedBy: actor,
+              });
+              audit.record(actor, 'AUTHORIZATION_TICKET_CONSUMED', 'authorization_ticket', ticket.id, {
+                ticketId: ticket.id,
+                taskId: id,
+                policyRuleId: ticket.policyRuleId,
+              });
+            }
             audit.record(actor, 'TASK_DISPATCHED', 'task', id, {
               from,
               to: t.authorizationStatus,
               via,
               ...(policyRuleId ? { policyRuleId } : {}),
+              ...(ticket ? { ticketId: ticket.id } : {}),
               ...(assigneeAgentId ? { assigneeAgentId } : {}),
             });
             return json(res, 200, { from, to: t.authorizationStatus, task: taskView(id) });
@@ -977,15 +1133,109 @@ const server = createServer(async (req, res) => {
         }
         const b = await readBody(req);
         if (!b['title']) return json(res, 400, { error: 'title is required' });
+        // §17.4 (Batch 18, G-11) — the Scope Checker's real
+        // consumption point: a subtask proposal is judged against
+        // its ROOT's recorded authorization scope before anything is
+        // created. The check runs only when the caller actually
+        // proposes scope-bearing fields (relation / authorization /
+        // ceiling / budget / ACs / requirement pin) — a plain
+        // title-only creation keeps the pre-existing behaviour
+        // exactly, and plain inheritance inside createSubtask can
+        // never violate. A refused proposal creates nothing, and the
+        // refusal is audited with the structured violations.
+        const strArr = (v: unknown): string[] | undefined =>
+          Array.isArray(v) && v.every((e) => typeof e === 'string')
+            ? (v as string[])
+            : undefined;
+        const relation =
+          typeof b['relation'] === 'string' ? b['relation'] : undefined;
+        const rawAuthorization =
+          typeof b['authorizationStatus'] === 'string'
+            ? b['authorizationStatus']
+            : undefined;
+        if (
+          rawAuthorization !== undefined &&
+          !(
+            ['DRAFT', 'WAITING_HUMAN_DISPATCH', 'AUTHORIZED'] as string[]
+          ).includes(rawAuthorization)
+        ) {
+          return json(res, 400, {
+            error:
+              'authorizationStatus at creation must be DRAFT|WAITING_HUMAN_DISPATCH|AUTHORIZED (REVOKED/EXPIRED are reached through the §17.2 transitions, or inherited from a dead root)',
+          });
+        }
+        const requestedAuthorization = rawAuthorization as
+          | InitialTaskAuthorizationStatus
+          | undefined;
+        const policyCeiling = strArr(b['policyCeiling']);
+        const acceptanceCriteria = strArr(b['acceptanceCriteria']);
+        const budgetEnvelope =
+          typeof b['budgetEnvelope'] === 'object' &&
+          b['budgetEnvelope'] !== null &&
+          !Array.isArray(b['budgetEnvelope']) &&
+          Object.values(b['budgetEnvelope'] as Record<string, unknown>).every(
+            (v) => typeof v === 'number' && Number.isFinite(v),
+          )
+            ? (b['budgetEnvelope'] as Record<string, number>)
+            : undefined;
+        const requirementRef =
+          typeof b['requirementRef'] === 'string' ? b['requirementRef'] : undefined;
+        const proposesScope =
+          relation !== undefined ||
+          requestedAuthorization !== undefined ||
+          policyCeiling !== undefined ||
+          budgetEnvelope !== undefined ||
+          acceptanceCriteria !== undefined ||
+          requirementRef !== undefined;
         try {
+          if (proposesScope) {
+            const scope = checkSubtaskScope((tid) => tasks.get(tid), id, {
+              relation,
+              authorizationStatus: requestedAuthorization,
+              policyCeiling,
+              budgetEnvelope,
+              acceptanceCriteria,
+              requirementRef,
+            });
+            if (!scope.ok) {
+              audit.record('human', 'TASK_SUBTASK_SCOPE_REJECTED', 'task', id, {
+                parentTaskId: id,
+                rootTaskId: scope.rootTaskId,
+                violations: scope.violations,
+              });
+              return json(res, 422, {
+                error: 'subtask proposal is outside the root authorization scope (§17.4)',
+                code: 'TASK_SCOPE_VIOLATION',
+                rootTaskId: scope.rootTaskId,
+                violations: scope.violations,
+              });
+            }
+          }
           const sub = tasks.createSubtask(id, {
             title: String(b['title']),
             goal: String(b['goal'] ?? ''),
             priority: (b['priority'] as 'P0' | 'P1' | 'P2' | 'P3' | 'P4') ?? 'P2',
+            ...(relation !== undefined ? { parentRelation: relation } : {}),
+            ...(requestedAuthorization !== undefined
+              ? { authorizationStatus: requestedAuthorization }
+              : {}),
+            ...(policyCeiling !== undefined ? { policyCeiling } : {}),
+            ...(budgetEnvelope !== undefined ? { budgetEnvelope } : {}),
+            ...(acceptanceCriteria !== undefined ? { acceptanceCriteria } : {}),
+            ...(requirementRef !== undefined ? { requirementRef } : {}),
           });
           audit.record('human', 'TASK_CREATED', 'task', sub.id, { title: sub.title, parent: id });
           return json(res, 201, sub);
         } catch (e) {
+          // createSubtask re-enforces the same rules for programmatic
+          // callers; surface its refusal as the same 422 shape.
+          if (e instanceof ScopeViolationError) {
+            return json(res, 422, {
+              error: (e as Error).message,
+              code: 'TASK_SCOPE_VIOLATION',
+              violations: e.violations,
+            });
+          }
           return json(res, 404, { error: (e as Error).message });
         }
       }
@@ -1077,4 +1327,12 @@ server.listen(PORT, HOST, () => {
         RUNTIME_TOOL_ALLOWLIST.join(', '),
     );
   }
+  console.log(
+    `[ai-factory] Secret broker (§46.2): backend=${secretBrokerSetup.backend}, ` +
+      `chain=${secretBrokerSetup.chain.join(' → ')}` +
+      (secretBrokerSetup.vaultPath ? `, vault=${secretBrokerSetup.vaultPath}` : '') +
+      (secretBrokerSetup.backend === 'memory'
+        ? ' — EPHEMERAL session: secrets die with this process (explicitly configured)'
+        : ''),
+  );
 });

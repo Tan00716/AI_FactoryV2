@@ -10,6 +10,7 @@ import { CreateTaskModal } from './components/CreateTaskModal';
 import { GitPanel, createGitApi } from './components/GitPanel';
 import { QaPanel, createQaApi } from './components/QaPanel';
 import { ApprovalsPanel } from './components/ApprovalsPanel';
+import { DispatchPanel } from './components/DispatchPanel';
 import { CicdPanel, createCicdApi } from './components/CicdPanel';
 import { SkillsPanel, createSkillsApi } from './components/SkillsPanel';
 import { MemoryPanel, createMemoryApi } from './components/MemoryPanel';
@@ -54,7 +55,7 @@ export default function App() {
   /** Batch 15: API identity label for the top bar (role / local mode /
    *  unknown when whoami cannot be fetched — displayed as-is, never guessed). */
   const [apiIdentityLabel, setApiIdentityLabel] = useState('');
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   const [bootError, setBootError] = useState('');
   const [qaTaskId, setQaTaskId] = useState<string | null>(null);
@@ -127,7 +128,7 @@ export default function App() {
         <main className="center">
           {bootError && <div className="banner err">{bootError}</div>}
           <div className="center-tabs">
-            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models'] as const).map((t) => (
+            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models'] as const).map((t) => (
               <button key={t} className={centerTab === t ? 'active' : ''} onClick={() => setCenterTab(t)}>{t}</button>
             ))}
           </div>
@@ -170,6 +171,8 @@ export default function App() {
             </div>
           ) : centerTab === 'Approvals' ? (
             <ApprovalsPanel />
+          ) : centerTab === 'Dispatch' ? (
+            <DispatchPanel />
           ) : centerTab === 'CI/CD' ? (
             <CicdPanel taskId={qaTaskId} cicd={cicdApi} />
           ) : centerTab === 'Skills' ? (

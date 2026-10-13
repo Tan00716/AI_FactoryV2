@@ -18,6 +18,7 @@
 export * from './types';
 export * from './workflow';
 export * from './tasks';
+export * from './scope';
 export * from './evidence';
 export * from './agents';
 export * from './audit';
