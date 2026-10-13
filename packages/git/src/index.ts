@@ -34,6 +34,7 @@ export {
   type MergeCandidateVerifier,
   type MergeQueueHooks,
   type MergeQueueOptions,
+  type MergeQueueEntryPersistence,
 } from './mergeQueue';
 export {
   taskBranchName,
@@ -52,6 +53,7 @@ export {
   mergeEvidencePayload,
   changeEvidenceFields,
   PrStore,
+  type PrStoreApi,
   type PrStatus,
   type PrRecord,
   type CreatePrInput,

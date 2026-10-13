@@ -46,7 +46,11 @@
  * candidate answers 409 with the entry, exactly like the direct
  * merge's conflict answer). GET /api/git/merge-queue?repo= lists a
  * repo's entries; GET /api/git/merge-queue/:id fetches one entry.
- * Queue state is in-process, consistent with the PrStore it consumes.
+ * Queue entries and PR records are durable since Batch 20
+ * (ctx.fdb.mergeQueueEntries / ctx.fdb.prStore): every mutation is
+ * written through the moment it happens, so a restart rebuilds the
+ * queue via hydrate() — VERIFYING rows come back QUEUED for honest
+ * re-verification, MERGED/FAILED rows stay as history.
  */
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
@@ -62,7 +66,6 @@ import {
   defaultBranchProtection,
   codeChangeEvidencePayload,
   mergeEvidencePayload,
-  PrStore,
   type GitAction,
   type GitBrokerContext,
 } from '@ai-factory/git';
@@ -73,21 +76,58 @@ import {
   projectIdOfTask,
 } from './project-guard';
 
-/** In-memory PR records for the prototype (module-level, per spec task 9). */
-const prs = new PrStore();
-
 const protection = defaultBranchProtection();
 
-/** Per-repo merge queues (module-level, in-process like `prs`). */
+/**
+ * Per-repo merge queues (module-level). Batch 20 — durable: the queue
+ * writes every mutation through ctx.fdb.mergeQueueEntries the moment it
+ * happens, and hydrate() rebuilds it from the DB on first use in this
+ * process, so a restart loses nothing. PR records come from the durable
+ * ctx.fdb.prStore for the same reason.
+ */
 const mergeQueues = new Map<string, MergeQueue>();
 
-function mergeQueueFor(repo: string): MergeQueue {
+function mergeQueueFor(ctx: RouteContext, repo: string): MergeQueue {
   let queue = mergeQueues.get(repo);
   if (!queue) {
-    queue = new MergeQueue(repo, { prs });
+    queue = new MergeQueue(repo, {
+      prs: ctx.fdb.prStore,
+      persistence: ctx.fdb.mergeQueueEntries,
+      audit: (action, details) => {
+        ctx.audit.record('system', action, 'git', repo, details);
+      },
+    });
+    queue.hydrate();
     mergeQueues.set(repo, queue);
   }
   return queue;
+}
+
+/** Terminal merge-queue decision events (each carries entryId in details). */
+const MERGE_QUEUE_DECISION_EVENTS = new Set([
+  'GIT_MERGE_QUEUE_MERGED',
+  'GIT_MERGE_QUEUE_FAILED',
+]);
+
+/**
+ * The audit-log id of an entry's terminal decision event — the
+ * decisionAuditRef the durable entry stores. The queue audits every
+ * decision with the entryId in details; the newest matching event wins.
+ * Null when the host never resolved it (the decision stays auditable
+ * by entryId either way).
+ */
+function decisionAuditId(ctx: RouteContext, entryId: string): string | null {
+  const records = ctx.audit.list();
+  for (let i = records.length - 1; i >= 0; i--) {
+    const r = records[i];
+    if (
+      MERGE_QUEUE_DECISION_EVENTS.has(r.action) &&
+      (r.details as Record<string, unknown> | undefined)?.['entryId'] === entryId
+    ) {
+      return r.id;
+    }
+  }
+  return null;
 }
 
 /** Env that tightens the git broker allowlist (comma-separated actions). */
@@ -239,8 +279,10 @@ export async function handleGitRoutes(
     if (method === 'GET' && path === '/api/git/merge-queue') {
       const repo = str(url.searchParams.get('repo'));
       if (!repo) return ctx.json(res, 400, { error: 'repo query param is required' }), true;
-      const queue = mergeQueues.get(repo);
-      return ctx.json(res, 200, { repo, entries: queue ? queue.list() : [] }), true;
+      // Hydrating accessor (not the raw Map): after a restart this is
+      // what brings the durable history back into view.
+      const queue = mergeQueueFor(ctx, repo);
+      return ctx.json(res, 200, { repo, entries: queue.list() }), true;
     }
 
     const mqEntryMatch = path.match(/^\/api\/git\/merge-queue\/([^/]+)$/);
@@ -365,7 +407,7 @@ export async function handleGitRoutes(
           true
         );
       }
-      const pr = prs.create({
+      const pr = ctx.fdb.prStore.create({
         taskId,
         sourceBranch,
         targetBranch,
@@ -393,7 +435,7 @@ export async function handleGitRoutes(
       const actor = str(b['actor']) ?? 'human';
       let pr;
       try {
-        pr = prs.get(prMergeMatch[1]);
+        pr = ctx.fdb.prStore.get(prMergeMatch[1]);
       } catch (e) {
         return ctx.json(res, 404, { error: (e as Error).message }), true;
       }
@@ -427,7 +469,7 @@ export async function handleGitRoutes(
           true
         );
       }
-      const merged = prs.updateStatus(pr.id, 'MERGED');
+      const merged = ctx.fdb.prStore.updateStatus(pr.id, 'MERGED');
       ctx.audit.record(actor, 'GIT_PR_MERGED', 'pr', pr.id, {
         repo,
         taskId: pr.taskId,
@@ -461,7 +503,7 @@ export async function handleGitRoutes(
       const actor = str(b['actor']) ?? 'human';
       let pr;
       try {
-        pr = prs.get(prId);
+        pr = ctx.fdb.prStore.get(prId);
       } catch (e) {
         return ctx.json(res, 404, { error: (e as Error).message }), true;
       }
@@ -486,7 +528,7 @@ export async function handleGitRoutes(
         })
       )
         return true;
-      const queue = mergeQueueFor(repo);
+      const queue = mergeQueueFor(ctx, repo);
       let entry;
       try {
         entry = queue.enqueue(pr, actor);
@@ -515,7 +557,14 @@ export async function handleGitRoutes(
           }
         },
       });
-      const mine = processed.find((e) => e.id === entry.id) ?? queue.get(entry.id);
+      // Resolve each processed entry's decision audit reference: the
+      // terminal decision events are already in the audit log keyed by
+      // entryId; the newest match is the reference the durable row keeps.
+      for (const e of processed) {
+        const ref = decisionAuditId(ctx, e.id);
+        if (ref) queue.setDecisionAuditRef(e.id, ref);
+      }
+      const mine = queue.get(entry.id);
       if (mine && mine.status === 'FAILED') {
         return (
           ctx.json(res, 409, {

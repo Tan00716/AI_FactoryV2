@@ -30,10 +30,11 @@
  * frame parser so the Authorization header keeps working (EventSource
  * cannot send headers).
  *
- * Sessions are process-local (like the merge queue / PrStore): a
- * restart drops them; closed sessions leave a bounded archive record,
- * not a resumable terminal. Idle sessions (>30 min) are reaped on
- * create/list.
+ * Sessions are process-local: a restart drops them; closed sessions
+ * leave a bounded archive record, not a resumable terminal. Idle
+ * sessions (>30 min) are reaped on create/list. (The merge queue and
+ * PrStore were process-local too, until Batch 20 made them durable —
+ * sessions have no such backing yet.)
  *
  * Wired into apps/server/src/index.ts by the coordinator:
  *   import { handleTerminalRoutes } from './routes/terminal';

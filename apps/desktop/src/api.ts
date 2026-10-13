@@ -127,6 +127,20 @@ export interface DispatchTicket {
   [k: string]: unknown;
 }
 
+/** §29.3 管理页签用：GET /api/approvals?status=PENDING 的行（服务端 §23.3
+ *  Approval 的本面子集；缺失字段不编造）。 */
+export interface QueueApproval {
+  approval_id: string;
+  action?: string;
+  task_id?: string;
+  status?: string;
+  requester?: string;
+  required_approvers?: string[];
+  risk_level?: string;
+  deadline?: string | null;
+  [k: string]: unknown;
+}
+
 /** §87 — full AI employee record from GET /api/agents. */
 export interface AgentFull {
   id: string; name: string; displayName: string; jobTitle: string; department: string;
@@ -294,7 +308,7 @@ export interface FinalReport {
 /** 备份列表项（GET /api/backups 的 manifest 摘要）。 */
 export interface BackupSummary {
   backupId: string;
-  kind: 'manual' | 'pre-restore';
+  kind: 'manual' | 'pre-restore' | 'scheduled';
   createdAt: string;
   appVersion: string;
   tables: Record<string, number>;
@@ -449,7 +463,12 @@ export function identityLabel(w: ApiIdentity): string {
 }
 
 export const api = {
-  health: () => req<{ ok: boolean }>('/health'),
+  /** /api/health 的真实形状（服务端原样）：outbox.pending 是聚合
+   *  阶段走查可直接用的计数；多余字段本面不读。 */
+  health: () =>
+    req<{ ok: boolean; outbox?: { store?: string; pending?: number }; [k: string]: unknown }>(
+      '/health',
+    ),
   /** 当前 API 身份（角色展示用）；失败时 req 抛错，调用方显示未知。 */
   whoami: () => req<ApiIdentity>('/auth/whoami'),
   projects: () => req<Project[]>('/projects'),
@@ -509,6 +528,9 @@ export const api = {
    *  端点未就绪（404）是面板要如实呈现的状态，不是异常。 */
   dispatchTickets: () =>
     reqWithStatus<{ tickets?: DispatchTicket[] } | DispatchTicket[]>('/authorization-tickets'),
+  /** §29.3 管理页签用：待审批队列（GET /api/approvals?status=PENDING）。
+   *  宽松只读形状：只呈现服务端实际给出的字段。 */
+  approvalsQueue: () => reqWithStatus<QueueApproval[]>('/approvals?status=PENDING'),
   attachEvidence: (id: string, input: { type: string; title: string; payload?: object }) =>
     req<EvidenceItem>(`/tasks/${id}/evidence`, { method: 'POST', body: JSON.stringify(input) }),
   agents: () => req<AgentFull[]>('/agents'),

@@ -140,6 +140,7 @@ import { handleActivityRoutes } from './routes/activity';
 import {
   applyPendingRestore,
   backupDirPath,
+  createBackup,
   handleBackupRoutes,
   initBackupService,
   listBackupManifests,
@@ -147,6 +148,12 @@ import {
   stagedRestoreBackupId,
 } from './routes/backup';
 import { handleRetentionRoutes } from './routes/retention';
+import {
+  backupScheduler,
+  handleBackupScheduleRoutes,
+  initBackupScheduler,
+  TICK_MS,
+} from './routes/backup-scheduler';
 import { handleAuthorizationTicketRoutes } from './routes/authorization-tickets';
 import { EventBus } from '@ai-factory/events';
 import {
@@ -398,6 +405,33 @@ setRuntimeCheckpointLog(checkpointLog);
  * server takes traffic like the other coordinator wirings above.
  */
 initBackupService(resolveBackupConfig(DB_PATH));
+
+/**
+ * Backup schedules (§47, Batch 20) — the in-process scheduler runs
+ * the same createBackup() the manual endpoint uses, on a 30s tick.
+ * Schedules are durable rows: boot() reconciles plans whose slot
+ * passed while the process was down, marking them MISSED (audited,
+ * never backfilled).
+ */
+initBackupScheduler({
+  schedules: fdb.backupSchedules,
+  audit: {
+    record: (actor, event, entityType, entityId, details) =>
+      audit.record(actor, event, entityType, entityId, details),
+  },
+  runBackup: () => createBackup(fdb, 'scheduled'),
+});
+backupScheduler().boot();
+const backupSchedulerTimer = setInterval(() => {
+  try {
+    backupScheduler().tick();
+  } catch (e) {
+    // A tick must never take the process down; the per-schedule
+    // failures are already recorded on their rows.
+    console.error('backup scheduler tick failed:', (e as Error).message);
+  }
+}, TICK_MS);
+if (typeof backupSchedulerTimer.unref === 'function') backupSchedulerTimer.unref();
 
 /**
  * Startup reconcile (§28.2): every non-terminal operation in the DB
@@ -704,6 +738,7 @@ const server = createServer(async (req, res) => {
     if (await handleEventRoutes(req, res, url, routeCtx)) return;
     if (await handleActivityRoutes(req, res, url, routeCtx)) return;
     if (await handleBackupRoutes(req, res, url, routeCtx)) return;
+    if (await handleBackupScheduleRoutes(req, res, url, routeCtx)) return;
     if (await handleRetentionRoutes(req, res, url, routeCtx)) return;
     if (await handleAuthorizationTicketRoutes(req, res, url, routeCtx)) return;
 

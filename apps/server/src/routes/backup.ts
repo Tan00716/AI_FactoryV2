@@ -68,7 +68,7 @@ export interface BackupManifestFile {
 export interface BackupManifest {
   format: string;
   backupId: string;
-  kind: 'manual' | 'pre-restore';
+  kind: 'manual' | 'pre-restore' | 'scheduled';
   createdAt: string;
   appVersion: string;
   sourceDbFile: string;
@@ -125,12 +125,14 @@ export function resolveBackupConfig(dbPath: string): BackupServiceConfig {
 
 // ------------------------------------------------------------- internals --
 
-function newBackupId(kind: 'manual' | 'pre-restore'): string {
+function newBackupId(kind: 'manual' | 'pre-restore' | 'scheduled'): string {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const rand = Math.floor(Math.random() * 0xffffff)
     .toString(16)
     .padStart(6, '0');
-  return `${kind === 'pre-restore' ? 'pre-restore' : 'backup'}-${ts}-${rand}`;
+  const prefix =
+    kind === 'pre-restore' ? 'pre-restore' : kind === 'scheduled' ? 'scheduled' : 'backup';
+  return `${prefix}-${ts}-${rand}`;
 }
 
 function sha256File(file: string): { bytes: number; sha256: string } {
@@ -175,10 +177,13 @@ function inspectSnapshot(file: string): {
   }
 }
 
-/** Create a backup of the live database. Used by the route AND restore. */
+/**
+ * Create a backup of the live database. Used by the manual route, the
+ * restore safety net, and the Batch 20 backup scheduler ('scheduled').
+ */
 export function createBackup(
   fdb: FactoryDatabase,
-  kind: 'manual' | 'pre-restore',
+  kind: 'manual' | 'pre-restore' | 'scheduled',
 ): { backupId: string; dir: string; manifest: BackupManifest } {
   const cfg = svc();
   const backupId = newBackupId(kind);

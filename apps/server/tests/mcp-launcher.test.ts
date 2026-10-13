@@ -17,10 +17,10 @@
  *    reality); a NEW launch resolves the rotated value.
  *
  * The HTTP surface (/api/mcp/launch) is covered for RBAC
- * classification only (requiredRoleFor) — the full HTTP install flow
- * cannot reach INSTALLED for a freshly registered server (default
- * approval policy is BLOCKED with no HTTP trust-assessment surface;
- * that is a pre-existing §46 gap, not something this batch invents).
+ * classification only (requiredRoleFor) at this level — the full HTTP
+ * trust chain (register BLOCKED -> /trust/approve -> install ->
+ * launch, plus deny/revoke) is exercised end to end in
+ * mcp-trust.test.ts (Batch 20 closed the §46 trust-approval gap).
  * Imports mcp-launcher.ts from src; @ai-factory/* resolve to dist, so
  * this test runs after the package build like the other src tests.
  */

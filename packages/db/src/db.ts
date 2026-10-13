@@ -29,7 +29,9 @@ import { SqliteRunManifestStore } from './run-manifests';
 import { SqliteTaskV2StateStore } from './task-v2-state';
 import { SqliteOutboxStore } from './outbox';
 import { SqliteRetentionStore } from './retention';
+import { SqliteBackupScheduleStore } from './backup-schedules';
 import { SqliteAuthorizationTicketStore } from './authorization-tickets';
+import { SqliteMergeQueueEntryStore, SqlitePrStore } from './merge-queue';
 import { SqliteDeploymentStore } from './deployments';
 import { SqliteWorktreeStore } from './worktrees';
 
@@ -479,6 +481,23 @@ export class SqliteAuditStore implements AuditStore {
  * missing columns are added (see migrateMemoryTable). Pre-v2 rows read
  * back with secure defaults (internal classification, empty ACL).
  */
+/**
+ * Batch 20 — retention_policies gains keep_count (keep newest N
+ * backups regardless of age). Existing databases are migrated in
+ * place: only the missing column is added.
+ */
+export function migrateRetentionTable(db: DatabaseSync): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(retention_policies)').all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
+  if (!cols.has('keep_count')) {
+    db.exec(`ALTER TABLE retention_policies ADD COLUMN keep_count INTEGER`);
+  }
+}
+
 export function migrateMemoryTable(db: DatabaseSync): void {
   const cols = new Set(
     (db.prepare('PRAGMA table_info(memory_entries)').all() as { name: string }[]).map(
@@ -749,6 +768,12 @@ export class FactoryDatabase {
    */
   readonly retention: SqliteRetentionStore;
   /**
+   * Batch 20 — backup schedules (§47): operator-configured backup
+   * plans the server's in-process scheduler executes; durable so a
+   * restart loses nothing (reconciled at boot).
+   */
+  readonly backupSchedules: SqliteBackupScheduleStore;
+  /**
    * §18.2 (G-17) / §48.4 (Batch 17) — durable workflow outbox; the
    * OutboxSink the server wires into WorkflowEngineV2, so every
    * committed v2 stage change appends its event to outbox_events in
@@ -778,6 +803,20 @@ export class FactoryDatabase {
    * globally unique, RELEASED rows retained as history.
    */
   readonly worktrees: SqliteWorktreeStore;
+  /**
+   * §36 (Batch 20) — durable PR records: the PRs the merge queue
+   * consumes were in-memory like the queue itself; a restarted server
+   * must still find the PR an entry points at.
+   */
+  readonly prStore: SqlitePrStore;
+  /**
+   * §36 (Batch 20) — durable merge-queue entry backing: every queue
+   * mutation is written through here the moment it happens, so
+   * MergeQueue.hydrate() rebuilds the queue after a restart instead of
+   * losing it. VERIFYING rows are demoted to QUEUED on hydrate (never
+   * trusted); MERGED/FAILED rows are history.
+   */
+  readonly mergeQueueEntries: SqliteMergeQueueEntryStore;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -791,6 +830,7 @@ export class FactoryDatabase {
     migrateMemoryTable(this.db);
     migrateEvidenceTable(this.db);
     migrateAuditTable(this.db);
+    migrateRetentionTable(this.db);
     this.tasks = new SqliteTaskStore(this.db);
     this.evidence = new SqliteEvidenceStore(this.db);
     this.agents = new SqliteAgentStore(this.db);
@@ -806,9 +846,12 @@ export class FactoryDatabase {
     this.taskV2States = new SqliteTaskV2StateStore(this.db);
     this.outbox = new SqliteOutboxStore(this.db);
     this.retention = new SqliteRetentionStore(this.db);
+    this.backupSchedules = new SqliteBackupScheduleStore(this.db);
     this.authorizationTickets = new SqliteAuthorizationTicketStore(this.db);
     this.deployments = new SqliteDeploymentStore(this.db);
     this.worktrees = new SqliteWorktreeStore(this.db);
+    this.prStore = new SqlitePrStore(this.db);
+    this.mergeQueueEntries = new SqliteMergeQueueEntryStore(this.db);
   }
 
   // -- projects -------------------------------------------------------------

@@ -8,11 +8,22 @@
  *   POST /api/mcp/remove                 {name, version}
  *   POST /api/mcp/gate                   {server, version?, tool, agentId?, taskId?, callerPermissions?}
  *   GET  /api/mcp/usage?server=
+ *   GET  /api/mcp/servers/:id/trust            trust evaluation query
+ *   POST /api/mcp/servers/:id/trust/approve    BLOCKED -> policy (admin)
+ *   POST /api/mcp/servers/:id/trust/deny       record a denial, stays BLOCKED (admin)
+ *   POST /api/mcp/servers/:id/trust/revoke     policy -> BLOCKED + uninstall + stop running (admin)
  *
  * Unknown sources default to BLOCKED (§73). An install that needs review
  * returns 202 with the pending-review descriptor; re-issue /review after
- * a human (or AI reviewer) decides. Every install/review/remove/gate call
- * writes an audit record.
+ * a human (or AI reviewer) decides. Every install/review/remove/gate/trust
+ * call writes an audit record.
+ *
+ * Trust flow (Batch 20, §46): the trustLevel/approvalPolicy state and
+ * McpManager.assessTrust live in @ai-factory/mcp; the HTTP state machine
+ * here is the route layer's — approving, denying or revoking trust is
+ * admin-only, illegal transitions are 409, and the launch endpoint
+ * refuses BLOCKED servers with a pointer to /trust/approve instead of
+ * a dead end (that dead end was a KNOWN_LIMITATIONS entry until now).
  *
  * The coordinator wires this in: handleMcpRoutes(req, res, url, ctx).
  * PROTOTYPE NOTE: registry is in-memory (lost on restart).
@@ -71,6 +82,57 @@ function summarize(name: string, version: string) {
     health: server?.health
       ? { overall: server.health.overall, checkedAt: server.health.checkedAt, failureClass: server.health.failureClass ?? null }
       : null,
+  };
+}
+
+const TRUST_LEVELS = ['UNKNOWN', 'LOW', 'MEDIUM', 'HIGH', 'VERIFIED'] as const;
+const APPROVABLE_POLICIES = ['AUTO', 'AI_REVIEW', 'HUMAN_APPROVAL'] as const;
+
+/** Parse a trust-endpoint :id of the form name@version (split on the last '@'). */
+function parseTrustServerId(id: string): { name: string; version: string } | null {
+  const at = id.lastIndexOf('@');
+  if (at <= 0 || at === id.length - 1) return null;
+  return { name: id.slice(0, at), version: id.slice(at + 1) };
+}
+
+/** The honest trust presentation for GET /api/mcp/servers/:id/trust. */
+function trustView(name: string, version: string) {
+  const server = registry.get(name, version)!;
+  const install = manager.getInstall(name, version);
+  const installStatus = install?.status ?? 'REGISTERED';
+  const enabled = manager.isEnabled(name, version);
+  const launchable =
+    installStatus === 'INSTALLED' && enabled &&
+    server.approvalPolicy !== 'BLOCKED' && server.transport === 'stdio';
+  const id = `${name}@${version}`;
+  const nextSteps: string[] = [];
+  if (server.approvalPolicy === 'BLOCKED') {
+    nextSteps.push(`POST /api/mcp/servers/${id}/trust/approve (admin) to approve, or /trust/deny to record a denial`);
+    nextSteps.push('then POST /api/mcp/install');
+  } else if (installStatus !== 'INSTALLED') {
+    nextSteps.push('POST /api/mcp/install');
+    if (server.approvalPolicy !== 'AUTO') {
+      nextSteps.push('POST /api/mcp/review {approved:true} after it returns PENDING_REVIEW');
+    }
+  } else if (!enabled) {
+    nextSteps.push('server is installed but disabled');
+  } else if (server.transport !== 'stdio') {
+    nextSteps.push('only stdio servers can be launched via POST /api/mcp/launch');
+  } else {
+    nextSteps.push('POST /api/mcp/launch');
+  }
+  return {
+    name,
+    version,
+    trustLevel: server.trustLevel,
+    approvalPolicy: server.approvalPolicy,
+    // The package's recorded assessment, or null when the server has
+    // never been assessed — not an implicit "fine".
+    assessment: manager.getAssessment(name, version) ?? null,
+    installStatus,
+    enabled,
+    launchable,
+    nextSteps,
   };
 }
 
@@ -176,6 +238,142 @@ export async function handleMcpRoutes(
     return ctx.json(res, 200, { ok: removed }), true;
   }
 
+  // ---- trust / approval flow (Batch 20, §46) ----
+  // :id is `name@version` (split on the last '@'). Trust state lives on
+  // the registration (trustLevel/approvalPolicy, §34.1 metadata); the
+  // state machine enforced here:
+  //
+  //   BLOCKED --approve(trustLevel, policy in AUTO|AI_REVIEW|HUMAN_APPROVAL)--> policy
+  //   BLOCKED --deny(reason)--> BLOCKED (stays; the denial is recorded)
+  //   policy  --revoke(reason)--> BLOCKED + uninstall + stop running launches
+  //
+  // §34.3 re-approval triggers (scope expansion, version change,
+  // executable change) are served by the registry default: a NEW
+  // version registers as BLOCKED and must be approved again — approving
+  // one version never bleeds trust into another.
+  const trustMatch = path.match(/^\/api\/mcp\/servers\/([^/]+)\/trust(\/(approve|deny|revoke))?$/);
+  if (trustMatch && (method === 'GET' || method === 'POST')) {
+    const parsed = parseTrustServerId(trustMatch[1]);
+    if (!parsed) {
+      return ctx.json(res, 400, { error: 'server id must be name@version' }), true;
+    }
+    const { name, version } = parsed;
+    const id = `${name}@${version}`;
+    const action = trustMatch[3] as 'approve' | 'deny' | 'revoke' | undefined;
+    const server = registry.get(name, version);
+    if (!server) {
+      return ctx.json(res, 404, { error: `mcp server ${id} is not registered` }), true;
+    }
+    if (method === 'GET' && !action) {
+      return ctx.json(res, 200, trustView(name, version)), true;
+    }
+    if (method === 'GET') {
+      return ctx.json(res, 405, { error: 'use POST for trust approve/deny/revoke' }), true;
+    }
+    const body = await ctx.readBody(req);
+    const reviewer = typeof body['reviewer'] === 'string' ? body['reviewer'] : 'human';
+
+    // POST /api/mcp/servers/:id/trust/approve — admin.
+    // Body: {trustLevel, approvalPolicy, basis?, reviewer?}.
+    if (action === 'approve') {
+      const trustLevel = body['trustLevel'];
+      const policy = body['approvalPolicy'];
+      if (typeof trustLevel !== 'string' || !(TRUST_LEVELS as readonly string[]).includes(trustLevel)) {
+        return ctx.json(res, 400, { error: `trustLevel must be one of ${TRUST_LEVELS.join('|')}` }), true;
+      }
+      if (policy === 'BLOCKED') {
+        return ctx.json(res, 400, { error: 'approving to BLOCKED is a deny — use /trust/deny instead' }), true;
+      }
+      if (typeof policy !== 'string' || !(APPROVABLE_POLICIES as readonly string[]).includes(policy)) {
+        return ctx.json(res, 400, { error: `approvalPolicy must be one of ${APPROVABLE_POLICIES.join('|')}` }), true;
+      }
+      if (server.approvalPolicy !== 'BLOCKED') {
+        ctx.audit.record(reviewer, 'MCP_TRUST_TRANSITION_DENIED', 'mcp_server', id, {
+          reason: 'ALREADY_APPROVED', currentPolicy: server.approvalPolicy,
+        });
+        return ctx.json(res, 409, {
+          error: `cannot approve ${id}: approval policy is already ${server.approvalPolicy} (only BLOCKED can be approved)`,
+          code: 'MCP_TRUST_TRANSITION',
+          currentPolicy: server.approvalPolicy,
+        }), true;
+      }
+      const from = { trustLevel: server.trustLevel, approvalPolicy: server.approvalPolicy };
+      const basis = typeof body['basis'] === 'string' ? body['basis'] : undefined;
+      manager.assessTrust(name, version, {
+        trustLevel: trustLevel as (typeof TRUST_LEVELS)[number],
+        approvalPolicy: policy as (typeof APPROVABLE_POLICIES)[number],
+        assessedBy: reviewer, notes: basis,
+      });
+      ctx.audit.record(reviewer, 'MCP_TRUST_APPROVED', 'mcp_server', id, {
+        from, to: { trustLevel, approvalPolicy: policy }, basis: basis ?? null,
+      });
+      return ctx.json(res, 200, {
+        ...trustView(name, version),
+        message: `approved — next: POST /api/mcp/install${policy === 'AUTO' ? ' (AUTO installs immediately)' : ' then /api/mcp/review after PENDING_REVIEW'}`,
+      }), true;
+    }
+
+    // POST /api/mcp/servers/:id/trust/deny — admin.
+    // Body: {reason?, reviewer?}. Records the decision; the server stays BLOCKED.
+    if (action === 'deny') {
+      if (server.approvalPolicy !== 'BLOCKED') {
+        ctx.audit.record(reviewer, 'MCP_TRUST_TRANSITION_DENIED', 'mcp_server', id, {
+          reason: 'NOT_BLOCKED', currentPolicy: server.approvalPolicy,
+        });
+        return ctx.json(res, 409, {
+          error: `cannot deny ${id}: approval policy is ${server.approvalPolicy} (only a BLOCKED server can be denied)`,
+          code: 'MCP_TRUST_TRANSITION',
+          currentPolicy: server.approvalPolicy,
+        }), true;
+      }
+      const reason = typeof body['reason'] === 'string' ? body['reason'] : undefined;
+      manager.assessTrust(name, version, {
+        trustLevel: server.trustLevel, approvalPolicy: 'BLOCKED',
+        assessedBy: reviewer, notes: reason,
+      });
+      ctx.audit.record(reviewer, 'MCP_TRUST_DENIED', 'mcp_server', id, { reason: reason ?? null });
+      return ctx.json(res, 200, { ...trustView(name, version), denied: true }), true;
+    }
+
+    // POST /api/mcp/servers/:id/trust/revoke — admin.
+    // Body: {reason?, reviewer?}. Drops trust, uninstalls, and stops
+    // running launches of this server. The forced stop is a deliberate
+    // local decision, not a spec MUST: §34.3 says untrusted code must
+    // not execute, and a revoked server is no longer trusted to run at
+    // all — unlike secret rotation (Batch 19), where the code stays
+    // trusted and long-lived connections are left alone with a
+    // staleness annotation.
+    const reason = typeof body['reason'] === 'string' ? body['reason'] : undefined;
+    if (server.approvalPolicy === 'BLOCKED') {
+      ctx.audit.record(reviewer, 'MCP_TRUST_TRANSITION_DENIED', 'mcp_server', id, {
+        reason: 'ALREADY_BLOCKED',
+      });
+      return ctx.json(res, 409, {
+        error: `cannot revoke ${id}: approval policy is already BLOCKED`,
+        code: 'MCP_TRUST_TRANSITION',
+        currentPolicy: 'BLOCKED',
+      }), true;
+    }
+    const from = { trustLevel: server.trustLevel, approvalPolicy: server.approvalPolicy };
+    manager.assessTrust(name, version, {
+      trustLevel: 'LOW', approvalPolicy: 'BLOCKED', assessedBy: reviewer, notes: reason,
+    });
+    const uninstalled = manager.uninstall(name, version);
+    let stoppedLaunches = 0;
+    for (const rec of launcher.list()) {
+      if (rec.server === name && rec.version === version && rec.alive) {
+        if (launcher.stop(rec.id, reviewer, ctx.audit)) stoppedLaunches++;
+      }
+    }
+    ctx.audit.record(reviewer, 'MCP_TRUST_REVOKED', 'mcp_server', id, {
+      reason: reason ?? null, from, stoppedLaunches, uninstalled,
+    });
+    return ctx.json(res, 200, { ...trustView(name, version), stoppedLaunches }), true;
+  }
+  if (trustMatch) {
+    return ctx.json(res, 405, { error: 'trust endpoints accept GET (query) and POST (actions) only' }), true;
+  }
+
   // ---- stdio launch with secret injection (Batch 19, §46.2) ----
   // POST /api/mcp/launch — admin. Body: {name, version, command,
   // args?, cwd?, secretEnv?: {ENV_VAR: "secret-name"}}.
@@ -195,6 +393,15 @@ export async function handleMcpRoutes(
     const server = registry.get(name, version);
     if (!server) {
       return ctx.json(res, 404, { error: `mcp server ${name}@${version} is not registered` }), true;
+    }
+    // Batch 20 (§46): a BLOCKED server can never be installed, so the
+    // launcher's generic precondition message would be a dead end.
+    // Point at the trust endpoint instead.
+    if (server.approvalPolicy === 'BLOCKED') {
+      return ctx.json(res, 403, {
+        error: `refusing to launch ${name}@${version}: approval policy BLOCKED (trust ${server.trustLevel}) — no install can proceed while BLOCKED; approve it first via POST /api/mcp/servers/${name}@${version}/trust/approve (admin), or record a denial via /trust/deny`,
+        code: 'MCP_TRUST_NOT_APPROVED',
+      }), true;
     }
     const actor = typeof body['requestedBy'] === 'string' ? body['requestedBy'] : 'human';
     try {

@@ -69,6 +69,11 @@ export interface RetentionPolicy {
   category: RetentionCategory;
   /** Days to keep; null = keep forever (unset or explicitly cleared). */
   retentionDays: number | null;
+  /**
+   * Batch 20 — keep newest N regardless of age; null = no count
+   * limit. Only the 'backups' category evaluates this column.
+   */
+  keepCount: number | null;
   updatedAt: string | null;
   updatedBy: string | null;
 }
@@ -130,12 +135,26 @@ export class SqliteRetentionStore {
       .prepare('SELECT * FROM retention_policies WHERE category = ?')
       .get(category) as Record<string, unknown> | undefined;
     if (!r) {
-      return { category, retentionDays: null, updatedAt: null, updatedBy: null };
+      return {
+        category,
+        retentionDays: null,
+        keepCount: null,
+        updatedAt: null,
+        updatedBy: null,
+      };
     }
     return {
       category,
       retentionDays:
         r['retention_days'] === null ? null : Number(r['retention_days']),
+      // Rows from a not-yet-migrated DB have no keep_count column —
+      // the SELECT would throw, so migrateRetentionTable runs at
+      // open; this branch only guards a NULL value, never a missing
+      // column.
+      keepCount:
+        r['keep_count'] === null || r['keep_count'] === undefined
+          ? null
+          : Number(r['keep_count']),
       updatedAt: r['updated_at'] as string,
       updatedBy: r['updated_by'] as string,
     };
@@ -145,23 +164,30 @@ export class SqliteRetentionStore {
     return RETENTION_CATEGORIES.map((c) => this.getPolicy(c));
   }
 
-  /** retentionDays null or 0 both mean keep-forever; stored verbatim. */
+  /**
+   * retentionDays null or 0 both mean keep-forever; stored verbatim.
+   * keepCount (Batch 20) is the backups-only "keep newest N" axis;
+   * the server route rejects it for other categories, so this store
+   * simply persists it.
+   */
   setPolicy(
     category: RetentionCategory,
     retentionDays: number | null,
     actor: string,
     nowIso: string,
+    keepCount: number | null = null,
   ): RetentionPolicy {
     this.db
       .prepare(
-        `INSERT INTO retention_policies (category, retention_days, updated_at, updated_by)
-         VALUES (?,?,?,?)
+        `INSERT INTO retention_policies (category, retention_days, keep_count, updated_at, updated_by)
+         VALUES (?,?,?,?,?)
          ON CONFLICT(category) DO UPDATE SET
            retention_days = excluded.retention_days,
+           keep_count = excluded.keep_count,
            updated_at = excluded.updated_at,
            updated_by = excluded.updated_by`,
       )
-      .run(category, retentionDays, nowIso, actor);
+      .run(category, retentionDays, keepCount, nowIso, actor);
     return this.getPolicy(category);
   }
 

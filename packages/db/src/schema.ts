@@ -469,6 +469,9 @@ CREATE TABLE IF NOT EXISTS task_v2_state (
 CREATE TABLE IF NOT EXISTS retention_policies (
   category TEXT PRIMARY KEY,
   retention_days INTEGER,
+  -- Batch 20: keep newest N backups regardless of age (only the
+  -- 'backups' category evaluates this column; NULL = no count limit).
+  keep_count INTEGER,
   updated_at TEXT NOT NULL,
   updated_by TEXT NOT NULL
 );
@@ -484,6 +487,25 @@ CREATE TABLE IF NOT EXISTS legal_holds (
 );
 CREATE INDEX IF NOT EXISTS idx_legal_holds_active
   ON legal_holds (released_at);
+-- Backup schedules (Batch 20): operator-configured backup plans the
+-- server's in-process scheduler executes. schedule_kind is 'interval'
+-- (interval_ms, floor 60s) or 'cron' (5-field cron_expr, minute/hour/
+-- day-of-month/month/day-of-week). next_run_at is the next planned
+-- execution in ISO time; the scheduler advances it after every run and
+-- marks missed executions MISSED on boot (no backfill).
+CREATE TABLE IF NOT EXISTS backup_schedules (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  schedule_kind TEXT NOT NULL,
+  interval_ms INTEGER,
+  cron_expr TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at TEXT,
+  last_status TEXT,
+  next_run_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL
+);
 -- Retention tombstones (Batch 15): when retention enforcement deletes
 -- a runtime_runs row, the run → project resolution its leftover step
 -- intents / checkpoints relied on disappears with it, and §47 would
@@ -568,4 +590,52 @@ CREATE TABLE IF NOT EXISTS deployments (
   rehydrated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_deployments_pipeline ON deployments (pipeline_id);
+
+-- Merge Queue + PR persistence — §36 (Batch 20). The queue in
+-- @ai-factory/git is operational in memory but writes every mutation
+-- through here the moment it happens; hydrate() rebuilds it after a
+-- restart. VERIFYING rows come back QUEUED (re-verified, never trusted);
+-- MERGED/FAILED rows are history. One PR may hold at most one ACTIVE
+-- (QUEUED/VERIFYING) entry — the partial unique index below makes
+-- cross-process double-enqueue impossible even when two processes
+-- race past the queue's in-memory check.
+CREATE TABLE IF NOT EXISTS pull_requests (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  source_branch TEXT NOT NULL,
+  target_branch TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'OPEN',
+  commits TEXT NOT NULL DEFAULT '[]',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  merged_at TEXT
+);
+CREATE TABLE IF NOT EXISTS merge_queue_entries (
+  id TEXT PRIMARY KEY,
+  repo_path TEXT NOT NULL,
+  pr_id TEXT NOT NULL,
+  task_id TEXT NOT NULL DEFAULT '',
+  source_branch TEXT NOT NULL,
+  target_branch TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'QUEUED',
+  position INTEGER NOT NULL,
+  enqueued_by TEXT NOT NULL DEFAULT '',
+  enqueued_at TEXT NOT NULL,
+  processed_at TEXT,
+  base_sha TEXT,
+  candidate_sha TEXT,
+  candidate_tree_oid TEXT,
+  target_sha TEXT,
+  diff_hash TEXT,
+  artifact_digest TEXT,
+  verification TEXT,
+  failure_reason TEXT,
+  merge_commit_sha TEXT,
+  decision_audit_ref TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS merge_queue_active_pr
+  ON merge_queue_entries(pr_id) WHERE status IN ('QUEUED','VERIFYING');
+CREATE INDEX IF NOT EXISTS idx_merge_queue_repo
+  ON merge_queue_entries(repo_path, position);
 `;

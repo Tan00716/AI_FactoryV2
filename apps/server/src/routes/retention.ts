@@ -96,6 +96,11 @@ interface CategoryReport {
   category: RetentionCategory;
   /** Effective policy in days; null = keep forever. */
   retentionDays: number | null;
+  /**
+   * Batch 20 — backups only: keep newest N regardless of age;
+   * null = no count limit.
+   */
+  keepCount: number | null;
   candidates: number;
   sampleIds: string[];
   heldExempt: number;
@@ -118,9 +123,7 @@ function effectiveDays(days: number | null): number | null {
 
 function evaluateAll(ctx: RouteContext, now: Date): EvaluationReport {
   const store = ctx.fdb.retention;
-  const policies = new Map(
-    store.listPolicies().map((p) => [p.category, p.retentionDays]),
-  );
+  const policies = new Map(store.listPolicies().map((p) => [p.category, p]));
   const holds = store.activeHolds();
   const anyHold = holds.length > 0;
   const nowMs = now.getTime();
@@ -128,11 +131,23 @@ function evaluateAll(ctx: RouteContext, now: Date): EvaluationReport {
   const candidateIds: EvaluationReport['_candidateIds'] = {};
 
   for (const category of RETENTION_CATEGORIES) {
-    const days = effectiveDays(policies.get(category) ?? null);
-    if (days === null) {
+    const policy = policies.get(category);
+    const days = effectiveDays(policy?.retentionDays ?? null);
+    // Batch 20 — the count axis exists only for backups; the PUT
+    // route rejects it for other categories, so a non-null value
+    // here always belongs to 'backups'.
+    const keepCount =
+      category === 'backups' &&
+      policy?.keepCount !== null &&
+      policy?.keepCount !== undefined &&
+      policy.keepCount > 0
+        ? policy.keepCount
+        : null;
+    if (days === null && keepCount === null) {
       categories.push({
         category,
-        retentionDays: policies.get(category) ?? null,
+        retentionDays: policy?.retentionDays ?? null,
+        keepCount: null,
         candidates: 0,
         sampleIds: [],
         heldExempt: 0,
@@ -141,7 +156,7 @@ function evaluateAll(ctx: RouteContext, now: Date): EvaluationReport {
       });
       continue;
     }
-    const cutoffMs = nowMs - days * DAY_MS;
+    const cutoffMs = days === null ? 0 : nowMs - days * DAY_MS;
     const cutoffIso = new Date(cutoffMs).toISOString();
 
     if (category === 'backups') {
@@ -153,6 +168,7 @@ function evaluateAll(ctx: RouteContext, now: Date): EvaluationReport {
         categories.push({
           category,
           retentionDays: days,
+          keepCount,
           candidates: 0,
           sampleIds: [],
           heldExempt: 0,
@@ -163,13 +179,25 @@ function evaluateAll(ctx: RouteContext, now: Date): EvaluationReport {
       }
       // Whole-database snapshots: ANY active hold exempts every
       // backup, and the staged-restore snapshot is exempt outright.
+      // Deletion axes (Batch 20): a backup is a candidate when it is
+      // BOTH (a) older than the days policy (if set) and (b) beyond
+      // the newest keepCount (if set) — OR semantics across the two
+      // axes, hold exemption applied last and absolutely.
       const staged = access.stagedRestoreBackupId();
+      const manifests = [...access.list()].sort((a, b) =>
+        b.createdAt.localeCompare(a.createdAt),
+      );
+      const overCount = new Set<string>();
+      if (keepCount !== null) {
+        for (const m of manifests.slice(keepCount)) overCount.add(m.backupId);
+      }
       let candidates = 0;
       let held = 0;
       const sampleIds: string[] = [];
       const ids: string[] = [];
-      for (const m of access.list()) {
-        if (m.createdAt >= cutoffIso) continue; // not expired
+      for (const m of manifests) {
+        const expiredByDays = days !== null && m.createdAt < cutoffIso;
+        if (!expiredByDays && !overCount.has(m.backupId)) continue;
         if (anyHold || m.backupId === staged) {
           held++;
           continue;
@@ -179,16 +207,24 @@ function evaluateAll(ctx: RouteContext, now: Date): EvaluationReport {
         if (sampleIds.length < SAMPLE_LIMIT) sampleIds.push(m.backupId);
       }
       candidateIds[category] = ids;
+      const notes: string[] = [];
+      if (anyHold) {
+        notes.push(
+          'backups are whole-database snapshots: any active legal hold exempts all of them',
+        );
+      }
+      if (keepCount !== null) {
+        notes.push(`keeping newest ${keepCount} backup(s) regardless of age`);
+      }
       categories.push({
         category,
         retentionDays: days,
+        keepCount,
         candidates,
         sampleIds,
         heldExempt: held,
         unknownRefExempt: 0,
-        note: anyHold
-          ? 'backups are whole-database snapshots: any active legal hold exempts all of them'
-          : undefined,
+        note: notes.length > 0 ? notes.join('; ') : undefined,
       });
       continue;
     }
@@ -203,6 +239,7 @@ function evaluateAll(ctx: RouteContext, now: Date): EvaluationReport {
     categories.push({
       category,
       retentionDays: days,
+      keepCount: null,
       candidates: ev.candidates.length,
       sampleIds: ev.candidates.slice(0, SAMPLE_LIMIT),
       heldExempt: ev.heldExempt,
@@ -258,12 +295,17 @@ export async function handleRetentionRoutes(
     const policies = b['policies'];
     if (!policies || typeof policies !== 'object' || Array.isArray(policies)) {
       json(res, 400, {
-        error: 'body must be { policies: { <category>: <days|null> } }',
+        error:
+          'body must be { policies: { <category>: <days|null> | { days, keepCount } } }',
       });
       return true;
     }
     const entries = Object.entries(policies as Record<string, unknown>);
-    for (const [category, days] of entries) {
+    // Batch 20 — per-category values accept the legacy <days|null>
+    // shape or { days, keepCount }; keepCount (keep newest N backups
+    // regardless of age) is only meaningful for 'backups'.
+    const parsed: { category: RetentionCategory; days: number | null; keepCount: number | null }[] = [];
+    for (const [category, value] of entries) {
       if (EXCLUDED_CATEGORIES.some((e) => e.category === category)) {
         json(res, 400, {
           error: `category '${category}' is excluded from retention and cannot be given a policy`,
@@ -274,6 +316,12 @@ export async function handleRetentionRoutes(
         json(res, 400, { error: `unknown retention category: ${category}` });
         return true;
       }
+      let days: unknown = value;
+      let keepCount: unknown = null;
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+        days = (value as Record<string, unknown>)['days'] ?? null;
+        keepCount = (value as Record<string, unknown>)['keepCount'] ?? null;
+      }
       if (
         days !== null &&
         (typeof days !== 'number' || !Number.isInteger(days) || days < 0)
@@ -283,20 +331,40 @@ export async function handleRetentionRoutes(
         });
         return true;
       }
+      if (
+        keepCount !== null &&
+        (typeof keepCount !== 'number' ||
+          !Number.isInteger(keepCount) ||
+          keepCount < 1)
+      ) {
+        json(res, 400, {
+          error: `keepCount for '${category}' must be a positive integer or null`,
+        });
+        return true;
+      }
+      if (keepCount !== null && category !== 'backups') {
+        json(res, 400, {
+          error: `keepCount is only supported for the 'backups' category`,
+        });
+        return true;
+      }
+      parsed.push({
+        category: category as RetentionCategory,
+        days: days as number | null,
+        keepCount: keepCount as number | null,
+      });
     }
     const actor = actorOf(b);
     const nowIso = new Date().toISOString();
-    const updated = entries.map(([category, days]) =>
-      store.setPolicy(
-        category as RetentionCategory,
-        days as number | null,
-        actor,
-        nowIso,
-      ),
+    const updated = parsed.map((p) =>
+      store.setPolicy(p.category, p.days, actor, nowIso, p.keepCount),
     );
     audit.record(actor, 'RETENTION_POLICY_UPDATED', 'retention_policy', 'policies', {
       policies: Object.fromEntries(
-        updated.map((u) => [u.category, u.retentionDays]),
+        updated.map((u) => [
+          u.category,
+          { retentionDays: u.retentionDays, keepCount: u.keepCount },
+        ]),
       ),
     });
     json(res, 200, { policies: store.listPolicies() });

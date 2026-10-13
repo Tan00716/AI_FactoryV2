@@ -109,8 +109,20 @@ export interface CreatePrInput {
   createdBy: string;
 }
 
+/**
+ * Structural PR-store contract. PrStore (in-memory) implements it;
+ * the durable SqlitePrStore in @ai-factory/db matches it structurally
+ * (no dependency edge from db to git), so MergeQueue accepts either.
+ */
+export interface PrStoreApi {
+  create(input: CreatePrInput): PrRecord;
+  get(id: string): PrRecord;
+  list(): PrRecord[];
+  updateStatus(id: string, status: PrStatus): PrRecord;
+}
+
 /** In-memory PR store (prototype; a real implementation persists via @ai-factory/db). */
-export class PrStore {
+export class PrStore implements PrStoreApi {
   private records = new Map<string, PrRecord>();
 
   create(input: CreatePrInput): PrRecord {

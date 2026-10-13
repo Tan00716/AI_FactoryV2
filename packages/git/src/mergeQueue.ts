@@ -27,12 +27,13 @@
  *      is the recorded choice: the queue's job is to keep verified
  *      work landing, and the failed PR stays OPEN for its author.)
  *
- * State is IN-PROCESS (a Map/array inside the instance), deliberately
- * consistent with PrStore — the PR records this queue consumes are
- * themselves in-memory in this codebase (see evidence.ts: "In-memory
- * PR store (prototype…)"). Queue entries are lost on restart exactly
- * like PR records are; no db table is invented ahead of the PR store's
- * own persistence.
+ * State is IN-PROCESS by default (an array inside the instance). With a
+ * MergeQueueEntryPersistence (Batch 20, @ai-factory/db), every mutation
+ * is written through the moment it happens and hydrate() rebuilds the
+ * queue after a restart: VERIFYING rows come back QUEUED (a verification
+ * that died mid-flight is re-run, never trusted), MERGED/FAILED rows
+ * are history. Without persistence the Batch 16 behavior stands: state
+ * is lost on restart.
  *
  * §36 also requires the current Candidate's Gate for a Protected
  * Branch Merge: on this path the candidate verification above IS that
@@ -42,7 +43,7 @@
 import { createHash } from 'crypto';
 import { randomUUID } from 'crypto';
 import { GitRepo, type GitAuditHook } from './git';
-import type { PrRecord, PrStore } from './evidence';
+import type { PrRecord, PrStoreApi } from './evidence';
 
 export type MergeQueueEntryStatus = 'QUEUED' | 'VERIFYING' | 'MERGED' | 'FAILED';
 
@@ -117,6 +118,32 @@ export interface MergeQueueEntry {
   failureReason: string | null;
   /** The merge commit sha when MERGED (== targetSha). */
   mergeCommitSha: string | null;
+  /**
+   * Audit-log id of the terminal decision event (GIT_MERGE_QUEUE_MERGED /
+   * GIT_MERGE_QUEUE_FAILED) for this entry. Filled by the host after the
+   * decision is audited — null when the host did not resolve it. The
+   * decision itself is always auditable by entryId without this field.
+   */
+  decisionAuditRef: string | null;
+}
+
+/**
+ * Durable backing for queue entries (Batch 20). The queue's operational
+ * state stays in memory, but every mutation is written through via save()
+ * the moment it happens, and hydrate() rebuilds the in-memory state from
+ * load() after a restart. The seam is synchronous: node:sqlite writes are
+ * sync, and the queue never wants a mutation to be "pending" across a
+ * crash — a VERIFYING row that never reached a terminal state is the
+ * honest crash evidence hydrate() demotes back to QUEUED.
+ *
+ * Implementations must reject a second ACTIVE (QUEUED/VERIFYING) row for
+ * the same prId — e.g. a partial unique index — so cross-process
+ * double-enqueue cannot slip past the queue's in-memory check.
+ */
+export interface MergeQueueEntryPersistence {
+  save(entry: MergeQueueEntry): void;
+  /** All entries for one repo, in enqueue (position) order. */
+  load(repo: string): MergeQueueEntry[];
 }
 
 /** Per-call hooks: hosts whose audit/evidence context is per-request
@@ -131,23 +158,33 @@ export interface MergeQueueHooks {
 export interface MergeQueueOptions extends MergeQueueHooks {
   /** PR store to read records from / mark MERGED in. Optional: without
    *  it the queue still verifies and merges branches, it just cannot
-   *  update PR records. */
-  prs?: PrStore;
+   *  update PR records. Accepts the in-memory PrStore or the durable
+   *  SqlitePrStore from @ai-factory/db (structural contract). */
+  prs?: PrStoreApi;
   /** Extra candidate verifier beyond conflict detection. */
   verify?: MergeCandidateVerifier;
   /** Label for the injected verifier's check. Default 'tests'. */
   verifierName?: string;
+  /**
+   * Durable entry backing (Batch 20). Without it the queue is exactly
+   * what Batch 16 shipped: in-process state, lost on restart. With it,
+   * call hydrate() once after construction to rebuild from load().
+   */
+  persistence?: MergeQueueEntryPersistence;
 }
 
 export class MergeQueue {
   /** Repository path this queue serializes merges for. */
   readonly repoPath: string;
   private readonly repo: GitRepo;
-  private readonly prs?: PrStore;
+  private readonly prs?: PrStoreApi;
   private readonly verify?: MergeCandidateVerifier;
   private readonly verifierName: string;
   private readonly hooks: MergeQueueHooks;
+  private readonly persistence?: MergeQueueEntryPersistence;
   private readonly entries: MergeQueueEntry[] = [];
+  /** Next enqueue position; advanced by hydrate() past restored rows. */
+  private nextPosition = 1;
   /** Serializes processing: drains chain onto this promise. */
   private tail: Promise<unknown> = Promise.resolve();
 
@@ -157,7 +194,79 @@ export class MergeQueue {
     this.prs = opts.prs;
     this.verify = opts.verify;
     this.verifierName = opts.verifierName ?? 'tests';
+    this.persistence = opts.persistence;
     this.hooks = { audit: opts.audit, onMerged: opts.onMerged };
+  }
+
+  /**
+   * Rebuild in-memory state from the durable backing after a restart
+   * (Batch 20). Honest crash semantics:
+   *  - QUEUED rows come back QUEUED (position preserved);
+   *  - VERIFYING rows come back QUEUED — the queue cannot pretend a
+   *    verification that died mid-flight completed; each demotion is
+   *    audited as MERGE_QUEUE_REHYDRATED and the entry is re-verified
+   *    from a freshly assembled candidate on the next process call
+   *    (the stored verification snapshot is display-only history);
+   *  - MERGED / FAILED rows are history: listed, never reprocessed.
+   * Idempotent: rows already present in memory are not duplicated.
+   */
+  hydrate(): void {
+    if (!this.persistence) return;
+    const rows = this.persistence.load(this.repoPath);
+    const known = new Set(this.entries.map((e) => e.id));
+    for (const row of rows) {
+      if (known.has(row.id)) continue;
+      const entry = structuredClone(row);
+      if (entry.position >= this.nextPosition) {
+        this.nextPosition = entry.position + 1;
+      }
+      if (entry.status === 'VERIFYING') {
+        entry.status = 'QUEUED';
+        this.persist(entry);
+        this.hooks.audit?.('MERGE_QUEUE_REHYDRATED', {
+          repo: this.repoPath,
+          entryId: entry.id,
+          prId: entry.prId,
+          taskId: entry.taskId,
+          fromStatus: 'VERIFYING',
+          toStatus: 'QUEUED',
+        });
+      }
+      this.entries.push(entry);
+      known.add(entry.id);
+    }
+  }
+
+  /**
+   * Write one entry's current state through to the durable backing.
+   * A duplicate-active-entry rejection from the backing (partial
+   * unique index) surfaces as the same domain error as the in-memory
+   * check, so cross-process double-enqueue answers identically.
+   */
+  private persist(entry: MergeQueueEntry): void {
+    if (!this.persistence) return;
+    try {
+      this.persistence.save(structuredClone(entry));
+    } catch (e) {
+      if (e instanceof Error && /UNIQUE constraint failed/i.test(e.message)) {
+        throw new Error(
+          `PR ${entry.prId} is already in the merge queue (entry ${entry.id})`,
+        );
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Record the audit-log id of this entry's terminal decision event.
+   * The host resolves it (the decision event is already audited with
+   * the entryId in its details); the queue only stores the reference.
+   */
+  setDecisionAuditRef(entryId: string, auditId: string): void {
+    const entry = this.entries.find((e) => e.id === entryId);
+    if (!entry) throw new Error(`merge queue entry not found: ${entryId}`);
+    entry.decisionAuditRef = auditId;
+    this.persist(entry);
   }
 
   /**
@@ -183,7 +292,7 @@ export class MergeQueue {
       sourceBranch: pr.sourceBranch,
       targetBranch: pr.targetBranch,
       status: 'QUEUED',
-      position: this.entries.length + 1,
+      position: this.nextPosition,
       enqueuedBy: actor,
       enqueuedAt: new Date().toISOString(),
       processedAt: null,
@@ -196,7 +305,15 @@ export class MergeQueue {
       verification: null,
       failureReason: null,
       mergeCommitSha: null,
+      decisionAuditRef: null,
     };
+    // Persist BEFORE the in-memory push: a cross-process duplicate is
+    // rejected by the backing's partial unique index and must surface
+    // as a 409, not as a row this process already believes it owns.
+    // nextPosition advances only on success, so a rejected duplicate
+    // does not burn a position number.
+    this.persist(entry);
+    this.nextPosition = entry.position + 1;
     this.entries.push(entry);
     this.hooks.audit?.('GIT_MERGE_QUEUE_ENQUEUED', {
       repo: this.repoPath,
@@ -269,6 +386,7 @@ export class MergeQueue {
       } satisfies PrRecord);
 
     entry.status = 'VERIFYING';
+    this.persist(entry);
     try {
       // --- assemble the candidate against the CURRENT target tip ---
       const baseSha = await this.repo.resolveRef(entry.targetBranch);
@@ -325,6 +443,10 @@ export class MergeQueue {
         conflicts: preview.conflicts,
         verifiedAt: new Date().toISOString(),
       };
+      // Written through BEFORE the verdict: a crash between verification
+      // and the terminal transition leaves VERIFYING, which hydrate()
+      // honestly demotes to QUEUED for a fresh re-verification.
+      this.persist(entry);
 
       const verified = preview.clean && verifierOk;
       if (!verified) {
@@ -334,6 +456,7 @@ export class MergeQueue {
           : `${this.verifierName} verification failed for merge candidate`;
         entry.diffHash = await this.proposedDiffHash(baseSha, candidateSha);
         entry.processedAt = new Date().toISOString();
+        this.persist(entry);
         audit?.('GIT_MERGE_QUEUE_FAILED', {
           repo: this.repoPath,
           entryId: entry.id,
@@ -362,6 +485,7 @@ export class MergeQueue {
           verifiedAt: entry.verification.verifiedAt,
         };
         entry.processedAt = new Date().toISOString();
+        this.persist(entry);
         audit?.('GIT_MERGE_QUEUE_FAILED', {
           repo: this.repoPath,
           entryId: entry.id,
@@ -383,6 +507,7 @@ export class MergeQueue {
       entry.status = 'MERGED';
       entry.processedAt = new Date().toISOString();
       if (this.prs) this.prs.updateStatus(entry.prId, 'MERGED');
+      this.persist(entry);
       audit?.('GIT_MERGE_QUEUE_MERGED', {
         repo: this.repoPath,
         entryId: entry.id,
@@ -398,6 +523,7 @@ export class MergeQueue {
       entry.status = 'FAILED';
       entry.failureReason = err instanceof Error ? err.message : String(err);
       entry.processedAt = new Date().toISOString();
+      this.persist(entry);
       audit?.('GIT_MERGE_QUEUE_FAILED', {
         repo: this.repoPath,
         entryId: entry.id,

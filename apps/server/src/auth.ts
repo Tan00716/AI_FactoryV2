@@ -367,6 +367,11 @@ export function requiredRoleFor(method: string, path: string): ApiRole | null {
   if (path === '/api/backup' && method === 'POST') return 'admin';
   if (path === '/api/restore' && method === 'POST') return 'admin';
   if (path === '/api/backups' || path.startsWith('/api/backups/')) return 'admin';
+  // Backup schedules (§47, Batch 20): creating a schedule creates
+  // backups on a timer — admin, like the backup surface itself.
+  if (path === '/api/backup/schedules' || path.startsWith('/api/backup/schedules/')) {
+    return method === 'GET' ? 'viewer' : 'admin';
+  }
   if (path === '/api/retention' || path.startsWith('/api/retention/')) {
     return method === 'GET' ? 'viewer' : 'admin';
   }
@@ -395,6 +400,12 @@ export function requiredRoleFor(method: string, path: string): ApiRole | null {
   if (path === '/api/mcp/launch' && method === 'POST') return 'admin';
   if (path.startsWith('/api/mcp/launches/') && path.endsWith('/stop') && method === 'POST') return 'admin';
   if ((path === '/api/mcp/launches' || path.startsWith('/api/mcp/launches/')) && method === 'GET') return 'viewer';
+  // MCP trust flow (§46, Batch 20): reading a trust evaluation is
+  // viewer, like the other metadata surfaces; approving, denying or
+  // revoking trust changes whether code may execute — admin.
+  if (path.startsWith('/api/mcp/servers/')) {
+    return method === 'GET' ? 'viewer' : 'admin';
+  }
   return method === 'GET' ? 'viewer' : 'operator';
 }
 
