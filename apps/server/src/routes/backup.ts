@@ -3,6 +3,8 @@
  *
  *   POST /api/backup            → create a backup of the factory database
  *   GET  /api/backups           → list backups (manifest summaries)
+ *     (each list item carries `backupId` — not `id` — plus kind,
+ *     createdAt, appVersion, tables, totalRows, bytes)
  *   POST /api/restore {backupId}→ validate + stage a restore
  *
  * Scope, stated plainly: the backup covers the factory DATABASE — the

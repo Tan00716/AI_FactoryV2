@@ -41,7 +41,7 @@ import {
   TaskManager,
 } from '@ai-factory/core';
 import type { Evidence, OutboxEvent } from '@ai-factory/core';
-import { FactoryDatabase } from '@ai-factory/db';
+import { FactoryDatabase, eventTypeOf } from '@ai-factory/db';
 import { RequirementManager } from '@ai-factory/requirements';
 import {
   createV2TransitionService,
@@ -343,12 +343,61 @@ describe('durable v2 outbox (§18.2/§48.4, Batch 17)', () => {
 
       const r = await call('GET', `/api/tasks/${taskId}/outbox`);
       assert.equal(r.status, 200);
-      const body = r.body as { taskId: string; events: OutboxEvent[] };
+      const body = r.body as {
+        taskId: string;
+        events: Array<OutboxEvent & { eventType: string }>;
+      };
       assert.equal(body.taskId, taskId);
-      assert.deepEqual(body.events, committed);
+      // Batch 22 (F7): the HTTP shape carries eventType, derived from
+      // the same rule as the outbox_events.event_type column.
+      assert.deepEqual(
+        body.events,
+        committed.map((e) => ({ ...e, eventType: eventTypeOf(e) })),
+      );
 
       const missing = await call('GET', '/api/tasks/no-such-task/outbox');
       assert.equal(missing.status, 404);
+      b.fdb.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('F7 (Batch 22): GET /outbox exposes the DB event vocabulary — finalize events read WORKFLOW_FINALIZED', async () => {
+    const { dir, file } = tmpDir();
+    try {
+      const w = makeWorld(file);
+      const taskId = newTask(w, 'f7 event vocabulary');
+      seedEvidence(w.evidence, taskId, PIN);
+      walk(w.service, taskId, WALK);
+      const done = w.service.complete(taskId, 'human', {});
+      assert.equal(done.ok, true, JSON.stringify(done));
+      w.fdb.close();
+
+      const b = makeWorld(file);
+      // NOTE: outboxView is asserted at the service level here, not
+      // through handleV2TransitionRoutes: the route uses a process-wide
+      // service singleton, which the earlier route-level test above has
+      // already bound to its (now deleted) world — a test-isolation
+      // artifact of the singleton, not of the product. The route handler
+      // passes outboxView's return value straight through (covered
+      // above), and the finalize vocabulary is what this test pins.
+      const body = b.service.outboxView(taskId);
+      assert.equal(body.taskId, taskId);
+      // 11 transitions + 1 finalize.
+      assert.equal(body.events.length, 12);
+      for (const e of body.events.slice(0, -1)) {
+        assert.equal(e.eventType, 'WORKFLOW_TRANSITIONED');
+      }
+      const last = body.events[body.events.length - 1];
+      assert.equal(last.intent, 'REQUEST_COMPLETE');
+      assert.equal(last.eventType, 'WORKFLOW_FINALIZED');
+      // The HTTP value matches the event_type column the DB actually wrote.
+      const rows = outboxRows(b.fdb, taskId);
+      assert.deepEqual(
+        body.events.map((e) => e.eventType),
+        rows.map((row) => row.event_type),
+      );
       b.fdb.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

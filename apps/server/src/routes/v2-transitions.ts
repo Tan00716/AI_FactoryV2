@@ -130,6 +130,7 @@ import type {
   WorkflowStage,
 } from '@ai-factory/core';
 import type { RequirementManager } from '@ai-factory/requirements';
+import { eventTypeOf } from '@ai-factory/db';
 import type { RouteContext } from './context';
 import { getRequirementManager } from './requirements';
 import {
@@ -492,9 +493,25 @@ export class V2TransitionService {
    * engine's drainOutbox contract. Throws for an unknown task (via
    * ensureSeeded), like stateView.
    */
-  outboxView(taskId: string): { taskId: string; events: OutboxEvent[] } {
+  outboxView(taskId: string): {
+    taskId: string;
+    events: Array<OutboxEvent & { eventType: string }>;
+  } {
     this.ensureSeeded(taskId);
-    return { taskId, events: this.engine.listOutbox(taskId) };
+    // Batch 22 (F7): the HTTP read surface used to return only the
+    // engine's OutboxEvent shape, while the DB vocabulary
+    // (WORKFLOW_TRANSITIONED / WORKFLOW_FINALIZED) lived only in the
+    // outbox_events.event_type column — which nothing ever read back.
+    // Each event now carries eventType, derived by the same eventTypeOf
+    // rule the column is written with: a deterministic projection of
+    // `intent`, not a second stored fact, so the HTTP value and the DB
+    // column cannot drift.
+    return {
+      taskId,
+      events: this.engine
+        .listOutbox(taskId)
+        .map((e) => ({ ...e, eventType: eventTypeOf(e) })),
+    };
   }
 
   /**

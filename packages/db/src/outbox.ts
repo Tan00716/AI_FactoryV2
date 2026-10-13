@@ -51,7 +51,20 @@ export interface OutboxStore extends OutboxSink {
   countPending(): number;
 }
 
-function eventTypeOf(event: OutboxEvent): string {
+/**
+ * The engine's audit vocabulary for an outbox fact — the value written
+ * to the outbox_events.event_type column (WORKFLOW_FINALIZED for the
+ * REQUEST_COMPLETE finalize event, WORKFLOW_TRANSITIONED otherwise).
+ *
+ * Exported (Batch 22) because the column was write-only: the store's
+ * read path returns core's StoredOutboxEvent (no event_type field) and
+ * the server's HTTP outbox view served the same engine shape, so no
+ * consumer could ever see the vocabulary. The server derives
+ * `eventType` on the HTTP response from this same function — it is a
+ * deterministic projection of `intent`, not a second stored fact, so
+ * the HTTP value and the DB column cannot drift apart.
+ */
+export function eventTypeOf(event: OutboxEvent): string {
   return event.intent === 'REQUEST_COMPLETE'
     ? 'WORKFLOW_FINALIZED'
     : 'WORKFLOW_TRANSITIONED';

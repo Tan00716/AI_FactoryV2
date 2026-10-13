@@ -5,6 +5,8 @@
  *   POST   /api/terminal/sessions            create a session
  *   GET    /api/terminal/sessions            list live sessions (+archive)
  *   GET    /api/terminal/sessions/:id/stream  SSE: terminal output stream
+ *     (output events carry base64 frames: {"b64": "<base64 utf-8 text>"};
+ *     'denied' and 'close' events carry plain JSON payloads)
  *   POST   /api/terminal/sessions/:id/input  write to the session's stdin
  *   POST   /api/terminal/sessions/:id/resize  live resize (SIGWINCH)
  *   DELETE /api/terminal/sessions/:id         close (whole-tree kill)

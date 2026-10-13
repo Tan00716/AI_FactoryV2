@@ -108,7 +108,7 @@ same tree.
 | W4 | `request-dispatch` → `dispatch` (`via: 'HUMAN'`) → same run request | `DRAFT → WAITING → AUTHORIZED`; run **202**, completes `COMPLETED` with a real `echo` `tool_result` |
 | W4b | requirement v1 + plan evidence pinned `REQ-001@1` → `v2-transition` to `PLANNING` | 200 — a genuine v2 engine commit, which is what feeds the outbox |
 | W5 | `GET /api/runtime/runs/:id/checkpoints[/latest]` | 200; checkpoints readable |
-| W6 | `GET /api/tasks/:id/outbox` | 200; persisted events with `to: 'PLANNING'` (engine shape — see F7) |
+| W6 | `GET /api/tasks/:id/outbox` | 200; persisted events with `to: 'PLANNING'` (engine shape + `eventType` since Batch 22 — see F7) |
 | W7 | `PUT /api/secrets/walksecret` → `GET` metadata → `POST /api/exec` with `secretEnv` | PUT/GET never carry the value; `printenv` output redacted (`***`), sentinel absent |
 | W8 | `POST /api/terminal/sessions` → `POST :id/input` → `GET :id/stream` (SSE) → `DELETE` | 201; `echo w21-terminal` output streamed back over SSE (base64 frames); session closed |
 | W9 | `POST /api/backup/schedules` (interval) → `POST :id/run` → `GET /api/backups` | 201; manual run produced a backup, listed |
@@ -154,3 +154,12 @@ only in the `outbox_events.event_type` column. An HTTP consumer
 cannot see the durable event type the DB stores. Harmless today
 (the engine shape carries the same facts), but the two surfaces
 should agree if the outbox gains external consumers.
+
+**F7 resolved (Batch 22).** `eventTypeOf` is now exported from
+`packages/db` (the single source of the rule the column is written
+with), and `V2TransitionService.outboxView` adds `eventType` to each
+HTTP event — a deterministic projection of `intent`, not a second
+stored fact, so the HTTP value and the DB column cannot drift.
+Pinned by tests at both layers (`packages/db/tests/outbox.test.ts`
+rule↔column agreement; `apps/server/tests/v2-outbox.test.ts` HTTP
+shape including the `WORKFLOW_FINALIZED` finalize event).

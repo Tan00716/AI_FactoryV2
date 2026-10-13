@@ -35,6 +35,7 @@ import {
   FactoryDatabase,
   InMemoryOutboxStore,
   SqliteOutboxStore,
+  eventTypeOf,
   type OutboxStore,
 } from '../src/index';
 import type { OutboxEvent } from '@ai-factory/core';
@@ -170,6 +171,48 @@ describe('outbox store (§18.2/§48.4, Batch 17)', () => {
       assert.equal(row['dispatched_at'], STAMP_ISO);
       raw.close();
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('eventTypeOf matches the event_type column written for each row (F7, Batch 22)', () => {
+    // The event_type column used to be write-only: nothing ever read it
+    // back, so HTTP consumers could not see the DB vocabulary. The
+    // exported eventTypeOf is the rule the column is written with; the
+    // server's HTTP outbox view derives eventType from it. Pin that the
+    // rule and the column agree for both vocabularies.
+    const { dir, file } = tmpDbFile();
+    const raw = new DatabaseSync(file);
+    try {
+      raw.exec(
+        `CREATE TABLE IF NOT EXISTS outbox_events (
+           event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL,
+           aggregate_id TEXT NOT NULL, occurred_at TEXT NOT NULL,
+           payload TEXT DEFAULT '{}', dispatched_at TEXT)`,
+      );
+      const store = new SqliteOutboxStore(raw);
+      const transitioned = ev('t-1', 'PLANNING', '2026-10-12T00:00:01.000Z');
+      const finalized = ev('t-1', 'DONE', '2026-10-12T00:00:02.000Z', 'REQUEST_COMPLETE');
+      const s1 = store.append(transitioned);
+      const s2 = store.append(finalized);
+      const rows = raw
+        .prepare('SELECT event_id, event_type, payload FROM outbox_events ORDER BY rowid')
+        .all() as unknown as Array<Record<string, string>>;
+      assert.equal(rows.length, 2);
+      assert.equal(rows[0]['event_id'], s1.id);
+      assert.equal(rows[1]['event_id'], s2.id);
+      assert.equal(eventTypeOf(transitioned), 'WORKFLOW_TRANSITIONED');
+      assert.equal(eventTypeOf(finalized), 'WORKFLOW_FINALIZED');
+      for (const row of rows) {
+        const payload = JSON.parse(row['payload']) as OutboxEvent;
+        assert.equal(
+          row['event_type'],
+          eventTypeOf(payload),
+          'stored column and the exported rule must agree',
+        );
+      }
+    } finally {
+      raw.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });

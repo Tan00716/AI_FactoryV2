@@ -227,9 +227,12 @@ describe('server runner: real execution', () => {
 
 describe('reachability matrix: all 16 builtins', () => {
   it('every builtin either runs or is loudly refused', async () => {
-    // The 8 definition-only builtins must DENY; the 3 server-wired run;
-    // the other 5 implemented-but-unwired FAIL loudly. Nothing may
-    // return a fake success or fall through silently.
+    // 7 of the 8 definition-only builtins must DENY at the gate
+    // (shell.execute is definition-only in the catalog but server-wired,
+    // so it passes the gate); the 3 server-wired run; the other 6
+    // implemented-but-unwired FAIL loudly. Nothing may return a fake
+    // success or fall through silently. (Batch 22-2 re-audit: 7/3/6,
+    // not 8/3/5.)
     const { createBuiltinToolRegistry } = await import('@ai-factory/tools');
     const catalog = createBuiltinToolRegistry();
     const defOnly = catalog.list().filter((t) => t.implementationStatus === 'definition-only');

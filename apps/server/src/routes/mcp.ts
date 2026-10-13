@@ -8,6 +8,7 @@
  *   POST /api/mcp/remove                 {name, version}
  *   POST /api/mcp/gate                   {server, version?, tool, agentId?, taskId?, callerPermissions?}
  *   GET  /api/mcp/usage?server=
+ *   POST /api/mcp/launch                {name, version} (+command/args/cwd/secretEnv); name and version are required (400 otherwise)
  *   GET  /api/mcp/servers/:id/trust            trust evaluation query
  *   POST /api/mcp/servers/:id/trust/approve    BLOCKED -> policy (admin)
  *   POST /api/mcp/servers/:id/trust/deny       record a denial, stays BLOCKED (admin)
