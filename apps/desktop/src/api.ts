@@ -337,9 +337,39 @@ export interface ProjectFilesRestoreResult {
   skipped: Array<{ projectId: string; name: string; reason: string }>;
   preRestoreDir: string;
 }
-/** 桌面端暂无 /api/needs-human 面板：§81 needsHuman 升级记录的
- *  detailJson.narrative 目前只在服务端测试与走查中覆盖，桌面 UI
- *  不读取该端点（无不一致，仅记录覆盖缺口）。 */
+/** §81 needs-human 升级记录（GET /api/needs-human[?status=] 的 items 行形状；
+ *  镜像服务端 NeedsHumanDbRecord；detailJson 为 JSON 字符串，narrative
+ *  在其中（Batch 44–45：诚实限定语活过持久化）。 */
+export interface NeedsHumanRecord {
+  id: string;
+  /** §81 触发器之一（ai-disagreement / budget-exceeded / repeated-failure /
+   *  high-risk-deployment / policy-violation / security-issue /
+   *  requirement-ambiguity / irrecoverable-env-error）。 */
+  reason: string;
+  reasonZh: string;
+  severity: 'medium' | 'high' | 'critical';
+  /** 触发来源，如 'authority-conflict:ac-...'。 */
+  source: string;
+  /** 具名人工接收者；system-raised 的为 null（服务端 coarse-grained
+   *  RBAC 无具名人工账号），requiredDeciderLevel 命名解决者需持有的级别。 */
+  recipient: string | null;
+  requiredDeciderLevel: string;
+  /** JSON 字符串；`narrative` 键为给人看的诚实限定语。 */
+  detailJson: string;
+  /** JSON 字符串（Record<string,string> 可追溯上下文）。 */
+  contextJson: string;
+  /** epoch ms。 */
+  raisedAt: number;
+  status: 'open' | 'acknowledged' | 'resolved';
+  resolvedAt: number | null;
+  resolvedBy: string | null;
+  resolution: string | null;
+}
+/** GET /api/needs-human[?status=] 的列表响应（viewer 角色）。 */
+export interface NeedsHumanListResponse {
+  items: NeedsHumanRecord[];
+  total: number;
+}
 /** 已排队待重启生效的恢复（GET /api/backups 的 pendingRestore）。 */
 export interface PendingRestore {
   backupId: string;
@@ -622,6 +652,12 @@ export const api = {
     req<ProjectFilesRestoreResult>(
       '/restore/project-files', { method: 'POST', body: JSON.stringify({ backupId }) },
     ),
+  /** Batch 50：§81 needs-human 升级记录（只读 viewer，NeedsHumanPanel 用）。
+   *  默认列 OPEN；status 可为 open|acknowledged|resolved（非法值服务端 400）。
+   *  只读 —— 解决动作走服务端 POST /api/needs-human/:id/resolve
+   * （operator），桌面故意不接写路径，不引入未经验证的写操作。 */
+  needsHuman: (status: 'open' | 'acknowledged' | 'resolved' = 'open') =>
+    req<NeedsHumanListResponse>(`/needs-human?status=${status}`),
   /** §28.3 某 run 的全部 checkpoint（按首次捕获顺序）。 */
   runCheckpoints: (runId: string) =>
     req<{ runId: string; checkpoints: CheckpointV2[] }>(

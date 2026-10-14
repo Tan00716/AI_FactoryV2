@@ -518,3 +518,46 @@ absence of a `value` key in the response, not string containment.
 `GET /api/audit` rows use `entityType`/`entityId` (mapped in
 `packages/db/src/db.ts`), not the snake_case DB column names. Adjusted
 the R4 assertions accordingly.
+
+## Walkthrough: §81 full-trigger sweep (Batch 50)
+
+Single `it`, pure HTTP, zero mocks, real compiled server over a fresh temp
+SQLite file (auth mode — `FACTORY_API_TOKENS=admin:…` — so the brute-force
+leg is reachable; every other call carries the admin Bearer). Hermetic:
+temp DB + temp `FACTORY_SECRETS_DIR`. Dual-mode: node builtins + fetch,
+zero src imports.
+
+| Leg | Trigger | How it is fired over HTTP | What the run asserts |
+|---|---|---|---|
+| S1 | security-issue | 10 × wrong Bearer on `POST` (back-to-back; no successful admin read between — a login clears the source counter) | exactly 1 OPEN, source `auth-bruteforce:<ip>`, narrative carries "counting fact … not a heuristic classification" |
+| S2 | policy-violation | same granter, 3 × `POST /api/workforce/employees` with empty `taskScope` → 403 | exactly 1 OPEN, source `policy-denial:<granter>`, narrative carries "The policy held on every attempt" |
+| S3 | requirement-ambiguity | 3 consecutive `POST /api/requirements/:id/ac-refinement` | exactly 1 OPEN, narrative carries "may be ambiguous" |
+| S4 | ai-disagreement | `mgr-a` ALLOW then `mgr-b` BLOCK on the same run target (same rank) → conflict OPEN | exactly 1 OPEN, narrative carries "the conflict is structural, not a judgment on either principal" |
+| S5 | high-risk-deployment | `POST /api/pipelines/:id/deploy` with no risk signals → assessRisk computes HIGH (unknown → strict) → parked at AWAITING_APPROVAL | exactly 1 OPEN, narrative carries "no deployment was executed — the gate held" |
+| S6 | budget-exceeded | `POST /api/runtime/runs` with `budgets: {maxSteps: 3}` → run FAILED / BUDGET_EXCEEDED (Batch 49 F14 deterministic trigger) | exactly 1 OPEN for the run, narrative carries "resource fact" |
+| S7 | repeated-failure | script with 4 × unknown-tool calls → stagnation → LOOP_STAGNATION → ESCALATED | exactly 1 OPEN for the run, narrative carries "retry budget was exhausted" |
+| S8 | irrecoverable-env-error | **honest negative control** — the server's HTTP surface has no input that can put a stagnation signature into ENV_ERROR_CODES, so the run asserts ZERO records for this reason (see F28) | the non-env stagnation from S7 produced exactly one upgrade record and nothing else |
+
+Final tally asserts the OPEN set is exactly the seven fired reasons and
+contains no `irrecoverable-env-error` row.
+
+Verified 1/1 three consecutive runs (~3.4 s each; 7 OPEN rows total).
+
+## Findings (§81 sweep)
+
+**F28 — Info (honest scope: 7/8 fire, the eighth is a pinned boundary).**
+The task assumed all eight triggers "might now be HTTP-reachable" after
+F14 closed the budget path. Verification says otherwise: no HTTP input on
+this server can produce an env-code stagnation signature (Batch 44/45
+boundary still holds — default stepFn masks tool codes, only echo/add are
+registered, StubAdapter never throws). The sweep asserts the negative
+boundary explicitly rather than faking a positive path. If a future batch
+adds an HTTP-reachable env signal, this leg is the place to flip S8 to
+positive.
+
+**F29 — Info (auth-mode walk hygiene).** The whole walk runs in auth mode;
+every call carries the admin Bearer. The brute-force leg must fire its 10
+bad requests back-to-back with no successful admin read between them (a
+login clears the source counter). Doing S1 first makes the ordering
+obvious; any later phase's admin reads only clear an already-spent
+counter.
