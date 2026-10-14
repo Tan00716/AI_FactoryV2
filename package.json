@@ -75,7 +75,8 @@
     "demo:e2e": "npm run build -w @ai-factory/db && npm run build -w @ai-factory/worktrees && npm run build -w @ai-factory/server && node --test apps/server/tests/first-run-walkthrough.test.ts",
     "demo:e2e-new": "npm run build -w @ai-factory/mcp && npm run build -w @ai-factory/db && npm run build -w @ai-factory/worktrees && npm run build -w @ai-factory/server && node --test apps/server/tests/first-run-walkthrough-b21.test.ts",
     "demo:e2e-v3": "npm run build -w @ai-factory/mcp && npm run build -w @ai-factory/tools && npm run build -w @ai-factory/db && npm run build -w @ai-factory/worktrees && npm run build -w @ai-factory/server && node --test apps/server/tests/first-run-walkthrough-b30.test.ts",
-    "demo:e2e-v4": "npm run build -w @ai-factory/mcp && npm run build -w @ai-factory/tools && npm run build -w @ai-factory/db && npm run build -w @ai-factory/worktrees && npm run build -w @ai-factory/employee-factory && npm run build -w @ai-factory/server && node --test apps/server/tests/first-run-walkthrough-b36.test.ts"
+    "demo:e2e-v4": "npm run build -w @ai-factory/mcp && npm run build -w @ai-factory/tools && npm run build -w @ai-factory/db && npm run build -w @ai-factory/worktrees && npm run build -w @ai-factory/employee-factory && npm run build -w @ai-factory/server && node --test apps/server/tests/first-run-walkthrough-b36.test.ts",
+    "demo:e2e-v5": "npm run build -w @ai-factory/mcp && npm run build -w @ai-factory/tools && npm run build -w @ai-factory/db && npm run build -w @ai-factory/worktrees && npm run build -w @ai-factory/employee-factory && npm run build -w @ai-factory/runtime && npm run build -w @ai-factory/cicd && npm run build -w @ai-factory/server && node --test apps/server/tests/first-run-walkthrough-b41.test.ts"
   },
   "version": "0.1.0",
   "workspaces": [

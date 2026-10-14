@@ -553,6 +553,14 @@ export class SqliteAuditStore implements AuditStore {
       rowToAuditRecord,
     );
   }
+  countByActorAction(actor: string, actions: readonly string[]): number {
+    if (actions.length === 0) return 0;
+    const placeholders = actions.map(() => '?').join(',');
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM audit_logs WHERE actor = ? AND action IN (${placeholders})`)
+      .get(actor, ...actions) as { n: number } | undefined;
+    return row?.n ?? 0;
+  }
 }
 
 // ---------------------------------------------------------------- memory ---

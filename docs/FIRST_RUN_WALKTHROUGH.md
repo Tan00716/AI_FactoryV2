@@ -261,3 +261,55 @@ The walkthrough's covering task scope was first written too narrow
 template requested six permissions — the server's 403 named exactly
 which permissions exceeded the scope. The error is the documentation:
 the scope contract is enforced, not approximated.
+
+## Walkthrough (fifth edition, Batch 41)
+
+`apps/server/tests/first-run-walkthrough-b41.test.ts` — the B37–B40
+chains, real server, temp DB, in-process legs against the real compiled
+packages (never mocks). Run with `npm run demo:e2e-v5`.
+v4 (B31–B36) remains the authority for the governance chains; v5 covers
+B37–B40 only.
+
+| Chain | What is walked | What the run asserts |
+|---|---|---|
+| M1 | in-process: `StdioMcpConnector.launch` + `performHandshake` against the real `@modelcontextprotocol/server-filesystem` (via `MCP_TEST_REAL_SERVER` or npx) | real initialize → negotiated version ∈ `CLIENT_PROTOCOL_VERSIONS`, `tools/list` non-empty with `read_text_file`, `tools/call` returns the real probe file content. No server in this environment → LOUD diagnostic skip of this leg only (the walkthrough continues), never a faked handshake |
+| S1 | `POST /api/projects` → task → `POST /api/git/pr` → `POST …/merge` → poll `GET /api/builds?prId=` → `GET /api/audit?limit=2000` | build lands `SUCCEEDED` with a real 64-hex §40 digest; the audit log shows `BUILD_SANDBOXED` (bwrap available) **or** `SANDBOX_UNAVAILABLE` (honest fallback) — environment-adaptive |
+| A1 | `GET /api/builds/:id` → read `attestationRef` file → `verifyDevAttestation`; in-process `attestationKeyFromEnv({})` | attestation verifies; subject digest == the build's real §40 digest; predicate plaintext `devOnly: true`; no key → `attestationKeyFromEnv()` is null (honest absence, no second boot needed) |
+| T1 | `POST /api/agents` → `POST /api/runtime/runs` (unknown-tool script) → `GET /api/needs-human?status=open`; `POST /api/pipelines` → `POST …/deploy` (PROD, no risk signals) → `GET /api/needs-human?status=open` | repeated-failure: run `ESCALATED`, upgrade `reason: 'repeated-failure'`, `recipient: null`, `requiredDeciderLevel: 'operator'`, `contextJson.reasonCode == 'LOOP_STAGNATION'` (machine code, not message). high-risk-deployment: PROD parks on approval, ticket `risk_level == 'HIGH'` (assessed, not hardcoded), upgrade `reason: 'high-risk-deployment'`, `recipient: null`, `requiredDeciderLevel: 'manager'`. budget-exceeded: honest skip (F14) |
+| E1 | in-process: `runCommandPipe(['/nonexistent-binary-…'])`, `assertSandboxAvailable('/nonexistent/bwrap-…')` | `MissingBinaryError`, `code == 'ENV_BINARY_MISSING'`; `SandboxUnavailableError`, `code == 'ENV_SANDBOX_UNAVAILABLE'` — real throws, no mocks |
+
+## Findings (fifth edition)
+
+**F14 — Medium (honest gap in HTTP reach, no product-code change).**
+`budget-exceeded` has no deterministic HTTP trigger: the runtime route's
+default stepFn returns `COMPLETE` at the first `EVALUATE`, so every HTTP
+run finishes in ~6 steps and can never reach `maxSteps: 40`. The emission
+code path (`buildRunUpgradeRecord`/`emitRunNeedsHuman`) is real and
+package-tested (`runner-reason-code.test.ts` 4/4); the walkthrough does
+not fake a trigger. If a future route lets callers stretch runs (custom
+step functions, pause/resume marathons), this leg should be re-walked.
+
+**F15 — Low (environment, no product-code change).**
+The M1 leg depends on reaching the npm registry (npx) or a local
+`MCP_TEST_REAL_SERVER`. In this environment the registry TLS fails
+(`_WRONG_VERSION_NUMBER` through the egress proxy), so the leg loud-skips
+with a diagnostic and the walkthrough continues. The skip contract mirrors
+`packages/mcp/tests/real-handshake.test.ts` (`serverNeverCameUp`); a live
+server that answers wrongly would be a real failure, not a skip.
+
+**F16 — Low (environment-adaptive assertion, no product-code change).**
+The S1 sandbox assertion accepts either `BUILD_SANDBOXED` or
+`SANDBOX_UNAVAILABLE` — availability is an environment property (bwrap
+installed + functional), not a test promise. In this environment bwrap is
+absent, so the honest fallback path is what the walkthrough exercises.
+
+**F17 — Info (walkthrough hygiene).**
+The attestation null path is pinned in-process (`attestationKeyFromEnv({})`
+→ null) instead of booting a second server without the key. The contract
+under test is the key-absent branch of the real function, not server
+startup behavior.
+
+**F18 — Info (edition scoping).**
+v5 deliberately does not re-walk the B31–B36 governance chains (v4's
+P1/B1/A1/D1/G1/R1/A2). Editions are cumulative across files, not
+replacements — `demo:e2e-v4` remains the authority for those chains.

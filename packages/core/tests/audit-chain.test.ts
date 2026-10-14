@@ -177,3 +177,25 @@ describe('audit hash chain (§32)', () => {
     assert.deepEqual(new AuditLog().verify(), { ok: true, verifiedCount: 0, legacyCount: 0 });
   });
 });
+
+describe('countByActorAction (Batch 41)', () => {
+  it('counts by actor and action set (memory impl)', () => {
+    const log = new AuditLog(new InMemoryAuditStore());
+    log.record('g1', 'RELATIVE_CEILING_DENIED', 'agent', 'e1');
+    log.record('g1', 'RELATIVE_CEILING_DENIED', 'agent', 'e2');
+    log.record('g1', 'TASK_SCOPE_CEILING_DENIED', 'agent', 'e3');
+    log.record('g2', 'RELATIVE_CEILING_DENIED', 'agent', 'e4');
+    log.record('g1', 'EMPLOYEE_CREATED', 'agent', 'e5');
+    assert.equal(
+      log.countByActorAction('g1', [
+        'RELATIVE_CEILING_DENIED',
+        'TASK_SCOPE_CEILING_DENIED',
+      ]),
+      3,
+    );
+    assert.equal(log.countByActorAction('g1', ['RELATIVE_CEILING_DENIED']), 2);
+    assert.equal(log.countByActorAction('g2', ['RELATIVE_CEILING_DENIED']), 1);
+    assert.equal(log.countByActorAction('nobody', ['RELATIVE_CEILING_DENIED']), 0);
+    assert.equal(log.countByActorAction('g1', []), 0);
+  });
+});

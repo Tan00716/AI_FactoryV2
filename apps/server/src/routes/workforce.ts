@@ -27,7 +27,13 @@ import {
   createEmployee,
   proposeChange,
 } from '@ai-factory/employee-factory';
-import type { FactoryPolicy } from '@ai-factory/employee-factory';
+import type {
+  FactoryPolicy,
+  RelativeCeilingDeniedIntent,
+  TaskScopeCeilingDeniedIntent,
+} from '@ai-factory/employee-factory';
+import { needsHuman } from '@ai-factory/autonomy';
+import type { NeedsHumanDbRecord } from '@ai-factory/db';
 import { OrganizationDesigner, SquadManager } from '@ai-factory/squads';
 import type { RouteContext } from './context';
 
@@ -129,28 +135,12 @@ export async function handleWorkforceRoutes(
           // 403 below (the package throws GovernanceError after the
           // sink runs). Both relative dimensions
           // (RELATIVE_CEILING_DENIED / TASK_SCOPE_CEILING_DENIED) enter
-          // the hash-chained audit with their distinguishing action.
-          audit: (intent) =>
-            ctx.audit.record(
-              intent.actor,
-              intent.action,
-              'agent',
-              intent.details.granterAgentId,
-              intent.action === 'RELATIVE_CEILING_DENIED'
-                ? {
-                    requestedTools: intent.details.requestedTools,
-                    requestedPermissions: intent.details.requestedPermissions,
-                    exceededTools: intent.details.exceededTools,
-                    exceededPermissions: intent.details.exceededPermissions,
-                  }
-                : {
-                    taskScope: intent.details.taskScope,
-                    requestedTools: intent.details.requestedTools,
-                    requestedPermissions: intent.details.requestedPermissions,
-                    exceededTools: intent.details.exceededTools,
-                    exceededPermissions: intent.details.exceededPermissions,
-                  },
-            ),
+          // the hash-chained audit with their distinguishing action, and
+          // repeated denials by the same granter feed the §81
+          // 'policy-violation' emission (Batch 41).
+          audit: (intent) => {
+            recordCeilingDenial(ctx, intent);
+          },
         },
       );
       ctx.audit.record(requestedBy, 'EMPLOYEE_CREATED', 'agent', agent.id, {
@@ -306,4 +296,227 @@ export async function handleWorkforceRoutes(
   }
 
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// §81 'policy-violation' emission (Batch 41).
+//
+// Honesty note — read before extending this: a single denial is the policy
+// WORKING, not a violation ("拒绝 ≠ 违规"). What is wired here is the
+// deterministic pattern "多次被拒绝仍尝试": N §8.2 ceiling denials by the
+// same granter, counted over the hash-chained audit (facts, not heuristics).
+// The emitted record honestly describes DENIED ATTEMPTS — the policy held
+// on every attempt and no elevation occurred — and asks a human to review
+// why the granter keeps attempting to exceed its grantable set (§5: AI
+// 不得提高自身/下属权限上限). This mirrors the 'repeated-failure'
+// precedent (Batch 38): LoopStagnation fires on N same-signature failures;
+// here the pattern is N same-granter ceiling denials. Emitting on a single
+// denial would be noise (the policy did its job); emitting on the pattern
+// is the exception the human needs to see.
+//
+// Scope: only the two audited §8.2 relative-ceiling denials feed this.
+// §19 absolute denials are throw-only (not audited) and structural
+// (parent linkage / limits), not authority-elevation attempts.
+
+/** §8.2 ceiling denial actions that feed the policy-violation emission. */
+export const POLICY_CEILING_DENIAL_ACTIONS = [
+  'RELATIVE_CEILING_DENIED',
+  'TASK_SCOPE_CEILING_DENIED',
+] as const;
+
+/**
+ * Ceiling denials by one granter that trigger a §81 'policy-violation'
+ * upgrade. Follows the stagnationLimit=3 precedent (Batch 38): an
+ * explicit, documented policy parameter, not a heuristic guess about
+ * content.
+ */
+export const POLICY_DENIAL_ESCALATION_THRESHOLD = 3;
+
+export type CeilingDenialIntent =
+  | RelativeCeilingDeniedIntent
+  | TaskScopeCeilingDeniedIntent;
+
+/**
+ * Record a §8.2 ceiling denial to the hash-chained audit, then evaluate
+ * the §81 'policy-violation' emission. Extracted from the createEmployee
+ * audit sink so tests can drive it without HTTP.
+ */
+export function recordCeilingDenial(
+  ctx: RouteContext,
+  intent: CeilingDenialIntent,
+): void {
+  ctx.audit.record(
+    intent.actor,
+    intent.action,
+    'agent',
+    intent.details.granterAgentId,
+    intent.action === 'RELATIVE_CEILING_DENIED'
+      ? {
+          requestedTools: intent.details.requestedTools,
+          requestedPermissions: intent.details.requestedPermissions,
+          exceededTools: intent.details.exceededTools,
+          exceededPermissions: intent.details.exceededPermissions,
+        }
+      : {
+          taskScope: intent.details.taskScope,
+          requestedTools: intent.details.requestedTools,
+          requestedPermissions: intent.details.requestedPermissions,
+          exceededTools: intent.details.exceededTools,
+          exceededPermissions: intent.details.exceededPermissions,
+        },
+  );
+  maybeEmitPolicyViolationUpgrade(ctx, intent);
+}
+
+/**
+ * Build the §81 'policy-violation' upgrade record for repeated ceiling
+ * denials. Pure: the caller (maybeEmitPolicyViolationUpgrade) has already
+ * decided the threshold is met and no OPEN upgrade exists for this granter.
+ *
+ * recipient is null: the server has coarse-grained token RBAC with no
+ * named human accounts, so we record the required level instead of
+ * inventing a person. 'operator' is the API role that does daily
+ * workforce/governance work — the honest minimum level that can inspect
+ * the granter's denied requests, fix the grant, or retire the actor.
+ * severity 'critical' comes from the @ai-factory/autonomy REASON_SEVERITY
+ * mapping for 'policy-violation' (not chosen here).
+ */
+export function buildPolicyViolationUpgradeRecord(args: {
+  granter: string;
+  denialCount: number;
+  relativeCeilingDenials: number;
+  taskScopeDenials: number;
+  exceededTools: string[];
+  exceededPermissions: string[];
+}): NeedsHumanDbRecord {
+  const rec = needsHuman('policy-violation', {
+    detail:
+      `granter ${args.granter} was denied ${args.denialCount} times attempting to grant ` +
+      `beyond its §8.2 relative ceiling ` +
+      `(RELATIVE_CEILING_DENIED ×${args.relativeCeilingDenials}, ` +
+      `TASK_SCOPE_CEILING_DENIED ×${args.taskScopeDenials}). ` +
+      `The policy held on every attempt — no elevation occurred. ` +
+      `Persistent attempts may indicate a misconfigured grant, a confused agent, ` +
+      `or prompt injection; human review is required.`,
+    context: {
+      granter: args.granter,
+      denialCount: String(args.denialCount),
+      relativeCeilingDenials: String(args.relativeCeilingDenials),
+      taskScopeDenials: String(args.taskScopeDenials),
+      exceededTools: args.exceededTools.join(','),
+      exceededPermissions: args.exceededPermissions.join(','),
+    },
+    impactScope: `agent creation by granter ${args.granter} keeps being denied; no privilege was elevated`,
+    stoppedActions: [
+      `agent creation denied for granter ${args.granter} (denial #${args.denialCount})`,
+    ],
+    suggestion:
+      "Review the granter's denied requests in the audit chain (actions " +
+      'RELATIVE_CEILING_DENIED / TASK_SCOPE_CEILING_DENIED). If the broader grant is ' +
+      "legitimate, raise the granter's own grant first — never widen it from below " +
+      '(§5/§8.2). If the attempts look malicious or confused, quarantine or retire ' +
+      'the granter. Mark this upgrade resolved via POST /api/needs-human/:id/resolve.',
+  });
+  return {
+    id: rec.id,
+    reason: rec.reason,
+    reasonZh: rec.reasonZh,
+    severity: rec.severity,
+    source: `policy-denial:${args.granter}`,
+    recipient: null,
+    requiredDeciderLevel: 'operator',
+    detailJson: JSON.stringify({
+      granter: args.granter,
+      denialCount: args.denialCount,
+      relativeCeilingDenials: args.relativeCeilingDenials,
+      taskScopeDenials: args.taskScopeDenials,
+      exceededTools: args.exceededTools,
+      exceededPermissions: args.exceededPermissions,
+      suggestion: rec.suggestion,
+    }),
+    contextJson: JSON.stringify(rec.context ?? {}),
+    raisedAt: Date.now(),
+    status: 'open',
+    resolvedAt: null,
+    resolvedBy: null,
+    resolution: null,
+  };
+}
+
+/**
+ * §81 'policy-violation' emission check. Called after every §8.2 ceiling
+ * denial is recorded. Emits at most one OPEN upgrade per granter: when the
+ * granter's total ceiling-denial count reaches
+ * POLICY_DENIAL_ESCALATION_THRESHOLD and no OPEN 'policy-violation'
+ * upgrade with source `policy-denial:<granter>` exists, a new upgrade is
+ * submitted (insert-only). Further denials while the upgrade is OPEN do
+ * not re-emit; after a human resolves it, the next denial at/over
+ * threshold opens a new episode.
+ *
+ * Write-through failures are audited NEEDS_HUMAN_PERSIST_FAILED and never
+ * thrown — the denial itself was already recorded and the 403 below must
+ * still be returned (same contract as emitRunNeedsHuman; the emission is
+ * advisory to the denial path).
+ */
+export function maybeEmitPolicyViolationUpgrade(
+  ctx: RouteContext,
+  intent: CeilingDenialIntent,
+): void {
+  const granter = intent.actor;
+  const count = ctx.audit.countByActorAction(
+    granter,
+    POLICY_CEILING_DENIAL_ACTIONS,
+  );
+  if (count < POLICY_DENIAL_ESCALATION_THRESHOLD) return;
+  const source = `policy-denial:${granter}`;
+  const alreadyOpen = ctx.fdb.needsHuman
+    .list('open')
+    .some((r) => r.reason === 'policy-violation' && r.source === source);
+  if (alreadyOpen) return;
+  const record = buildPolicyViolationUpgradeRecord({
+    granter,
+    denialCount: count,
+    relativeCeilingDenials: ctx.audit.countByActorAction(granter, [
+      'RELATIVE_CEILING_DENIED',
+    ]),
+    taskScopeDenials: ctx.audit.countByActorAction(granter, [
+      'TASK_SCOPE_CEILING_DENIED',
+    ]),
+    exceededTools: [...intent.details.exceededTools],
+    exceededPermissions: [...intent.details.exceededPermissions],
+  });
+  emitPolicyViolationNeedsHuman(ctx, record);
+}
+
+/**
+ * Write-through for §81 'policy-violation' upgrades: insert-only into
+ * fdb.needsHuman, audited NEEDS_HUMAN_RAISED. Same contract as
+ * emitRunNeedsHuman (routes/runtime.ts) — duplicated here rather than
+ * imported so this module keeps no value-imports of sibling route files
+ * (dual-mode: server tests import this file's src directly; see
+ * needs-human-run-emission.test.ts for the precedent).
+ */
+function emitPolicyViolationNeedsHuman(
+  ctx: RouteContext,
+  record: NeedsHumanDbRecord,
+): void {
+  try {
+    ctx.fdb.needsHuman.submit(record);
+    ctx.audit.record('system', 'NEEDS_HUMAN_RAISED', 'needs-human', record.id, {
+      reason: record.reason,
+      source: record.source,
+      requiredDeciderLevel: record.requiredDeciderLevel,
+    });
+  } catch (err) {
+    ctx.audit.record(
+      'system',
+      'NEEDS_HUMAN_PERSIST_FAILED',
+      'needs-human',
+      record.id,
+      {
+        error: err instanceof Error ? err.message : String(err),
+        source: record.source,
+      },
+    );
+  }
 }

@@ -125,6 +125,14 @@ export function verifyAuditChain(records: readonly AuditRecord[]): AuditChainVer
 export interface AuditStore {
   append(r: AuditRecord): void;
   list(): AuditRecord[];
+  /**
+   * Count records by actor and action set (Batch 41: §81 'policy-violation'
+   * emission counts repeated ceiling denials per actor). The SQLite
+   * implementation answers with an indexed COUNT query instead of
+   * hydrating the whole chain — denials are rare but the chain is
+   * unbounded, so a full list() scan per denial would not scale.
+   */
+  countByActorAction(actor: string, actions: readonly string[]): number;
 }
 
 export class InMemoryAuditStore implements AuditStore {
@@ -134,6 +142,14 @@ export class InMemoryAuditStore implements AuditStore {
   }
   list(): AuditRecord[] {
     return this.records.map((r) => structuredClone(r));
+  }
+  countByActorAction(actor: string, actions: readonly string[]): number {
+    const set = new Set(actions);
+    let n = 0;
+    for (const r of this.records) {
+      if (r.actor === actor && set.has(r.action)) n++;
+    }
+    return n;
   }
 }
 
@@ -185,6 +201,14 @@ export class AuditLog {
 
   list(): AuditRecord[] {
     return this.store.list();
+  }
+
+  /**
+   * Count records by actor and action set. Delegates to the store so the
+   * SQLite implementation can answer with a COUNT query (Batch 41).
+   */
+  countByActorAction(actor: string, actions: readonly string[]): number {
+    return this.store.countByActorAction(actor, actions);
   }
 
   /** Verify the stored records against the §32 hash chain. */
