@@ -313,3 +313,49 @@ startup behavior.
 v5 deliberately does not re-walk the B31–B36 governance chains (v4's
 P1/B1/A1/D1/G1/R1/A2). Editions are cumulative across files, not
 replacements — `demo:e2e-v4` remains the authority for those chains.
+
+## Walkthrough (sixth edition, Batch 43)
+
+`apps/server/tests/first-run-walkthrough-b43.test.ts` — the B41–B42
+§81 chains, real server, temp DB, pure HTTP, zero mocks. Run with
+`npm run demo:e2e-v6`. The server boots with `FACTORY_API_TOKENS` set
+(the S1 leg needs real 401s); every leg call carries the admin token.
+v4 remains the authority for the B31–B36 governance chains and v5 for
+the B37–B40 chains; v6 covers B41–B42 only.
+
+| Chain | What is walked | What the run asserts |
+|---|---|---|
+| P1 | `POST /api/workforce/employees` (empty `taskScope`) → 403 ×3 by one granter → `GET /api/needs-human?status=open`; a single denial by another granter first | single denial emits nothing; 3 denials → exactly one OPEN `policy-violation` (`source: 'policy-denial:<granter>'`, `recipient: null`, `requiredDeciderLevel: 'operator'`, `detailJson.granter`/`denialCount` correct). The honest-wording narrative is NOT in the persisted record — finding F19 |
+| S1 | 1× wrong Bearer → 401 → read; then 10× wrong Bearer back-to-back → read | single 401 emits nothing; 10× → exactly one OPEN `security-issue` (`source` starts with `'auth-bruteforce:'`, `recipient: null`, `requiredDeciderLevel: 'admin'`, detail names the counted fact). Phase ordering matters — finding F20 |
+| R1 | `PUT /api/secrets/:name` (metadata only) → 3× `POST /api/exec` (`printenv` + `secretEnv` injection) → `GET /api/audit?limit=2000` → `GET /api/needs-human?status=open` | each output redacted (no sentinel, `***` marker); ≥3 `SECRET_REDACTED_HIT` detection events; event payloads never carry secret content; exactly one OPEN `security-issue` (`source` starts with `'redaction-monitor:exec:'`, `recipient: null`, `requiredDeciderLevel: 'operator'`) |
+| Q1 | `POST /api/requirements` → 3× `POST /api/requirements/:id/ac-refinement` → `GET /api/needs-human?status=open` → 4th refinement | exactly one OPEN `requirement-ambiguity` (`source: 'requirement-refinement:<id>'`, `recipient: null`, `requiredDeciderLevel: 'manager'`); 4th refinement → 409 `REQUIREMENT_REFINEMENT_PAUSED` (the circuit breaker is real, not decorative) |
+
+## Findings (sixth edition)
+
+**F19 — Medium (honest wording does not survive persistence; no product-code change in this walkthrough).**
+The Batch 41/42 builders pass an honest narrative to `needsHuman()`
+(e.g. "The policy held on every attempt — no elevation occurred"), but
+`NeedsHumanDbRecord` has no `detail` column and only
+`buildBruteForceUpgradeRecord` copies its narrative into `detailJson`.
+The policy-violation, redaction, and requirement-ambiguity builders
+persist only structured fields (granter/denialCount, source/counts,
+requirementId/refinementCount) — the API-visible record never states
+the crucial qualifier. A human reading `GET /api/needs-human` sees
+`reason: 'policy-violation'` with no in-record statement that no
+violation actually occurred. Recommended fix (for a product batch, not
+this walkthrough): include `narrative` in `detailJson` for the three
+builders, mirroring the brute-force precedent.
+
+**F20 — Low (walkthrough ordering, documented product rule).**
+A successful admin authentication from the loopback IP clears the
+brute-force counter ("legit login clears"). The S1 leg therefore does
+its single-401 probe and read first, then runs a full fresh 10-denial
+attack with no read between attempts. This is the documented detector
+rule working as designed, not a bug — but any future leg that mixes
+reads into an attack phase will silently reset the count.
+
+**F21 — Info (walkthrough hygiene).**
+`GET /api/audit` returns a bare array (newest first), not
+`{records: […]}`. The v6 `auditRecords` helper accepts both shapes
+(v5's `auditActions` already did); future legs should not assume the
+envelope.

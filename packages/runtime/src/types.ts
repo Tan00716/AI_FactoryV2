@@ -134,6 +134,16 @@ export interface RunResult {
    * instead of matching on the human-readable reason message.
    */
   reasonCode?: string | null;
+  /**
+   * Batch 43 — the LoopStagnation signature when the run escalated on
+   * stagnation (the errorSignature the loop gave up on: a FactoryError
+   * code when the repeating step threw a FactoryError, 'step-throw'
+   * otherwise). Null when the run did not escalate on stagnation. The
+   * server classifies §81 'irrecoverable-env-error' on this field —
+   * determinately, by code — instead of parsing the human-readable
+   * reason message.
+   */
+  stagnationSignature?: string | null;
   /** §25 (G-51) — extended-budget consumption for this run, when a
    *  BudgetTracker was wired (runAgent's default path always wires one). */
   budgetUsage?: {
@@ -243,6 +253,25 @@ export class FilesystemBoundary extends FactoryError {
   constructor(resolvedPath: string) {
     super('FILESYSTEM_BOUNDARY', `Path outside allowed roots: ${resolvedPath}`);
   }
+}
+
+/**
+ * Batch 43 — the machine-readable environment-error code namespace, as an
+ * explicit set. A code is in this set iff a Batch-40-style deterministic
+ * environment failure carries it (SandboxUnavailableError,
+ * MissingBinaryError). Explicit set, not a prefix rule: adding a code here
+ * is a deliberate product decision (a new code starts NOT emitting), never
+ * an accident of naming. The server's §81 'irrecoverable-env-error'
+ * emission matches on this set — by code, never by message.
+ */
+export const ENV_ERROR_CODES: ReadonlySet<string> = new Set([
+  'ENV_SANDBOX_UNAVAILABLE',
+  'ENV_BINARY_MISSING',
+]);
+
+/** Deterministic environment-error predicate: code membership, no heuristics. */
+export function isEnvErrorCode(code: string | null | undefined): boolean {
+  return typeof code === 'string' && ENV_ERROR_CODES.has(code);
 }
 
 /** §26 — a step (tool call / adapter call) exceeded its timeout. */

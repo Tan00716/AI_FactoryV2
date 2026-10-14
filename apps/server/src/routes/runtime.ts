@@ -121,6 +121,7 @@ import {
   DEFAULT_EXTENDED_BUDGETS,
   Harness,
   StubAdapter,
+  isEnvErrorCode,
   runAgent,
   type CheckpointV2,
   type StepIntent,
@@ -503,6 +504,102 @@ export function buildRunUpgradeRecord(args: {
     resolvedBy: null,
     resolution: null,
   };
+}
+
+/**
+ * §81 'irrecoverable-env-error' upgrade record (Batch 43).
+ *
+ * The deterministic emission point: a run that escalated on LOOP_STAGNATION
+ * whose stagnation signature is a machine-readable environment-error code
+ * (ENV_ERROR_CODES in @ai-factory/runtime — Batch 40's SandboxUnavailableError
+ * / MissingBinaryError). The system state itself is the trigger's definition:
+ * the loop retried the same env-erroring step to the stagnation limit with no
+ * progress, so the loop's own recovery was exhausted — "irrecoverable" is a
+ * fact about what happened, not a prediction. A single env error never
+ * emits: the AgentLoop absorbs it as a failed phase and the agent may work
+ * around it.
+ *
+ * This fires ADDITIVELY alongside the Batch-38 'repeated-failure' record for
+ * the same stagnation (that contract is re-audited and untouched): both
+ * records are true, the env record cross-references the stagnation, and the
+ * store's primary key is the record id so the two coexist.
+ *
+ * recipient is null (no named human accounts); requiredDeciderLevel is
+ * 'operator' — a mapping choice (the spec has no trigger→rank table): the
+ * run is terminal and the operator decides abandon / revise-task /
+ * repair-host-then-rerun. severity 'critical' comes from the autonomy
+ * REASON_SEVERITY mapping.
+ */
+export function buildEnvErrorUpgradeRecord(args: {
+  runId: string;
+  taskId: string;
+  agentId: string;
+  envErrorCode: string;
+  reason: string | undefined;
+  steps: number;
+}): NeedsHumanDbRecord {
+  const rec = needsHuman('irrecoverable-env-error', {
+    detail:
+      `run ${args.runId} hit an irrecoverable environment error: '${args.envErrorCode}' ` +
+      `repeated with no progress until the loop's stagnation limit tripped and the run escalated ` +
+      `(agent ${args.agentId}, task ${args.taskId}). ` +
+      `A 'repeated-failure' record was also raised for the stagnation itself. ` +
+      `${args.reason ?? 'no reason recorded'}`,
+    context: {
+      runId: args.runId,
+      taskId: args.taskId,
+      agentId: args.agentId,
+      reasonCode: 'LOOP_STAGNATION',
+      envErrorCode: args.envErrorCode,
+      steps: String(args.steps),
+    },
+    impactScope: `run ${args.runId} is terminal; the host environment needs repair before any re-run can succeed`,
+    stoppedActions: [`run ${args.runId} — terminated on irrecoverable environment error ${args.envErrorCode}`],
+    suggestion:
+      'Repair the host environment (install the missing binary / restore the sandbox / free disk / fix network), then re-run; or revise the task to avoid the missing capability; or abandon the run. Mark this upgrade resolved via POST /api/needs-human/:id/resolve.',
+  });
+  return {
+    id: rec.id,
+    reason: rec.reason,
+    reasonZh: rec.reasonZh,
+    severity: rec.severity,
+    source: `runtime-run:${args.runId}`,
+    recipient: null,
+    requiredDeciderLevel: 'operator',
+    detailJson: JSON.stringify({
+      runId: args.runId,
+      taskId: args.taskId,
+      agentId: args.agentId,
+      reasonCode: 'LOOP_STAGNATION',
+      envErrorCode: args.envErrorCode,
+      steps: args.steps,
+      reason: args.reason ?? null,
+      // Cross-reference: this fires additively alongside the Batch-38
+      // 'repeated-failure' record for the same stagnation (same runId,
+      // same source, different record id) — both records are true.
+      note: "A 'repeated-failure' record was also raised for the stagnation itself.",
+      suggestion: rec.suggestion,
+    }),
+    contextJson: JSON.stringify(rec.context ?? {}),
+    raisedAt: Date.now(),
+    status: 'open',
+    resolvedAt: null,
+    resolvedBy: null,
+    resolution: null,
+  };
+}
+
+/**
+ * Pure emission predicate (Batch 43) — exported for tests. True iff the run
+ * escalated on stagnation AND the stagnation signature is a deterministic
+ * environment-error code. Code membership only; the human-readable reason
+ * message is never parsed.
+ */
+export function shouldEmitEnvErrorUpgrade(result: {
+  reasonCode?: string | null;
+  stagnationSignature?: string | null;
+}): boolean {
+  return result.reasonCode === 'LOOP_STAGNATION' && isEnvErrorCode(result.stagnationSignature);
 }
 
 /**
@@ -1197,6 +1294,28 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
             taskId,
             agentId,
             reasonCode: result.reasonCode,
+            reason: result.reason,
+            steps: result.steps,
+          }),
+        );
+      }
+      // §81 emission (Batch 43): the run escalated on stagnation whose
+      // signature is a machine-readable environment-error code — the loop's
+      // own recovery was exhausted on an env failure, i.e. an irrecoverable
+      // environment error. Additive to the 'repeated-failure' record above
+      // (Batch-38 contract untouched); matched on code, never on message.
+      // A direct ENV_* reasonCode (the Batch-38 bridge already carries one
+      // when an env FactoryError escapes the loop) is deliberately NOT
+      // matched: no live production path produces it today, and wiring it
+      // would be definition-without-implementation.
+      if (shouldEmitEnvErrorUpgrade(result)) {
+        emitRunNeedsHuman(
+          ctx,
+          buildEnvErrorUpgradeRecord({
+            runId: id,
+            taskId,
+            agentId,
+            envErrorCode: result.stagnationSignature as string,
             reason: result.reason,
             steps: result.steps,
           }),

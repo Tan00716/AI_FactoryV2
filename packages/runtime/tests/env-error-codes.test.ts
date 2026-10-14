@@ -15,6 +15,7 @@ import type { Agent, Permission, Task } from '@ai-factory/core';
 import {
   AgentLoop,
   Harness,
+  isEnvErrorCode,
   MissingBinaryError,
   runAgent,
   runCommandPipe,
@@ -158,5 +159,88 @@ describe('environment error codes → RunResult.reasonCode (Batch 40)', () => {
   it('runCommandPipe on a failing (but present) binary does not raise an env code', async () => {
     const r = await runCommandPipe([process.execPath, '-e', 'process.exit(3)'], { timeoutMs: 10000 });
     assert.equal(r.exitCode, 3);
+  });
+});
+
+describe('stagnation signature → §81 irrecoverable-env-error signal (Batch 43)', () => {
+  it('persistent ENV_BINARY_MISSING → escalated + LOOP_STAGNATION + stagnationSignature ENV_BINARY_MISSING', async () => {
+    // True path: the loop retries the same env-erroring step to the
+    // stagnation limit with no progress — the loop's own recovery is
+    // exhausted, which is exactly what "irrecoverable" means here.
+    const loop = new AgentLoop({
+      budgets: { maxSteps: 40, timeMs: 60_000, maxRetries: 10 },
+      stagnationLimit: 3,
+    });
+    const result = await runAgent({
+      agent: makeAgent(),
+      task: makeTask(),
+      harness: makeHarness(),
+      adapter: new StubAdapter([]),
+      loop,
+      stepFn: () => {
+        throw new MissingBinaryError('bwrap');
+      },
+    });
+    assert.equal(result.outcome, 'escalated');
+    assert.equal(result.reasonCode, 'LOOP_STAGNATION');
+    assert.equal(result.stagnationSignature, 'ENV_BINARY_MISSING');
+  });
+
+  it('persistent non-env error → stagnationSignature carries the non-env signature (no env signal invented)', async () => {
+    const loop = new AgentLoop({
+      budgets: { maxSteps: 40, timeMs: 60_000, maxRetries: 10 },
+      stagnationLimit: 3,
+    });
+    const result = await runAgent({
+      agent: makeAgent(),
+      task: makeTask(),
+      harness: makeHarness(),
+      adapter: new StubAdapter([]),
+      loop,
+      stepFn: () => {
+        throw new Error('plain repeated boom');
+      },
+    });
+    assert.equal(result.outcome, 'escalated');
+    assert.equal(result.reasonCode, 'LOOP_STAGNATION');
+    assert.equal(result.stagnationSignature, 'step-throw');
+    assert.equal(isEnvErrorCode(result.stagnationSignature), false);
+  });
+
+  it('non-stagnation terminal states carry no stagnationSignature', async () => {
+    class EnvThrowLoop extends AgentLoop {
+      constructor(private readonly err: Error) {
+        super({ budgets: { maxSteps: 40, timeMs: 60_000, maxRetries: 10 } });
+      }
+      override async run(): Promise<never> {
+        throw this.err;
+      }
+    }
+    const result = await runAgent({
+      agent: makeAgent(),
+      task: makeTask(),
+      harness: makeHarness(),
+      adapter: new StubAdapter([]),
+      loop: new EnvThrowLoop(new SandboxUnavailableError('bwrap probe failed: ENOENT')),
+    });
+    assert.equal(result.outcome, 'failed');
+    assert.equal(result.reasonCode, 'ENV_SANDBOX_UNAVAILABLE');
+    assert.equal(result.stagnationSignature, undefined);
+  });
+
+  it('isEnvErrorCode: exact set membership — no prefix accidents, no message sniffing', () => {
+    assert.equal(isEnvErrorCode('ENV_BINARY_MISSING'), true);
+    assert.equal(isEnvErrorCode('ENV_SANDBOX_UNAVAILABLE'), true);
+    // Not in the set: close-but-unknown names, non-env codes, junk.
+    assert.equal(isEnvErrorCode('ENV_DISK_FULL'), false);
+    assert.equal(isEnvErrorCode('ENV_'), false);
+    assert.equal(isEnvErrorCode('LOOP_STAGNATION'), false);
+    assert.equal(isEnvErrorCode('BUDGET_EXCEEDED'), false);
+    assert.equal(isEnvErrorCode('step-throw'), false);
+    assert.equal(isEnvErrorCode(null), false);
+    assert.equal(isEnvErrorCode(undefined), false);
+    assert.equal(isEnvErrorCode(''), false);
+    // A message *mentioning* an env code is not a code.
+    assert.equal(isEnvErrorCode('Sandbox unavailable: ENV_BINARY_MISSING?'), false);
   });
 });

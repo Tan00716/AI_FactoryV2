@@ -325,7 +325,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
     // §25: stagnation auto-escalates instead of failing the run.
     if (err instanceof LoopStagnation) {
       pushTrace('RUNNER', 'auto-escalate', err.message);
-      return { outcome: 'escalated', steps, evidence, handoffs, trace, reason: err.message, reasonCode, budgetUsage: tracker.usage, intentSummary: intentSummary() };
+      return { outcome: 'escalated', steps, evidence, handoffs, trace, reason: err.message, reasonCode, budgetUsage: tracker.usage, intentSummary: intentSummary(), stagnationSignature: err.signature };
     }
     const reason = err instanceof Error ? err.message : String(err);
     pushTrace('RUNNER', 'run failed', reason);
