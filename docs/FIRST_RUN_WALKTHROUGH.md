@@ -732,3 +732,50 @@ The A2 tamper opens its own `node:sqlite` connection while the server is
 idle between HTTP calls; a 10-attempt retry on lock failure is in place
 because the lock state is timing-adjacent (never hit in practice — the
 server holds no long write transactions on `audit_logs`).
+
+## Walkthrough: audit-chain verify leg (Batch 54)
+
+Batch 53 closed F33 by adding `GET /api/audit/verify` (operator/admin):
+the server itself verifies its full §32 chain anchored at genesis and
+returns `{ok, verifiedCount, legacyCount, brokenAt?}`. This leg is the
+first-run proof that the endpoint behaves — single `it`, pure HTTP, zero
+mocks, real compiled server over a fresh temp SQLite file. Hermetic:
+temp DB + temp `FACTORY_SECRETS_DIR`. Dual-mode: node builtins + fetch +
+`node:sqlite`, zero src imports.
+
+| Leg | What it asserts |
+|---|---|
+| V1 | three real `POST /api/projects` → `GET /api/audit/verify` → 200 `ok:true`, `verifiedCount` ≥ 3, `legacyCount:0`, no `brokenAt` key (the endpoint verifies its own chain, anchored at genesis) |
+| V2 | one middle record's `details` rewritten *directly in the SQLite file* via a second `node:sqlite` connection — the "attacker with DB access"; there is intentionally no HTTP mutation path → `GET /api/audit/verify` → 200 `ok:false`, `brokenAt` pinpointing the tampered record's append-order index (found by id via the F21 bare array reversed, not assumed), `verifiedCount` exactly the records before the break |
+| V3 | `GET /api/audit/verify?limit=1` → 400 `AUDIT_VERIFY_NO_PAGINATION` — the fail-closed refusal that keeps F33's spurious `brokenAt:0` from ever reaching a verifier |
+
+Verified 1/1 three consecutive runs (each ~2s). The honest claim is
+unchanged: detection-not-prevention. The endpoint verifies the server's
+*local* chain; it cannot stop a DB writer, it makes the tamper evident and
+locates it. Contract also pinned separately by
+`apps/server/tests/audit-chain-verify.test.ts` (4 tests: intact,
+tamper, pagination refusal, role gating — Batch 53).
+
+## Findings (audit-chain verify leg)
+
+**F35 — Info (operator-role note).**
+The walkthrough runs against the server's default auth mode (no tokens),
+so V1–V3 don't exercise role gating. That axis is pinned by the
+contract test (`viewer → 403, operator → 200`), and the desktop
+`OpsPanel` button ("拉取全链验证") inherits the same gating — a viewer
+session sees the server's 403 surfaced verbatim, not a fabricated
+result.
+
+**F36 — Info (verify is point-in-time, not a watch).**
+`GET /api/audit/verify` attests the chain *at call time*. It does not
+subscribe, and a tamper seconds after a successful verify goes unseen
+until the next call — same boundary as the Batch 52 client-side leg,
+now behind one HTTP call. Continuous attestation (periodic verify +
+alert) is an operator policy choice, not something the endpoint claims.
+
+**F37 — Info (brokenAt is an append-order index).**
+`brokenAt` counts from genesis in append order (`ORDER BY ts, rowid`),
+not the newest-first order `GET /api/audit` returns (F21). The endpoint
+documents this, and the desktop button's red state quotes the boundary
+verbatim — a consumer joining `brokenAt` against the raw array without
+reversing will point at the wrong record.
