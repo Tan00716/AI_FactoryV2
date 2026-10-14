@@ -150,6 +150,12 @@ describe("§81 'requirement-ambiguity' on AC-refinement churn (Batch 42)", () =>
     };
     assert.equal(detail.requirementId, id);
     assert.equal(detail.refinementCount, 3);
+    // F19 (Batch 44): the honest narrative must survive persistence — it is
+    // copied into detailJson, not only the transient autonomy record.
+    assert.match(
+      String((detail as Record<string, unknown>)['narrative']),
+      /may be ambiguous/,
+    );
     const raised = t.audits.find((a) => a.action === 'NEEDS_HUMAN_RAISED');
     assert.ok(raised, 'NEEDS_HUMAN_RAISED audited');
   });

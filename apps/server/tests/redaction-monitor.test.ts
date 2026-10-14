@@ -126,6 +126,9 @@ describe('buildSecurityUpgradeRecord', () => {
     const detail = JSON.parse(rec.detailJson) as Record<string, unknown>;
     assert.equal(detail['eventsInWindow'], 3);
     assert.equal(detail['totalHits'], 7);
+    // F19 (Batch 44): the honest narrative must survive persistence — it is
+    // copied into detailJson, not only the transient autonomy record.
+    assert.match(String(detail['narrative']), /A single hit can be benign/);
     // Honest caveat: single hits can be benign.
     assert.match(String(detail['suggestion']), /SECRET_REDACTED_HIT/);
     const context = JSON.parse(rec.contextJson) as Record<string, string>;

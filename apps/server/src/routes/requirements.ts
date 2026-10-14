@@ -354,15 +354,18 @@ export function buildRequirementAmbiguityUpgradeRecord(args: {
   refinementCount: number;
   latestVersion: number;
 }): NeedsHumanDbRecord {
+  // F19 (Batch 44): the honest narrative must survive persistence — it goes
+  // into detailJson (brute-force precedent), not only the transient record.
+  const narrative =
+    `requirement ${args.requirementId} has ${args.refinementCount} consecutive ` +
+    `AC_REFINEMENT versions (latest v${args.latestVersion}). The sanctioned ` +
+    `clarification path (proposeAcRefinement) has been used ` +
+    `${args.refinementCount} times in a row without the acceptance-criteria ` +
+    `set stabilizing — bounded autonomous clarification is exhausted and ` +
+    `the underlying requirement may be ambiguous. Human judgment is ` +
+    `required before further autonomous refinement.`;
   const rec = needsHuman('requirement-ambiguity', {
-    detail:
-      `requirement ${args.requirementId} has ${args.refinementCount} consecutive ` +
-      `AC_REFINEMENT versions (latest v${args.latestVersion}). The sanctioned ` +
-      `clarification path (proposeAcRefinement) has been used ` +
-      `${args.refinementCount} times in a row without the acceptance-criteria ` +
-      `set stabilizing — bounded autonomous clarification is exhausted and ` +
-      `the underlying requirement may be ambiguous. Human judgment is ` +
-      `required before further autonomous refinement.`,
+    detail: narrative,
     context: {
       requirementId: args.requirementId,
       consecutiveRefinements: String(args.refinementCount),
@@ -396,6 +399,7 @@ export function buildRequirementAmbiguityUpgradeRecord(args: {
     recipient: null,
     requiredDeciderLevel: 'manager',
     detailJson: JSON.stringify({
+      narrative,
       requirementId: args.requirementId,
       refinementCount: args.refinementCount,
       latestVersion: args.latestVersion,

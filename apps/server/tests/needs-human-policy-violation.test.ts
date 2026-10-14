@@ -32,6 +32,7 @@ import {
   buildPolicyViolationUpgradeRecord,
   recordCeilingDenial,
 } from '../src/routes/workforce.ts';
+import { handleNeedsHumanRoutes } from '../src/routes/needs-human.ts';
 import type { RouteContext } from '../src/routes/context.ts';
 import type { CeilingDenialIntent } from '../src/routes/workforce.ts';
 
@@ -109,10 +110,53 @@ describe("§81 'policy-violation' on repeated ceiling denials (Batch 41)", () =>
     assert.equal(detail['granter'], 'agent-g1');
     assert.equal(detail['denialCount'], 3);
     assert.deepEqual(detail['exceededTools'], ['shell']);
+    // F19 (Batch 44): the honest narrative must survive persistence — it is
+    // copied into detailJson, not only the transient autonomy record.
+    assert.match(
+      String(detail['narrative']),
+      /The policy held on every attempt — no elevation occurred/,
+    );
     const context = JSON.parse(rec.contextJson) as Record<string, string>;
     assert.equal(context['denialCount'], '3');
     // The human-readable detail (in the autonomy record) must say the
     // policy HELD — never claim a breach occurred.
+  });
+
+  it('F19: GET /api/needs-human returns the persisted narrative (read path)', async () => {
+    const { ctx, needsHuman } = makeCtx();
+    const rec = buildPolicyViolationUpgradeRecord({
+      granter: 'agent-g1',
+      denialCount: 3,
+      relativeCeilingDenials: 2,
+      taskScopeDenials: 1,
+      exceededTools: ['shell'],
+      exceededPermissions: [],
+    });
+    needsHuman.submit(rec);
+    let status = 0;
+    let body: unknown = null;
+    const readCtx = {
+      ...ctx,
+      json: (_res: unknown, s: number, b: unknown) => {
+        status = s;
+        body = b;
+      },
+    } as unknown as RouteContext;
+    const handled = await handleNeedsHumanRoutes(
+      { method: 'GET' } as never,
+      {} as never,
+      new URL('http://localhost/api/needs-human'),
+      readCtx,
+    );
+    assert.equal(handled, true);
+    assert.equal(status, 200);
+    const items = (body as { items: Array<{ detailJson: string }> }).items;
+    assert.equal(items.length, 1);
+    const detail = JSON.parse(items[0]!.detailJson) as Record<string, unknown>;
+    assert.match(
+      String(detail['narrative']),
+      /The policy held on every attempt — no elevation occurred/,
+    );
   });
 
   it('below threshold: denials audited, no emission', () => {

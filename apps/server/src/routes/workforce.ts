@@ -389,15 +389,18 @@ export function buildPolicyViolationUpgradeRecord(args: {
   exceededTools: string[];
   exceededPermissions: string[];
 }): NeedsHumanDbRecord {
+  // F19 (Batch 44): the honest narrative must survive persistence — it goes
+  // into detailJson (brute-force precedent), not only the transient record.
+  const narrative =
+    `granter ${args.granter} was denied ${args.denialCount} times attempting to grant ` +
+    `beyond its §8.2 relative ceiling ` +
+    `(RELATIVE_CEILING_DENIED ×${args.relativeCeilingDenials}, ` +
+    `TASK_SCOPE_CEILING_DENIED ×${args.taskScopeDenials}). ` +
+    `The policy held on every attempt — no elevation occurred. ` +
+    `Persistent attempts may indicate a misconfigured grant, a confused agent, ` +
+    `or prompt injection; human review is required.`;
   const rec = needsHuman('policy-violation', {
-    detail:
-      `granter ${args.granter} was denied ${args.denialCount} times attempting to grant ` +
-      `beyond its §8.2 relative ceiling ` +
-      `(RELATIVE_CEILING_DENIED ×${args.relativeCeilingDenials}, ` +
-      `TASK_SCOPE_CEILING_DENIED ×${args.taskScopeDenials}). ` +
-      `The policy held on every attempt — no elevation occurred. ` +
-      `Persistent attempts may indicate a misconfigured grant, a confused agent, ` +
-      `or prompt injection; human review is required.`,
+    detail: narrative,
     context: {
       granter: args.granter,
       denialCount: String(args.denialCount),
@@ -426,6 +429,7 @@ export function buildPolicyViolationUpgradeRecord(args: {
     recipient: null,
     requiredDeciderLevel: 'operator',
     detailJson: JSON.stringify({
+      narrative,
       granter: args.granter,
       denialCount: args.denialCount,
       relativeCeilingDenials: args.relativeCeilingDenials,

@@ -160,15 +160,18 @@ export function buildSecurityUpgradeRecord(args: {
   windowMs: number;
   threshold: number;
 }): NeedsHumanDbRecord {
+  // F19 (Batch 44): the honest narrative must survive persistence — it goes
+  // into detailJson (brute-force precedent), not only the transient record.
+  const narrative =
+    `redaction monitor: ${args.eventsInWindow} output(s) from ${args.sourceType} ` +
+    `'${args.source}' contained injected secret values (${args.totalHits} exact ` +
+    `replacements) within ${Math.round(args.windowMs / 1000)}s ` +
+    `(threshold ${args.threshold} detection events). A single hit can be benign ` +
+    `(e.g. a command echoing its own environment for debugging), but repeated ` +
+    `hits from one source in a short window suggest systematic dumping — ` +
+    `human judgment needed.`;
   const rec = needsHuman('security-issue', {
-    detail:
-      `redaction monitor: ${args.eventsInWindow} output(s) from ${args.sourceType} ` +
-      `'${args.source}' contained injected secret values (${args.totalHits} exact ` +
-      `replacements) within ${Math.round(args.windowMs / 1000)}s ` +
-      `(threshold ${args.threshold} detection events). A single hit can be benign ` +
-      `(e.g. a command echoing its own environment for debugging), but repeated ` +
-      `hits from one source in a short window suggest systematic dumping — ` +
-      `human judgment needed.`,
+    detail: narrative,
     context: {
       source: args.source,
       sourceType: args.sourceType,
@@ -199,6 +202,7 @@ export function buildSecurityUpgradeRecord(args: {
     recipient: null,
     requiredDeciderLevel: 'operator',
     detailJson: JSON.stringify({
+      narrative,
       source: args.source,
       sourceType: args.sourceType,
       eventsInWindow: args.eventsInWindow,
