@@ -168,6 +168,13 @@ describe('buildDeployUpgradeRecord (Batch 39)', () => {
     const context = JSON.parse(rec.contextJson) as Record<string, string>;
     assert.equal(context['environment'], 'PROD');
     assert.equal(context['taskId'], 'task-1');
+    // F19 follow-up (Batch 45): the honest narrative must survive
+    // persistence — it is copied into detailJson, not only the transient
+    // autonomy record.
+    assert.match(
+      String(detail['narrative']),
+      /no deployment was executed — the gate held/,
+    );
   });
 });
 

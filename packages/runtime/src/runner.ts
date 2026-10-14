@@ -18,6 +18,7 @@ import {
   Clock,
   EvidenceRecord,
   FactoryError,
+  isEnvErrorCode,
   LoopPhase,
   LoopStagnation,
   PhaseResult,
@@ -160,10 +161,27 @@ function defaultStepFn(ctx: DefaultStepContext): StepFn {
             if (err instanceof BudgetExceeded) throw err;
             if (err instanceof Error && (err as { code?: string }).code === 'PERMISSION_BYPASS_ATTEMPT') throw err;
             const message = err instanceof Error ? err.message : String(err);
+            // Batch 45: a tool that throws a machine-readable environment
+            // error keeps its code as the step signature. This mirrors
+            // AgentLoop's own convention (`err instanceof FactoryError ?
+            // err.code : 'step-throw'` in loop.ts) — the tool layer was the
+            // only place masking it. Only codes in the explicit
+            // ENV_ERROR_CODES set pass through; every other tool failure
+            // keeps the `tool:<name>:fail` namespace, so stagnation
+            // grouping for ordinary tool failures is unchanged. This makes
+            // §81 'irrecoverable-env-error' reachable in principle at the
+            // tool layer (a tool throwing MissingBinaryError 3x stagnates
+            // on ENV_BINARY_MISSING). It does NOT invent an HTTP trigger —
+            // no registered server tool throws today (see the
+            // RUNTIME_TOOL_NAMES tripwire test).
+            const errorSignature =
+              err instanceof FactoryError && isEnvErrorCode(err.code)
+                ? err.code
+                : `tool:${tc.tool}:fail`;
             return {
               ok: false,
               error: `tool '${tc.tool}' failed: ${message}`,
-              errorSignature: `tool:${tc.tool}:fail`,
+              errorSignature,
             };
           }
         }

@@ -64,8 +64,11 @@ const LEVEL_BY_RANK: Record<number, AuthorityLevel> = {
  * named human accounts, so we record the required level instead of
  * inventing a person. requiredDeciderLevel is strictly higher than both
  * parties (the §8.1 upward rule).
+ *
+ * Exported as a test seam (like every other §81 builder) so the
+ * F19 narrative persistence can be asserted at the builder level.
  */
-function buildUpgradeRecord(
+export function buildUpgradeRecord(
   conflict: AuthorityConflict,
   registry: AuthorityConflictRegistry,
 ): NeedsHumanDbRecord {
@@ -80,8 +83,14 @@ function buildUpgradeRecord(
   const effects = directives.map((d) => d.effect);
   const target = `${conflict.targetKind}:${conflict.targetId}`;
 
+  // F19 follow-up (Batch 45): the honest narrative must survive persistence —
+  // it goes in detailJson as `narrative` (the transient `detail` field is not
+  // persisted; NeedsHumanDbRecord has no `detail` column).
+  const narrative =
+    `AUTHORITY_CONFLICT ${conflict.conflictId}: ${effects.join(' vs ')} on ${target} — both directives are equally valid at rank ${maxRank} (${maxLevel}) and genuinely incompatible; the target is paused. ` +
+    `Both directives remain valid; the conflict is structural, not a judgment on either principal.`;
   const rec = needsHuman('ai-disagreement', {
-    detail: `AUTHORITY_CONFLICT ${conflict.conflictId}: ${effects.join(' vs ')} on ${target} — both directives are equally valid at rank ${maxRank} (${maxLevel}) and genuinely incompatible; the target is paused.`,
+    detail: narrative,
     context: {
       conflictId: conflict.conflictId,
       targetKind: conflict.targetKind,
@@ -108,6 +117,7 @@ function buildUpgradeRecord(
     recipient: null,
     requiredDeciderLevel: deadlocked ? maxLevel : requiredLevel,
     detailJson: JSON.stringify({
+      narrative,
       conflictId: conflict.conflictId,
       target,
       directiveIds: conflict.directiveIds,

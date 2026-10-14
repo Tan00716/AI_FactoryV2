@@ -464,8 +464,16 @@ export function buildRunUpgradeRecord(args: {
     args.reasonCode === 'BUDGET_EXCEEDED'
       ? `run ${args.runId} exhausted its execution budget after ${args.steps} steps`
       : `run ${args.runId} stagnated: the same error repeated with no progress for ${args.steps} steps`;
+  // F19 follow-up (Batch 45): the honest narrative must survive persistence —
+  // it goes in detailJson as `narrative` (the transient `detail` field is not
+  // persisted; NeedsHumanDbRecord has no `detail` column).
+  const narrative =
+    `${what} (agent ${args.agentId}, task ${args.taskId}). ${args.reason ?? 'no reason recorded'} ` +
+    (args.reasonCode === 'BUDGET_EXCEEDED'
+      ? 'The budget limit is a resource fact; nothing is claimed about the task\'s validity.'
+      : 'The loop\'s own retry budget was exhausted — a fact about the run\'s terminal state, not a prediction.');
   const rec = needsHuman(trigger, {
-    detail: `${what} (agent ${args.agentId}, task ${args.taskId}). ${args.reason ?? 'no reason recorded'}`,
+    detail: narrative,
     context: {
       runId: args.runId,
       taskId: args.taskId,
@@ -489,6 +497,7 @@ export function buildRunUpgradeRecord(args: {
     recipient: null,
     requiredDeciderLevel: 'operator',
     detailJson: JSON.stringify({
+      narrative,
       runId: args.runId,
       taskId: args.taskId,
       agentId: args.agentId,
@@ -538,13 +547,19 @@ export function buildEnvErrorUpgradeRecord(args: {
   reason: string | undefined;
   steps: number;
 }): NeedsHumanDbRecord {
+  // F19 follow-up (Batch 45): the honest narrative must survive persistence —
+  // it goes in detailJson as `narrative` (the transient `detail` field is not
+  // persisted; NeedsHumanDbRecord has no `detail` column).
+  const narrative =
+    `run ${args.runId} hit an irrecoverable environment error: '${args.envErrorCode}' ` +
+    `repeated with no progress until the loop's stagnation limit tripped and the run escalated ` +
+    `(agent ${args.agentId}, task ${args.taskId}). ` +
+    `A 'repeated-failure' record was also raised for the stagnation itself. ` +
+    `'Irrecoverable' describes the loop's own recovery being exhausted — a fact about the run's ` +
+    `terminal state, not a prediction about the environment; no completed breach is asserted. ` +
+    `${args.reason ?? 'no reason recorded'}`;
   const rec = needsHuman('irrecoverable-env-error', {
-    detail:
-      `run ${args.runId} hit an irrecoverable environment error: '${args.envErrorCode}' ` +
-      `repeated with no progress until the loop's stagnation limit tripped and the run escalated ` +
-      `(agent ${args.agentId}, task ${args.taskId}). ` +
-      `A 'repeated-failure' record was also raised for the stagnation itself. ` +
-      `${args.reason ?? 'no reason recorded'}`,
+    detail: narrative,
     context: {
       runId: args.runId,
       taskId: args.taskId,
@@ -567,6 +582,7 @@ export function buildEnvErrorUpgradeRecord(args: {
     recipient: null,
     requiredDeciderLevel: 'operator',
     detailJson: JSON.stringify({
+      narrative,
       runId: args.runId,
       taskId: args.taskId,
       agentId: args.agentId,

@@ -244,3 +244,83 @@ describe('stagnation signature → §81 irrecoverable-env-error signal (Batch 43
     assert.equal(isEnvErrorCode('Sandbox unavailable: ENV_BINARY_MISSING?'), false);
   });
 });
+
+describe('tool-layer env-code passthrough (Batch 45)', () => {
+  // Design review (Batch 45-3): the default stepFn's ACT phase was the
+  // ONLY place masking FactoryError codes (`tool:<name>:fail`), while
+  // AgentLoop itself already passes them through (`err instanceof
+  // FactoryError ? err.code : 'step-throw'`). The narrow fix: only codes
+  // in the explicit ENV_ERROR_CODES set keep their code as the step
+  // signature; every other tool failure keeps `tool:<name>:fail`, so
+  // stagnation grouping for ordinary tool failures is unchanged.
+  // Rejected alternatives: (a-full) unmasking ALL tool codes — changes
+  // stagnation grouping semantics for every tool-thrown code, blast
+  // radius too large; (b) unconditional assertSandboxAvailable() in the
+  // run path — bwrap is absent in this environment and on all non-Linux
+  // platforms, so every run would die with ENV_SANDBOX_UNAVAILABLE,
+  // contradicting the best-effort-with-honest-fallback design.
+  function toolHarness(toolPermissions: Record<string, any> = {}) {
+    return new Harness({
+      allowedRoots: ['/tmp/ai-factory-ws'],
+      stepTimeoutMs: 2000,
+      permissions: ['filesystem.read', 'filesystem.write', 'shell.execute'],
+      toolPermissions,
+      evidence: { collect: () => undefined },
+    });
+  }
+
+  function boomScript(tool: string, n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      text: `attempt ${i}`,
+      toolCalls: [{ tool, args: {} }],
+    }));
+  }
+
+  it('tool throwing MissingBinaryError 3x → stagnation on ENV_BINARY_MISSING (not tool:<name>:fail)', async () => {
+    const loop = new AgentLoop({
+      budgets: { maxSteps: 40, timeMs: 60_000, maxRetries: 10 },
+      stagnationLimit: 3,
+    });
+    const result = await runAgent({
+      agent: makeAgent(),
+      task: makeTask(),
+      harness: toolHarness({ boom: 'shell.execute' }),
+      adapter: new StubAdapter(boomScript('boom', 6)),
+      loop,
+      // NOTE: no custom stepFn — this exercises the DEFAULT stepFn's
+      // tool-call catch, the exact masking site.
+      tools: {
+        boom: async () => {
+          throw new MissingBinaryError('bwrap');
+        },
+      },
+    });
+    assert.equal(result.outcome, 'escalated');
+    assert.equal(result.reasonCode, 'LOOP_STAGNATION');
+    assert.equal(result.stagnationSignature, 'ENV_BINARY_MISSING');
+    assert.equal(isEnvErrorCode(result.stagnationSignature), true);
+  });
+
+  it('tool throwing a plain Error 3x → signature stays tool:<name>:fail (masking preserved)', async () => {
+    const loop = new AgentLoop({
+      budgets: { maxSteps: 40, timeMs: 60_000, maxRetries: 10 },
+      stagnationLimit: 3,
+    });
+    const result = await runAgent({
+      agent: makeAgent(),
+      task: makeTask(),
+      harness: toolHarness({ boom2: 'shell.execute' }),
+      adapter: new StubAdapter(boomScript('boom2', 6)),
+      loop,
+      tools: {
+        boom2: async () => {
+          throw new Error('plain repeated boom');
+        },
+      },
+    });
+    assert.equal(result.outcome, 'escalated');
+    assert.equal(result.reasonCode, 'LOOP_STAGNATION');
+    assert.equal(result.stagnationSignature, 'tool:boom2:fail');
+    assert.equal(isEnvErrorCode(result.stagnationSignature), false);
+  });
+});

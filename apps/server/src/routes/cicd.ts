@@ -696,12 +696,18 @@ export function buildDeployUpgradeRecord(args: {
   actor: string;
   assessment: RiskAssessment;
 }): NeedsHumanDbRecord {
+  // F19 follow-up (Batch 45): the honest narrative must survive persistence —
+  // it goes in detailJson as `narrative` (the transient `detail` field is not
+  // persisted; NeedsHumanDbRecord has no `detail` column).
+  const narrative =
+    `deployment ${args.deploymentId} → ${args.environment} assessed ` +
+    `${args.assessment.level} (floor ${args.assessment.floor}, authorization ` +
+    `${args.assessment.authorization.kind}): ${args.assessment.reasons.join('; ')}. ` +
+    `Requested by ${args.actor}; parked at AWAITING_APPROVAL. ` +
+    `The risk level is the assessRisk function's assessed value, not a hardcode; ` +
+    `no deployment was executed — the gate held.`;
   const rec = needsHuman('high-risk-deployment', {
-    detail:
-      `deployment ${args.deploymentId} → ${args.environment} assessed ` +
-      `${args.assessment.level} (floor ${args.assessment.floor}, authorization ` +
-      `${args.assessment.authorization.kind}): ${args.assessment.reasons.join('; ')}. ` +
-      `Requested by ${args.actor}; parked at AWAITING_APPROVAL.`,
+    detail: narrative,
     context: {
       deploymentId: args.deploymentId,
       pipelineId: args.pipelineId,
@@ -731,6 +737,7 @@ export function buildDeployUpgradeRecord(args: {
     recipient: null,
     requiredDeciderLevel: 'manager',
     detailJson: JSON.stringify({
+      narrative,
       deploymentId: args.deploymentId,
       pipelineId: args.pipelineId,
       environment: args.environment,

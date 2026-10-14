@@ -10,7 +10,11 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { handleAuthorityRoutes } from '../src/routes/authority.ts';
+import { handleAuthorityRoutes, buildUpgradeRecord } from '../src/routes/authority.ts';
+import {
+  AuthorityConflictRegistry,
+  type AuthorityConflict,
+} from '@ai-factory/policy';
 
 function makeCtx(body: unknown) {
   const jsonCalls: Array<{ status: number; body: unknown }> = [];
@@ -146,5 +150,34 @@ describe('POST /api/authority/directives — conflict flow', () => {
       targetKind: 'run', targetId: `${TARGET}-bad`, effect: 'ALLOW', instruction: '',
     });
     assert.equal(r.status, 400);
+  });
+});
+
+describe('F19 follow-up (Batch 45): ai-disagreement narrative survives persistence', () => {
+  it('buildUpgradeRecord copies the honest narrative into detailJson', () => {
+    let opened: AuthorityConflict | null = null;
+    const registry = new AuthorityConflictRegistry({
+      onConflictOpened: (c) => {
+        opened = c;
+      },
+    });
+    registry.registerDirective({
+      principalId: 'mgr-a', authorityLevel: 'manager',
+      targetKind: 'run', targetId: 'run-narr-1', effect: 'ALLOW', instruction: 'proceed',
+    });
+    registry.registerDirective({
+      principalId: 'mgr-b', authorityLevel: 'manager',
+      targetKind: 'run', targetId: 'run-narr-1', effect: 'BLOCK', instruction: 'hold',
+    });
+    assert.ok(opened, 'expected an OPEN conflict');
+    const conflict: AuthorityConflict = opened;
+    const rec = buildUpgradeRecord(conflict, registry);
+    assert.equal(rec.reason, 'ai-disagreement');
+    assert.equal(rec.recipient, null);
+    const detail = JSON.parse(rec.detailJson) as Record<string, unknown>;
+    assert.match(
+      String(detail['narrative']),
+      /the conflict is structural, not a judgment on either principal/,
+    );
   });
 });

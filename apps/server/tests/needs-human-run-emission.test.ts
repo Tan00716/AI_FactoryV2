@@ -78,6 +78,24 @@ describe('§81 run-terminal needsHuman emissions (Batch 38)', () => {
     assert.equal(rec.recipient, null);
     assert.equal(rec.requiredDeciderLevel, 'operator');
     assert.equal(rec.status, 'open');
+    // F19 follow-up (Batch 45): the honest narrative must survive
+    // persistence — it is copied into detailJson, not only the transient
+    // autonomy record.
+    const detail2 = JSON.parse(rec.detailJson) as Record<string, unknown>;
+    assert.match(String(detail2['narrative']), /The loop's own retry budget was exhausted/);
+  });
+
+  it("F19: 'budget-exceeded' record carries the narrative in detailJson", () => {
+    const rec = buildRunUpgradeRecord({
+      runId: 'run-4',
+      taskId: 'task-4',
+      agentId: 'agent-4',
+      reasonCode: 'BUDGET_EXCEEDED',
+      reason: 'Budget exceeded: steps 41 reached maxSteps 40',
+      steps: 41,
+    });
+    const detail = JSON.parse(rec.detailJson) as Record<string, unknown>;
+    assert.match(String(detail['narrative']), /The budget limit is a resource fact/);
   });
 
   it('emitRunNeedsHuman writes through insert-only + audits NEEDS_HUMAN_RAISED', () => {

@@ -150,6 +150,13 @@ describe("§81 'irrecoverable-env-error' emission (Batch 43)", () => {
     assert.match(String(detailJson['suggestion']), /Repair the host environment/);
     assert.match(String(detailJson['note']), /repeated-failure/);
     assert.equal(detailJson['envErrorCode'], 'ENV_SANDBOX_UNAVAILABLE');
+    // F19 follow-up (Batch 45): the honest narrative must survive
+    // persistence — it is copied into detailJson, not only the transient
+    // autonomy record.
+    assert.match(
+      String(detailJson['narrative']),
+      /'Irrecoverable' describes the loop's own recovery being exhausted/,
+    );
   });
 
   it('coexists with the repeated-failure record for the same run (same source, different id)', () => {
