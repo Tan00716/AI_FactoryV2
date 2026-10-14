@@ -416,3 +416,44 @@ leg, so `demo:e2e-v7` must build `@ai-factory/runtime` before running the
 test (its chain does, mirroring v6). A future leg that needs more package
 imports must extend the demo chain the same way — the test fails loudly
 with a resolve error otherwise, not silently.
+
+## Walkthrough (eighth edition, Batch 48)
+
+Walks the Batch 47 links, single test, pure HTTP, zero mocks (the P1-plant
+leg writes one row straight into the live DB via `node:sqlite` — not a
+mock, but the F22 threat model itself: a row that predates the
+record-creation gate or was written straight to the DB, bypassing HTTP
+validation). Two server boots: Server A with `FACTORY_MERGE_DRAIN=0` (plus
+`FACTORY_PROJECTS_ROOT`), Server B with the default env. Run with
+`npm run demo:e2e-v8` (same 11-package build chain as v7 — the test needs
+no new package imports, only node builtins). v4 remains the authority for
+the B31–B36 governance chains, v5 for the B37–B40 chains, v6 for the
+B41–B42 §81 chains, v7 for the B43–B45 chains; v8 covers B47 only.
+
+| Chain | What is walked | What the run asserts |
+|---|---|---|
+| P1(a) | `POST /api/projects` with planted paths: `/etc`, `<root>/../etc`, `relative/path`, `<root>/does-not-exist-b48` | each → 400 with its own explicit code (`PROJECT_PATH_OUTSIDE_ROOT` / `PROJECT_PATH_OUTSIDE_ROOT` / `PROJECT_PATH_NOT_ABSOLUTE` / `PROJECT_PATH_NOT_FOUND`); no record is written for any of them |
+| P1(b) | a real tree under the operator root → `POST /api/projects` with its `path` | 201 — the gate is a policy, not a blockade |
+| P1(c) | create a second in-root project (201), then live-plant its path to `/etc` via a direct DB write while the server runs → `POST /api/backup` | 201; `manifest.scope` stays `'factory-database+project-files'` (the good tree is still collected); no manifest entry under `projects/<planted>/` — `/etc` was never walked; the planted row is *recorded* in `manifest.skippedProjects` with `reason: 'path-outside-root'`, never silent |
+| M1(on) | real git repo (feat branch merges cleanly onto main) → `POST /api/git/pr` → `POST /api/git/merge-queue` with `FACTORY_MERGE_DRAIN=0` | 202 + `drainPending: true`; entry stays `QUEUED` (drain never ran on this instance); a `MERGE_QUEUE_ENQUEUED` audit record carries the deferral (`drainPending: true`, `reason: 'FACTORY_MERGE_DRAIN=0'`) |
+| M1(off) | same git setup on Server B (default env) → `POST /api/git/merge-queue` | 201, no `drainPending` field on the default path, entry `MERGED` — the old synchronous behavior is untouched |
+
+## Findings (eighth edition)
+
+**F24 — Info (walkthrough hygiene: live DB plant relies on the server being idle).**
+The P1(c) leg plants a row with a direct `node:sqlite` autocommit write
+while the child server holds the DB open. This works (verified during
+development — no lock contention, since the server holds no open
+transaction between HTTP calls), but it is timing-adjacent: a write that
+lands mid-transaction would throw `SQLITE_BUSY` instead of failing an
+assertion. If this leg ever flakes, the deterministic alternative is
+stop-plant-restart (stop the server, plant, reboot, then run the backup) —
+the threat model is identical either way.
+
+**F25 — Info (parallel-batch port pressure).**
+During development one probe hit `ECONNREFUSED` because a sibling batch's
+server was already on the randomly chosen port — the 24xxx–44xxx random
+port range is shared by all concurrently running walkthroughs and tests.
+The boot loops treat a collision as a boot failure (loud), never as a
+misread assertion. As parallel batches multiply, a wider or coordinated
+port scheme would reduce flaky boot retries.

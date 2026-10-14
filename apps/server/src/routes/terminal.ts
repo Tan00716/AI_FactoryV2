@@ -50,7 +50,10 @@ import {
   PtySessionError,
   type PtySession,
 } from '@ai-factory/runtime';
-import { redactSecretValuesCounted } from '@ai-factory/secrets';
+import {
+  createCrossChunkRedactor,
+  type CrossChunkRedactor,
+} from '@ai-factory/secrets';
 import { recordRedactionHit } from '../redaction-monitor';
 import {
   checkCommandPolicy,
@@ -67,6 +70,34 @@ const MAX_INPUT_BYTES = 64 * 1024;
 
 /** Shells a session may launch (server-configured, not user-typed). */
 const ALLOWED_SESSION_SHELLS = new Set(['/bin/bash', '/bin/sh', '/usr/bin/bash']);
+
+/**
+ * Per-SSE-stream redactor (Batch 48): wraps a CrossChunkRedactor and
+ * reports every hit batch through `onHit`. Exported as the test seam
+ * for the terminal wiring — the cross-chunk algorithm itself is unit
+ * tested in @ai-factory/secrets.
+ */
+export interface TerminalStreamRedactor {
+  /** Feed one raw chunk; returns redacted text safe to emit now. */
+  push(chunk: string): string;
+  /** Commit and return the held tail; call once at stream end. */
+  flush(): string;
+}
+
+export function createTerminalStreamRedactor(
+  secretValues: readonly string[],
+  onHit: (hits: number) => void,
+): TerminalStreamRedactor {
+  const inner: CrossChunkRedactor = createCrossChunkRedactor(secretValues);
+  const emit = (r: { text: string; hits: number }): string => {
+    if (r.hits > 0) onHit(r.hits);
+    return r.text;
+  };
+  return {
+    push: (chunk: string) => emit(inner.push(chunk)),
+    flush: () => emit(inner.flush()),
+  };
+}
 
 function sessionIdFrom(url: URL): { id: string; rest: string } | null {
   const m = /^\/api\/terminal\/sessions\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -184,25 +215,29 @@ export async function handleTerminalRoutes(
     }
 
     // Secret redaction (§50.1 输入 Secret 脱敏): injected values are
-    // scrubbed from the streamed/transcript output, per chunk. Chunk
-    // boundaries are an approximation — a value split across two
-    // chunks is not caught; stated in KNOWN_LIMITATIONS.
-    // A hit (≥1 replacement in a chunk) is a SECRET_REDACTED_HIT
+    // scrubbed from the streamed/transcript output. Cross-chunk safe
+    // (Batch 48): each SSE stream gets its own CrossChunkRedactor,
+    // which holds back the last (longestSecret-1) code points so a
+    // value split across chunk boundaries is still caught BEFORE any
+    // of its bytes are emitted. The holdback delays tail bytes until
+    // more output arrives or the stream closes (flush) — the honest
+    // price of not leaking; the backlog/live-chunk boundary is covered
+    // too because the backlog goes through the same redactor instance.
+    // A hit (≥1 replacement in a push/flush) is a SECRET_REDACTED_HIT
     // detection event (Batch 42) — hit count + session id, never secret
     // content — feeding the §81 'security-issue' aggregation.
-    const redact = (s: string): string => {
-      if (secretValues.length === 0) return s;
-      const r = redactSecretValuesCounted(s, secretValues);
-      if (r.hits > 0) {
-        recordRedactionHit(ctx, actor, {
+    (
+      session as PtySession & {
+        createStreamRedactor?: (hitCtx: RouteContext) => TerminalStreamRedactor;
+      }
+    ).createStreamRedactor = (hitCtx: RouteContext) =>
+      createTerminalStreamRedactor(secretValues, (hits) =>
+        recordRedactionHit(hitCtx, actor, {
           source: session.id,
           sourceType: 'terminal',
-          hits: r.hits,
-        });
-      }
-      return r.text;
-    };
-    (session as PtySession & { outputRedactor?: (s: string) => string }).outputRedactor = redact;
+          hits,
+        }),
+      );
 
     // AI line denials are audited (values never: only the caller's own
     // refused line and the policy reason).
@@ -246,9 +281,18 @@ export async function handleTerminalRoutes(
   if (rest === '/stream' && method === 'GET') {
     const session = getSessionOr404(ctx, res, id);
     if (!session) return true;
-    const redact =
-      (session as PtySession & { outputRedactor?: (s: string) => string }).outputRedactor ??
-      ((s: string) => s);
+    // One cross-chunk redactor per stream subscription: the backlog and
+    // the live chunks share it, so the backlog/live boundary is covered
+    // too. Sessions created before Batch 48 have no factory (in-memory
+    // only — sessions never survive a restart) and degrade to identity.
+    const factory = (
+      session as PtySession & {
+        createStreamRedactor?: (hitCtx: RouteContext) => TerminalStreamRedactor;
+      }
+    ).createStreamRedactor;
+    const streamRedactor: TerminalStreamRedactor = factory
+      ? factory(ctx)
+      : { push: (s: string) => s, flush: () => '' };
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -265,16 +309,20 @@ export async function handleTerminalRoutes(
       }
     };
     const sendOutput = (text: string): boolean => {
-      const b64 = Buffer.from(redact(text), 'utf8').toString('base64');
+      const b64 = Buffer.from(text, 'utf8').toString('base64');
       return send('output', JSON.stringify({ b64 }));
     };
 
     res.write(': connected\n\n');
     const backlog = session.transcriptText();
-    if (backlog) sendOutput(backlog);
+    if (backlog) sendOutput(streamRedactor.push(backlog));
 
     const unsubOutput = session.onOutput((chunk) => {
-      if (!sendOutput(chunk.toString('utf8'))) {
+      const out = streamRedactor.push(chunk.toString('utf8'));
+      // '' means the whole chunk is held in the cross-chunk carry —
+      // nothing safe to emit yet, and not a write failure.
+      if (out === '') return;
+      if (!sendOutput(out)) {
         cleanup();
       }
     });
@@ -282,6 +330,9 @@ export async function handleTerminalRoutes(
       send('denied', JSON.stringify({ line: line.slice(0, 200), reason }));
     });
     const unsubClose = session.onClose((exit) => {
+      // Flush the held tail BEFORE the close event: output must precede it.
+      const tail = streamRedactor.flush();
+      if (tail !== '') sendOutput(tail);
       send('close', JSON.stringify(exit));
       cleanup(true);
     });
@@ -321,6 +372,8 @@ export async function handleTerminalRoutes(
     req.on('close', () => cleanup());
     // If the session already died before we subscribed, report it.
     if (!session.alive && session.exit) {
+      const tail = streamRedactor.flush();
+      if (tail !== '') sendOutput(tail);
       send('close', JSON.stringify(session.exit));
       cleanup(true);
     }

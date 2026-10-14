@@ -375,3 +375,137 @@ export function redactSecretValuesCounted(
 export function redactSecretValues(text: string, values: readonly string[]): string {
   return redactSecretValuesCounted(text, values).text;
 }
+
+
+/**
+ * Stateful cross-chunk secret redactor (Batch 48 — terminal §50.1).
+ *
+ * The per-chunk `redactSecretValuesCounted` misses a secret value split
+ * across two output chunks (neither chunk alone contains a full match).
+ * This redactor closes that hole: it feeds every push through the same
+ * longest-first exact-substring matcher, but only COMMITS a match once
+ * it is provably complete — a match ending at code-point index `e` in
+ * the combined (pending + chunk) text is committed only if
+ * `e <= len - carryLen`, where `carryLen = longestValueLength - 1`.
+ *
+ * Why that threshold is airtight: a committed match could only be
+ * "wrong" if a longer injected value started at (or overlapping) the
+ * match and extended beyond the combined text. Any such longer value
+ * has length <= carryLen + 1, so from the match's start it reaches at
+ * most `e + carryLen <= len` — i.e. it would fit entirely inside the
+ * combined text, where longest-first matching would already have
+ * preferred it. Hence nothing committed can be retroactively
+ * invalidated by future chunks — not even when a shorter value is a
+ * strict prefix of a longer one (e.g. "AB" vs "ABCDEF" split as
+ * "…AB" | "CDEF…": the "AB" match is correctly deferred, then the
+ * "ABCDEF" match wins on the longer combined text).
+ *
+ * Uncommitted bytes stay RAW in the pending tail and are re-examined
+ * on the next push; `flush()` commits everything at stream end. The
+ * concatenated emits + flush equal whole-stream
+ * `redactSecretValuesCounted` output — nothing duplicated, nothing
+ * lost, hits counted exactly once per value occurrence.
+ *
+ * Other properties:
+ *  - Carry is cut on code-point boundaries (spread), never splitting a
+ *    surrogate pair, so astral-plane secrets match correctly.
+ *  - Tradeoff: the last <= carryLen code points lag one chunk behind
+ *    (or until flush). Pending memory is bounded by
+ *    carryLen + longestValueLength, never by stream length.
+ *  - Empty `values` (or all length <= 1, which can never span a chunk
+ *    boundary) degrade to a transparent passthrough.
+ */
+export interface CrossChunkRedactor {
+  /** Feed one raw output chunk; returns redacted text safe to emit now. */
+  push(chunk: string): RedactionResult;
+  /** Commit and emit the held tail; call once at stream end. */
+  flush(): RedactionResult;
+}
+
+/** A secret-value occurrence as code-point indices into the text. */
+interface SecretOccurrence {
+  start: number;
+  end: number;
+}
+
+/**
+ * Longest-first, non-overlapping, left-to-right occurrence scan —
+ * position-tracking equivalent of the sequential split/join in
+ * `redactSecretValuesCounted` (so whole-stream results agree
+ * byte-for-byte). `values` must already be longest-first sorted.
+ */
+function findSecretOccurrences(cps: string[], values: readonly string[]): SecretOccurrence[] {
+  const claimed = new Array<boolean>(cps.length).fill(false);
+  const out: SecretOccurrence[] = [];
+  for (const v of values) {
+    const vcps = [...v];
+    if (vcps.length === 0 || vcps.length > cps.length) continue;
+    let i = 0;
+    while (i <= cps.length - vcps.length) {
+      let ok = true;
+      for (let k = 0; k < vcps.length; k++) {
+        if (claimed[i + k] || cps[i + k] !== vcps[k]) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
+        out.push({ start: i, end: i + vcps.length });
+        for (let k = 0; k < vcps.length; k++) claimed[i + k] = true;
+        i += vcps.length; // non-overlapping, like split()
+      } else {
+        i++;
+      }
+    }
+  }
+  out.sort((a, b) => a.start - b.start);
+  return out;
+}
+
+/** Splice `***` over non-overlapping, start-sorted occurrences. */
+function spliceRedactions(cps: string[], occurrences: SecretOccurrence[]): string {
+  let out = '';
+  let pos = 0;
+  for (const m of occurrences) {
+    out += cps.slice(pos, m.start).join('');
+    out += '***';
+    pos = m.end;
+  }
+  out += cps.slice(pos).join('');
+  return out;
+}
+
+export function createCrossChunkRedactor(values: readonly string[]): CrossChunkRedactor {
+  const sorted = [...values]
+    .filter((v) => v.length > 0)
+    .sort((a, b) => [...b].length - [...a].length);
+  const longest = sorted.reduce((m, v) => Math.max(m, [...v].length), 0);
+  // A value of length L can start at most L-1 code points before a
+  // chunk boundary and still cross it; values of length <= 1 can never
+  // span a boundary, so they need no carry.
+  const carryLen = Math.max(0, longest - 1);
+  let pending: string[] = []; // raw code points held for the next push
+
+  const run = (chunk: string, commitAll: boolean): RedactionResult => {
+    const cps = [...pending, ...chunk];
+    const occurrences = findSecretOccurrences(cps, sorted);
+    const threshold = commitAll ? cps.length : cps.length - carryLen;
+    const committed = occurrences.filter((m) => m.end <= threshold);
+    // Emit up to the earliest uncommitted occurrence (and never past
+    // the carry holdback); everything from there stays raw pending.
+    // Clamp at 0: when the combined text is shorter than the carry,
+    // everything is held.
+    let emitEnd = commitAll ? cps.length : Math.max(0, cps.length - carryLen);
+    for (const m of occurrences) {
+      if (m.end > threshold && m.start < emitEnd) emitEnd = m.start;
+    }
+    const emit = spliceRedactions(cps.slice(0, emitEnd), committed);
+    pending = cps.slice(emitEnd);
+    return { text: emit, hits: committed.length };
+  };
+
+  return {
+    push: (chunk: string) => run(chunk, false),
+    flush: () => run('', true),
+  };
+}
