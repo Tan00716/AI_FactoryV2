@@ -692,9 +692,20 @@ the real compiled `@ai-factory/core` dist, zero src imports.
 
 Verified 1/1 three consecutive runs. The honest claim is
 detection-not-prevention: the chain cannot stop a DB writer; it makes
-the tamper evident and locates it. There is deliberately no HTTP verify
-endpoint — the server is the writer, the operator is the verifier, and
-the chain is verified where it is consumed.
+the tamper evident and locates it.
+
+**Batch 53 update:** this leg's "no HTTP verify endpoint" boundary has
+been closed by `GET /api/audit/verify` (operator/admin — see
+`requiredRoleFor` in `apps/server/src/auth.ts`). The endpoint verifies
+the full chain anchored at genesis server-side and returns
+`{ok, verifiedCount, legacyCount, brokenAt?}` (`brokenAt` indexes the
+full append-order chain and is present only when `ok` is false).
+Pagination is refused, not silently truncated: `?limit=…`/`?offset=…`
+→ 400 `AUDIT_VERIFY_NO_PAGINATION` (F33 below is exactly why).
+Contract pinned by `apps/server/tests/audit-chain-verify.test.ts`:
+intact chain → `ok:true`; a record tampered directly in the SQLite file
+→ `ok:false` with `brokenAt` pinpointing the record; pagination →
+400; viewer → 403, operator → 200.
 
 ## Findings (audit-chain leg)
 
@@ -709,8 +720,12 @@ perfectly intact chain — the walk reverses the bare array first.
 record's `prevHash` points outside the window → spurious `brokenAt:0`.
 Empirically confirmed with a one-off probe: full chain of 20 records
 verifies `ok:true`; `limit=2` on the same DB verifies `ok:false,
-brokenAt:0`. A future verify endpoint must anchor from genesis; until
-then verifiers must fetch the whole chain (`limit` ≥ total).
+brokenAt:0`. **Closed by `GET /api/audit/verify` (Batch 53):** the
+endpoint anchors at genesis and *refuses* pagination outright
+(`?limit=…`/`?offset=…` → 400 `AUDIT_VERIFY_NO_PAGINATION`) instead of
+verifying a truncated window — fail-closed, so no verifier can ever
+receive a spurious break. Client-side verifiers still pulling the raw
+array must fetch the whole chain (`limit` ≥ total).
 
 **F34 — Info (second-connection write timing).**
 The A2 tamper opens its own `node:sqlite` connection while the server is

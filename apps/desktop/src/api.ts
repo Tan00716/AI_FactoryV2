@@ -180,6 +180,12 @@ export interface AuditRecord {
   id: string; ts: string; actor: string; action: string;
   entityType: string; entityId: string; details: Record<string, unknown>;
 }
+/** GET /api/audit/verify 的裸返回形状（服务端直接返回 audit.verify()，§32）。
+ *  brokenAt 仅 ok=false 时出现，是追加序（ORDER BY ts, rowid）链的下标，
+ *  不是 API 的 newest-first 序。 */
+export interface AuditChainVerification {
+  ok: boolean; verifiedCount: number; legacyCount: number; brokenAt?: number;
+}
 export interface DashboardStat {
   key: string; label: string; value: number | string | null;
   unit?: string; source: string; note?: string;
@@ -591,6 +597,10 @@ export const api = {
   agents: () => req<AgentFull[]>('/agents'),
   org: () => req<OrgNode[]>('/org'),
   audit: (limit = 100) => req<AuditRecord[]>(`/audit?limit=${limit}`),
+  /** §32 审计链完整性：GET /api/audit/verify 从 genesis 锚定验证整条链。
+   *  不接受 limit/offset（F33：截断窗口会误报 brokenAt:0，所以端点 400
+   *  拒绝分页）；角色门控 operator+（auth 模式下 viewer 403）。 */
+  auditVerify: () => req<AuditChainVerification>('/audit/verify'),
   deployments: () => req<DeploymentRecord[]>('/deployments'),
   memoryEntries: (scope: string, scopeId: string) =>
     req<MemoryEntry[]>(`/memory?scope=${encodeURIComponent(scope)}&scopeId=${encodeURIComponent(scopeId)}`),

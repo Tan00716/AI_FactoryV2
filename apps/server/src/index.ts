@@ -1610,6 +1610,24 @@ const server = createServer(async (req, res) => {
       const limit = Number(url.searchParams.get('limit') ?? 100);
       return json(res, 200, audit.list().slice(-limit).reverse());
     }
+    // GET /api/audit/verify — §32 chain verification (Batch 53, F33).
+    // The server verifies its FULL chain anchored at genesis and returns
+    // {ok, verifiedCount, legacyCount, brokenAt?} (brokenAt present only
+    // when ok is false, indexing the full append-order chain). Pagination
+    // is refused, not silently ignored: a truncated window's first record
+    // points outside the window and would falsely report brokenAt:0
+    // (F33), so `limit`/`offset` is a 400 — fail-closed. Role:
+    // operator/admin (see requiredRoleFor in auth.ts).
+    if (path === '/api/audit/verify' && method === 'GET') {
+      if (url.searchParams.has('limit') || url.searchParams.has('offset')) {
+        return json(res, 400, {
+          error:
+            'GET /api/audit/verify does not accept pagination — it always verifies the full chain from genesis',
+          code: 'AUDIT_VERIFY_NO_PAGINATION',
+        });
+      }
+      return json(res, 200, audit.verify());
+    }
 
     return json(res, 404, { error: 'Not found' });
   } catch (e) {

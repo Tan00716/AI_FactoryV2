@@ -111,3 +111,8 @@ manifest 的 `scope` 字段只有两种取值：
 - retention：`backups` 类别新增 `keepCount` 轴（保留最新 N 个，与天数轴取并集）；
   过期备份只在显式 `POST /api/retention/enforce`（确认字段 + hold 重评估）
   时整目录删除；已 staged 待恢复的备份无条件豁免。
+- 审计链自检（Batch 53）：`GET /api/audit/verify`（operator/admin 面）在服务端
+  锚定 genesis 验证整条 §32 链，返回 `{ok, verifiedCount, legacyCount,
+  brokenAt?}`；分页参数（`?limit`/`?offset`）直接 400
+  `AUDIT_VERIFY_NO_PAGINATION`（截断窗口会误报 brokenAt:0，见走查 F33）。
+  恢复前后可用它确认审计链不断。

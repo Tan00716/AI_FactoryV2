@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   api,
+  type AuditChainVerification,
   type FactoryStatus,
   type IncidentSummary,
   type QuotaBucketView,
@@ -48,6 +49,24 @@ export function OpsPanel() {
   const [buckets, setBuckets] = useState<QuotaBucketView[]>([]);
   const [incidents, setIncidents] = useState<IncidentSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // 审计链完整性（§32 / Batch 53）：idle → loading → ok / broken / error。
+  // broken 是追加序（ORDER BY ts, rowid）链的下标，非 API newest-first 序。
+  const [chain, setChain] = useState<AuditChainVerification | null>(null);
+  const [chainState, setChainState] = useState<'idle' | 'loading' | 'ok' | 'broken' | 'error'>('idle');
+  const [chainError, setChainError] = useState<string | null>(null);
+
+  const verifyChain = useCallback(async () => {
+    setChainState('loading');
+    setChainError(null);
+    try {
+      const v = await api.auditVerify();
+      setChain(v);
+      setChainState(v.ok ? 'ok' : 'broken');
+    } catch (e) {
+      setChainError((e as Error).message);
+      setChainState('error');
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -112,6 +131,42 @@ export function OpsPanel() {
           自身健康: <b>{watchdog?.selfHealth ?? '未知'}</b>
           <span className="muted">（ok = 心跳正常；degraded = 出现缺失 tick）</span>
         </p>
+      </Block>
+
+      <Block title="审计链完整性（§32）">
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={verifyChain}
+            disabled={chainState === 'loading'}
+            title="拉取全链验证：服务端从 genesis 锚定验证整条审计链，不分页（F33）。角色要求 operator+。"
+          >
+            {chainState === 'loading' ? '验证中…' : '拉取全链验证'}
+          </button>
+          <span className="muted" style={{ fontSize: 12 }}>
+            {chainState === 'idle' && '尚未验证'}
+            {chainState === 'loading' && '正在从 genesis 拉取全链…'}
+          </span>
+        </div>
+        {chainState === 'ok' && chain && (
+          <p style={{ margin: '8px 0 0', color: 'green' }}>
+            ✅ 链完整：已验证 {chain.verifiedCount} 条
+            {chain.legacyCount > 0 && (
+              <span className="muted">（{chain.legacyCount} 条 legacy 记录跳过，不影响链完整性）</span>
+            )}
+          </p>
+        )}
+        {chainState === 'broken' && chain && (
+          <div className="banner err" style={{ marginTop: 8 }}>
+            ❌ 审计链断裂：首个失败位于追加序下标 {chain.brokenAt}（按 ORDER BY ts, rowid，非列表新在前序）
+            —— 断裂前 {chain.verifiedCount} 条已验证，断裂后的记录不可信。detection-not-prevention：链阻止不了 DB 写者，它让篡改显形并定位。
+          </div>
+        )}
+        {chainState === 'error' && (
+          <div className="banner err" style={{ marginTop: 8 }}>
+            验证请求失败: {chainError}（权限不足时会是 403：端点要求 operator+ 角色）
+          </div>
+        )}
       </Block>
 
       <Block title={`Quota Buckets 用量（§27） — ${buckets.length} 个`}>

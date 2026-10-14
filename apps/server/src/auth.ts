@@ -487,6 +487,11 @@ export function requiredRoleFor(method: string, path: string): ApiRole | null {
   if (path === '/api/builds' || path.startsWith('/api/builds/')) {
     return method === 'GET' ? 'viewer' : 'admin';
   }
+  // Audit chain verification (§32, Batch 53): verifying the chain is an
+  // operator control action, not passive metadata reading — viewer does
+  // not get it. The endpoint always verifies the FULL chain anchored at
+  // genesis; pagination is refused, not silently truncated (F33).
+  if (path === '/api/audit/verify') return 'operator';
   return method === 'GET' ? 'viewer' : 'operator';
 }
 
