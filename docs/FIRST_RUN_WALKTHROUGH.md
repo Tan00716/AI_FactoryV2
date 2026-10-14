@@ -1,3 +1,68 @@
+# Walkthrough index (Batch 51)
+
+One line per walkthrough edition below; each edition is cumulative
+across files, not a replacement — `demo:e2e-v4` remains the authority
+for the B31–B36 governance chains, v5 for B37–B40, v6 for B41–B42 §81,
+v7 for B43–B45, v8 for B47. Every edition runs the real compiled
+server (fresh temp SQLite, hermetic `FACTORY_SECRETS_DIR`) over pure
+HTTP, zero mocks, unless the row says otherwise.
+
+| Edition | Batch | Chains | Verification | Key findings |
+|---|---|---|---|---|
+| v1 (first edition) | 11 | 8 steps (health → final report → restart) | test body ≈1.3s, full invocation ≈6.5s, 3 consecutive green; server suite 83/83 | F1–F5 |
+| v2 (second edition) | 21 | W1–W19 (authorization axis, outbox, secrets/exec, terminal SSE, backup schedules, worktrees, MCP stdio lifecycle, pipelines, SIGKILL) | 3 consecutive green (~6.4s each); v1 script still passes unchanged | F6, F7 (F7 closed B22) |
+| v3 (third edition) | 30 | D1–D5 (db broker), B1 (build SBOM), R1 (retention), M1–M2 (MCP persistence), B2, A1 (audit hash chain) | 1/1 green first run; failure chains walked, not described | F8, F9 (F9 closed B31) |
+| v4 (fourth edition) | 36 | P1 (pipelines), B1 (builds read), A1 (authority conflicts), D1 (task-scope ceiling), G1 (gates/delegations/proposals/disputes), R1 (project records), A2 (audit) | `npm run demo:e2e-v4`; one SIGKILL | F10–F13 |
+| v5 (fifth edition) | 41 | M1 (real MCP handshake), S1 (sandboxed build), A1 (dev attestation), T1 (needs-human repeated-failure + high-risk-deployment), E1 (env errors in-process) | `npm run demo:e2e-v5`; T1 budget-exceeded honestly skipped (F14) | F14 (closed B49), F15–F18 |
+| v6 (sixth edition) | 43 | P1 (policy-violation), S1 (auth brute-force), R1 (redaction monitor), Q1 (requirement-ambiguity) | `npm run demo:e2e-v6`; auth mode (`FACTORY_API_TOKENS`) | F19 (closed B44), F20, F21 (closed B46) |
+| v7 (seventh edition) | 46 | N1 (narrative survives persistence), K1 (backup project files + tamper-422), E1(a) (env-code passthrough, package-level), E1(b) (HTTP negative control) | `npm run demo:e2e-v7` (11-package build chain), 1/1 ×3 | F22 (closed B47), F23 |
+| v8 (eighth edition) | 48 | P1(a/b/c) (F22 path-policy gate + live-DB-plant threat model), M1(on) (enqueue-only 202), M1(off) (old sync behavior) | `npm run demo:e2e-v8`, 1/1 ×4; two server boots | F24, F25 |
+| redaction leg | 49 | R1–R4 (cross-chunk redaction over terminal SSE: split value, prefix-overlap pair, exactly-once marker, audit events) | 1/1 ×3; 2 detection events — below escalation threshold, no needs-human noise by design | F26, F27 |
+| §81 full-trigger sweep | 50 | S1–S8 (all eight §81 triggers; S8 = honest negative control) | 1/1 ×3 (~3.4s each); 7 OPEN rows, no env-error row | F28, F29 |
+| escalation leg | 51 | E1–E4 (4 detection events ≥ threshold → exactly 1 OPEN security-issue with honest narrative) | 1/1 ×3 (~7s each) | F30, F31 |
+
+## Findings index (F1–F31)
+
+Status: `closed` = fixed and pinned by tests; `open` = still true today
+(includes by-design and environment notes); `hygiene` = process note, no
+fix expected.
+
+| # | Level | Status | One-liner |
+|---|---|---|---|
+| F1 | High | open | v2 lifecycle cannot complete over HTTP — no finalize route; detour via v1 transition (no completion-predicate check, `final_seal` stays 0) |
+| F2 | Medium | open | requirements and §16 compatibility declarations are process memory, lost on restart |
+| F3 | Medium | open | v2 transitions do not seal the evidence they consume (`onSealEvidence` unwired) |
+| F4 | Low | open | run records are process memory (`GET /api/runtime/runs/:id` 404s after restart) |
+| F5 | Low | open | final-report `contentHash` covers `generatedAt` — compare counts, not hashes |
+| F6 | Medium | open | partial workspace rebuilds can leave `dist/` inconsistent; full `npm run build` resolves |
+| F7 | Low | closed (B22) | outbox read surface vs DB column vocabulary mismatch — fixed with exported `eventTypeOf` + deterministic projection |
+| F8 | Low | open | retention `evaluate` counts candidates per category, not files |
+| F9 | Low | closed (B31) | no `/api/builds` read route — added read-only builds surface |
+| F10 | Low | open | mid-run pipeline chain uses honestly-labeled row-shape simulation (real SIGKILL can't land mid-run) |
+| F11 | Low | open | `GET /api/pipelines/:id` prefers the live in-memory record; persisted view authoritative only after restart |
+| F12 | Low | open | authority-conflict registry is in-memory; OPEN conflicts lost on restart |
+| F13 | Info | hygiene | scope contract is enforced, not approximated (server's 403 names the missing permission) |
+| F14 | Medium | closed (B49) | `budget-exceeded` had no deterministic HTTP trigger — `budgets: {maxSteps,timeMs,maxRetries}` added, fail-closed |
+| F15 | Low | open | M1 leg needs the npm registry (loud skip in this environment) |
+| F16 | Low | open | sandbox assertion is environment-adaptive (`BUILD_SANDBOXED` or honest `SANDBOX_UNAVAILABLE`) |
+| F17 | Info | hygiene | attestation null path pinned in-process instead of a second boot |
+| F18 | Info | hygiene | editions are cumulative across files, not replacements |
+| F19 | Medium | closed (B44) | honest narrative did not survive persistence — now `detailJson.narrative` on all 8 builders |
+| F20 | Low | open | documented product rule: a legit login clears the brute-force counter (phase ordering matters) |
+| F21 | Info | closed (B46) | `GET /api/audit` bare array pinned as the formal contract (tripwire test) |
+| F22 | Low | closed (B47) | backup collector trusted the project record's `path` — 3-layer fix (record gate + collector defense + restore defense) |
+| F23 | Info | hygiene | demo chains that import package dists must build them first (loud resolve failure otherwise) |
+| F24 | Info | hygiene | live DB plant relies on the server being idle; stop-plant-restart is the deterministic fallback |
+| F25 | Info | hygiene | parallel walkthroughs share the 24xxx–44xxx random port pool; collisions fail boot loudly |
+| F26 | Info | hygiene | metadata-only contract = absence of a `value` key, not string containment |
+| F27 | Info | hygiene | `GET /api/audit` rows are camelCase (`entityType`/`entityId`) |
+| F28 | Info | open | 7/8 §81 triggers fire over HTTP; `irrecoverable-env-error` is a pinned negative control — S8 is the flip point |
+| F29 | Info | hygiene | auth-mode walk ordering: brute-force leg's 10 bad requests must be back-to-back |
+| F30 | Info | hygiene | escalation threshold counts detection *events*, not summed hit totals |
+| F31 | Info | hygiene | escalate-once-per-pattern; window-expiry reset covered by package unit tests |
+
+---
+
 # First-Run Walkthrough — verified 2026-10-12 (Batch 11-1)
 
 An end-to-end check of the new-user story: a fresh server over a fresh
@@ -609,3 +674,46 @@ asserts exactly one OPEN row, and the walk never emits more than one
 input line, so no second pattern exists to fire again. Window expiry
 resetting (full age-out → may escalate again) is covered by the
 package-level unit tests, not this walk.
+
+## Walkthrough: audit-chain integrity leg (Batch 52)
+
+The §32 hash chain (`packages/core/src/audit.ts`: `AuditLog.record`
+stamps `prevHash`/`summaryHash`, `verifyAuditChain` re-derives) is the
+core "append-only and immutable" invariant, but no walkthrough had ever
+verified end-to-end that *tampering is detected*. Single `it`, pure HTTP,
+zero mocks, real compiled server over a fresh temp SQLite file. Hermetic:
+temp DB + temp `FACTORY_SECRETS_DIR`. Dual-mode: node builtins + fetch +
+the real compiled `@ai-factory/core` dist, zero src imports.
+
+| Leg | What it asserts |
+|---|---|
+| A1 | three real `POST /api/projects` → `GET /api/audit?limit=200` (bare array, newest first — the F21 contract) reversed to append order → `verifyAuditChain` returns `ok:true`, `legacyCount:0`, `verifiedCount` equal to the record count (fresh DB: every record is chained) |
+| A2 | one middle record's `details` rewritten *directly in the SQLite file* via a second `node:sqlite` connection — the "attacker with DB access" the append-only design defends against; there is intentionally no HTTP mutation path → re-fetch → `verifyAuditChain` returns `ok:false` with `brokenAt` pinpointing the tampered record's index (found by id, not assumed), and `verifiedCount` equals exactly the records before the break |
+
+Verified 1/1 three consecutive runs. The honest claim is
+detection-not-prevention: the chain cannot stop a DB writer; it makes
+the tamper evident and locates it. There is deliberately no HTTP verify
+endpoint — the server is the writer, the operator is the verifier, and
+the chain is verified where it is consumed.
+
+## Findings (audit-chain leg)
+
+**F32 — Info (verify append order, not API order).**
+`GET /api/audit` returns newest-first (F21 contract) while the chain
+commits to append order (`ORDER BY ts, rowid` in the store). A verifier
+feeding the raw API array to `verifyAuditChain` gets `brokenAt:0` on a
+perfectly intact chain — the walk reverses the bare array first.
+
+**F33 — Info (pagination truncates genesis).**
+`limit` smaller than the chain length yields a suffix whose first
+record's `prevHash` points outside the window → spurious `brokenAt:0`.
+Empirically confirmed with a one-off probe: full chain of 20 records
+verifies `ok:true`; `limit=2` on the same DB verifies `ok:false,
+brokenAt:0`. A future verify endpoint must anchor from genesis; until
+then verifiers must fetch the whole chain (`limit` ≥ total).
+
+**F34 — Info (second-connection write timing).**
+The A2 tamper opens its own `node:sqlite` connection while the server is
+idle between HTTP calls; a 10-attempt retry on lock failure is in place
+because the lock state is timing-adjacent (never hit in practice — the
+server holds no long write transactions on `audit_logs`).
