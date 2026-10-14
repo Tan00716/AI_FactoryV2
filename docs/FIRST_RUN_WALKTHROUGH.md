@@ -359,3 +359,43 @@ reads into an attack phase will silently reset the count.
 `{records: […]}`. The v6 `auditRecords` helper accepts both shapes
 (v5's `auditActions` already did); future legs should not assume the
 envelope.
+
+## Walkthrough (seventh edition, Batch 46)
+
+Walks the Batch 43–45 links, single test, pure HTTP, zero mocks (the
+E1-package leg runs the real compiled `@ai-factory/runtime` in-process,
+also zero mocks). Run with `npm run demo:e2e-v7` (builds
+mcp/tools/db/worktrees/employee-factory/runtime/cicd/security/secrets/requirements/server
+first — the test imports the compiled runtime dist). v4 remains the
+authority for the B31–B36 governance chains, v5 for the B37–B40 chains,
+v6 for the B41–B42 §81 chains; v7 covers B43–B45 only.
+
+| Chain | What is walked | What the run asserts |
+|---|---|---|
+| N1 | `POST /api/workforce/employees` (empty `taskScope`) → 403 ×3 by one granter → `GET /api/needs-human?status=open` | exactly one OPEN `policy-violation`; the persisted `detailJson.narrative` contains the honest qualifier ("The policy held on every attempt — no elevation occurred") — the Batch 44 F19 fix, visible through the read API |
+| K1 | temp project tree (working files + `.ai/`) → `POST /api/projects` with its `path` → `POST /api/backup` → tamper one backed-up copy → `POST /api/restore/project-files` | manifest `scope` is `'factory-database+project-files'` (honest: files were actually collected); manifest lists `projects/<id>/src/index.ts` and `projects/<id>/.ai/config.yaml`; tampered backup → 422 and the live project tree is untouched (validation precedes any write) |
+| E1(a) | in-process: default stepFn, zero custom stepFn — a tool throwing `MissingBinaryError` 3×; then a tool throwing a plain `Error` 3× | env tool → run `escalated`, `reasonCode` `LOOP_STAGNATION`, `stagnationSignature` `ENV_BINARY_MISSING` (the Batch 45 narrow passthrough); plain error → signature stays `tool:<name>:fail` (masking preserved for ordinary tools) |
+| E1(b) | `POST /api/agents` → `POST /api/projects` → `POST /api/tasks` → `POST /api/runtime/runs` (script calls a nonexistent tool 3×) → poll to terminal → `GET /api/needs-human?status=open` | run `ESCALATED`; exactly one upgrade for that run, `reason: 'repeated-failure'`; zero `irrecoverable-env-error` (the env gate does not false-positive; the HTTP positive path still does not exist — Batch 44/45 boundary, pinned as code by the tripwire test) |
+
+## Findings (seventh edition)
+
+**F22 — Low (backup collection trusts the project record's `path`).**
+`POST /api/projects` accepts `path` as a plain string — no absolute-path
+check, no existence check, no containment check (`apps/server/src/index.ts`
+passes `String(b['path'] ?? '')` straight into the row). `createBackup`
+then resolves and walks whatever directory that field points at (bounded
+only by the default exclusions and the 512MiB total cap). The restore side
+*does* have `..` containment checks, but the collection side will happily
+read an unrelated tree (e.g. a record pointing at `/etc`) into the backup
+directory. In open (unauthenticated) mode any API caller can plant such a
+record. Not a walkthrough artifact — a real product gap: collection should
+either validate containment at record-creation time or refuse to back up
+paths outside an operator-configured project root. Left for a product
+batch; the walkthrough only uses its own temp dir.
+
+**F23 — Info (walkthrough hygiene).**
+The v7 test imports the compiled `@ai-factory/runtime` dist for the E1(a)
+leg, so `demo:e2e-v7` must build `@ai-factory/runtime` before running the
+test (its chain does, mirroring v6). A future leg that needs more package
+imports must extend the demo chain the same way — the test fails loudly
+with a resolve error otherwise, not silently.

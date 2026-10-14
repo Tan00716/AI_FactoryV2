@@ -1580,6 +1580,12 @@ const server = createServer(async (req, res) => {
       if (!taskId) return json(res, 400, { error: 'taskId is required' });
       return json(res, 200, evidence.listByTask(taskId));
     }
+    // GET /api/audit — formal contract (Batch 46, F21): returns a BARE JSON
+    // ARRAY of audit records, newest first; `limit` caps the count
+    // (default 100). Never an envelope ({records:[...]} / {items:[...]}):
+    // ~27 server tests plus the /api/evidence sibling consume the bare
+    // array. Callers must not assume an envelope; any future shape change
+    // is a breaking API change and must update audit-list-contract.test.ts.
     if (path === '/api/audit' && method === 'GET') {
       const limit = Number(url.searchParams.get('limit') ?? 100);
       return json(res, 200, audit.list().slice(-limit).reverse());
