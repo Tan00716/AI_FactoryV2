@@ -561,3 +561,51 @@ bad requests back-to-back with no successful admin read between them (a
 login clears the source counter). Doing S1 first makes the ordering
 obvious; any later phase's admin reads only clear an already-spent
 counter.
+
+## Walkthrough: redaction → needs-human escalation leg (Batch 51)
+
+Companion to the Batch 49 redaction leg. That leg observed exactly 2
+detection events from its session and asserted NO escalation (below the
+aggregation threshold) — this leg crosses it. Single `it`, pure HTTP,
+zero mocks, real compiled server + real pty. Hermetic: temp DB + temp
+`FACTORY_SECRETS_DIR`. Dual-mode: node builtins + fetch, zero src
+imports.
+
+One secret goes into the hermetic vault; a terminal session gets it as a
+`secretEnv` ref. One input line runs four `printf '%s' "$VAR"` with
+shell-side `sleep 0.7` between them, so the four full secret prints are
+contiguous in the transcript but arrive as four separate pty data
+events → four redactor pushes. With the Batch 48 cross-chunk carry
+(`carryLen` = secret length − 1), the first push holds, the next three
+each emit a hit, and the stream-close flush emits the last — 4
+`SECRET_REDACTED_HIT` detection events for the one session, ≥ the
+aggregation threshold (≥3 events in 5 min).
+
+| Leg | What it asserts |
+|---|---|
+| E1 | ≥3 `SECRET_REDACTED_HIT` audit events for the session (the escalation precondition — asserted, not assumed), entityType `terminal`, never carrying secret content |
+| E2 | `GET /api/needs-human?status=open` has exactly one OPEN `security-issue` row from `redaction-monitor:terminal:<sessionId>`, `requiredDeciderLevel: operator` |
+| E3 | that row's `detailJson.narrative` carries the honest qualifier ("human judgment needed" — a single hit can be benign, the aggregated pattern is what escalates) and never carries secret content |
+| E4 | the SSE stream has zero secret bytes (Batch 48 guarantee holds), redaction markers present, and `NEEDS_HUMAN_RAISED` is audited for the escalation row |
+
+Verified 1/1 three consecutive runs (~7 s each; 4 detection events per
+run). Note the trigger is the redaction monitor's own aggregation, not
+`budget-exceeded` — it is the second §81 path after S1 whose "repeated
+dumping" pattern escalates from detection events rather than a run
+terminal state.
+
+## Findings (escalation leg)
+
+**F30 — Info (threshold semantics: events, not hits).**
+`RedactionHitAggregator.noteHit` counts detection *events* (one per
+`recordRedactionHit` call), not the summed hit totals — a push emitting
+2 hits still contributes one event toward the threshold. The walk emits
+four separate pty prints (not one big one) deliberately, so the event
+count is what crosses 3.
+
+**F31 — Info (escalate-once-per-pattern).** The aggregator's `escalated`
+set means a source fires at most once per active pattern — the E2 leg
+asserts exactly one OPEN row, and the walk never emits more than one
+input line, so no second pattern exists to fire again. Window expiry
+resetting (full age-out → may escalate again) is covered by the
+package-level unit tests, not this walk.
