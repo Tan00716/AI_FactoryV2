@@ -280,14 +280,27 @@ B37–B40 only.
 
 ## Findings (fifth edition)
 
-**F14 — Medium (honest gap in HTTP reach, no product-code change).**
-`budget-exceeded` has no deterministic HTTP trigger: the runtime route's
+**F14 — Medium (honest gap in HTTP reach; CLOSED in Batch 49).**
+`budget-exceeded` had no deterministic HTTP trigger: the runtime route's
 default stepFn returns `COMPLETE` at the first `EVALUATE`, so every HTTP
-run finishes in ~6 steps and can never reach `maxSteps: 40`. The emission
-code path (`buildRunUpgradeRecord`/`emitRunNeedsHuman`) is real and
-package-tested (`runner-reason-code.test.ts` 4/4); the walkthrough does
-not fake a trigger. If a future route lets callers stretch runs (custom
-step functions, pause/resume marathons), this leg should be re-walked.
+run finished in ~6 steps and could never reach `maxSteps: 40`. The emission
+code path (`buildRunUpgradeRecord`/`emitRunNeedsHuman`) was real and
+package-tested (`runner-reason-code.test.ts` 4/4); the walkthrough did
+not fake a trigger. **Batch 49 fix:** `POST /api/runtime/runs` and
+`POST /api/runtime/runs/:id/resume` now accept an optional `budgets`
+object (`{ maxSteps?, timeMs?, maxRetries? }`, fail-closed validation →
+400 `INVALID_BUDGETS`), resolved per-request by `resolveRunLoopBudgets()`
+and threaded to both the `AgentLoop` and the manifest's
+`budgetLimits.loop` snapshot (the Batch-15 no-drift invariant, now
+per-request). With `budgets: { maxSteps: 3 }` the caller sets a real,
+enforced limit and the run genuinely exceeds it → `BUDGET_EXCEEDED` →
+'budget-exceeded' emission over pure HTTP — the first deterministic HTTP
+trigger for this §81 reason. Pinned by
+`apps/server/tests/runtime-run-budgets.test.ts` (11/11: unit resolver +
+HTTP positive path + manifest honesty + fail-closed validation +
+defaults-unchanged regression + resume-path validation). If a future
+route lets callers stretch runs (custom step functions, pause/resume
+marathons), this leg should be re-walked.
 
 **F15 — Low (environment, no product-code change).**
 The M1 leg depends on reaching the npm registry (npx) or a local
@@ -457,3 +470,51 @@ port range is shared by all concurrently running walkthroughs and tests.
 The boot loops treat a collision as a boot failure (loud), never as a
 misread assertion. As parallel batches multiply, a wider or coordinated
 port scheme would reduce flaky boot retries.
+
+## Walkthrough: redaction leg (Batch 49)
+
+The v1–v8 series never covered secret redaction; Batch 48 made the
+terminal SSE stream cross-chunk safe (`createCrossChunkRedactor` in
+`packages/secrets/src/broker.ts`, wired per-SSE-subscription in
+`apps/server/src/routes/terminal.ts`). This leg
+(`apps/server/tests/first-run-walkthrough-redaction.test.ts`, single test,
+pure HTTP, zero mocks, real server + real pty) drives it end to end:
+three real secrets in the hermetic file vault, a terminal session created
+with `secretEnv` refs, each secret emitted SPLIT across two pty writes.
+
+Deterministic chunk forcing (no timing luck): one input line runs
+`printf '%s' "${VAR:0:12}"; sleep 0.7; printf '%s' "${VAR:12}"` — the halves
+are contiguous in the transcript (no shell prompt between them) but arrive
+as two separate pty data events 0.7s apart → two separate redactor pushes.
+`stty -echo` first, so command lines are not echoed and the marker line can
+be asserted exactly-once. A single SSE subscription reads to the
+session's `close` event; the handler flushes the held tail BEFORE the close
+frame, so the collected text is the complete redacted transcript. The
+shell is ended with `exit` (no DELETE — that would 404 the stream's
+session record).
+
+| Chain | What is walked | What the run asserts |
+|---|---|---|
+| R1 | realistic token (`walk-b49-sentinel-<ts>`) split mid-value across two chunks | stream contains zero bytes of the value; `***` present |
+| R2 | prefix-overlap pair: short value `walk-b49-pre` is a strict prefix of `walk-b49-pre-longer`; the long one is emitted with the split exactly at the short/long boundary | long value fully redacted; no partial `-longer` tail leaks (the Batch 48 `xxAB\|CDEFyy` leak scenario, live); short value never appears standalone |
+| R3 | plain `NORMAL-<marker>` line with echo off | appears exactly once in the collected stream — no duplication, no loss |
+| R4 | `GET /api/audit` after the stream closes | ≥1 `SECRET_REDACTED_HIT` events, all `entityType: 'terminal'` + `entityId` = the session; no event carries secret content |
+
+Verified 1/1 three consecutive runs. Observed: exactly 2 redaction
+markers (one per emitted secret) and exactly 2 detection events — below
+the redaction-monitor escalation threshold of 3, so this leg creates no
+needs-human noise by design.
+
+## Findings (redaction leg)
+
+**F26 — Info (walkthrough hygiene: metadata-only means "no `value` key").**
+The first draft asserted `!JSON.stringify(putBody).includes(secretValue)`
+on `PUT /api/secrets/:name`; it failed on the prefix-overlap secret whose
+value equals its name (`walk-b49-pre`) — the metadata legitimately carries
+the name. The honest contract (as the b43 walkthrough asserted) is the
+absence of a `value` key in the response, not string containment.
+
+**F27 — Info (test hygiene: audit rows are camelCase).**
+`GET /api/audit` rows use `entityType`/`entityId` (mapped in
+`packages/db/src/db.ts`), not the snake_case DB column names. Adjusted
+the R4 assertions accordingly.

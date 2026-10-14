@@ -1,8 +1,16 @@
 /**
  * Agent Runtime routes — spec §24–§27.
  *
- *  POST /api/runtime/runs        {agentId, taskId, script?, routeRequest?}
- *                               → executes an agent loop with the StubAdapter
+ *  POST /api/runtime/runs        {agentId, taskId, script?, routeRequest?, budgets?}
+ *                               → executes an agent loop with the StubAdapter.
+ *                               `budgets` (Batch 49, F14) optionally overrides
+ *                               the loop budgets {maxSteps, timeMs,
+ *                               maxRetries} (RUN_LOOP_BUDGETS defaults);
+ *                               malformed → 400 INVALID_BUDGETS. This is what
+ *                               makes §81 'budget-exceeded' deterministically
+ *                               reachable over HTTP: the default stepFn
+ *                               completes at the first EVALUATE, so the
+ *                               fixed 40-step budget could never be hit.
  *  GET  /api/runtime/runs        list runs — each record joined server-side
  *                               with its manifest's key columns, the live
  *                               checkpoint count, the process-live flag and
@@ -317,6 +325,63 @@ export function isRuntimeRunLive(runId: string): boolean {
  * budgets the run actually executes under.
  */
 export const RUN_LOOP_BUDGETS = { maxSteps: 40, timeMs: 60_000, maxRetries: 3 } as const;
+
+/** The three AgentLoop budgets a run executes under (matches RunManifestBudgetLimits['loop']). */
+export interface RunLoopBudgets {
+  maxSteps: number;
+  timeMs: number;
+  maxRetries: number;
+}
+
+const RUN_LOOP_BUDGET_KEYS = ['maxSteps', 'timeMs', 'maxRetries'] as const;
+
+/**
+ * Batch 49 (F14) — per-request run budget overrides.
+ *
+ * `POST /api/runtime/runs` and `POST /api/runtime/runs/:id/resume` accept an
+ * optional `budgets` object; any of the three loop budgets may be overridden.
+ * This is what makes §81 'budget-exceeded' deterministically reachable over
+ * HTTP for the first time: the default stepFn completes at the first
+ * EVALUATE (~6 phases), so the fixed 40-step budget could never be hit —
+ * with `budgets: { maxSteps: 3 }` the caller sets a real, enforced limit
+ * and the run genuinely exceeds it (BUDGET_EXCEEDED → 'budget-exceeded'
+ * emission, same machinery as the package-level path).
+ *
+ * Fail-closed validation: `budgets` must be a plain object; only the three
+ * known keys are accepted (an unknown key is almost certainly a typo like
+ * `maxsteps`, and silently ignoring it would mislead the caller into
+ * thinking their limit applies); every provided value must be a positive
+ * safe integer. Violations are reported, never defaulted.
+ */
+export function resolveRunLoopBudgets(
+  body: Record<string, unknown>,
+): { ok: true; budgets: RunLoopBudgets } | { ok: false; error: string; code: string } {
+  const budgets: RunLoopBudgets = { ...RUN_LOOP_BUDGETS };
+  const raw = body['budgets'];
+  if (raw === undefined || raw === null) return { ok: true, budgets };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'budgets must be an object', code: 'INVALID_BUDGETS' };
+  }
+  const input = raw as Record<string, unknown>;
+  for (const key of Object.keys(input)) {
+    if (!(RUN_LOOP_BUDGET_KEYS as readonly string[]).includes(key)) {
+      return { ok: false, error: `unknown budget key '${key}'`, code: 'INVALID_BUDGETS' };
+    }
+  }
+  for (const key of RUN_LOOP_BUDGET_KEYS) {
+    const v = input[key];
+    if (v === undefined) continue;
+    if (!Number.isSafeInteger(v) || (v as number) <= 0) {
+      return {
+        ok: false,
+        error: `budgets.${key} must be a positive integer`,
+        code: 'INVALID_BUDGETS',
+      };
+    }
+    budgets[key] = v as number;
+  }
+  return { ok: true, budgets };
+}
 
 /**
  * The active manifest store. Module-level for the same reason as the
@@ -1130,6 +1195,15 @@ export interface ExecuteRuntimeRunDeps {
     resumeOf: { runId: string; stepPosition: number };
     budgetBaseline: Record<string, number>;
   };
+  /**
+   * Batch 49 (F14) — the effective loop budgets for this run, resolved
+   * per-request by resolveRunLoopBudgets(). Absent → RUN_LOOP_BUDGETS.
+   * Threaded to the AgentLoop here; the manifest snapshot is threaded
+   * separately at each construction site from the same resolved value,
+   * so the snapshot can never drift from the budgets the run executes
+   * under (the Batch-15 invariant, now per-request).
+   */
+  budgets?: RunLoopBudgets;
 }
 
 /**
@@ -1221,7 +1295,7 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
       // capture reads this harness's BudgetTracker, which runAgent
       // attaches before the loop starts.
       const loop = new AgentLoop({
-        budgets: { ...RUN_LOOP_BUDGETS },
+        budgets: deps.budgets ?? { ...RUN_LOOP_BUDGETS },
         onTrace: createRunCheckpointCapture({
           ctx,
           runId: id,
@@ -1390,6 +1464,8 @@ export function createResumedRunManifest(
     adapterName: string;
     routeRequestProvided: boolean;
     createdAt: string;
+    /** Batch 49 (F14) — effective loop budgets, resolved per-request. */
+    budgets: RunLoopBudgets;
   },
 ): { manifest: RunManifest; completeManifest: (facts: RunManifestCompletion) => void } {
   const { runId, agent, task, grantedTools } = args;
@@ -1406,7 +1482,7 @@ export function createResumedRunManifest(
     },
     grantedTools: [...grantedTools],
     budgetLimits: {
-      loop: { ...RUN_LOOP_BUDGETS },
+      loop: { ...args.budgets },
       extended: { ...DEFAULT_EXTENDED_BUDGETS },
     },
     contextManifestHash: assembleRunCheckpoint({
@@ -1604,6 +1680,13 @@ export async function handleRuntimeRoutes(
   if (method === 'POST' && resumeMatch) {
     const sourceId = resumeMatch[1];
     const b = await ctx.readBody(req);
+    // Batch 49 (F14) — same per-request budget overrides as POST /runs.
+    const resolvedBudgets = resolveRunLoopBudgets(b);
+    if (!resolvedBudgets.ok) {
+      ctx.json(res, 400, { error: resolvedBudgets.error, code: resolvedBudgets.code });
+      return true;
+    }
+    const loopBudgets = resolvedBudgets.budgets;
     const source = runStore.get(sourceId);
     if (!source) {
       return ctx.json(res, 404, { error: 'run not found' }), true;
@@ -1738,6 +1821,7 @@ export async function handleRuntimeRoutes(
       adapterName: adapter.name,
       routeRequestProvided: b['routeRequest'] != null,
       createdAt: newRec.createdAt,
+      budgets: loopBudgets,
     });
     // §91 — agent runs are first-class bus events.
     ctx.bus.emit(
@@ -1786,6 +1870,7 @@ export async function handleRuntimeRoutes(
       completeManifest,
       budgetTracker: seedBudgetTracker(checkpoint.budgetUsage),
       initialStepPosition: checkpoint.stepPosition,
+      budgets: loopBudgets,
       resumeLink: {
         resumeOf: { runId: sourceId, stepPosition: checkpoint.stepPosition },
         budgetBaseline,
@@ -1820,6 +1905,16 @@ export async function handleRuntimeRoutes(
       ctx.json(res, 400, { error: 'agentId and taskId are required' });
       return true;
     }
+
+    // Batch 49 (F14) — per-request budget overrides. Validated before any
+    // work happens: a malformed `budgets` object fails the request, it
+    // never silently falls back to defaults.
+    const resolvedBudgets = resolveRunLoopBudgets(b);
+    if (!resolvedBudgets.ok) {
+      ctx.json(res, 400, { error: resolvedBudgets.error, code: resolvedBudgets.code });
+      return true;
+    }
+    const loopBudgets = resolvedBudgets.budgets;
 
     // §26 — resolve the operator tool allowlist for this run. An entry
     // naming an unregistered tool is a configuration error: audit it
@@ -1960,7 +2055,7 @@ export async function handleRuntimeRoutes(
       },
       grantedTools: [...grantedTools],
       budgetLimits: {
-        loop: { ...RUN_LOOP_BUDGETS },
+        loop: { ...loopBudgets },
         extended: { ...DEFAULT_EXTENDED_BUDGETS },
       },
       contextManifestHash: assembleRunCheckpoint({
@@ -2036,6 +2131,7 @@ export async function handleRuntimeRoutes(
       adapter,
       routeRequest: b['routeRequest'] != null ? b['routeRequest'] : undefined,
       completeManifest,
+      budgets: loopBudgets,
     });
 
     return ctx.json(res, 202, { id, status: 'RUNNING' }), true;

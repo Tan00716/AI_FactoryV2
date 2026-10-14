@@ -15,6 +15,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   ToolExecutor,
   ToolRegistry,
+  registerBuiltinTools,
   type ToolCall,
   type ToolPrincipal,
 } from '@ai-factory/tools';
@@ -24,7 +25,14 @@ import { createImplementationGate, createServerToolRunner } from '../tool-runner
 const PREFIX = '/api/tools';
 
 // In-memory prototype singletons (consistent with other route modules here).
-const registry = new ToolRegistry();
+// Batch 49 — the 16 builtin §33 definitions are pre-registered at boot:
+// previously GET /api/tools returned [] until an operator hand-registered
+// every definition via POST /api/tools/register. Pre-registration is
+// metadata only — execution still goes through the implementation gate
+// (definition-only → DENIED), the server runner (wired tools only) and
+// the executor's capability/approval checks, so nothing here can turn
+// "not implemented" into a fake success.
+const registry = registerBuiltinTools(new ToolRegistry());
 // Batch 21: the prototype runner (exitCode 0 for every tool — a silent
 // fake success) is gone. This executor runs the real server runner:
 // runtime.echo/add as pure functions, shell.execute through the SAME

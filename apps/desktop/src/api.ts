@@ -305,16 +305,41 @@ export interface FinalReport {
     hashAlgorithm: 'sha256';
   };
 }
-/** 备份列表项（GET /api/backups 的 manifest 摘要）。 */
+/** 备份列表项（GET /api/backups 的 manifest 摘要）。
+ *  scope：'factory-database'（仅数据库）或 'factory-database+project-files'
+ * （Batch 45 起：至少收录 1 个项目工作文件时为后者）；projectFiles 仅在
+ *  scope 含项目文件时出现。 */
 export interface BackupSummary {
   backupId: string;
   kind: 'manual' | 'pre-restore' | 'scheduled';
   createdAt: string;
   appVersion: string;
+  scope: string;
+  projectFiles?: {
+    projects: Array<{
+      projectId: string; name: string; fileCount: number; bytes: number; skipped: number;
+    }>;
+  };
   tables: Record<string, number>;
   totalRows: number;
   bytes: number;
 }
+/** POST /api/restore/project-files 的成功响应（Batch 45 起）。
+ *  与 POST /api/restore 不同：项目文件恢复立即生效，不排队重启；
+ *  恢复前服务端已复制当前项目文件到 preRestoreDir（回滚可再回滚）。
+ *  校验失败 → 422 {error, problems}，现树不动。 */
+export interface ProjectFilesRestoreResult {
+  ok: boolean;
+  backupId: string;
+  projects: Array<{
+    projectId: string; name: string; path: string; restored: number; bytes: number;
+  }>;
+  skipped: Array<{ projectId: string; name: string; reason: string }>;
+  preRestoreDir: string;
+}
+/** 桌面端暂无 /api/needs-human 面板：§81 needsHuman 升级记录的
+ *  detailJson.narrative 目前只在服务端测试与走查中覆盖，桌面 UI
+ *  不读取该端点（无不一致，仅记录覆盖缺口）。 */
 /** 已排队待重启生效的恢复（GET /api/backups 的 pendingRestore）。 */
 export interface PendingRestore {
   backupId: string;
@@ -584,10 +609,18 @@ export const api = {
     req<{ backupId: string; kind: string; dir: string }>(
       '/backup', { method: 'POST', body: JSON.stringify({}) },
     ),
-  /** 排队恢复：服务端校验备份后 staged，重启服务端才生效（restartRequired）。 */
+  /** 排队恢复：服务端校验备份后 staged，重启服务端才生效（restartRequired）。
+   *  注意：只恢复数据库快照，项目工作文件不在此路径。 */
   stageRestore: (backupId: string) =>
     req<RestoreStageResult>(
       '/restore', { method: 'POST', body: JSON.stringify({ backupId }) },
+    ),
+  /** Batch 45：恢复备份中的项目工作文件到 live 项目目录。立即生效，
+   *  不排队重启；校验失败（422）则现树不动。preRestoreDir 为服务端
+   *  恢复前复制的当前文件回滚点。 */
+  restoreProjectFiles: (backupId: string) =>
+    req<ProjectFilesRestoreResult>(
+      '/restore/project-files', { method: 'POST', body: JSON.stringify({ backupId }) },
     ),
   /** §28.3 某 run 的全部 checkpoint（按首次捕获顺序）。 */
   runCheckpoints: (runId: string) =>

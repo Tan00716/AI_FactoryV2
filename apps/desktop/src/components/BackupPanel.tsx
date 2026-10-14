@@ -3,19 +3,26 @@ import {
   api,
   type BackupSummary,
   type PendingRestore,
+  type ProjectFilesRestoreResult,
   type RestoreStageResult,
 } from '../api';
 
 /**
- * 备份 / 恢复面板（运维区）：工厂数据库的备份与排队恢复。
+ * 备份 / 恢复面板（运维区）：工厂数据库的备份与排队恢复，以及
+ *  项目工作文件的备份与立即恢复（Batch 45 起）。
  *  - GET /api/backups：备份列表（manifest 摘要）+ 待生效恢复状态
- *  - POST /api/backup：创建备份（服务端 VACUUM INTO 一致性快照）
- *  - POST /api/restore：校验并排队恢复 —— 破坏性相邻操作，UI 必须先
- *    展开确认区，讲清三件事后才允许提交：① 服务端会先自动备份当前
- *    数据库（pre-restore，可回滚）；② 恢复在下次服务端重启时才生效，
- *    运行中的服务继续使用现库；③ 备份范围仅为工厂数据库，项目工作
- *    文件不在内。对服务端返回（restartRequired、preRestoreBackupId、
- *    message）与拒绝原因（校验 problems、409 已有排队）如实呈现。
+ *  - POST /api/backup：创建备份（服务端 VACUUM INTO 一致性快照 +
+ *    项目工作文件收录，Batch 45；scope 字段如实标注范围）
+ *  - POST /api/restore：校验并排队恢复数据库 —— 破坏性相邻操作，
+ *    UI 必须先展开确认区，讲清三件事后才允许提交：① 服务端会先自动
+ *    备份当前数据库（pre-restore，可回滚）；② 恢复在下次服务端重启
+ *    时才生效，运行中的服务继续使用现库；③ 只恢复数据库，项目工作
+ *    文件不受影响（项目文件恢复走独立端点）。
+ *  - POST /api/restore/project-files：校验并立即恢复备份中的项目
+ *    工作文件到 live 项目目录 —— 同样是破坏性操作，确认区必须讲清：
+ *    ① 立即生效，不排队重启（与数据库恢复不对称）；② 恢复前服务端
+ *    已复制当前文件到 preRestoreDir（可再回滚）；③ 校验失败（422）
+ *    则现树不动。对服务端返回与拒绝原因（校验 problems）如实呈现。
  */
 
 function fmtTime(iso?: string | null): string {
@@ -37,6 +44,9 @@ export function BackupPanel() {
   const [err, setErr] = useState('');
   const [problems, setProblems] = useState<string[]>([]);
   const [busy, setBusy] = useState('');
+  /** 项目文件恢复确认区中的 backupId（立即生效路径，独立于数据库恢复排队）。 */
+  const [confirmFilesId, setConfirmFilesId] = useState<string | null>(null);
+  const [stagedFiles, setStagedFiles] = useState<ProjectFilesRestoreResult | null>(null);
   /** backupId 正在确认区中等待操作者确认（null = 无确认进行中）。 */
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [staged, setStaged] = useState<RestoreStageResult | null>(null);
@@ -90,16 +100,40 @@ export function BackupPanel() {
     }
   };
 
+  const onConfirmProjectFilesRestore = async () => {
+    if (!confirmFilesId) return;
+    setBusy('restore-files');
+    setErr('');
+    setProblems([]);
+    try {
+      const res = await api.restoreProjectFiles(confirmFilesId);
+      setStagedFiles(res);
+      setConfirmFilesId(null);
+      await load();
+    } catch (e) {
+      const ex = e as Error & { problems?: string[] };
+      setErr(`项目文件恢复失败：${ex.message}`);
+      if (Array.isArray(ex.problems)) setProblems(ex.problems);
+      await load();
+    } finally {
+      setBusy('');
+    }
+  };
+
   const confirmTarget = confirmId
     ? backups.find((b) => b.backupId === confirmId)
+    : undefined;
+  const confirmFilesTarget = confirmFilesId
+    ? backups.find((b) => b.backupId === confirmFilesId)
     : undefined;
 
   return (
     <div className="panel">
-      <h2>备份 / 恢复 <span className="muted">工厂数据库 · VACUUM INTO 快照 + manifest 校验</span></h2>
+      <h2>备份 / 恢复 <span className="muted">VACUUM INTO 快照 + manifest 校验</span></h2>
       <p className="muted">
-        备份范围仅为工厂数据库（项目、任务、证据、审批、审计链、需求、run 记录等）；
-        项目工作文件（源码树、项目 .ai/ 配置）不在备份内。
+        备份范围 = 工厂数据库（项目、任务、证据、审批、审计链、需求、run 记录等）
+        + 已收录项目的项目工作文件（含 .ai/ 配置；符号链接不跟随，有排除项与
+        大小上限）。列表中的「范围」列如实标注每份备份实际收录的范围。
       </p>
       {err && <div className="banner err">{err}</div>}
       {problems.length > 0 && (
@@ -150,12 +184,12 @@ export function BackupPanel() {
       {!loaded ? (
         <p className="muted">Loading backups…</p>
       ) : backups.length === 0 ? (
-        <p className="muted">暂无备份。点击「创建备份」生成第一份数据库快照。</p>
+        <p className="muted">暂无备份。点击「创建备份」生成第一份备份。</p>
       ) : (
         <table className="data-table">
           <thead>
             <tr>
-              <th>备份</th><th>类型</th><th>创建时间</th><th>应用版本</th>
+              <th>备份</th><th>类型</th><th>范围</th><th>创建时间</th><th>应用版本</th>
               <th>总行数</th><th>大小</th><th>操作</th>
             </tr>
           </thead>
@@ -168,6 +202,16 @@ export function BackupPanel() {
                     {b.kind}
                   </span>
                 </td>
+                <td>
+                  <span className="pill">
+                    {b.scope === 'factory-database+project-files' ? '数据库+项目文件' : '仅数据库'}
+                  </span>
+                  {b.projectFiles && (
+                    <div className="muted" style={{ fontSize: 11 }}>
+                      {b.projectFiles.projects.reduce((a, p) => a + p.fileCount, 0)} 个文件
+                    </div>
+                  )}
+                </td>
                 <td>{fmtTime(b.createdAt)}</td>
                 <td>{b.appVersion}</td>
                 <td>{b.totalRows}</td>
@@ -178,8 +222,17 @@ export function BackupPanel() {
                     disabled={busy !== '' || pending !== null}
                     title={pending ? '已有恢复在排队，重启服务端应用后才能再排队' : undefined}
                   >
-                    恢复…
+                    恢复数据库…
                   </button>
+                  {b.scope === 'factory-database+project-files' && (
+                    <button
+                      onClick={() => { setConfirmFilesId(b.backupId); setStagedFiles(null); }}
+                      disabled={busy !== ''}
+                      title="立即恢复该备份中的项目工作文件到 live 项目目录（不排队重启）"
+                    >
+                      恢复项目文件…
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -207,7 +260,8 @@ export function BackupPanel() {
                 恢复<strong>不会立即生效</strong>：它被排队（restartRequired），
                 在下一次服务端重启时才应用；重启前运行中的服务继续使用当前数据库。
               </li>
-              <li>备份只含工厂数据库；项目工作文件不在恢复范围内，不会被触碰也不会被还原。</li>
+              <li>此路径只恢复数据库；项目工作文件不受影响（项目文件恢复是
+                独立的立即生效操作，见「恢复项目文件…」）。</li>
               <li>恢复应用时，现库文件会被改名保留为 .superseded 文件，不直接删除。</li>
             </ul>
             <div className="row">
@@ -219,6 +273,55 @@ export function BackupPanel() {
                 {busy === 'restore' ? '排队中…' : '确认排队恢复'}
               </button>
               <button onClick={() => setConfirmId(null)} disabled={busy !== ''}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmFilesId && (
+        <div className="card" style={{ borderColor: 'var(--red)', cursor: 'default' }}>
+          <div className="card-title">⚠ 确认恢复项目文件（立即生效）</div>
+          <div style={{ fontSize: 13 }}>
+            <p style={{ margin: '4px 0' }}>
+              将把备份 <code>{confirmFilesId}</code>
+              {confirmFilesTarget && (
+                <>（创建于 {fmtTime(confirmFilesTarget.createdAt)}，范围「{confirmFilesTarget.scope === 'factory-database+project-files' ? '数据库+项目文件' : confirmFilesTarget.scope}」）</>
+              )}
+              中的项目工作文件恢复到 live 项目目录。提交前请确认以下事实：
+            </p>
+            <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
+              <li>
+                恢复<strong>立即生效</strong>：不排队、不等重启（与数据库恢复
+                不对称——数据库恢复仍需重启服务端）。
+              </li>
+              <li>服务端会先把当前项目文件复制到备份目录下的回滚点（preRestoreDir），误操作可再回滚。</li>
+              <li>校验失败（422）时现树不动，不会部分写入。</li>
+            </ul>
+            <div className="row">
+              <button
+                onClick={() => void onConfirmProjectFilesRestore()}
+                disabled={busy !== ''}
+                style={{ borderColor: 'var(--red)' }}
+              >
+                {busy === 'restore-files' ? '恢复中…' : '确认立即恢复'}
+              </button>
+              <button onClick={() => setConfirmFilesId(null)} disabled={busy !== ''}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {stagedFiles && (
+        <div className="card" style={{ cursor: 'default' }}>
+          <div className="card-title">✅ 项目文件已恢复（立即生效）</div>
+          <div style={{ fontSize: 13 }}>
+            <div>
+              备份：<code>{stagedFiles.backupId}</code> ·
+              恢复 {stagedFiles.projects.reduce((a, p) => a + p.restored, 0)} 个文件
+              {stagedFiles.skipped.length > 0 && (
+                <> · 跳过 {stagedFiles.skipped.length} 个项目（{stagedFiles.skipped.map((s) => s.reason).join('、')}）</>
+              )}
+            </div>
+            <div className="muted">
+              回滚点：<code>{stagedFiles.preRestoreDir}</code>（恢复前复制的当前文件）
             </div>
           </div>
         </div>
