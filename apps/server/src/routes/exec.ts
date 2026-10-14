@@ -30,7 +30,8 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
 import { UnverifiedBackend } from '@ai-factory/security';
 import { PtyUnavailableError, runCommandPty } from '@ai-factory/runtime';
-import { SecretNotFoundError, redactSecretValues } from '@ai-factory/secrets';
+import { SecretNotFoundError, redactSecretValuesCounted } from '@ai-factory/secrets';
+import { recordRedactionHit } from '../redaction-monitor';
 
 const execFileAsync = promisify(execFile);
 
@@ -287,6 +288,31 @@ function truncate(output: string): { text: string; truncated: boolean } {
   };
 }
 
+/**
+ * Redact injected secret values from one exec output unit (Batch 42).
+ * A hit (≥1 replacement) is recorded as a SECRET_REDACTED_HIT detection
+ * event with the hit count and the command as source — never secret
+ * content — and fed to the §81 'security-issue' aggregation (single
+ * hits never escalate on their own).
+ */
+function redactExecOutput(
+  raw: string,
+  values: readonly string[],
+  command: string,
+  actor: string,
+  ctx: RouteContext,
+): string {
+  const r = redactSecretValuesCounted(raw, values);
+  if (r.hits > 0) {
+    recordRedactionHit(ctx, actor, {
+      source: command.slice(0, 80),
+      sourceType: 'exec',
+      hits: r.hits,
+    });
+  }
+  return r.text;
+}
+
 export async function handleExecRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -403,7 +429,9 @@ export async function handleExecRoutes(
         timeoutMs: TIMEOUT_MS,
         maxOutputBytes: 1024 * 1024,
       });
-      const { text, truncated } = truncate(redactSecretValues(r.stdout, injectedValues));
+      const { text, truncated } = truncate(
+        redactExecOutput(r.stdout, injectedValues, command, actor, ctx),
+      );
       const isTruncated = truncated || r.truncated;
       if (r.timedOut) {
         ctx.audit.record(actor, 'EXEC_TIMEOUT', 'exec', command.slice(0, 80), {
@@ -460,7 +488,13 @@ export async function handleExecRoutes(
       env: { ...process.env, ...injectedEnv },
     });
     const { text, truncated } = truncate(
-      redactSecretValues(stdout + (stderr ? `\n[stderr]\n${stderr}` : ''), injectedValues),
+      redactExecOutput(
+        stdout + (stderr ? `\n[stderr]\n${stderr}` : ''),
+        injectedValues,
+        command,
+        actor,
+        ctx,
+      ),
     );
     ctx.audit.record(actor, 'EXEC_RUN', 'exec', command.slice(0, 80), {
       cwd,
@@ -485,9 +519,12 @@ export async function handleExecRoutes(
     const out = `${e.stdout ?? ''}${e.stderr ? `\n[stderr]\n${e.stderr}` : ''}`;
     const timedOut = e.killed === true;
     const { text, truncated } = truncate(
-      redactSecretValues(
+      redactExecOutput(
         out.trim() || (timedOut ? `command timed out after ${TIMEOUT_MS / 1000}s` : (e.message ?? 'failed')),
         injectedValues,
+        command,
+        actor,
+        ctx,
       ),
     );
     ctx.audit.record(actor, timedOut ? 'EXEC_TIMEOUT' : 'EXEC_FAILED', 'exec', command.slice(0, 80), {

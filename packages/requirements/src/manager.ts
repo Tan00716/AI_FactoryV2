@@ -301,6 +301,27 @@ export class RequirementManager {
     return r.versions[r.versions.length - 1];
   }
 
+  /**
+   * Count trailing versions with changeKind === 'AC_REFINEMENT' (Batch 42).
+   *
+   * Pure fact about the recorded version history: each AC_REFINEMENT is
+   * the AI using the sanctioned clarification path (proposeAcRefinement).
+   * A long run of consecutive refinements means the AC set keeps needing
+   * clarification without stabilizing — the deterministic pattern the
+   * §81 'requirement-ambiguity' emission watches for. Any other
+   * changeKind (SCOPE_CHANGE, TARGET_CHANGE, CORRECTION) breaks the
+   * streak, mirroring LoopStagnation's consecutive-signature semantics.
+   */
+  countConsecutiveAcRefinements(id: string): number {
+    const versions = this.get(id).versions;
+    let n = 0;
+    for (let i = versions.length - 1; i >= 0; i--) {
+      if (versions[i]!.changeKind !== 'AC_REFINEMENT') break;
+      n++;
+    }
+    return n;
+  }
+
   /** Immutable read of a specific version — old records are never mutated. */
   getVersion(id: string, version: number): RequirementVersion {
     const v = this.get(id).versions.find((x) => x.version === version);

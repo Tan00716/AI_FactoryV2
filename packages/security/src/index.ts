@@ -16,6 +16,8 @@
  *                   (§7.2), extended path-threat analysis [SPEC v2 §7]
  *  - routes       registerSecurityRoutes(router, deps):
  *                   POST /api/security/scan, POST /api/security/redact
+ *  - brute-force  deterministic 401-aggregation brute-force detector
+ *                   (sliding window counter → §81 'security-issue')
  */
 export * from './credentials';
 export * from './injection';
@@ -23,3 +25,4 @@ export * from './scanner';
 export * from './sandbox';
 export * from './isolation';
 export * from './routes';
+export * from './brute-force';

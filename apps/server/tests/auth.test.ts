@@ -265,3 +265,119 @@ describe('enforceApiAuth over real HTTP', () => {
     }
   });
 });
+
+describe('brute-force advisory hooks (Batch 42)', () => {
+  interface HookCall {
+    remoteAddress: string | null;
+    tokenPrefixHash: string;
+  }
+
+  function runWithHooks(opts: {
+    authorization?: string;
+    token?: string;
+    url?: string;
+    method?: string;
+    onAuthDenied?: (e: HookCall) => void;
+    onAuthenticatedAllow?: (e: HookCall) => void;
+  }) {
+    const denied: HookCall[] = [];
+    const allowed: HookCall[] = [];
+    const auditCalls: Array<{ action: string; details?: Record<string, unknown> }> = [];
+    const responses: Array<{ status: number }> = [];
+    const req = {
+      method: opts.method ?? 'POST',
+      url: opts.url ?? '/api/tasks',
+      headers: opts.authorization === undefined ? {} : { authorization: opts.authorization },
+      socket: { remoteAddress: '203.0.113.9' },
+    };
+    const proceeded = enforceApiAuth(req as never, {} as never, {
+      token: opts.token,
+      audit: {
+        record: (actor, action, entityType, entityId, details) => {
+          auditCalls.push({ action, details });
+        },
+      },
+      json: (_res, status, _body) => {
+        responses.push({ status });
+      },
+      onAuthDenied: (e) => {
+        denied.push(e);
+        opts.onAuthDenied?.(e);
+      },
+      onAuthenticatedAllow: (e) => {
+        allowed.push(e);
+        opts.onAuthenticatedAllow?.(e);
+      },
+    });
+    return { proceeded, denied, allowed, auditCalls, responses };
+  }
+
+  it('401 fires onAuthDenied with address + prefix hash, never token material', () => {
+    const r = runWithHooks({ authorization: 'Bearer wrong-token-xyz', token: TOKEN });
+    assert.equal(r.proceeded, false);
+    assert.equal(r.responses[0].status, 401);
+    assert.equal(r.denied.length, 1);
+    assert.equal(r.denied[0].remoteAddress, '203.0.113.9');
+    assert.match(r.denied[0].tokenPrefixHash, /^[0-9a-f]{16}$/);
+    assert.ok(!r.denied[0].tokenPrefixHash.includes('wrong'));
+    assert.equal(r.allowed.length, 0);
+  });
+
+  it('a throwing onAuthDenied still serves the 401 and audits AUTH_CALLBACK_FAILED', () => {
+    const r = runWithHooks({
+      authorization: 'Bearer wrong-token-xyz',
+      token: TOKEN,
+      onAuthDenied: () => {
+        throw new Error('hook exploded');
+      },
+    });
+    assert.equal(r.proceeded, false);
+    assert.equal(r.responses[0].status, 401);
+    assert.ok(r.auditCalls.some((c) => c.action === 'AUTH_CALLBACK_FAILED'));
+  });
+
+  it('a real credential match fires onAuthenticatedAllow (and clears the counter downstream)', () => {
+    const r = runWithHooks({ authorization: `Bearer ${TOKEN}`, token: TOKEN });
+    assert.equal(r.proceeded, true);
+    assert.equal(r.allowed.length, 1);
+    assert.equal(r.allowed[0].remoteAddress, '203.0.113.9');
+    assert.equal(r.denied.length, 0);
+  });
+
+  it('health exemption and open mode never fire onAuthenticatedAllow', () => {
+    const health = runWithHooks({ url: '/api/health', method: 'GET', token: TOKEN });
+    assert.equal(health.proceeded, true);
+    assert.equal(health.allowed.length, 0);
+
+    const open = runWithHooks({ authorization: undefined, token: undefined });
+    assert.equal(open.proceeded, true);
+    assert.equal(open.allowed.length, 0);
+  });
+
+  it('403 RBAC path fires neither hook (a valid token is not brute force)', () => {
+    // roleTokens with a viewer token hitting an admin surface → 403.
+    const req = {
+      method: 'POST',
+      url: '/api/backups',
+      headers: { authorization: 'Bearer viewer-token-1' },
+      socket: { remoteAddress: '203.0.113.9' },
+    };
+    const denied: HookCall[] = [];
+    const allowed: HookCall[] = [];
+    const responses: Array<{ status: number }> = [];
+    const proceeded = enforceApiAuth(req as never, {} as never, {
+      token: undefined,
+      roleTokens: [{ role: 'viewer', token: 'viewer-token-1' }],
+      audit: { record: () => {} },
+      json: (_res, status, _body) => {
+        responses.push({ status });
+      },
+      onAuthDenied: (e) => denied.push(e),
+      onAuthenticatedAllow: (e) => allowed.push(e),
+    });
+    assert.equal(proceeded, false);
+    assert.equal(responses[0].status, 403);
+    assert.equal(denied.length, 0);
+    assert.equal(allowed.length, 0);
+  });
+});

@@ -161,3 +161,26 @@ describe('completion_target (§16: AI may not move the endpoint)', () => {
     );
   });
 });
+
+describe('countConsecutiveAcRefinements (Batch 42)', () => {
+  it('counts trailing AC_REFINEMENT versions; other kinds break the streak', () => {
+    const m = mgr();
+    const r = m.create(baseInput());
+    assert.equal(m.countConsecutiveAcRefinements(r.id), 0);
+    m.proposeAcRefinement(r.id, 'AC-001', { description: 'clearer' }, 'agent:pm');
+    m.proposeAcRefinement(r.id, 'AC-001', { description: 'even clearer' }, 'agent:pm');
+    assert.equal(m.countConsecutiveAcRefinements(r.id), 2);
+    // A non-refinement version resets the streak.
+    m.newVersion(r.id, 'SCOPE_CHANGE', 'scope grew', 'human:po', (d) => {
+      d.businessGoal = 'Ship bigger feature X';
+    });
+    assert.equal(m.countConsecutiveAcRefinements(r.id), 0);
+    m.proposeAcRefinement(r.id, 'AC-001', { description: 'clearest' }, 'agent:pm');
+    assert.equal(m.countConsecutiveAcRefinements(r.id), 1);
+  });
+
+  it('throws for unknown requirement', () => {
+    const m = mgr();
+    assert.throws(() => m.countConsecutiveAcRefinements('REQ-NOPE'), /not found/i);
+  });
+});

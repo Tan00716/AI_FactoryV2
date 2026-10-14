@@ -12,6 +12,7 @@ import {
   SecretNotFoundError,
   SecretReadOnlyError,
   redactSecretValues,
+  redactSecretValuesCounted,
   type SecretAuditEvent,
 } from '../src/index';
 import { EnvSecretStore } from '../src/index';
@@ -169,5 +170,43 @@ describe('redactSecretValues', () => {
 
   it('skips empty values instead of nuking the text', () => {
     assert.equal(redactSecretValues('hello', ['']), 'hello');
+  });
+});
+
+describe('redactSecretValuesCounted (Batch 42)', () => {
+  it('returns the exact replacement count', () => {
+    const r = redactSecretValuesCounted(`a=${SENTINEL} b=${SENTINEL} again`, [SENTINEL]);
+    assert.equal(r.text, 'a=*** b=*** again');
+    assert.equal(r.hits, 2);
+  });
+
+  it('counts longest-first without double counting overlaps', () => {
+    const r = redactSecretValuesCounted('xxabcdefxx', ['abc', 'abcdef']);
+    assert.equal(r.text, 'xx***xx');
+    assert.equal(r.hits, 1);
+  });
+
+  it('sums hits across multiple values', () => {
+    const r = redactSecretValuesCounted('k1=v1 k2=v2 k1=v1', ['v1', 'v2']);
+    assert.equal(r.text, 'k1=*** k2=*** k1=***');
+    assert.equal(r.hits, 3);
+  });
+
+  it('returns zero hits when nothing matches', () => {
+    const r = redactSecretValuesCounted('hello world', [SENTINEL]);
+    assert.equal(r.text, 'hello world');
+    assert.equal(r.hits, 0);
+  });
+
+  it('skips empty values and counts nothing for them', () => {
+    const r = redactSecretValuesCounted('hello', ['']);
+    assert.equal(r.text, 'hello');
+    assert.equal(r.hits, 0);
+  });
+
+  it('redactSecretValues stays byte-identical to the counted text', () => {
+    const text = `x=${SENTINEL}y zzabcdefzz`;
+    const values = [SENTINEL, 'abc', 'abcdef', ''];
+    assert.equal(redactSecretValues(text, values), redactSecretValuesCounted(text, values).text);
   });
 });

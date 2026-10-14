@@ -1,4 +1,4 @@
-# §81 needsHuman 触发器勘察（Batch 36–41）
+# §81 needsHuman 触发器勘察（Batch 36–42）
 
 SPEC §81："Human intervention should mainly occur when: Requirement
 ambiguity, Policy violation, Repeated failure, Budget exceeded,
@@ -12,7 +12,7 @@ AI disagreement." 八个触发器在 `@ai-factory/autonomy` 的
 null（server 只有粗粒度 token RBAC，无具名人类账号），记
 requiredDeciderLevel 而不编造人。
 
-## 已发射（5/8）
+## 已发射（7/8）
 
 | 触发器 | 发射点 | 批次 |
 |---|---|---|
@@ -22,14 +22,16 @@ requiredDeciderLevel 而不编造人。
 | `high-risk-deployment`（高风险部署） | `POST /api/pipelines/:id/deploy` 停靠审批时调真实 `assessRisk`（`packages/cicd/src/risk.ts`，§41.1：un-lowerable floor，unknown → strict）：请求可带可选 `risk` 对象（严格类型校验，400 拒垃圾）；未给的信号按 assessRisk 自己的严格契约默认（booleans false、changeType ''、blastRadius 'unknown' 中性）——无信号输入按"无验证恢复路径"等真实理由评出 HIGH，不是硬编码。票据的 `risk_level` 改为**评估值**（替代硬编码 'HIGH'）；HIGH/CRITICAL 评估额外发射 `needsHuman('high-risk-deployment', …)`，source `cicd-deploy:<deploymentId>`。requiredDeciderLevel：`manager`（§8 人类审批者等级；§41.1 HIGH 需人类+专家复核）。severity high。低风险（LOW/MEDIUM）不发射，`DEPLOYMENT_RISK_ASSESSED` 审计记录评估值与 caller-provided 信号。 | Batch 39 |
 | `policy-violation`（策略违规） | §8.2 ceiling 拒绝的**确定性模式**"多次被拒绝仍尝试"：同一 granter 的 `RELATIVE_CEILING_DENIED` / `TASK_SCOPE_CEILING_DENIED` 拒绝在哈希链审计中累计到 `POLICY_DENIAL_ESCALATION_THRESHOLD`（3，stagnationLimit=3 前例）→ `needsHuman('policy-violation', …)` 写透 `needs_human_upgrades`，source `policy-denial:<granter>`。**诚实口径**：单次拒绝是政策在起作用（"拒绝 ≠ 违规"），不发射；发射的是被拒模式，记录明文写"the policy held on every attempt — no elevation occurred"。计数经 `AuditLog.countByActorAction`（SQLite 用 COUNT 查询，不全量水合）。每 granter 至多一条 OPEN（去重查 `policy-denial:<granter>`）；人工消解后下一轮重新计数。requiredDeciderLevel：`operator`（日常治理工作角色，可查审计、调 grant 或 retire 该 granter）。severity critical（`@ai-factory/autonomy` 的 `REASON_SEVERITY` 映射）。发射点：`apps/server/src/routes/workforce.ts` 的 `recordCeilingDenial`（createEmployee 审计 sink 抽出），写透失败审计 `NEEDS_HUMAN_PERSIST_FAILED` 永不抛（不影响 403 拒绝路径）。 | Batch 41 |
 
+| `security-issue`（安全问题） | AUTH_DENIED 聚合的**确定性**暴力破解信号：`packages/security` 的 `BruteForceDetector` 按来源（remoteAddress）滑窗计数（默认 5 分钟内 10 次 401），这是计数事实不是启发式分类。阈值 crossing → `needsHuman('security-issue', …)` 写透 `needs_human_upgrades`，source `auth-bruteforce:<ip>`。单次 401 永不发射（可能是输错 token）；成功登录清零该来源计数；403 RBAC 路径不算（有效 token 权限不足不是暴力破解）；health 豁免/ open 模式/非 /api 路径永不触发 clearing（防攻击者用 GET /api/health 洗计数）。requiredDeciderLevel：`admin`（处置=轮换 token/retention 与 legal hold 面/网络边缘封禁，属 admin 的危险管理面；spec 无 incident→rank 映射表，已在注释写明是映射选择）。severity critical（autonomy 的 REASON_SEVERITY）。去重：每来源至多一条 OPEN（list('open') 为准；人工消解后继续攻击→下一次 401 自然重发）。计数器是进程内存（重启清零窗口；落库每 401 一写会让攻击者决定写盘量=DoS 向量；告警行本身落库持久）。fail-closed：检测器只做 advisory，抛异常→审计 `BRUTE_FORCE_DETECTOR_FAILED` 且不发射（401 门在上游独立，检测器故障既不能放行攻击也不能制造误报）；auth.ts 的 hook 调用被 guard，抛错→`AUTH_CALLBACK_FAILED` 审计，401 照发。**第二发射点（Batch 42）：输出脱敏命中的确定性聚合信号**——`redactSecretValuesCounted()` 返回精确替换计数（`packages/secrets`，老 `redactSecretValues()` 行为逐字节不变）；exec/terminal/MCP 三处消费点在命中 ≥1 时记 `SECRET_REDACTED_HIT` 检测事件（审计：命中数 + 输出来源，永不记 secret 内容）。`apps/server/src/redaction-monitor.ts` 的 `RedactionHitAggregator` 按来源滑窗计数（默认 5 分钟内 3 个检测事件，与 stagnationLimit=3 / POLICY_DENIAL_ESCALATION_THRESHOLD 同前例）→ `needsHuman('security-issue', …)`，source `redaction-monitor:<type>:<source>`。单次命中永不发射（可能是 benign echo，如命令打印自己环境做调试）；阈值 crossing 才发射。requiredDeciderLevel：`operator`（可经 broker 轮换/吊销泄漏的 secret、终止终端会话/停 MCP 服务器；spec 无映射表，已在注释写明是映射选择）。severity critical（autonomy 的 REASON_SEVERITY）。去重：同一活跃 pattern 至多一条 OPEN（窗口完全排空后新一轮可重发；不因人工消解自动清计数）。聚合器进程内存（重启清零窗口；检测事件本身在审计链持久）。fail-closed：发射只做 advisory，写透失败审计 `NEEDS_HUMAN_PERSIST_FAILED` 且不抛——脱敏本身不受影响。 | Batch 42 |
+
+| `requirement-ambiguity`（需求歧义） | 同一需求连续 `AC_REFINEMENT` 版本达到 `REQUIREMENT_REFINEMENT_ESCALATION_THRESHOLD`（3，与 stagnationLimit=3 / POLICY_DENIAL_ESCALATION_THRESHOLD 同前例）：每次 `proposeAcRefinement` 都是 AI 走受控澄清路径的结构化记录事件，计数是确定性的——**不是** QA 正则启发式（`packages/qa/src/classify.ts` 的 `AMBIGUITY_RE`，Batch 38-4 已拒绝在正则上发射）。`POST /api/requirements/:id/ac-refinement` 成功后检查 `RequirementManager.countConsecutiveAcRefinements()`（尾部连续 `changeKind==='AC_REFINEMENT'` 计数；`SCOPE_CHANGE`/`TARGET_CHANGE`/`CORRECTION` 打断 streak）；达标且无 OPEN 记录时 `needsHuman('requirement-ambiguity', …)` 写透 `needs_human_upgrades`，source `requirement-refinement:<id>`。诚实口径（Batch 41 同标准）：单次 refinement 是系统正常工作，不发射；发射的是"澄清不收敛"模式，记录明文写"N 次连续澄清，AC 集未稳定"。OPEN 期间同需求的 autonomous refinement 熔断 409（`REQUIREMENT_REFINEMENT_PAUSED`）；人工消解后下一轮重新计数。requiredDeciderLevel：`manager`（映射选择：需求含义澄清是产品/业务判断，高于日常 run 工作；spec 无映射表已在注释写明）。severity medium（`@ai-factory/autonomy` 的 `REASON_SEVERITY` 映射）。写透失败审计 `NEEDS_HUMAN_PERSIST_FAILED` 永不抛（不影响 201）。 | Batch 42 |
+
 写透失败一律审计 `NEEDS_HUMAN_PERSIST_FAILED`，**永不回滚**已提交的主记录（冲突记录 / run 记录）。
 
-## 未发射（3/8）——诚实原因
+## 未发射（1/8）——诚实原因
 
 | 触发器 | 勘察结论 |
 |---|---|
-| `requirement-ambiguity`（需求歧义） | `packages/qa/src/classify.ts` 有 `REQUIREMENT_AMBIGUITY` 分类（正则启发式）→ owner 记 `'human'` 并落 QA evidence。但这是**启发式猜测**，不是确定性状态；`QaLoop.escalated` 是通用标志不区分原因。在正则上发射等于用启发式冒充确定性——不接。 |
-| `security-issue`（安全问题） | Batch 41 地毯式勘察结论（维持不接，理由精确到代码）：①**全是预防，不是检测**——exec deny patterns（`EXEC_DENIED` 是执行前拒绝的审计）、memory 写守卫（`SECRET_DETECTED` 是写前抛）、delegation 校验（`CAPABILITY_VIOLATION`/`SCOPE_VIOLATION` 是执行前抛）、MCP install BLOCK（`requestInstall` 拒绝）、终端/MCP 输出脱敏（`redactSecretValues` 是纯字符串替换，连"脱敏了几次"都不记录，更无检测事件）。②**检测器全是启发式**——MCP scanner（正则：destructive/pipe-shell/exfil）、prompt-injection 防御（正则 override attempts）、secret patterns（"suspected raw secret"）、可疑脚本名；按 38-4 标准在正则上发射=冒充确定性。③**无聚合**——`AUTH_DENIED` 按次审计但无暴力破解检测器，单次 401 可能是输错 token，发射=噪声。④**运维非事件**——lease 过期/吊销、`SECRET_DECRYPTION_FAILED`（可能是损坏非攻击）。`packages/incidents` 是手工记录系统，零安全检测器接入。真要接，需要确定性的"安全事件已发生"信号（如：脱敏命中记为检测事件、同源 N 次 401 的暴力破解检测器）——都不存在，不发明。 |
 | `irrecoverable-env-error`（不可恢复环境错误） | Batch 39 深挖结论（维持不接，理由比 Batch 38 更精确）：① `RecoveryLoop` 本体**不是** stub——`run()` 有确定性终局（`success`/`aborted`/`escalated` + `failure.type` + history），但"环境类"一半来自 `classifyFailure`，其文件头明写 **heuristic classifier**（正则规则，confidence 0.9/0.6/0.1）；在正则上发射 = 38-4 拒绝 `requirement-ambiguity` 时的同一条"启发式冒充确定性"，标准必须一致。② `RecoveryLoop` 在 server **零生产调用者**（`apps/server/src/routes/recovery.ts` 只 import `SnapshotStore`/`classifyFailure`/`selectStrategy`）；在 loop 里接发射，生产环境永远跑不到，是"定义存在冒充实现存在"。③"重试耗尽"本身不是环境专属——对所有 failure type 都耗尽，在耗尽上不分类型发射会把 model error 误标成环境错误。真要接，需要先给环境错误一个 machine-readable 的确定性信号（如 `BudgetExceeded` 的 `code` 那样），再把 loop 接入 server 的真实调用点。**前者在 Batch 40 已落地**（`SandboxUnavailableError`/`MissingBinaryError`，code 经 `RunResult.reasonCode` 透出，`runCommandPipe` 的 spawn ENOENT 确定性映射；`assertSandboxAvailable()` 严格探针；信号层，不自动发射）；后者仍不存在，不接。 |
 
 ## 消解面

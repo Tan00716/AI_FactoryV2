@@ -172,6 +172,11 @@ import { handleDbRoutes } from './routes/db';
 import { handleBuildsRoutes } from './routes/builds';
 import { createDbBrokerService } from './db-broker';
 import { EventBus } from '@ai-factory/events';
+import { BruteForceDetector } from '@ai-factory/security';
+import {
+  clearBruteForceOnLogin,
+  handleBruteForceDenial,
+} from './brute-force-emission';
 import {
   API_TOKEN_ENV,
   API_TOKENS_ENV,
@@ -249,6 +254,19 @@ const fdb = new FactoryDatabase(DB_PATH);
 const tasks = new TaskManager(fdb.tasks);
 const evidence = new EvidenceEngine(fdb.evidence);
 const audit = new AuditLog(fdb.audit);
+/**
+ * §81 'security-issue' brute-force detector (Batch 42): in-memory
+ * sliding-window 401 counter (10 denials / 5 min per source → the
+ * deterministic brute-force signal the Batch 41 survey asked for).
+ * Counters are process memory by design — a restart resets the
+ * window, and the emitted needsHuman row (insert-only, terminal) is
+ * the durable artifact; an attacker who keeps hammering after a
+ * restart refills the new window and re-triggers. Per-401 DB writes
+ * would let the attacker dictate write volume (disk-fill DoS on the
+ * detector). The detector never blocks: the 401 gate is upstream and
+ * independent.
+ */
+const bruteForceDetector = new BruteForceDetector();
 /**
  * §40 post-merge build execution (Batch 24). The runner is
  * constructed exactly once, here, from explicit operator
@@ -702,7 +720,24 @@ const server = createServer(async (req, res) => {
     // 403. Denials are audited (AUTH_DENIED / RBAC_DENIED) inside
     // enforceApiAuth. OPTIONS preflight above stays open — it carries
     // no credentials and grants nothing.
-    if (!enforceApiAuth(req, res, { token: API_TOKEN, roleTokens: AUTH_CONFIG.roleTokens, audit, json })) return;
+    //
+    // §81 'security-issue' (Batch 42): the advisory brute-force hooks
+    // feed the in-memory detector. handleBruteForceDenial never throws
+    // (detector failure → BRUTE_FORCE_DETECTOR_FAILED audit, the 401
+    // stands); a real credential match clears the source's counter.
+    const bruteForceDeps = { needsHuman: fdb.needsHuman, audit };
+    if (
+      !enforceApiAuth(req, res, {
+        token: API_TOKEN,
+        roleTokens: AUTH_CONFIG.roleTokens,
+        audit,
+        json,
+        onAuthDenied: (event) => handleBruteForceDenial(bruteForceDeps, bruteForceDetector, event),
+        onAuthenticatedAllow: (event) =>
+          clearBruteForceOnLogin(bruteForceDeps, bruteForceDetector, event.remoteAddress),
+      })
+    )
+      return;
 
     // Whoami (Batch 15): the caller's own role + the auth mode, for
     // clients (the desktop top bar) to display. Past the gate, so a

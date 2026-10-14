@@ -50,7 +50,8 @@ import {
   PtySessionError,
   type PtySession,
 } from '@ai-factory/runtime';
-import { redactSecretValues } from '@ai-factory/secrets';
+import { redactSecretValuesCounted } from '@ai-factory/secrets';
+import { recordRedactionHit } from '../redaction-monitor';
 import {
   checkCommandPolicy,
   commandHitsControlDir,
@@ -186,8 +187,21 @@ export async function handleTerminalRoutes(
     // scrubbed from the streamed/transcript output, per chunk. Chunk
     // boundaries are an approximation — a value split across two
     // chunks is not caught; stated in KNOWN_LIMITATIONS.
-    const redact = (s: string): string =>
-      secretValues.length > 0 ? redactSecretValues(s, secretValues) : s;
+    // A hit (≥1 replacement in a chunk) is a SECRET_REDACTED_HIT
+    // detection event (Batch 42) — hit count + session id, never secret
+    // content — feeding the §81 'security-issue' aggregation.
+    const redact = (s: string): string => {
+      if (secretValues.length === 0) return s;
+      const r = redactSecretValuesCounted(s, secretValues);
+      if (r.hits > 0) {
+        recordRedactionHit(ctx, actor, {
+          source: session.id,
+          sourceType: 'terminal',
+          hits: r.hits,
+        });
+      }
+      return r.text;
+    };
     (session as PtySession & { outputRedactor?: (s: string) => string }).outputRedactor = redact;
 
     // AI line denials are audited (values never: only the caller's own

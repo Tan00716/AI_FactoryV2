@@ -325,17 +325,53 @@ export class SecretBroker {
 }
 
 /**
+ * Result of counted redaction: the redacted text plus the deterministic
+ * number of exact-substring replacements actually performed.
+ */
+export interface RedactionResult {
+  text: string;
+  /**
+   * Exact count of `***` substitutions performed. This is a
+   * deterministic count of what happened (N replacements), not a
+   * heuristic judgment about the content — every hit is an exact
+   * occurrence of a known injected value.
+   */
+  hits: number;
+}
+
+/**
+ * Like redactSecretValues, but also returns how many replacements were
+ * performed. Counting is sequential over values (longest first), so
+ * `hits` is exactly the number of `***` substitutions in `text`.
+ */
+export function redactSecretValuesCounted(
+  text: string,
+  values: readonly string[],
+): RedactionResult {
+  let out = text;
+  let hits = 0;
+  const sorted = [...values].filter((v) => v.length > 0).sort((a, b) => b.length - a.length);
+  for (const v of sorted) {
+    const parts = out.split(v);
+    if (parts.length > 1) {
+      hits += parts.length - 1;
+      out = parts.join('***');
+    }
+  }
+  return { text: out, hits };
+}
+
+/**
  * Replace every exact occurrence of each resolved value with `***`.
  * Used at consumption points whose output is logged or returned
  * (§46.2: stdout/stderr 统一脱敏). Empty values are skipped; matching
  * is exact-substring, longest first so overlapping values redact
  * cleanly.
+ *
+ * Kept byte-for-byte behavior-compatible: implemented on top of
+ * redactSecretValuesCounted; callers that need the hit count use the
+ * counted variant directly.
  */
 export function redactSecretValues(text: string, values: readonly string[]): string {
-  let out = text;
-  const sorted = [...values].filter((v) => v.length > 0).sort((a, b) => b.length - a.length);
-  for (const v of sorted) {
-    out = out.split(v).join('***');
-  }
-  return out;
+  return redactSecretValuesCounted(text, values).text;
 }

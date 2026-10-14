@@ -45,6 +45,7 @@ import {
 import type { RouteContext } from './context';
 import type { FactoryDatabase, McpServerStore } from '@ai-factory/db';
 import { McpServerLauncher, McpLaunchError } from '../mcp-launcher';
+import { recordRedactionHit } from '../redaction-monitor';
 import {
   hydrateMcpRegistry,
   attachMcpPersistence,
@@ -496,6 +497,13 @@ export async function handleMcpRoutes(
         actor,
         broker: ctx.secretBroker,
         audit: ctx.audit,
+        // Batch 42 — redaction hits on MCP server output become
+        // SECRET_REDACTED_HIT detection events (hit count + server id,
+        // never secret content) feeding the §81 'security-issue'
+        // aggregation. The launch() call is async-fire; ctx (fdb/audit)
+        // is long-lived, like the existing MCP_SERVER_EXIT audit below.
+        onRedactionHit: ({ source, hits }) =>
+          recordRedactionHit(ctx, 'system', { source, sourceType: 'mcp_server', hits }),
       });
       return ctx.json(res, 201, {
         launchId: rec.id, server: rec.server, version: rec.version,

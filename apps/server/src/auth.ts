@@ -22,6 +22,7 @@
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { tokenPrefixHash } from '@ai-factory/security';
 
 export const API_TOKEN_ENV = 'FACTORY_API_TOKEN';
 export const API_TOKENS_ENV = 'FACTORY_API_TOKENS';
@@ -128,6 +129,30 @@ export interface ApiAuthDeps {
   roleTokens?: RoleToken[];
   audit: AuthAuditSink;
   json: (res: ServerResponse, status: number, body: unknown) => void;
+  /**
+   * Advisory-only hooks for the §81 brute-force detector (Batch 42).
+   * onAuthDenied fires after the uniform 401 is written; never for the
+   * 403 RBAC path (a valid token with a small role is not a brute-force
+   * signal). onAuthenticatedAllow fires only when a real credential
+   * matched — never for the open mode, the health exemption, or
+   * non-/api paths (clearing on those would let an attacker reset
+   * their own counter with a GET /api/health).
+   * Both are advisory: each call is guarded so a throwing hook can
+   * never break the 401 gate or leak into the response.
+   */
+  onAuthDenied?: (event: ApiAuthDeniedEvent) => void;
+  onAuthenticatedAllow?: (event: ApiAuthDeniedEvent) => void;
+}
+
+/**
+ * The advisory event handed to the brute-force detector hooks.
+ * Carries the remote address and a deterministic grouping hash —
+ * never any token material (see tokenPrefixHash in
+ * @ai-factory/security).
+ */
+export interface ApiAuthDeniedEvent {
+  remoteAddress: string | null;
+  tokenPrefixHash: string;
 }
 
 /**
@@ -153,7 +178,15 @@ export function enforceApiAuth(
     authorization: req.headers.authorization,
     config,
   });
-  if (access.outcome === 'allow') return true;
+  if (access.outcome === 'allow') {
+    // Advisory hook (Batch 42): a real credential matched. Fires only
+    // here — open mode / health exemption / non-/api paths never clear
+    // a brute-force counter (see ApiAuthDeps docs).
+    if (deps.onAuthenticatedAllow && access.mode !== 'open' && access.role !== null) {
+      fireAuthHook(deps, 'onAuthenticatedAllow', req);
+    }
+    return true;
+  }
   if (access.outcome === 'forbidden') {
     // Authenticated, but the role is too small for this surface. The
     // body stays minimal ({ error } only — no role configuration leaks);
@@ -174,7 +207,36 @@ export function enforceApiAuth(
     remoteAddress: req.socket?.remoteAddress ?? null,
   });
   deps.json(res, 401, { error: 'Unauthorized' });
+  // Advisory hook (Batch 42): fired AFTER the 401 is written, so a
+  // detector bug can never disturb the denial. Guarded — the gate
+  // stays bulletproof no matter what the hook does.
+  if (deps.onAuthDenied) {
+    fireAuthHook(deps, 'onAuthDenied', req);
+  }
   return false;
+}
+
+/**
+ * Invoke one advisory auth hook with the detector event. A throwing
+ * hook is audited (AUTH_CALLBACK_FAILED) and swallowed: the 401/allow
+ * decision already stands and must never be disturbed by advisory
+ * logic. The event carries no token material.
+ */
+function fireAuthHook(
+  deps: ApiAuthDeps,
+  hook: 'onAuthDenied' | 'onAuthenticatedAllow',
+  req: IncomingMessage,
+): void {
+  try {
+    deps[hook]?.({
+      remoteAddress: req.socket?.remoteAddress ?? null,
+      tokenPrefixHash: tokenPrefixHash(req.headers.authorization),
+    });
+  } catch (err) {
+    deps.audit.record('system', 'AUTH_CALLBACK_FAILED', 'api', hook, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 // ------------------------------------------------------------ RBAC (Batch 15)

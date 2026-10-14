@@ -12,8 +12,13 @@
  *     §81 'budget-exceeded' (Batch 38)
  *   - a runtime run terminating with reasonCode LOOP_STAGNATION →
  *     §81 'repeated-failure' (Batch 38)
- * The remaining five §81 triggers (requirement-ambiguity,
- * policy-violation, high-risk-deployment, security-issue,
+ *   - POST /api/pipelines/:id/deploy risk assessment HIGH/CRITICAL →
+ *     §81 'high-risk-deployment' (Batch 39)
+ *   - §8.2 ceiling-denial pattern (same granter, N denials) →
+ *     §81 'policy-violation' (Batch 41)
+ *   - AUTH_DENIED aggregation (10 denials / 5 min per source) →
+ *     §81 'security-issue' (Batch 42)
+ * The remaining two §81 triggers (requirement-ambiguity,
  * irrecoverable-env-error) have no determinate emitter — see
  * docs/needs-human-triggers.md. NOTHING auto-resolves a row: resolving the
  * underlying authority conflict does not touch this table. A human marks

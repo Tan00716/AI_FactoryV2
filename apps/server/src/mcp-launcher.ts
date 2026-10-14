@@ -51,7 +51,7 @@ import {
 import type { AuditLog } from '@ai-factory/core';
 import {
   SecretNotFoundError,
-  redactSecretValues,
+  redactSecretValuesCounted,
   type SecretBroker,
   type SecretLease,
 } from '@ai-factory/secrets';
@@ -122,6 +122,14 @@ export interface McpLaunchOptions {
   audit: AuditLog;
   policy?: McpRuntimePolicy;
   now?: () => number;
+  /**
+   * Batch 42 — redaction-hit detection hook. Called (at most once per
+   * chunk) when stdout/stderr redaction replaced ≥1 injected secret
+   * value, with the server id and the exact replacement count — never
+   * secret content. The launcher stays storage-agnostic: the server
+   * layer wires this to the audit chain + §81 aggregation.
+   */
+  onRedactionHit?: (hit: { source: string; hits: number }) => void;
 }
 
 /**
@@ -290,7 +298,9 @@ export class McpServerLauncher {
       this.sink?.launchEnded(id, { exitCode: code, signal });
     };
     const onData = (chunk: Buffer) => {
-      const redacted = redactSecretValues(chunk.toString('utf8'), entry.values);
+      const r = redactSecretValuesCounted(chunk.toString('utf8'), entry.values);
+      if (r.hits > 0) opts.onRedactionHit?.({ source: idBase, hits: r.hits });
+      const redacted = r.text;
       entry.log += redacted;
       if (entry.log.length > MCP_LAUNCH_LOG_CAP) {
         entry.log = entry.log.slice(-MCP_LAUNCH_LOG_CAP);

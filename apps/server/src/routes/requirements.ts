@@ -22,6 +22,8 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { RequirementManager } from '@ai-factory/requirements';
 import type { EntityLinks, RequirementStore } from '@ai-factory/requirements';
+import { needsHuman } from '@ai-factory/autonomy';
+import type { NeedsHumanDbRecord } from '@ai-factory/db';
 import type { RouteContext } from './context';
 
 let manager = new RequirementManager();
@@ -242,14 +244,31 @@ export async function handleRequirementRoutes(
   }
 
   if (method === 'POST' && seg.length === 2 && seg[1] === 'ac-refinement') {
+    const requirementId = seg[0]!;
+    // §81 'requirement-ambiguity' circuit breaker (Batch 42): while an
+    // OPEN upgrade exists for this requirement, further autonomous
+    // refinements pause — bounded clarification is exhausted and a human
+    // must judge. Human meaning-changes go through newVersion with a
+    // recorded HUMAN authorization, never through this endpoint.
+    if (isRefinementPaused(ctx, requirementId)) {
+      ctx.json(res, 409, {
+        error:
+          `AC refinement paused for requirement ${requirementId}: an OPEN ` +
+          `'requirement-ambiguity' upgrade awaits human review ` +
+          `(POST /api/needs-human/:id/resolve to continue).`,
+        code: 'REQUIREMENT_REFINEMENT_PAUSED',
+      });
+      return true;
+    }
     const body = await ctx.readBody(req);
     try {
       const v = manager.proposeAcRefinement(
-        seg[0],
+        requirementId,
         body['acId'] as string,
         (body['patch'] as never) ?? {},
         (body['by'] as string | undefined) ?? 'api',
       );
+      maybeEmitRequirementAmbiguityUpgrade(ctx, requirementId);
       ctx.json(res, 201, { version: v });
     } catch (err) {
       ctx.json(res, 400, { error: (err as Error).message });
@@ -272,4 +291,187 @@ export async function handleRequirementRoutes(
   }
 
   return false;
+}
+
+/**
+ * §81 'requirement-ambiguity' emission on AC-refinement churn (Batch 42).
+ *
+ * The deterministic pattern: N consecutive versions with
+ * changeKind === 'AC_REFINEMENT' on the same requirement. Each
+ * AC_REFINEMENT is the AI using the sanctioned clarification path
+ * (proposeAcRefinement); a run of N means the AC set keeps needing
+ * clarification without stabilizing. This is a deterministic count of
+ * structured, recorded events — not the QA regex heuristic
+ * (packages/qa/src/classify.ts AMBIGUITY_RE), which Batch 38-4 rejected
+ * as "heuristic masquerading as deterministic".
+ *
+ * Honest framing (same bar as Batch 41 'policy-violation'): a single
+ * refinement is the system working as designed — no emission. The
+ * emission fires on the PATTERN, and the record states plainly what was
+ * observed (N consecutive refinements), not a proven verdict that the
+ * requirement "is ambiguous".
+ */
+export const REQUIREMENT_REFINEMENT_ESCALATION_THRESHOLD = 3;
+
+export function requirementRefinementUpgradeSource(
+  requirementId: string,
+): string {
+  return `requirement-refinement:${requirementId}`;
+}
+
+/**
+ * Whether autonomous AC refinement is currently paused for the
+ * requirement: an OPEN 'requirement-ambiguity' upgrade with the matching
+ * source exists. Exported so tests can drive the 409 guard directly.
+ */
+export function isRefinementPaused(
+  ctx: RouteContext,
+  requirementId: string,
+): boolean {
+  const source = requirementRefinementUpgradeSource(requirementId);
+  return ctx.fdb.needsHuman
+    .list('open')
+    .some((r) => r.reason === 'requirement-ambiguity' && r.source === source);
+}
+
+/**
+ * Build the §81 'requirement-ambiguity' upgrade record for AC-refinement
+ * churn. Pure: the caller (maybeEmitRequirementAmbiguityUpgrade) has
+ * already decided the threshold is met and no OPEN upgrade exists for
+ * this requirement.
+ *
+ * recipient is null: the server has coarse-grained token RBAC with no
+ * named human accounts, so we record the required level instead of
+ * inventing a person. 'manager' is a mapping choice (documented here,
+ * spec has no AC-churn → rank table): clarifying requirement meaning is
+ * a product/business judgment above routine run work, the same level
+ * Batch 39 chose for high-risk-deployment. severity 'medium' comes from
+ * the @ai-factory/autonomy REASON_SEVERITY mapping for
+ * 'requirement-ambiguity' (not chosen here).
+ */
+export function buildRequirementAmbiguityUpgradeRecord(args: {
+  requirementId: string;
+  refinementCount: number;
+  latestVersion: number;
+}): NeedsHumanDbRecord {
+  const rec = needsHuman('requirement-ambiguity', {
+    detail:
+      `requirement ${args.requirementId} has ${args.refinementCount} consecutive ` +
+      `AC_REFINEMENT versions (latest v${args.latestVersion}). The sanctioned ` +
+      `clarification path (proposeAcRefinement) has been used ` +
+      `${args.refinementCount} times in a row without the acceptance-criteria ` +
+      `set stabilizing — bounded autonomous clarification is exhausted and ` +
+      `the underlying requirement may be ambiguous. Human judgment is ` +
+      `required before further autonomous refinement.`,
+    context: {
+      requirementId: args.requirementId,
+      consecutiveRefinements: String(args.refinementCount),
+      threshold: String(REQUIREMENT_REFINEMENT_ESCALATION_THRESHOLD),
+      latestVersion: String(args.latestVersion),
+    },
+    impactScope:
+      `autonomous AC refinement for requirement ${args.requirementId} is ` +
+      `paused pending human review; other requirements are unaffected`,
+    stoppedActions: [
+      `autonomous AC refinement paused for requirement ${args.requirementId} ` +
+        `(refinement #${args.refinementCount}); ` +
+        `POST /api/requirements/${args.requirementId}/ac-refinement returns 409 ` +
+        `while this upgrade is OPEN`,
+    ],
+    suggestion:
+      'Review the recent AC_REFINEMENT versions of the requirement ' +
+      '(GET /api/requirements/:id/versions/:v — changeNote "AC <id> refined"). ' +
+      'If the acceptance criteria are now clear, mark this upgrade resolved ' +
+      'via POST /api/needs-human/:id/resolve and refinement resumes. If the ' +
+      'requirement itself is unclear, restate it with POST ' +
+      '/api/requirements/:id/versions (TARGET_CHANGE / SCOPE_CHANGE with a ' +
+      'recorded HUMAN authorization where §16 requires it).',
+  });
+  return {
+    id: rec.id,
+    reason: rec.reason,
+    reasonZh: rec.reasonZh,
+    severity: rec.severity,
+    source: requirementRefinementUpgradeSource(args.requirementId),
+    recipient: null,
+    requiredDeciderLevel: 'manager',
+    detailJson: JSON.stringify({
+      requirementId: args.requirementId,
+      refinementCount: args.refinementCount,
+      latestVersion: args.latestVersion,
+      threshold: REQUIREMENT_REFINEMENT_ESCALATION_THRESHOLD,
+      suggestion: rec.suggestion,
+    }),
+    contextJson: JSON.stringify(rec.context ?? {}),
+    raisedAt: Date.now(),
+    status: 'open',
+    resolvedAt: null,
+    resolvedBy: null,
+    resolution: null,
+  };
+}
+
+/**
+ * §81 'requirement-ambiguity' emission check. Called after every
+ * successful AC refinement. Emits at most one OPEN upgrade per
+ * requirement: when the trailing AC_REFINEMENT streak reaches
+ * REQUIREMENT_REFINEMENT_ESCALATION_THRESHOLD and no OPEN
+ * 'requirement-ambiguity' upgrade with source
+ * `requirement-refinement:<id>` exists, a new upgrade is submitted
+ * (insert-only). Further refinements while the upgrade is OPEN are
+ * 409-paused by the handler above, so they never reach this check;
+ * after a human resolves it, the next refinement at/over threshold
+ * opens a new episode.
+ *
+ * Write-through failures are audited NEEDS_HUMAN_PERSIST_FAILED and never
+ * thrown — the refinement itself already succeeded and the 201 below must
+ * still be returned (same contract as emitRunNeedsHuman; the emission is
+ * advisory to the refinement path).
+ */
+export function maybeEmitRequirementAmbiguityUpgrade(
+  ctx: RouteContext,
+  requirementId: string,
+): void {
+  const count = manager.countConsecutiveAcRefinements(requirementId);
+  if (count < REQUIREMENT_REFINEMENT_ESCALATION_THRESHOLD) return;
+  if (isRefinementPaused(ctx, requirementId)) return;
+  const record = buildRequirementAmbiguityUpgradeRecord({
+    requirementId,
+    refinementCount: count,
+    latestVersion: manager.latest(requirementId).version,
+  });
+  emitRequirementAmbiguityNeedsHuman(ctx, record);
+}
+
+/**
+ * Write-through for §81 'requirement-ambiguity' upgrades: insert-only
+ * into fdb.needsHuman, audited NEEDS_HUMAN_RAISED. Same contract as
+ * emitRunNeedsHuman (routes/runtime.ts) — duplicated here rather than
+ * imported so this module keeps no value-imports of sibling route files
+ * (dual-mode: server tests import this file's src directly; see
+ * needs-human-policy-violation.test.ts for the precedent).
+ */
+function emitRequirementAmbiguityNeedsHuman(
+  ctx: RouteContext,
+  record: NeedsHumanDbRecord,
+): void {
+  try {
+    ctx.fdb.needsHuman.submit(record);
+    ctx.audit.record('system', 'NEEDS_HUMAN_RAISED', 'needs-human', record.id, {
+      reason: record.reason,
+      source: record.source,
+      requiredDeciderLevel: record.requiredDeciderLevel,
+    });
+  } catch (err) {
+    ctx.audit.record(
+      'system',
+      'NEEDS_HUMAN_PERSIST_FAILED',
+      'needs-human',
+      record.id,
+      {
+        error: err instanceof Error ? err.message : String(err),
+        source: record.source,
+      },
+    );
+  }
 }
