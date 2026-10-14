@@ -91,10 +91,14 @@ interface BootedServer {
 const serverMain = fileURLToPath(new URL('../dist/index.js', import.meta.url));
 const serverCwd = fileURLToPath(new URL('..', import.meta.url));
 
-async function bootServer(dbFile: string): Promise<BootedServer> {
+async function bootServer(
+  dbFile: string,
+  extraEnv: Record<string, string> = {},
+): Promise<BootedServer> {
   const port = 24_000 + Math.floor(Math.random() * 20_000);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    ...extraEnv,
     PORT: String(port),
     DB_PATH: dbFile,
     // Hermetic secrets: point the file vault at a temp dir so the walk
@@ -194,9 +198,14 @@ describe('first-run walkthrough, seventh edition — B43–B45 chains (Batch 46-
     let server: BootedServer | undefined;
     // The K1 project tree lives outside `dir` (the backup collector must
     // not see the backup dir as project content); track it for cleanup.
+    // Batch 47-2 (F22): project working dirs must sit under the
+    // operator-configured root, so the walk sets FACTORY_PROJECTS_ROOT
+    // to its own temp base and builds the project tree inside it.
     let projDir = '';
+    let projectsRoot = '';
     try {
-      server = await bootServer(dbFile);
+      projectsRoot = mkdtempSync(join(tmpdir(), 'factory-walk-b46-root-'));
+      server = await bootServer(dbFile, { FACTORY_PROJECTS_ROOT: projectsRoot });
       const port = server.port;
 
       // --------------------------------------------------------------- N1 --
@@ -232,7 +241,7 @@ describe('first-run walkthrough, seventh edition — B43–B45 chains (Batch 46-
       // tree (working files + .ai/) → POST /api/backup → manifest
       // lists per-file entries; tamper one backed-up file → restore
       // refuses with 422 and the live tree is untouched.
-      projDir = mkdtempSync(join(tmpdir(), 'factory-walk-b46-proj-'));
+      projDir = mkdtempSync(join(projectsRoot, 'factory-walk-b46-proj-'));
       mkdirSync(join(projDir, '.ai'), { recursive: true });
       mkdirSync(join(projDir, 'src'), { recursive: true });
       writeFileSync(join(projDir, '.ai', 'config.yaml'), 'name: walk-b46\n');
@@ -406,6 +415,7 @@ describe('first-run walkthrough, seventh edition — B43–B45 chains (Batch 46-
       if (server) await killServer(server);
       rmSync(dir, { recursive: true, force: true });
       if (projDir) rmSync(projDir, { recursive: true, force: true });
+      if (projectsRoot) rmSync(projectsRoot, { recursive: true, force: true });
     }
   });
 });

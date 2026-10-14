@@ -85,10 +85,22 @@
 - **M0（本批，已做）**：文档界定。`KNOWN_LIMITATIONS.md` 的 merge queue 条目
   口径收紧为"同一 DB 文件的多进程；多机（多 DB 文件 / 共享文件 / 时钟偏移）
   均未覆盖，见本文档"。部署建议：merge queue 只跑单实例。
-- **M1（小，可做）**：单写者开关。`FACTORY_MERGE_DRAIN=0` 时 `POST /api/git/merge-queue`
-  只 enqueue 不 `processAll`，返回 202 + `drainPending: true`（契约变更需在文档
-  写明）。价值：为"API 实例若干 + drainer 一台"的拓扑铺路；今天单实例部署
-  下行为零变更（默认开）。
+- **M1（已落地，Batch 47）**：单写者开关。`FACTORY_MERGE_DRAIN=0` 时
+  `POST /api/git/merge-queue` 只 enqueue 不 `processAll`，返回 202 +
+  `drainPending: true`，条目保持 QUEUED，审计记 `MERGE_QUEUE_ENQUEUED`
+ （`drainPending: true`，`reason: 'FACTORY_MERGE_DRAIN=0'`）。开关在请求时
+  按请求读 env（无重启即可切换）。默认（未设）行为逐行未动——老测试全绿。
+  价值：为"API 实例若干 + drainer 一台"的拓扑铺路；今天单实例部署下
+  行为零变更。
+- **部署建议（API 实例 + drainer 一台拓扑）**：
+  - API 实例：`FACTORY_MERGE_DRAIN=0`——只接受 enqueue，永远不 drain。
+    多个 API 实例可以同时存在（enqueue 的原子 INSERT/CAS 本身按 DB 排斥，
+    但注意**同一 DB 文件**仍是前提——见 §2 场景 A）。
+  - drainer 实例：默认 env（不设该变量）——唯一的 drain 执行者。
+    **必须只跑一台 drainer**：drain 触发器本身就是"能 serve 该端点的进程都
+    会 drain"，两台 drainer 就是场景 A 的脑裂。
+  - **诚实声明**：在 M2（共享状态）落定前，这个拓扑只能解决 drain 互斥，
+    不能解决状态共享——多机部署仍是不支持的，任何相反的宣传都是虚假的。
 - **M2（大，真正的门）**：共享状态决策。Postgres 迁移的 RFC（含全量表清单、
   迁移策略、回滚方案）或明确"不支持多机"的产品决策。这是唯一能让 M1 产生
   实际多机价值的前置。**在 M2 落定前，任何多机 merge queue 的宣传都是虚假的。**

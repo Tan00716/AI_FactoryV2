@@ -157,7 +157,9 @@ import {
   initBackupService,
   listBackupManifests,
   resolveBackupConfig,
+  resolveProjectsRoot,
   stagedRestoreBackupId,
+  validateProjectPath,
 } from './routes/backup';
 import { handleRetentionRoutes } from './routes/retention';
 import { initMcpPersistence } from './routes/mcp';
@@ -968,6 +970,24 @@ const server = createServer(async (req, res) => {
       // verbatim: scalars as strings, ref collections as string arrays.
       // Wrong shapes are 400; nothing is fabricated — absent fields
       // stay null/[] in the record.
+      //
+      // Batch 47-2 (finding F22): a non-empty working-directory path is
+      // a trust decision — the backup collector walks it — so it must
+      // be absolute, exist, be a directory, and stay under the
+      // operator-configured project root. Refusals carry explicit codes.
+      const rawPath = String(b['path'] ?? '');
+      if (rawPath.trim()) {
+        const pathCheck = validateProjectPath(
+          rawPath,
+          resolveProjectsRoot(process.env, DB_PATH),
+        );
+        if (!pathCheck.ok) {
+          return json(res, 400, {
+            error: pathCheck.problem.message,
+            code: pathCheck.problem.code,
+          });
+        }
+      }
       try {
         const scalar = (key: string): string | undefined => {
           const v = b[key];

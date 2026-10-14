@@ -113,6 +113,19 @@ export interface BackupManifest {
   scope: 'factory-database' | 'factory-database+project-files';
   files: BackupManifestFile[];
   tables: Record<string, number>;
+  /**
+   * Projects whose working tree was NOT collected because the recorded
+   * path escaped the operator-configured project root (Batch 47-2,
+   * finding F22). Recorded, never silent — a planted row cannot sneak
+   * an unrelated tree into a backup even if it predates the
+   * record-creation gate. Present only when non-empty.
+   */
+  skippedProjects?: Array<{
+    projectId: string;
+    name: string;
+    path: string;
+    reason: 'path-outside-root';
+  }>;
   /** Present when scope is 'factory-database+project-files'. */
   projectFiles?: {
     projects: BackupManifestProject[];
@@ -130,19 +143,30 @@ export interface BackupServiceConfig {
   appVersion: string;
   /** Project working-files collection (Batch 45-4). */
   projectFiles: ProjectFilesConfig;
+  /**
+   * Operator-configured project root (Batch 47-2, finding F22): project
+   * working directories must live under this root. Env
+   * FACTORY_PROJECTS_ROOT, default <db dir>/projects. The collector and
+   * the project-files restore both refuse to read from / write to
+   * directories outside it — recorded as skips, never silent.
+   */
+  projectsRoot: string;
 }
 
 let config: BackupServiceConfig | null = null;
 
 /** Coordinator wiring (index.ts), before the server takes traffic. */
 export function initBackupService(
-  cfg: Omit<BackupServiceConfig, 'projectFiles'> & {
+  cfg: Omit<BackupServiceConfig, 'projectFiles' | 'projectsRoot'> & {
     projectFiles?: ProjectFilesConfig;
+    projectsRoot?: string;
   },
 ): void {
   config = {
     ...cfg,
     projectFiles: cfg.projectFiles ?? resolveProjectFilesConfig(),
+    projectsRoot:
+      cfg.projectsRoot ?? resolveProjectsRoot(process.env, cfg.dbPath),
   };
 }
 
@@ -178,6 +202,7 @@ export function resolveBackupConfig(dbPath: string): BackupServiceConfig {
     backupDir,
     appVersion: appVersion(),
     projectFiles: resolveProjectFilesConfig(),
+    projectsRoot: resolveProjectsRoot(process.env, dbPath),
   };
 }
 
@@ -300,6 +325,164 @@ export interface CollectedProjectFile {
   bytes: number;
   sha256: string;
 }
+
+// ------------------------------------------------- project path policy --
+
+/**
+ * Project working-directory path policy (Batch 47-2, finding F22).
+ *
+ * The backup collector walks the directory named by a project record's
+ * `path` field, so the record-creation surface must not accept arbitrary
+ * filesystem locations. Every non-empty project path must be absolute,
+ * exist, be a directory, and stay under an operator-configured root:
+ *
+ *   FACTORY_PROJECTS_ROOT=<abs dir>   explicit; resolved once
+ *   default: <directory of DB_PATH>/projects
+ *
+ * An empty/blank path stays legal — it means "no local working
+ * directory" (e.g. a record that only carries remote refs) and the
+ * collector skips it. Nothing is fabricated: a path that cannot be
+ * verified is refused, never silently rewritten.
+ *
+ * These live in the backup route module (not a separate file) because
+ * this module is imported by type-stripping server tests: a separate
+ * src module would force an extensionless sibling value-import, which
+ * node type-stripping cannot resolve (dual-mode iron rule — tsc
+ * forbids the `.ts`-suffixed alternative). Pure functions: no env reads
+ * inside the validators — the caller passes the already-resolved root.
+ */
+export type ProjectPathErrorCode =
+  | 'PROJECT_PATH_NOT_ABSOLUTE'
+  | 'PROJECT_PATH_NOT_DIRECTORY'
+  | 'PROJECT_PATH_NOT_FOUND'
+  | 'PROJECT_PATH_OUTSIDE_ROOT';
+
+export interface ProjectPathProblem {
+  code: ProjectPathErrorCode;
+  message: string;
+}
+
+export type ProjectPathValidation =
+  | { ok: true; abs: string }
+  | { ok: false; problem: ProjectPathProblem };
+
+/**
+ * Resolve the operator-configured project root: FACTORY_PROJECTS_ROOT
+ * when set (non-blank), otherwise <directory of dbPath>/projects.
+ * The returned value is absolute but is NOT required to exist — a
+ * missing root simply means every candidate path fails containment
+ * (lexically nothing can be "inside" a root that was never configured
+ * correctly), which is the safe direction.
+ */
+export function resolveProjectsRoot(
+  env: NodeJS.ProcessEnv = process.env,
+  dbPath: string,
+): string {
+  const raw = env['FACTORY_PROJECTS_ROOT'];
+  if (raw && raw.trim()) return path.resolve(raw.trim());
+  return path.join(path.dirname(path.resolve(dbPath)), 'projects');
+}
+
+/** Lexical containment: abs equals root or lives strictly under it. */
+function lexicallyInside(abs: string, root: string): boolean {
+  return abs === root || abs.startsWith(root + path.sep);
+}
+
+/** Resolve through symlinks when the path exists; otherwise the input. */
+function derefPath(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+function outsideRoot(abs: string, root: string): ProjectPathValidation {
+  return {
+    ok: false,
+    problem: {
+      code: 'PROJECT_PATH_OUTSIDE_ROOT',
+      message: `project path escapes the project root (${root}): ${abs}`,
+    },
+  };
+}
+
+/**
+ * Validate a non-empty project working-directory path and return the
+ * resolved absolute path on success. Order matters — shape first
+ * (absolute), then containment, then existence — and each refusal names
+ * its own code so API consumers can act on it instead of guessing.
+ *
+ * Containment runs before existence on purpose: a path outside the
+ * root is refused as OUTSIDE_ROOT whether or not it exists, so the
+ * code difference can never be used as an existence oracle for
+ * locations the caller should not be naming at all.
+ *
+ * The containment check runs twice: once lexically (cheap, catches
+ * `..` escapes even for not-yet-existing paths) and once on the
+ * dereferenced real path (catches a symlink inside the root pointing
+ * elsewhere).
+ */
+export function validateProjectPath(
+  raw: string,
+  root: string,
+): ProjectPathValidation {
+  const trimmed = raw.trim();
+  if (!path.isAbsolute(trimmed)) {
+    return {
+      ok: false,
+      problem: {
+        code: 'PROJECT_PATH_NOT_ABSOLUTE',
+        message: `project path must be an absolute path, got: ${raw}`,
+      },
+    };
+  }
+  const abs = path.resolve(trimmed);
+  // Lexical containment first (see doc comment): no existence oracle
+  // for paths outside the root.
+  if (!lexicallyInside(abs, root)) return outsideRoot(abs, root);
+  let st;
+  try {
+    st = fs.statSync(abs);
+  } catch {
+    return {
+      ok: false,
+      problem: {
+        code: 'PROJECT_PATH_NOT_FOUND',
+        message: `project path does not exist: ${abs}`,
+      },
+    };
+  }
+  if (!st.isDirectory()) {
+    return {
+      ok: false,
+      problem: {
+        code: 'PROJECT_PATH_NOT_DIRECTORY',
+        message: `project path is not a directory: ${abs}`,
+      },
+    };
+  }
+  // Symlink escape: the directory itself may resolve elsewhere.
+  const real = derefPath(abs);
+  const realRoot = fs.existsSync(root) ? derefPath(root) : root;
+  if (!lexicallyInside(real, realRoot)) return outsideRoot(abs, root);
+  return { ok: true, abs };
+}
+
+/**
+ * Lightweight containment check for the backup/restore paths: does an
+ * already-resolved directory stay under the root, including through
+ * symlinks? Does not require existence — missing directories are
+ * skipped separately by the collector.
+ */
+export function isPathInsideProjectsRoot(abs: string, root: string): boolean {
+  if (!lexicallyInside(abs, root)) return false;
+  const real = fs.existsSync(abs) ? derefPath(abs) : abs;
+  const realRoot = fs.existsSync(root) ? derefPath(root) : root;
+  return lexicallyInside(real, realRoot);
+}
+
+// ------------------------------------------------- project file collect --
 
 export type ProjectFileSkipReason =
   | 'symlink'
@@ -576,6 +759,7 @@ export function createBackup(
 
   // ---- project working files (Batch 45-4) -------------------------
   const backedProjects: BackupManifestProject[] = [];
+  const skippedProjects: NonNullable<BackupManifest['skippedProjects']> = [];
   if (cfg.projectFiles.enabled) {
     const projectsRoot = path.join(dir, 'projects');
     // listProjects() excludes archived projects by default — archived
@@ -585,6 +769,19 @@ export function createBackup(
       if (!projectDir) continue;
       const abs = path.resolve(projectDir);
       if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) continue;
+      // Batch 47-2 (finding F22): defense in depth — even a row that
+      // predates the record-creation gate (or was written straight to
+      // the DB, bypassing HTTP validation) cannot pull an unrelated
+      // tree into a backup. Recorded, never silent.
+      if (!isPathInsideProjectsRoot(abs, cfg.projectsRoot)) {
+        skippedProjects.push({
+          projectId: p.id,
+          name: p.name,
+          path: abs,
+          reason: 'path-outside-root',
+        });
+        continue;
+      }
       const collected = collectProjectFiles(abs, cfg.projectFiles, [
         cfg.backupDir,
       ]);
@@ -621,6 +818,7 @@ export function createBackup(
     scope,
     files,
     tables,
+    ...(skippedProjects.length > 0 ? { skippedProjects } : {}),
     ...(scope === 'factory-database+project-files'
       ? {
           projectFiles: {
@@ -829,6 +1027,19 @@ export function restoreProjectFilesFromBackup(
           projectId: proj.projectId,
           name: proj.name,
           reason: 'project-dir-missing',
+        });
+        continue;
+      }
+      // Batch 47-2 (finding F22): the restore side must not trust the
+      // live record's path either — a row planted before the
+      // record-creation gate could otherwise redirect a restore into
+      // an unrelated tree. Recorded, never silent. (The manifest
+      // fallback path was collected under the root at backup time.)
+      if (!isPathInsideProjectsRoot(path.resolve(projectDir), cfg.projectsRoot)) {
+        result.skipped.push({
+          projectId: proj.projectId,
+          name: proj.name,
+          reason: 'path-outside-root',
         });
         continue;
       }

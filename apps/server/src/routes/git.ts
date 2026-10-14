@@ -615,6 +615,21 @@ export async function handleGitRoutes(
         prId: pr.id,
         taskId: pr.taskId,
       });
+      // Batch 47 (M1 — single-writer switch, see
+      // docs/merge-queue-multimachine.md §4): when FACTORY_MERGE_DRAIN=0 the
+      // API instance only enqueues. The entry stays QUEUED until a separate
+      // drainer instance (default env) runs processAll. Read at request time
+      // so a server can be booted either way without a restart.
+      if (process.env['FACTORY_MERGE_DRAIN'] === '0') {
+        ctx.audit.record(actor, 'MERGE_QUEUE_ENQUEUED', 'git', repo, {
+          entryId: entry.id,
+          prId: pr.id,
+          taskId: pr.taskId,
+          drainPending: true,
+          reason: 'FACTORY_MERGE_DRAIN=0',
+        });
+        return ctx.json(res, 202, { ok: true, entry: queue.get(entry.id), drainPending: true }), true;
+      }
       const processed = await queue.processAll({
         audit: auditHook(actor),
         onMerged: (mergedEntry, mergedPr) => {

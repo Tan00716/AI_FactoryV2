@@ -177,7 +177,7 @@ describe('createBackup with project files', () => {
     fdb.createProject({ id: 'p2', name: 'P2-archived', description: '', path: projDir });
     fdb.setProjectStatus('p2', 'archived');
     fdb.createProject({ id: 'p3', name: 'P3-nodir', description: '', path: join(dir, 'nope') });
-    initBackupService({ dbPath: join(dir, 'factory.db'), backupDir, appVersion: 'test', projectFiles: smallCaps() });
+    initBackupService({ dbPath: join(dir, 'factory.db'), backupDir, appVersion: 'test', projectFiles: smallCaps(), projectsRoot: dir });
   });
   afterEach(() => {
     fdb.close();

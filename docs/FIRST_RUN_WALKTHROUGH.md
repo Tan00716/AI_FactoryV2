@@ -380,18 +380,35 @@ v6 for the B41–B42 §81 chains; v7 covers B43–B45 only.
 ## Findings (seventh edition)
 
 **F22 — Low (backup collection trusts the project record's `path`).**
-`POST /api/projects` accepts `path` as a plain string — no absolute-path
+`POST /api/projects` accepted `path` as a plain string — no absolute-path
 check, no existence check, no containment check (`apps/server/src/index.ts`
-passes `String(b['path'] ?? '')` straight into the row). `createBackup`
-then resolves and walks whatever directory that field points at (bounded
+passed `String(b['path'] ?? '')` straight into the row). `createBackup`
+then resolved and walked whatever directory that field pointed at (bounded
 only by the default exclusions and the 512MiB total cap). The restore side
-*does* have `..` containment checks, but the collection side will happily
+*does* have `..` containment checks, but the collection side would happily
 read an unrelated tree (e.g. a record pointing at `/etc`) into the backup
-directory. In open (unauthenticated) mode any API caller can plant such a
-record. Not a walkthrough artifact — a real product gap: collection should
-either validate containment at record-creation time or refuse to back up
-paths outside an operator-configured project root. Left for a product
-batch; the walkthrough only uses its own temp dir.
+directory. In open (unauthenticated) mode any API caller could plant such a
+record. Not a walkthrough artifact — a real product gap.
+
+**Fixed in Batch 47.** Three layers, all in `apps/server/src/routes/backup.ts`
+(path policy) + the `POST /api/projects` handler (`apps/server/src/index.ts`):
+(1) record-creation gate — a non-empty `path` must be absolute, exist, be
+a directory, and stay under the operator-configured root
+(`FACTORY_PROJECTS_ROOT`, default `<db dir>/projects`); refusals carry
+explicit codes (`PROJECT_PATH_NOT_ABSOLUTE` / `_NOT_FOUND` /
+`_NOT_DIRECTORY` / `_OUTSIDE_ROOT`), containment checked before existence
+so the code can never serve as an existence oracle; empty path stays legal
+(no local working dir). (2) collector defense in depth — `createBackup`
+skips rows whose path escapes the root and records them in
+`manifest.skippedProjects` (`reason: 'path-outside-root'`), so even a row
+planted before the gate (or written straight to the DB) cannot pull an
+unrelated tree into a backup. (3) restore defense in depth —
+`restoreProjectFilesFromBackup` refuses to write into a live directory
+outside the root (same recorded reason). Dirty-data walk of the dev DB
+(Batch 47): exactly one row, the seeded demo `MyApp`
+(`C:\AIProjects\MyApp`) — no planted rows; the seed is now a recorded
+skip rather than a silent one. Pinned by
+`apps/server/tests/project-path-validation.test.ts` (6/6).
 
 **F23 — Info (walkthrough hygiene).**
 The v7 test imports the compiled `@ai-factory/runtime` dist for the E1(a)
