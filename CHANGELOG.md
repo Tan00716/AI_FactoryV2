@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 94 (2026-10-16)
+
+独立复核 + 可售清单更新批。
+
+- **Batch 92+93 联合独立复核（gap-audit/REAUDIT_BATCH92_93.md，偏差 0 处）**：155cbbc 恰好 4 文件、b04ac08 恰好 1 文件，与 CHANGELOG Batch 92/93 条目描述一致，无 .github、无意外文件。F58 one-liner 与 KNOWN_LIMITATIONS 的 B87 条目抽查在位；B93 三套数字记录为子任务声称（复核人不重跑）。REAUDIT 链：1–10 + 21–93 连续
+- **可售清单"当前状态"小节更新（B91–93）**：`~/workspace/goals/ai-factory-app-prototype/files/SELLABLE_CHECKLIST.md`（repo 外）新增"当前状态（2026-10-16，Batch 93 收口，基线 b04ac08，本地）"小节：三批摘要（B91 AppImage 重打、 B92 复核+findings triage、B93 全量回归）、复核链 1–10 + 21–91（B92/B93 待补，如实标注）、主线数字（构建 0、包套件 2593/0、服务端 500/500、验收 121/121 均为 B93 亲跑；desktop tsc 0/B89、electron tsc 0/B80-81、smoke OK/B81）、新增真实缺口 0、结论仍是"可运行的原型 + 持续收敛"（13 硬门槛未变）。数字逐项对照 CHANGELOG B91–B93 一致；17 个历史小节全部在位
+- **测试基线**：本批是复核+文档批，无产品代码改动；主线数字为 B93 亲跑（构建 0、包套件 2593/0、服务端 500/500、验收 121/121）。
+
 ## Batch 93 (2026-10-16)
 
 B89 后全量回归批。
