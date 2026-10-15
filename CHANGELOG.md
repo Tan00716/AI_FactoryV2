@@ -1,5 +1,15 @@
 # Changelog
 
+## Batch 93 (2026-10-16)
+
+B89 后全量回归批。
+
+- **包套件全量回归**：`npm test`（先对 40 个 workspace 包执行 build，exit 0）→ tests 2109（pass 2107，2 skipped）+ tests 486（pass 486），合计 **2593 pass / 0 fail**，与 B83 基线一致
+- **服务端套件全量回归**：`npm run test:server` → **tests 500 / pass 500 / fail 0**（约 15 分钟），B89 死代码删除（含服务端 3 处）之后的首个服务端全套回归，无回归
+- **验收套件**：`npm run test:acceptance` → **121/121**（约 3 秒）
+- **结论**：三套全绿，B89 的产品代码改动（Sidebar live-skills、4 处死代码删除）未引入任何回归，无需进入 flake/真问题分支。/tmp 2%，wrapper 临时根均已自行清理
+- **测试基线（本批亲跑，更新）**：构建 0、包套件 2593/0、服务端 500/500、验收 121/121；desktop tsc 0（B89）、electron tsc 0（沿用 B80/81）、smoke:boot OK（沿用 B81）。
+
 ## Batch 92 (2026-10-16)
 
 独立复核 + Findings 重新 triage 批。
