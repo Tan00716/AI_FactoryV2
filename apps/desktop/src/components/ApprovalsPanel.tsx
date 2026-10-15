@@ -169,7 +169,10 @@ export function ApprovalsPanelInner({ api, pollMs = 5000 }: ApprovalsPanelProps)
   const refresh = useCallback(() => {
     client
       .list()
-      .then(setItems)
+      .then((items) => {
+        setItems(items);
+        setError('');
+      })
       .catch((e: Error) => setError(e.message));
   }, [client]);
 
