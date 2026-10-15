@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 79 (2026-10-16)
+
+联合复核 + 剩余可实施项扫荡批。
+
+- **Batch 76/77/78 联合独立复核（gap-audit/REAUDIT_BATCH76_78.md，偏差 0 处）**：三批文件清单 vs CHANGELOG 描述全部一致——159f821 恰好 3 文件（CHANGELOG + REAUDIT_BATCH75.md + SELLABLE_REVERIFY_BATCH75.md）、c9a1f42 恰好 4 文件（CHANGELOG + REAUDIT_BATCH74.md + b77 2 张 PNG）、980f603 恰好 4 文件（CHANGELOG + KNOWN_LIMITATIONS.md + b78-2 2 张 PNG）；三批均无 .github、无意外文件（B78 的 SELLABLE_CHECKLIST.md 改动在 repo 外 goals 目录，条目如实描述，非偏差）。报告资产在位且实在：REAUDIT_BATCH75.md 8657 bytes、SELLABLE_REVERIFY_BATCH75.md 15471 bytes、REAUDIT_BATCH74.md 5985 bytes，尺寸与声称逐项吻合；4 张 PNG 用 `file` 亲验均为真 PNG，尺寸与声称一致（b77 166596/167632 bytes 1365×739；b78-2 181469/176578 bytes 1439×871）。78-1 文档改动 `git show` diff 亲验：KL PNG "39 张"→"41 张"、前瞻口径 F1–F62→F1–F68；walkthrough Findings index 恰好 68 数据行连续；PNG 口径自洽（43 个 PNG 文件 = 41 桌面真机 + b78-2 的 2 张）。零产品代码改动：三批按 `*.(ts|tsx)` 过滤均零匹配，无需重跑全量测试，沿用 B75/76 主线收口口径诚实。REAUDIT 链：21–75 awk 扫描连续无断号，本轮补上后覆盖 1–10 + 21–78。卫生注记：B76 条目的"（15471 bytes，未跟踪）"是子任务写作时口径、收口已纳入 commit——时间差非偏差；B76 条目内 499/1 与主线 500/500 并存且已如实披露口径——非偏差。全程未 git stash、未 commit、未碰 .github
+- **SPEC_V2 剩余可实施项扫荡（79-2）——Top 3 短名单**：Findings index F1–F68 共 13 条 open，分类：by design/文档已记 9 条（F5/F6/F8/F10/F11/F20/F32/F35/F56，不动）、Tan/环境侧阻塞 4 条（F15/F16/F54/F67，不动）、**代码侧可做 0 条**——findings index 里已无代码侧活。亲读否决的假候选：git-commit 密钥扫描（产品路径无提交用户内容入口，无攻击面）、F57 follow-up（B66 已做）、F53 剩余（B66 已落地 redactText choke point）、MCP SSE/HTTP（无真实 MCP 服务器可验真，属 scope creep）。Top 3 短名单（价值/工作量排序，写在 gap-audit/BATCH79_SHORTLIST.md，未 commit）：① §81 sweep 走查 S8 腿更新——Batch 75 翻转 S8 后，`first-run-walkthrough-needshuman.test.ts` 头部注释仍写 "HTTP surface has no input"，断言文案 "HTTP positive path does not exist" 已不成立；更新注释 + 新增 S8 阳性腿（operator + signal → ESCALATED，declared-not-observed 在位），tally 从 7/8+1 负向变为真正 8/8；改动面 1 个测试文件，零产品代码。② AT 正式验收资产纯逻辑 21/64——`docs/AT_MAPPING.md` 里 21 个 `blocked: 无` 的 AT（008/016/018/023/025/026/033/034/035/036/037/040/042/043/045/046/052/053/054/056/057），按 TEST_PLAN_V2 约定建 `docs/testing/v2/` 可执行验收文件，显式标注"逻辑层验收非端到端"；其余 43 项保持 NOT_RUN 并写清缺的环境——这是硬门槛 #13 唯一有代码侧突破口的一项。③ F58 follow-up：DATA_EXPORT → approvals 授权票据——非本地模型调用前在 approvals 包建授权票据，与 DATA_EXPORT 证据双向关联 + 审计；默认记录式（零 UX 变更），阻塞式留给 Tan 决策。全程只读+grep，未动产品代码，未 stash，未碰 .github
+- **测试基线**：本批是复核+调研批，无产品代码改动；主线数字沿用 Batch 75/76 收口口径（构建 0、包套件 2589/0、服务端 500/500、desktop tsc 0、electron tsc 0、smoke:boot OK）。
+
 ## Batch 78 (2026-10-15)
 
 文档卫生 + F61 新 UX 真机走查批。
