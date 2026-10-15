@@ -13,13 +13,15 @@
   继续记 `NOT_RUN`（见下表），不冒充通过；
 - 运行方式：`cd ~/workspace/ai-factory && npm run test:acceptance`
   （= `node scripts/run-tests-tmp.mjs --test 'docs/testing/v2/at-*.test.mjs'`，走 TMPDIR 隔离 wrapper）。
-- 当前主线实测：**tests 121，pass 121，fail 0**（2026-10-16，基线 `1844cd3` 未动——本批未 commit）。
+- 当前主线实测：**tests 138，pass 138，fail 0**（2026-10-16，Batch 107-1：新增 AT-005/009/041 逻辑层验收 17 个断言；基线 `22c9abe` 未动——本批未 commit）。
 
-## 已验收：21 项（逻辑层）
+## 已验收：24 项（逻辑层）
 
 | AT | 场景 | 验收文件 | 断言数 | 判定要点 |
 |---|---|---|---|---|
+| AT-005 | 越权全路径拒绝 | `at-005.test.mjs` | 5 | 无 database.write 能力的 Coder 经 Shell/MCP/Python 全路径拒绝；deny 必审计；政策显式拒绝生产写；非生产写不受误伤；未知能力拒绝 |
 | AT-008 | Scout 新工程方法六阶段 | `at-008.test.mjs` | 6 | 六阶段顺序执行全 ok；产物 PROPOSED 不激活；community <8 验证拒绝；IRULE 运行对象字节不变；compare 只读去重 |
+| AT-009 | MCP 故障注入 | `at-009.test.mjs` | 6 | bounded retry 按 maxAttempts 有界；失败返回 outcome 不抛错（Task 不丢）；同授权下找到 backup 替代；§34.4 耗尽 escalated；CircuitBreaker 熔断 |
 | AT-016 | 组织报告传播去重 | `at-016.test.mjs` | 5 | 主管理链正确；菱形横向路径去重；横向循环不风暴；hop 上限精确截断；只走横向报告边 |
 | AT-018 | 越级上报 | `at-018.test.mjs` | 4 | security-issue 标 critical；上报记录完整可审计；`evaluateEscalation` 无法被改名屏蔽；未知理由不误报 |
 | AT-023 | 无可信证据 Gate 不过 | `at-023.test.mjs` | 4 | trust 未声明默认 UNVERIFIED；无证据 → BLOCKED/MISSING_EVIDENCE；AI/HUMAN/SERVICE 不能自写裁决 |
@@ -31,6 +33,7 @@
 | AT-036 | Takeover fencing | `at-036.test.mjs` | 6 | 接管 HUMAN_OWNED；旧 worker 写入被 fence；人工修改有归属；非接管态人工修改拒绝；过期基线拒绝；不虚假接管 |
 | AT-037 | Lease 过期接管 | `at-037.test.mjs` | 7 | 单 writer；冲突；过期 → STALE_OWNER；reassign 后旧 token 拒绝；fencing 单调递增；错误 token 续约拒绝 |
 | AT-040 | 锁/Lease 序列化 | `at-040.test.mjs` | 6 | 先到获锁后到排队；释放 FIFO 授予；prod env 单持有者；TTL 到期；按 key 隔离；部署单活跃持有者 |
+| AT-041 | 证据不可篡改（写边界） | `at-041.test.mjs` | 6 | 篡改后 hash 变化可发现；非法记录通不过 18 字段契约；Engine.create 写边界拒绝；UNVERIFIED hash 对上也不通过 Gate；TRUSTED 通过对照；伪造信任等级被拒 |
 | AT-042 | 独立性拒绝自审 | `at-042.test.mjs` | 6 | 自审拒绝；同 Run 自审拒绝；`reviewWithIndependence` 拒绝；干净对照放行；无合格候选 BLOCKED；有合格 STAFFED |
 | AT-043 | QA attempt 保留 | `at-043.test.mjs` | 9 | mandatorySkipped → BLOCKED；缺工具 FAIL；隔离≠通过；全绿 PASS；failed 优先；attempt 全保留；三类失败分类 |
 | AT-045 | 凭证不泄漏 | `at-045.test.mjs` | 8 | SecretRef 脱敏；序列化只含引用；Bearer/password=/URL 脱敏；对象脱敏大小写不敏感不突变；UI 导出载荷深脱敏 |
@@ -41,9 +44,11 @@
 | AT-056 | Eval 独立评分 | `at-056.test.mjs` | 6 | 冲突判定；自评+独评开争议；一致无争议；adjudicate 证据方胜；低置信 ESCALATED；高风险强制独立验证 |
 | AT-057 | 组织环拒绝 | `at-057.test.mjs` | 5 | 主管理环拒绝；三段/两段委托环拒绝；applyChange 原子拒绝；无环对照放行 |
 
-## 未验收：43 项 NOT_RUN（缺的真实环境，逐项）
+## 未验收：40 项 NOT_RUN（缺的真实环境，逐项）
 
-`blocked` 为"缺真实环境"的 26 项（逻辑层单元已跑过）+ 17 项（无可引用的已跑测试）。
+`blocked` 为"缺真实环境"的 23 项（逻辑层单元已跑过）+ 17 项（无可引用的已跑测试）。
+2026-10-16（Batch 107-1）：AT-005、AT-009、AT-041 从 NOT_RUN 晋升为逻辑层验收
+（判定断言的逻辑语义可被包公共 API 完整覆盖，B80 严格标准）。
 
 | AT | 场景 | 缺的真实环境（NOT_RUN 原因） |
 |---|---|---|
@@ -51,10 +56,8 @@
 | AT-002 | 新目录建 CRM | 真实文件系统、真实依赖安装与构建 |
 | AT-003 | 受控 Employee 生命周期 | 真实任务生命周期执行：真实创建、真实退休/保留 |
 | AT-004 | QA FAIL 修复循环端到端 | 真实 Diff、独立 QA、旧 Evidence 失效联动端到端 |
-| AT-005 | 越权全路径拒绝 | 真实 Shell/MCP/Python 进程的端到端拒绝与审计 |
 | AT-006 | 生产发布批准 | 真实生产发布流程 |
 | AT-007 | 低风险预授权发布 | 真实发布流水线、progressive rollout、Outcome 观测 |
-| AT-009 | MCP 故障注入 | 真实 MCP 服务故障注入 |
 | AT-010 | 崩溃恢复 | 真实 Worker 进程崩溃与重启 |
 | AT-011 | 脚本越界（真实隔离） | 真实隔离 Host：子进程同约束的真实验证 |
 | AT-012 | 路径攻击（真实隔离） | 真实隔离 Host：Junction/Hardlink/UNC/路径替换攻击验收 |
@@ -75,7 +78,6 @@
 | AT-032 | Quota Hit 路由 | 真实模型 Provider 额度 + 真实 CI |
 | AT-038 | 超时重启幂等 | 真实远端 Git/部署服务 |
 | AT-039 | 不可逆外部动作 | 真实外部系统 |
-| AT-041 | 证据不可篡改（写边界） | 真实 Collector 写边界 |
 | AT-044 | 注入内容不升指令 | 真实网络/MCP 执行 |
 | AT-047 | Canary 不自动 Promotion | 真实生产流量与遥测 |
 | AT-048 | 生产故障恢复/补偿 | 真实生产迁移执行 |
@@ -91,11 +93,11 @@
 | AT-063 | 升级不静默切换 | 真实升级场景 |
 | AT-064 | 多级组织报告 | 真实多级组织运行 |
 
-**分组汇总**：真实执行环境 16（001/002/003/004/005/010/015/017/019/021/022/024/027/041/063/064）；
+**分组汇总**（2026-10-16 Batch 107-1 更新）：真实执行环境 14（001/002/003/004/010/015/017/019/021/022/024/027/063/064）；
 真实生产环境 10（006/007/020/030/031/047/048/049/059/060）；真实隔离 Host 2（011/012）；
-真实网络/外部服务/MCP/Webhook 6（009/013/038/039/044/058）；真实模型 Provider/技能运行 4（014/032/051/055）；
+真实网络/外部服务/MCP/Webhook 5（013/038/039/044/058）；真实模型 Provider/技能运行 4（014/032/051/055）；
 真实 Worker 联动 1（029）；真人验收 2（028/050）；真实 Electron/桌面 1（061）；50+ 远程 Run 压力 1（062）。
-合计 43，64 = 21 + 43 齐全。
+合计 40，64 = 24 + 40 齐全。
 
 ## 已知语义注记（非缺陷，验收忠实实现行为）
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 107 (2026-10-16)
+
+AT 逻辑层验收第二批。
+
+- **AT 逻辑层验收第二批（B106 重审的可推进项落地）**：26 个"部分覆盖"逐项按 B80 严格标准分析（判定断言必须被包公共 API 完整覆盖，不为凑数放水）。**晋升 3 个 AT（+17 断言）**：AT-005（越权全路径拒绝，5 断言——`packages/policy` 的 `checkCapability` 纯逻辑授权判定）、AT-009（MCP 故障注入，6 断言——`packages/mcp` 的 `McpResilience.execute` bounded retry + 熔断，纯逻辑无需真实 MCP 服务）、AT-041（证据不可篡改，6 断言——`packages/core` 的 `EvidenceV2Engine` + hash + 门禁）。**11 个维持 NOT_RUN**（逐项理由已记录：AT-011/012 需真实隔离 Host、AT-029 需真实 Worker、AT-032 需真实模型额度、AT-044 缺网络层、AT-048/051/059 需真实故障注入、AT-060/063/064 无包 API）
+- **`npm run test:acceptance` → 138/138**（was 121/121），0 失败。AT 逻辑层覆盖 **24/64**（was 21/64），NOT_RUN 从 43 降至 40。新增 `docs/testing/v2/at-005.test.mjs`、`at-009.test.mjs`、`at-041.test.mjs`；`ACCEPTANCE_INDEX.md` 同步更新。未改产品代码（纯新增验收测试 + 文档）。正式端到端验收仍为 0——不把逻辑验收说成端到端
+- **测试基线**：构建 0（B100）、包套件 2593/0（B100）、服务端 500/500（B100）、验收 138/138（本批亲跑）、desktop/server tsc 0（B100）、smoke:boot OK（B81）。
+
 ## Batch 106 (2026-10-16)
 
 13 硬门槛逐项重审批。
