@@ -1,5 +1,14 @@
 # Changelog
 
+## Batch 92 (2026-10-16)
+
+独立复核 + Findings 重新 triage 批。
+
+- **Batch 90+91 联合独立复核（gap-audit/REAUDIT_BATCH90_91.md，偏差 0 处）**：b3ff7d3 恰好 2 文件、48849b7 恰好 1 文件，与 CHANGELOG Batch 90/91 条目描述一致，无 .github、无意外文件。B90 冒烟结论与 B91 打包数字记录为子任务声称；过程注记与边界如实披露；可售清单新小节在位。REAUDIT 链：1–10 + 21–91 连续
+- **Findings F1–F68 重新 triage——13 条 open 全部维持原判，0 状态变化，0 新增**：`git log 1844cd3..48849b7`（B79→B91）全部非测试源码变更共 11 个文件（B80 的 F58 四件套 + B89 的 Sidebar/api.ts + 4 处死代码删除），逐一对照 13 条 finding 的代码前提——无一命中。9 条 by-design、4 条 Tan/环境阻塞全部仍成立（F6 经 B91 打包亲验仍成立；F15 经 B87 亲验仍阻塞）。B79 短名单 5 项"代码侧刻意不做"全部未变（B81 修的是测试等待条件，reconcile"只报告不处置"的产品语义未动；B89 没碰 Board 流转路径）。B80–B91 新 finding 检查：0 条（B89 的 stale/dead code 已修；pgrep/旧 asar 是过程教训已记；B87 Advisory 延迟是验证方法边界）
+- **文档卫生（收口人补 2 处轻微滞后）**：walkthrough 的 F58 one-liner 同步 Batch 80 现状（RECORD mode 已落地、阻塞式待 Tan 决策，F58 仍 open）；`docs/KNOWN_LIMITATIONS.md` 的"隔离与安全"节新增 B87 依赖审计边界条目（Advisory 同步延迟、上架前重跑 npm audit）
+- **测试基线**：本批是复核+审计+文档批，无产品代码改动；主线数字沿用 B80–83 收口口径（构建 0、包套件 2593/0×2、服务端 500/500×2、验收 121/121、desktop/electron tsc 0、smoke:boot OK）。
+
 ## Batch 91 (2026-10-16)
 
 AppImage 重打 + 可售清单更新批。
