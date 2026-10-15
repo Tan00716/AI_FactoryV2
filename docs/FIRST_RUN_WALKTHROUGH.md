@@ -1,10 +1,10 @@
-# Walkthrough index (Batch 60)
+# Walkthrough index (Batch 61)
 
 One line per walkthrough edition below; each edition is cumulative
 across files, not a replacement — `demo:e2e-v4` remains the authority
 for the B31–B36 governance chains, v5 for B37–B40, v6 for B41–B42 §81,
 v7 for B43–B45, v8 for B47, the audit-chain legs for B52–B56, and the
-usability/response-shape legs for B58–B59. Every edition runs the real compiled
+usability/response-shape legs for B58–B61. Every edition runs the real compiled
 server (fresh temp SQLite, hermetic `FACTORY_SECRETS_DIR`) over pure
 HTTP, zero mocks, unless the row says otherwise.
 
@@ -30,8 +30,10 @@ HTTP, zero mocks, unless the row says otherwise.
 | ApprovalsPanel response-shape fix | 58-5 | root-cause fix for F41: `RawApproval` + `toApprovalItem()` snake_case→camelCase mapping on all 5 paths (`id←approval_id`, `requestedBy←requester`, `riskLevel←risk_level`, `requiredApprover←required_approvers.join(', ')`, `status` + `INVALIDATED`); `(a.evidenceIds ?? []).length` guards; `ApprovalsErrorBoundary` in the same file | desktop tsc 0; real server response shape re-verified (exactly 20 snake_case keys, no `evidenceIds`/`agentId`) | F41 (closed B58), F43 |
 | response-shape compatibility audit | 59 | all 38 desktop panels read against real server responses (20+ GET endpoints probed with seeded data): 1 more real bug of the F41 class — QaPanel whole-tree crash on failed QA runs (`summary={error}` passes the `{run.summary && ...}` guard, `categories.map` on undefined); fixed server-side (failure summary normalized to success shape + `error` field) and panel-side (red pill + `?? []`); other 37 panels clean | desktop tsc 0, server tsc 0 | F44, F48 |
 | QA failure-path leg | 60 | A–C (failed QA run → server writes the normalized failure summary: `TMPDIR` under a regular file = deterministic ENOTDIR at the auto-fix step; summary is the success shape with zeros/empty arrays + non-empty `error` naming the qa-run dir, `Array.isArray(categories)` holds, record retrievable via `GET /api/qa/runs/:id`; success control → auto-fix applies, verdict PASS, no `error` key; key-set relationship pinned: failure keys = success keys + `error`); real server boot path, pure HTTP | 1/1 ×3; pins the F44 server-side fix (the panel's `categories.map` contract) | F49 |
+| packaged full Electron walkthrough | 61-2 | `NODE_ENV=production` Electron (main.ts packaged path: `loadFile` + backend spawn), renderer from the compiled dist (`apps/desktop/renderer -> dist` temp symlink): (a) `PORT=32111` — `apiPort` injected via `loadFile(..., { query: { apiPort } })`, page URL `…/index.html?apiPort=32111`, `defaultApiBase()` → `http://localhost:32111/api`, full dashboard renders, no "Cannot reach" banner, no Offline; (b) race simulation (kill backend + `location.reload()`) → red banner with the *parsed* API_BASE (`http://localhost:32111/api`, not the old hardcoded 3100) + ● Offline; restart backend → banner cleared, ● Running, dashboard re-renders with new events (~2s retry) | 3 real PNGs, all viewed; both 60-5 fixes verified in the real packaged path | F50 |
+| desktop interaction walkthrough | 61-4 | remaining interaction gaps closed on a real machine (Electron+Xvfb+vite dev+real server, real `executeJavaScript` handlers + screenshots): Board drag (synthetic HTML5 drag through React's real `onDragStart`/`onDrop`) of an IN PROGRESS card to CODE REVIEW → gate toast "⛔ 门禁拒绝（缺证据）" + real `WORKFLOW_TRANSITION_DENIED` in AI Activity (server 422 `GATE_DENIED` pre-verified via curl, UI consistent); real QA run (default unit category) → verdict PASS, attempts=3 (attempt 1 `PRODUCT_FAILURE` → auto-fix → attempts 2/3 pass), no red pill; Approvals regression (real HIGH approval) → panel renders Pending(1) + three buttons, no crash | 4 real PNGs, all viewed; Board/QA/Approvals interaction evidence | F51 |
 
-## Findings index (F1–F49)
+## Findings index (F1–F51)
 
 Status: `closed` = fixed and pinned by tests; `open` = still true today
 (includes by-design and environment notes); `hygiene` = process note, no
@@ -88,6 +90,8 @@ fix expected.
 | F47 | Info | hygiene | SIGKILL of the packaged main process leaves its spawned backend child reparented (main.ts's `window-all-closed` `backend?.kill()` only fires on normal exit): kill the backend child by exact PID too |
 | F48 | Low | open | `/api/projects` returns snake_case bare rows (`created_at`, …) while the desktop `Project` interface only reads `id`/`name`/`description`/`path` — safe today, silent `undefined` if someone later reads `project.createdAt` |
 | F49 | Info | closed (B60) | QA failure-path leg pins the F44 server-side fix end to end: with `TMPDIR` under a regular file (a real, deterministic environment failure), `POST /api/qa/runs` fails at the auto-fix step (`ENOTDIR` naming the `qa-run-<id>` dir) and the run record's summary is exactly the success shape (`total/passed/failed/skipped: 0`, `categories: []`, `failures: []`) plus a non-empty string `error` — key set = success keys + `error`; the record is retrievable via `GET /api/qa/runs/:id`; `Array.isArray(categories)` holds (the panel's `categories.map` contract, the exact thing that crashed the tree pre-fix). Success control (normal `TMPDIR`): auto-fix applies, verdict PASS, no `error` key. Test-hygiene note: `node --test` exports `NODE_TEST_CONTEXT`/`NODE_TEST_WORKER_ID`, which makes the QA loop's spawned `node --test` children refuse to run ("recursively within a test file") — the walkthrough boots its servers without those vars (production never has them); env hygiene, not a mock |
+| F50 | Info | closed (B61) | 60-5 fixes verified in the real packaged path: `apiPort` query injection via `loadFile` works (`PORT=32111` → fully rendered dashboard, no Offline); race simulation (kill backend + reload) → red banner with the *parsed* `API_BASE` (`http://localhost:32111/api`, not the old hardcoded 3100) + ● Offline; restart backend → banner cleared, ● Running restored (~2s retry); the packaged path no longer assumes port 3100 or mount-once success |
+| F51 | Info | closed (B61) | remaining desktop interaction gaps closed on a real machine: Board drag (IN PROGRESS→CODE REVIEW) → gate toast "⛔ 门禁拒绝（缺证据）" + real `WORKFLOW_TRANSITION_DENIED` (UI consistent with server 422 `GATE_DENIED`); real QA run → verdict PASS, attempts=3 (attempt 1 `PRODUCT_FAILURE` → auto-fix → attempts 2/3 pass), no red pill; Approvals regression → panel renders, no crash (approve→decided loop already walked in 59-2) |
 
 ---
 
@@ -1015,3 +1019,89 @@ reparented — kill it by exact PID); F48 (open, low: `/api/projects`
 returns snake_case bare rows; the desktop `Project` interface only
 reads `id`/`name`/`description`/`path` — silent `undefined` risk if
 `project.createdAt` is ever read).
+
+## Walkthrough: packaged full Electron walkthrough (Batch 61-2)
+
+The two 60-5 fixes, verified in the real packaged path instead of the
+HTTP+code-logic layer: Electron with `NODE_ENV=production` (so
+`electron/main.ts` takes the packaged branch — `loadFile` + spawn the
+backend), the renderer loaded from the compiled dist (a temporary
+`apps/desktop/renderer -> dist` symlink, removed after the walk), and a
+real compiled server on `PORT=32111` over a fresh HOME/DB/secrets tree
+(`~/b61-2/`, avoiding the `/tmp` tmpfs).
+
+(a) **PORT=32111**: the page URL was
+`file:///.../renderer/index.html?apiPort=32111` — `apiPort` injected via
+`loadFile(..., { query: { apiPort: String(API_PORT) } })` works in the
+packaged path; `window.location.search = ?apiPort=32111` and
+`defaultApiBase()` resolved to `http://localhost:32111/api`. The
+dashboard rendered fully (6 active tasks, 1 running agent, AI ORG
+tree, real audit events) with **no "Cannot reach" banner and no
+Offline**. Boundary noted: an *unpacked-repo* electron's own backend
+spawn fails (`resourcesPath` has no server — that layout only exists in
+the packaged tree, where 58-3/60-4 already verified the spawn works), so
+this walk used a manually started backend.
+
+(b) **Race simulation**: killing the backend and `location.reload()`
+faithfully reproduces a mount-time "backend not listening" — the red
+banner read **"Cannot reach the local API at
+http://localhost:32111/api — is the backend running? (Failed to
+fetch)"** + ● Offline. The banner text uses the *parsed* `API_BASE`
+(32111), not the old hardcoded 3100 — this incidentally verifies the
+60-5 copy fix. Restarting the backend cleared the banner, restored
+● Running, and re-rendered the dashboard with fresh audit events — the
+2-second retry on `bootError` works. Note: killing the backend *after*
+a successful start only produces panel-level "Failed to fetch" pills,
+never the App banner — the banner path is mount-time `refresh()`, so
+the reload simulation is the faithful race reproduction. A residual
+"审计日志加载失败" pill in BottomPanel after recovery is that panel's
+own error state, unrelated to the App-level banner fix.
+
+## Walkthrough: desktop interaction walkthrough (Batch 61-4)
+
+The remaining interaction gaps (60-4 only clicked Dashboard/NeedsHuman/
+Ops) closed on a real machine: real compiled server (fresh
+`~/b61-4/` tree) + vite dev + repo Electron + Xvfb :93, driving real
+`executeJavaScript` handlers and `win.capturePage()` screenshots.
+
+- **Board drag**: a synthetic HTML5 drag (dataTransfer stub, through
+  React's real `onDragStart`/`onDrop` handlers) moved an IN PROGRESS card
+  (`#8a5d5183`) to CODE REVIEW. The gate fired as designed: red toast
+  "⛔ 门禁拒绝（缺证据）: Code change artifact (commit/PR) — missing"
+  and a real `WORKFLOW_TRANSITION_DENIED` event in AI Activity. The
+  server behavior was pre-verified via curl (422 + `GATE_DENIED`) —
+  UI and server are consistent.
+- **Real QA run** (default unit category): verdict **PASS**,
+  attempts=3 — attempt 1 hit the demo sample's deliberate off-by-one
+  (`PRODUCT_FAILURE`) → auto-fix → attempts 2/3 passed; no red pill
+  appeared, and `QA_RUN_COMPLETED` is in the activity stream. This also
+  exercises the F44 fix under success conditions.
+- **Approvals regression**: a real HIGH approval (201) created over
+  HTTP → the panel rendered Pending(1) with req/task/expiry and the
+  three buttons — no crash (post-F41-fix regression confirmation; the
+  approve→decided loop was already walked in 59-2).
+
+Boundaries: Linux+Xvfb dev mode, not the packaged AppImage; the drag
+is a synthetic event (not a mouse), but it goes through the real React
+handlers and the real API; only one card dragged, only the default QA
+category run, and Approvals was render-only here (decision loop covered
+in 59-2). dbus noise is the usual headless benign output.
+
+## Findings (packaged / interactive legs, Batch 61)
+
+**F50 — Info: 60-5 fixes verified in the real packaged path (closed B61).**
+`apiPort` query injection via `loadFile` works — `PORT=32111` gives a
+fully rendered dashboard with no Offline. The race simulation confirms
+the App banner uses the parsed `API_BASE` (32111, not the old hardcoded
+3100) and that the 2-second retry clears the banner and restores
+● Running. Both 60-4 findings are now closed end to end: the packaged
+path no longer needs the "mount-once" assumption and no longer assumes
+port 3100.
+
+**F51 — Info: remaining interaction gaps closed on a real machine (closed B61).**
+Board drag → gate toast + `WORKFLOW_TRANSITION_DENIED` (UI matches the
+server's 422 `GATE_DENIED`); real QA run PASS with the attempts=3
+auto-fix chain and no red pill; Approvals regression shows no crash.
+Desktop real-machine PNG evidence is now 24 total (the 9th
+sellable-checklist re-verification counted 17 through Batch 60; Batch
+61 adds the 3 b61-2 + 4 b61-4 PNGs).

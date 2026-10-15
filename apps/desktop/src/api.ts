@@ -100,7 +100,40 @@ async function reqText(path: string, init?: RequestInit): Promise<string> {
   return text;
 }
 
-export interface Project { id: string; name: string; description: string; path: string }
+export interface Project {
+  id: string; name: string; description: string; path: string;
+  /** 归一化后的项目生命周期状态（服务端原生 status）。 */
+  status: 'active' | 'archived';
+  /** ISO 时间戳（服务端原生 created_at / updated_at）。 */
+  createdAt: string; updatedAt: string;
+}
+/**
+ * GET /api/projects 的服务端原生形状（snake_case，见 packages/db/src/db.ts
+ * 的 ProjectRow——§6.1 项目记录字段，snake_case 是服务端的原生契约，正确设计，
+ * 不做服务端改名以免破坏 API 兼容性）。
+ *
+ * F48 闭环（Batch 62-2）：桌面不再对原生记录做"子集盲读"——toProject() 把它
+ * 归一化为桌面的显式 camelCase 契约 Project，将来写 project.createdAt 不再
+ * 静默 undefined（F41 同类问题——ApprovalsPanel 的教训）。
+ */
+interface RawProject {
+  id: string; name: string; description: string; path: string;
+  status: string; archived_at: string | null;
+  created_at: string; updated_at: string;
+  [k: string]: unknown;
+}
+/** snake_case → camelCase 归一化（58-5 ApprovalsPanel 的同模式）。 */
+function toProject(raw: RawProject): Project {
+  return {
+    id: String(raw.id ?? ''),
+    name: String(raw.name ?? ''),
+    description: String(raw.description ?? ''),
+    path: String(raw.path ?? ''),
+    status: raw.status === 'archived' ? 'archived' : 'active',
+    createdAt: typeof raw.created_at === 'string' ? raw.created_at : '',
+    updatedAt: typeof raw.updated_at === 'string' ? raw.updated_at : '',
+  };
+}
 export interface BoardCard {
   id: string; title: string; priority: string; status: string; risk: string;
   agent: string | null; agentCount: number; updatedAt: string;
@@ -557,7 +590,9 @@ export const api = {
     ),
   /** 当前 API 身份（角色展示用）；失败时 req 抛错，调用方显示未知。 */
   whoami: () => req<ApiIdentity>('/auth/whoami'),
-  projects: () => req<Project[]>('/projects'),
+  /** F48 闭环（Batch 62-2）：/api/projects 返回服务端原生 snake_case 行，
+   *  toProject() 归一化为桌面的 camelCase 显式契约。 */
+  projects: () => req<RawProject[]>('/projects').then((list) => list.map(toProject)),
   board: (projectId: string) =>
     req<{ projectId: string; columns: Record<string, BoardCard[]> }>(
       `/board?projectId=${encodeURIComponent(projectId)}`,
