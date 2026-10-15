@@ -1,10 +1,11 @@
-# Walkthrough index (Batch 61)
+# Walkthrough index (Batch 65)
 
 One line per walkthrough edition below; each edition is cumulative
 across files, not a replacement — `demo:e2e-v4` remains the authority
 for the B31–B36 governance chains, v5 for B37–B40, v6 for B41–B42 §81,
-v7 for B43–B45, v8 for B47, the audit-chain legs for B52–B56, and the
-usability/response-shape legs for B58–B61. Every edition runs the real compiled
+v7 for B43–B45, v8 for B47, the audit-chain legs for B52–B56, the
+usability/response-shape legs for B58–B61, and the invariant-coverage/
+gap-closure legs for B62–B65. Every edition runs the real compiled
 server (fresh temp SQLite, hermetic `FACTORY_SECRETS_DIR`) over pure
 HTTP, zero mocks, unless the row says otherwise.
 
@@ -32,8 +33,16 @@ HTTP, zero mocks, unless the row says otherwise.
 | QA failure-path leg | 60 | A–C (failed QA run → server writes the normalized failure summary: `TMPDIR` under a regular file = deterministic ENOTDIR at the auto-fix step; summary is the success shape with zeros/empty arrays + non-empty `error` naming the qa-run dir, `Array.isArray(categories)` holds, record retrievable via `GET /api/qa/runs/:id`; success control → auto-fix applies, verdict PASS, no `error` key; key-set relationship pinned: failure keys = success keys + `error`); real server boot path, pure HTTP | 1/1 ×3; pins the F44 server-side fix (the panel's `categories.map` contract) | F49 |
 | packaged full Electron walkthrough | 61-2 | `NODE_ENV=production` Electron (main.ts packaged path: `loadFile` + backend spawn), renderer from the compiled dist (`apps/desktop/renderer -> dist` temp symlink): (a) `PORT=32111` — `apiPort` injected via `loadFile(..., { query: { apiPort } })`, page URL `…/index.html?apiPort=32111`, `defaultApiBase()` → `http://localhost:32111/api`, full dashboard renders, no "Cannot reach" banner, no Offline; (b) race simulation (kill backend + `location.reload()`) → red banner with the *parsed* API_BASE (`http://localhost:32111/api`, not the old hardcoded 3100) + ● Offline; restart backend → banner cleared, ● Running, dashboard re-renders with new events (~2s retry) | 3 real PNGs, all viewed; both 60-5 fixes verified in the real packaged path | F50 |
 | desktop interaction walkthrough | 61-4 | remaining interaction gaps closed on a real machine (Electron+Xvfb+vite dev+real server, real `executeJavaScript` handlers + screenshots): Board drag (synthetic HTML5 drag through React's real `onDragStart`/`onDrop`) of an IN PROGRESS card to CODE REVIEW → gate toast "⛔ 门禁拒绝（缺证据）" + real `WORKFLOW_TRANSITION_DENIED` in AI Activity (server 422 `GATE_DENIED` pre-verified via curl, UI consistent); real QA run (default unit category) → verdict PASS, attempts=3 (attempt 1 `PRODUCT_FAILURE` → auto-fix → attempts 2/3 pass), no red pill; Approvals regression (real HIGH approval) → panel renders Pending(1) + three buttons, no crash | 4 real PNGs, all viewed; Board/QA/Approvals interaction evidence | F51 |
+| INV coverage sweep | 62-3 | all 35 SPEC_V2 invariants read+grepped against tests/walkthroughs: 24 pinned, 11 real gaps (G1–G11, prioritized G9>G8>G6>G10) | sweep document `gap-audit/INV_COVERAGE_SWEEP.md`; honest yardstick: pinned by a test or a walkthrough, never by code existing | F52 |
+| `/api/projects` shape normalization | 62-2 | F48 close: desktop-side `RawProject` + `toProject()` snake_case→camelCase mapping, single normalization point in `api.projects()`; server untouched (snake_case is the §6.1 native contract — renaming it would be a breaking API change) | desktop tsc 0; real server response shape verified; projects tests 16/16 | F48 (closed B62) |
+| pre-send prompt secret scanning | 63-2 | G9/INV-26: `scanForSecrets` wired into `runner.ts` `defaultStepFn` before `tracker.consumeModelCall()` and `adapter.invoke` — secret in prompt → fail-closed `adapter:secret-in-prompt`, adapter never called, model-call budget unconsumed; deterministic retry → `LoopStagnation` escalation (not silent retry) | new test 2/2 ×3; runtime package 176/176; error text carries the signature only, no secret values | F53 |
+| exec-confinement walkthrough | 63-3 | G8/INV-15: A agent+legal command → 403 `CONFINEMENT_UNAVAILABLE` + `EXEC_DENIED` audit, zero `EXEC_RUN`; B human+same command → 200; C agent+`rm -rf /` (deny-pattern) → still `CONFINEMENT_UNAVAILABLE` — confinement check precedes the policy check | 1/1 ×3; real compiled server, pure HTTP; honest boundary: `UnverifiedBackend.verifyConfinement()` always `verified:false` — no real OS isolation on this host | F54 |
+| RunManifest version pins | 63-4 | G6/INV-10: `RunManifestVersionPins` (employee/organization/policy/requirement versions) recorded at run creation (both `POST /runs` and resume); db migration for pre-pin rows (`NULL` = not recorded, never fabricated) | build 0; `npm test` 2520/2520 (+3, arithmetic 2517+3 verified); smoke:boot OK | F52 |
+| auto-governance walkthrough | 64-2 | G10/INV-28: `evaluateAutoGovern` pure policy fn + `VersionRegistry` (idempotent disable, effect records kept); `autoGovern` executes disable/fallback-migrate/downgrade; `advance` `auto-govern` step writes `AUTO_GOVERNANCE_APPLIED` audit; healthy case → 0 decisions; failing case → 3 decisions + migrate to v0; v1 pinned case stays; new case activating v2 → 422 `DISABLED_VERSION`; observations carry `version` tags so old failures don't disable new versions (caught by a test) | walkthrough 1/1 ×3 (real compiled server, pure HTTP, `$HOME` temp dir); auto-governance 16/16, loop 6/6; evaluation package 118/118 ×3 | F56 |
+| small-gaps trio | 64-3 | G1/INV-03 board drag: only `POST /transition` changes state (bare status/stage writes → 400, mixed writes ignored, illegal jump → 422 + `WORKFLOW_TRANSITION_DENIED`); G2/INV-05 git broker: broker deny → 403 `GIT_BROKER_DENIED`, zero side effects (no queue entry, target tip byte-identical); G5/INV-09 product authority: proposals filed `WAITING_HUMAN_DISPATCH`, unauthorized run → 403 `TASK_NOT_AUTHORIZED` | 5/5 ×3, 2/2 ×3, 1/1 ×3 (real compiled server, pure HTTP; zero product-code changes) | F60, F61 |
+| data-export / release / finding / QA-gate | 64-4 | G11/INV-30: non-local model call records an explicit `data_export` evidence event before `adapter.invoke` (local exempt; unknown provider → `'unknown'` fail-safe, never silently assumed local); G7/INV-11: `Release.requirementRef` + deploy Gate 2b — fail-closed on pin mismatch without a compatibility statement (`RELEASE_EVIDENCE_MISMATCH` / `RELEASE_COMPATIBILITY_DECLARED` audits); G3/INV-07: `TaskManager.reportFinding()` — evidence required, `TODO` + `WAITING_HUMAN_DISPATCH`, never directly AUTHORIZED; G4/INV-08: `QaCreationGate` opt-in policy gate (deny → `GovernanceError`, zero registration) | 5/5, release +7 (49/49), task-dispatch +4 (12/12), org +5 (12/12); package tscs 0 | F57, F58, F62 |
 
-## Findings index (F1–F51)
+## Findings index (F1–F62)
 
 Status: `closed` = fixed and pinned by tests; `open` = still true today
 (includes by-design and environment notes); `hygiene` = process note, no
@@ -88,10 +97,21 @@ fix expected.
 | F45 | Info | hygiene | this machine's `/tmp` is a 512MB tmpfs (474M used): AppImage staging needs ~2GB and heavy SQLite writes fail with `ERR_SQLITE_ERROR disk I/O error` — reroute to `$HOME`; environment constraint, not build-code rot |
 | F46 | Info | hygiene | no FUSE on this machine (`libfuse.so.2` missing): the `.AppImage` binary itself cannot execute here; the `linux-unpacked` tree runs the same bundled code — recorded as a boundary, not a product defect |
 | F47 | Info | hygiene | SIGKILL of the packaged main process leaves its spawned backend child reparented (main.ts's `window-all-closed` `backend?.kill()` only fires on normal exit): kill the backend child by exact PID too |
-| F48 | Low | open | `/api/projects` returns snake_case bare rows (`created_at`, …) while the desktop `Project` interface only reads `id`/`name`/`description`/`path` — safe today, silent `undefined` if someone later reads `project.createdAt` |
+| F48 | Low | closed (B62) | `/api/projects` returned snake_case bare rows (`created_at`, …) while the desktop `Project` interface only read `id`/`name`/`description`/`path` — closed by the desktop-side `RawProject` + `toProject()` mapping: `Project` is now an explicit camelCase contract (`createdAt`/`updatedAt`, defensive `status` fallback), all consumers go through the single `api.projects()` normalization point; server untouched (snake_case is the §6.1 native contract) |
 | F49 | Info | closed (B60) | QA failure-path leg pins the F44 server-side fix end to end: with `TMPDIR` under a regular file (a real, deterministic environment failure), `POST /api/qa/runs` fails at the auto-fix step (`ENOTDIR` naming the `qa-run-<id>` dir) and the run record's summary is exactly the success shape (`total/passed/failed/skipped: 0`, `categories: []`, `failures: []`) plus a non-empty string `error` — key set = success keys + `error`; the record is retrievable via `GET /api/qa/runs/:id`; `Array.isArray(categories)` holds (the panel's `categories.map` contract, the exact thing that crashed the tree pre-fix). Success control (normal `TMPDIR`): auto-fix applies, verdict PASS, no `error` key. Test-hygiene note: `node --test` exports `NODE_TEST_CONTEXT`/`NODE_TEST_WORKER_ID`, which makes the QA loop's spawned `node --test` children refuse to run ("recursively within a test file") — the walkthrough boots its servers without those vars (production never has them); env hygiene, not a mock |
 | F50 | Info | closed (B61) | 60-5 fixes verified in the real packaged path: `apiPort` query injection via `loadFile` works (`PORT=32111` → fully rendered dashboard, no Offline); race simulation (kill backend + reload) → red banner with the *parsed* `API_BASE` (`http://localhost:32111/api`, not the old hardcoded 3100) + ● Offline; restart backend → banner cleared, ● Running restored (~2s retry); the packaged path no longer assumes port 3100 or mount-once success |
 | F51 | Info | closed (B61) | remaining desktop interaction gaps closed on a real machine: Board drag (IN PROGRESS→CODE REVIEW) → gate toast "⛔ 门禁拒绝（缺证据）" + real `WORKFLOW_TRANSITION_DENIED` (UI consistent with server 422 `GATE_DENIED`); real QA run → verdict PASS, attempts=3 (attempt 1 `PRODUCT_FAILURE` → auto-fix → attempts 2/3 pass), no red pill; Approvals regression → panel renders, no crash (approve→decided loop already walked in 59-2) |
+| F52 | Info | closed (B64) | SPEC_V2 invariant coverage sweep (`gap-audit/INV_COVERAGE_SWEEP.md`): 24/35 pinned by tests/walkthroughs, 11 real gaps G1–G11 — all closed by Batch 64 (G9→63-2 secret scanning, G8→63-3 exec-confinement, G6→63-4 version pins, G10→64-2 auto-governance, G1/G2/G5→64-3 trio, G11/G7/G3/G4→64-4) |
+| F53 | Info | open | G9 honest boundary: the pre-send secret scan covers the `adapter.invoke` path (fail-closed); the run trace still verbatim-logs the user's own task text (pre-existing user-input logging, separate from the adapter send path — full-chain desensitization is a follow-up item); git-commit secret scanning out of scope |
+| F54 | Info | open | G8 honest boundary: `UnverifiedBackend.verifyConfinement()` always returns `verified:false` — this host has no real OS isolation; what the walkthrough pins is the *refusal*, not a sandbox claim (no-universal-isolation-host is a known hard gate) |
+| F55 | Info | hygiene | Batch 63 shared-worktree incident: 63-4 ran `git stash -u` on the shared main tree (repeating the B39/B43 iron-rule violation) to check a test-count arithmetic, sweeping up sibling work — recovered byte-identical via `git checkout stash@{0}` / `stash@{0}^3` (63-3's file rebuilt, SHA-256 identical; `.github/workflows/ci.yml` reset to untracked), zero files lost; lesson nailed into AGENTS.md — every spawn brief must restate the no-stash rule |
+| F56 | Info | open | G10 honest boundaries: `downgrade-autonomy` is decided and recorded in the admission trail, but actually rewriting the autonomy store is the autonomy layer's job (the evaluation package doesn't cross-package write, and the server doesn't pretend to execute it); observation thresholds (1 failure → disable, 2 consecutive → downgrade) are documented engineering choices, not spec numbers |
+| F57 | Info | open | G4 honest boundary: `QaCreationGate` is opt-in; the server `qa.ts` route doesn't pass a policy (the project policy store doesn't exist yet), so server-path auto-creation is still ungated — the mechanism exists and is pinned by tests; wiring is a follow-up |
+| F58 | Info | hygiene | G11 honest boundary: `DATA_EXPORT` is an evidence-level audit record, not an approvals-package authorization ticket; a real pre-send export authorization ticket needs approvals integration (follow-up item) |
+| F59 | Info | hygiene | this machine has no `/dev/null` (`mknod` blocked by the container) — a regular file stands in (625 bytes and accumulating, not auto-discarded) so git works; environment issue, unfixable from here |
+| F60 | Info | hygiene | G2 mechanics boundary: build-runner's git subprocess is downstream mechanics of a broker-authorized merge decision — gating it again would be double-gating the same decision (noted in the test file header) |
+| F61 | Info | open | G5 honest boundary: v1 `POST /transition` doesn't check the §17.2 axis (Board still runs on v1); changing v1 is a product decision affecting Board UX, recorded in KNOWN_LIMITATIONS |
+| F62 | Info | hygiene | G7 honest boundary: the compatibility statement is caller-provided — the system records and audits it (`RELEASE_COMPATIBILITY_DECLARED`), never verifies its truth |
 
 ---
 
@@ -1105,3 +1125,210 @@ auto-fix chain and no red pill; Approvals regression shows no crash.
 Desktop real-machine PNG evidence is now 24 total (the 9th
 sellable-checklist re-verification counted 17 through Batch 60; Batch
 61 adds the 3 b61-2 + 4 b61-4 PNGs).
+
+---
+
+## Walkthrough: invariant-coverage / gap-closure legs (Batch 62–65)
+
+The B62-3 sweep read every SPEC_V2 invariant (INV-01–INV-35) against
+tests and walkthroughs: 24 pinned, 11 real gaps (G1–G11). Each gap was
+then closed with a walkthrough or pinned test in B62–B64; the 10th
+sellable-checklist re-verification (B65) independently re-ran the G8
+leg. No new walkthrough legs were needed for desktop — the remaining
+desktop evidence is the packaged + interaction legs from B61.
+
+**INV coverage sweep (62-3).** `gap-audit/INV_COVERAGE_SWEEP.md`: honest
+yardstick — an invariant counts as covered only if a test or a
+walkthrough pins it, never because code exists. 24/35 listed with the
+pinning test file + one-line evidence each; G1–G11 real gaps with a
+priority order (G9 > G8 > G6 > G10, then by verification cost). Spot
+checks the sweep asserts: `runner.ts`'s `adapter.invoke` really did
+send the prompt unscreened before 63-2, and `loop.ts:268`'s auto-
+governance really was a comment-level promise before 64-2.
+
+**F48 close (62-2).** `/api/projects` returns snake_case bare rows
+(`created_at`, …); the desktop `Project` interface only read
+`id`/`name`/`description`/`path` — safe today, but a future
+`project.createdAt` would be silent `undefined` (the F41 class). Fixed
+desktop-side (58-5 pattern): the server keeps its §6.1 native snake_case
+contract (renaming it would be a breaking API change); the desktop got
+`RawProject` (documents the native shape) + `toProject()` with
+defensive fallbacks, and `api.projects()` maps every row through it.
+Verified against a real server response (the probe's `createdAt`
+mapping was a real timestamp) and projects tests 16/16.
+
+**G9 pre-send secret scanning (63-2).** `scanForSecrets` (from
+`@ai-factory/memory`) is now called on the assembled prompt in
+`defaultStepFn`'s ACT phase, *before* `tracker.consumeModelCall()` and
+*before* `adapter.invoke`: a secret in the prompt → fail-closed
+`{ ok: false, errorSignature: 'adapter:secret-in-prompt' }`, the adapter
+is never invoked and the model-call budget is not consumed. The prompt
+is deterministic, so the signature can't be retried away — three
+consecutive identical signatures escalate via `LoopStagnation`. The
+error text carries only the signature and the spec reference, never
+the secret value. Test: 2/2 (secret prompt → adapter called 0 times,
+outcome escalated, no secret value in the trace or the escalation
+reason; clean prompt → adapter called, outcome completed), runtime
+package 176/176. Boundary: the run trace still logs the user's own
+task text verbatim (pre-existing user-input logging — full-chain
+desensitization is a separate item); git-commit scanning out of scope.
+
+**G8 exec-confinement (63-3).** `apps/server/tests/first-run-
+walkthrough-exec-confinement.test.ts`, A–C on a real compiled server
+over pure HTTP: A `actor='agent'` + a legal command → 403
+`CONFINEMENT_UNAVAILABLE` (message names the unverified confinement),
+`GET /api/audit` shows `EXEC_DENIED` (`details.reason =
+CONFINEMENT_UNAVAILABLE`), and zero `EXEC_RUN` (the command never
+executed); B `actor='human'` + the same command → 200 with correct
+output; C `actor='agent'` + `rm -rf /` (a deny-pattern command) → still
+`CONFINEMENT_UNAVAILABLE`, not `POLICY_DENIED` — the walk pins the
+fail-closed order (confinement check runs before the command-policy
+check in `routes/exec.ts`). 1/1 ×3. Boundary, stated in the test file
+header: what is pinned is the *refusal*; `UnverifiedBackend.
+verifyConfinement()` always returns `verified:false` because this host
+has no real OS isolation — proving subprocess-level OS isolation
+remains a hard gate.
+
+**G6 version pins (63-4).** `RunManifestVersionPins` (`employee_version`
+/ `organization_version` / `policy_version` / `requirement_version`)
+are recorded at run creation on both `POST /runs` and resume; a db
+migration backfills pre-pin rows (`NULL` = not recorded, never
+fabricated). Verified: build 0, `npm test` 2520/2520 (baseline 2517 +
+3, arithmetic checked), smoke:boot OK.
+
+**G10 auto-governance (64-2).** `apps/server/tests/first-run-
+walkthrough-auto-governance.test.ts` on a real compiled server over
+pure HTTP, 1/1 ×3: a healthy case → 0 governance decisions; a failing
+case → 3 decisions (disable the failing version, downgrade autonomy,
+switch to the approved fallback) with a real `AUTO_GOVERNANCE_APPLIED`
+audit; a case pinned on v1 stays on v1; a new case trying to activate
+the disabled v2 → 422 `DISABLED_VERSION`. The mechanism: pure
+`evaluateAutoGovern` policy fn (deterministic thresholds: ≥1 failure
+observation or independent-eval failure → disable-version; ≥2 trailing
+failures or independent-eval failure → downgrade-autonomy; disabled
+version + approved non-disabled fallback → switch-to-fallback; idempotent
+and authorization-free by construction) + `VersionRegistry`
+(ACTIVE/DISABLED, POLICY_APPROVAL marks fallback eligibility, effect
+records kept on disable). A test-caught fix: observations carry
+`version` tags so old failures can't disable a new version. Tests:
+16/16 policy fn, 6/6 loop, evaluation package 118/118 ×3. Boundaries:
+the downgrade decision is recorded in the admission trail but the
+autonomy store itself is not rewritten (the evaluation package doesn't
+cross-package write); thresholds are documented engineering choices,
+not spec numbers.
+
+**Small-gaps trio (64-3).** Zero product-code changes — pure tests on a
+real compiled server over pure HTTP. `board-drag-transition.test.ts`
+5/5 ×3: only `POST /transition` changes state — bare `status`/`stage`
+writes → 400, `status`/`stage` smuggled next to a legal `to` are
+ignored, `GET`/`PUT /transition` are unrouted (404), an illegal jump
+(TODO→DONE) → 422 `UNKNOWN_TRANSITION` with the DB row untouched and
+`WORKFLOW_TRANSITION_DENIED` in the audit. `git-merge-queue-broker-
+gate.test.ts` 2/2 ×3: `FACTORY_GIT_BROKER_ACTIONS=read,branch,commit`
+(no merge) → 403 `GIT_BROKER_DENIED` with zero side effects (no queue
+entry, target tip byte-identical); the control (default allowlist) →
+202 enqueue. `product-authority-default.test.ts` 1/1 ×3: product-direction
+proposals are filed `WAITING_HUMAN_DISPATCH` (never silently
+authorized); `via=POLICY` without a Rule ID → 400; a waiting proposal
+sent to `POST /api/runtime/runs` → 403 `TASK_NOT_AUTHORIZED` with zero
+run records; `via=HUMAN` dispatch → AUTHORIZED, then the run returns
+202.
+
+**Data-export / release / finding / QA-gate (64-4).**
+`runner-data-export.test.ts` 5/5: `dataExportEventFor()` is a pure fn
+(local → null, cloud → event with provider/privacy, unknown provider →
+recorded `'unknown'` fail-safe); `runAgent` integration — a public+coding
+route to `shared:code-coder` → adapter invoked once + exactly 1
+`DATA_EXPORT` evidence event; a sensitive route to `local:local-private`
+→ adapter invoked once + 0 events. `release.test.ts` +7 (49/49):
+`Release.requirementRef` (`REQ-001@2` form, recorded at creation,
+never invented), deploy Gate 2b — release pin vs evidence pins
+mismatch with no compatibility statement → fail-closed
+`RELEASE_EVIDENCE_MISMATCH`; with an explicit statement → allowed +
+`RELEASE_COMPATIBILITY_DECLARED`. `task-dispatch.test.ts` +4 (12/12):
+`TaskManager.reportFinding()` — evidence required (empty array throws),
+`TODO` + `WAITING_HUMAN_DISPATCH`, never directly AUTHORIZED. `org.
+test.ts` +5 (12/12): `QaCreationGate` opt-in policy gate —
+`enforcePolicy` denial → `GovernanceError` with zero registration;
+without a gate the behavior is unchanged. Boundaries: the DATA_EXPORT
+event is evidence-level audit, not an approvals authorization ticket;
+the compatibility statement is caller-provided (recorded, not
+verified); the server `qa.ts` route doesn't pass a policy yet (project
+policy store doesn't exist).
+
+**10th sellable-checklist re-verification (65-2).**
+`gap-audit/SELLABLE_REVERIFY_BATCH64.md`: 14 items flipped green since
+the 9th round (biggest: INV coverage 24/35 → 35/35), 0 new real gaps;
+the G8 leg was independently re-run 3/3 (real compiled server, 16.7s).
+Verdict: still "working prototype + converging", not a shippable
+product — the 13 hard gates are all still on Tan/environment side, and
+there is no delegable code-side path left.
+
+## Findings (gap-closure legs, Batch 62–65)
+
+**F52 — Info: SPEC_V2 invariant coverage is now 35/35 (closed B64).** The
+B62-3 sweep found 24/35 pinned and 11 real gaps G1–G11; every gap is
+closed with code+tests (or pinned tests) by Batch 64: G9→63-2,
+G8→63-3, G6→63-4, G10→64-2, G1/G2/G5→64-3, G11/G7/G3/G4→64-4. The
+sweep's yardstick stays: pinned by a test or a walkthrough, never by
+code existing.
+
+**F53 — Info: G9 honest boundary (open).** The pre-send scan covers the
+`adapter.invoke` path and fails closed — but the run trace still logs
+the user's own task text verbatim (a pre-existing user-input logging
+behavior, separate from the adapter send path), so full-chain
+desensitization is a standalone follow-up; git-commit scanning was out
+of scope.
+
+**F54 — Info: G8 honest boundary (open).** What the walkthrough pins is
+the *refusal*: `UnverifiedBackend.verifyConfinement()` always returns
+`verified:false`, and `POST /api/exec` refuses non-human actors before
+it ever consults the command policy. There is no real OS isolation on
+this host — proving subprocess-level isolation remains a hard gate.
+
+**F55 — Info: Batch 63 shared-worktree incident (hygiene).** 63-4 ran
+`git stash -u` on the shared main tree (repeating the B39/B43 iron-rule
+violation) to check a test-count arithmetic, sweeping up G9/G6 sibling
+work, 63-3's new test file, and the untracked CI workflow file. 63-3
+noticed its file missing, found the stash via reflog; recovery was
+`git checkout stash@{0} -- <8 tracked>` + `git checkout stash@{0}^3 --
+<untracked>`, every file diffed byte-identical against the stash
+versions, the CI file reset to untracked, and the stash dropped only
+after verification. Zero files lost. The lesson is nailed into
+AGENTS.md: every spawn brief must restate the no-stash rule.
+
+**F56 — Info: G10 honest boundaries (open).** `downgrade-autonomy` is
+decided and recorded in the admission trail, but the autonomy store
+itself is not rewritten — the evaluation package doesn't cross-package
+write, and the server doesn't pretend to execute it. The observation
+thresholds (1 failure → disable, 2 consecutive → downgrade) are
+documented engineering choices, not spec numbers.
+
+**F57 — Info: G4 honest boundary (open).** `QaCreationGate` is opt-in;
+the server `qa.ts` route doesn't pass a policy because the project
+policy store doesn't exist yet, so server-path auto-creation is still
+ungated. The mechanism exists and is pinned by tests; wiring it in is
+a follow-up.
+
+**F58 — Info: G11 honest boundary (hygiene).** `DATA_EXPORT` is an
+evidence-level audit record, not an approvals-package authorization
+ticket; a real pre-send export authorization ticket needs approvals
+integration (follow-up).
+
+**F59 — Info: this machine has no `/dev/null` (hygiene).** `mknod` is
+blocked by the container, so a regular file stands in (625 bytes and
+accumulating, not auto-discarded) to keep git working. Environment
+issue, unfixable from here.
+
+**F60 — Info: G2 mechanics boundary (hygiene).** Build-runner's git
+subprocess is downstream mechanics of a broker-authorized merge
+decision — gating it again would be double-gating the same decision
+(noted in the test file header).
+
+**F61 — Info: G5 honest boundary (open).** v1 `POST /transition`
+doesn't check the §17.2 axis (Board still runs on v1); changing v1 is a
+product decision affecting Board UX (KNOWN_LIMITATIONS).
+
+**F62 — Info: G7 honest boundary (hygiene).** The compatibility
+statement is caller-provided — the system records and audits it
+(`RELEASE_COMPATIBILITY_DECLARED`), never verifies its truth.

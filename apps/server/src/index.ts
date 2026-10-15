@@ -72,6 +72,7 @@ import { createSecretBrokerFromEnv } from '@ai-factory/secrets';
 import { CheckpointLog, OperationLedger } from '@ai-factory/runtime';
 import type { StepIntentStore, TargetLedgerQuery } from '@ai-factory/runtime';
 import type { RouteContext } from './routes/context';
+import { FactoryPolicyStore } from '@ai-factory/employee-factory';
 import {
   BuildRunner,
   buildRunnerConfigFromEnv,
@@ -886,6 +887,9 @@ const server = createServer(async (req, res) => {
     // Each handler returns true when it owned the path.
     const routeCtx: RouteContext = {
       tasks, evidence, audit, agents, engine, fdb, stepIntentStore, notify, bus, json, readBody,
+      // Batch 66-d — project policy store for agent auto-creation gates
+      // (INV-08): qa.ts reads the QA creation policy from it.
+      factoryPolicyStore: new FactoryPolicyStore(),
       // §47 (Batch 14): retention reads/deletes backup directories and
       // must respect a staged restore — the backup module owns both.
       backupAccess: {

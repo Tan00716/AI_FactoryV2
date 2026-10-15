@@ -28,7 +28,6 @@ import {
   proposeChange,
 } from '@ai-factory/employee-factory';
 import type {
-  FactoryPolicy,
   RelativeCeilingDeniedIntent,
   TaskScopeCeilingDeniedIntent,
 } from '@ai-factory/employee-factory';
@@ -36,27 +35,9 @@ import { needsHuman } from '@ai-factory/autonomy';
 import type { NeedsHumanDbRecord } from '@ai-factory/db';
 import { OrganizationDesigner, SquadManager } from '@ai-factory/squads';
 import type { RouteContext } from './context';
-
-/** Server-side factory governance (§19). */
-const FACTORY_POLICY: FactoryPolicy = {
-  maxChildren: 6,
-  maxDepth: 3,
-  maxConcurrentAgents: 8,
-  maxTotalAgents: 64,
-  maxRuntimeMs: 30 * 60 * 1000,
-  maxBudget: 1000,
-  allowedRoles: [
-    'engineer', 'developer', 'qa', 'tester', 'specialist', 'designer',
-    'analyst', 'reviewer', 'lead', 'architect', 'devops',
-  ],
-  allowedModels: ['fast-classifier', 'code-coder', 'reasoning-architect', 'vision-capable', 'local-private', 'reasoning'],
-  allowedTools: ['read', 'write', 'shell', 'git', 'test', 'Repository', 'Terminal', 'SQL Sandbox', 'Static Analyzer'],
-  allowedPermissions: [
-    'filesystem.read', 'filesystem.write', 'shell.execute', 'git.commit',
-    'git.push', 'git.merge', 'github.pull_request', 'database.read',
-    'deploy.dev', 'deploy.uat', 'agent.create', 'workflow.modify',
-  ],
-};
+// Dual-mode: bare specifier (no extensionless relative value imports in
+// src — see the note in needs-human-policy-violation.test.ts).
+import { DEFAULT_FACTORY_POLICY as FACTORY_POLICY } from '@ai-factory/employee-factory';
 
 const squads = new SquadManager();
 const org = new OrganizationDesigner();

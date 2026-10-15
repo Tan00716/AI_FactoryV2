@@ -38,11 +38,36 @@ import {
   SuiteRunner,
 } from '@ai-factory/qa';
 import type { RouteContext } from './context';
+// Dual-mode: bare specifier — src must not value-import siblings via
+// extensionless relative paths (see needs-human-policy-violation.test.ts).
+import { QA_CREATION_POLICY } from '@ai-factory/employee-factory';
+import type { QaCreationGate } from '@ai-factory/qa';
 import {
   isTaskProjectArchived,
   projectArchivedBody,
   projectIdOfTask,
 } from './project-guard';
+
+/**
+ * INV-08 (Batch 66-d): the policy gate for QA org auto-creation. The
+ * policy comes from the server's FactoryPolicyStore when wired
+ * (RouteContext.factoryPolicyStore), otherwise the QA_CREATION_POLICY
+ * defaults — the gate is therefore always enforced on this path, and
+ * the store is the seam for per-project tightening.
+ */
+function qaCreationGate(ctx: RouteContext): QaCreationGate {
+  return { policy: ctx.factoryPolicyStore?.forProject('default') ?? QA_CREATION_POLICY };
+}
+
+/** GovernanceError → 403 (same mapping as routes/workforce.ts). */
+function qaCreationDenied(ctx: RouteContext, res: ServerResponse, e: unknown): boolean {
+  const denied = e instanceof Error && e.name === 'GovernanceError';
+  ctx.json(res, denied ? 403 : 400, {
+    error: e instanceof Error ? e.message : 'QA creation failed',
+    governance: denied,
+  });
+  return true;
+}
 
 const QA_SPECIALIST_KINDS: readonly QaSpecialistKind[] = [
   'Functional',
@@ -131,9 +156,13 @@ export async function handleQaRoutes(
 
   // GET /api/qa/org
   if (method === 'GET' && seg.length === 1 && seg[0] === 'org') {
-    const lead = ensureQaLead(ctx.agents);
-    const { specialists } = listQaOrg(ctx.agents);
-    ctx.json(res, 200, { lead: slimAgent(lead), specialists: specialists.map(slimAgent) });
+    try {
+      const lead = ensureQaLead(ctx.agents, qaCreationGate(ctx));
+      const { specialists } = listQaOrg(ctx.agents);
+      ctx.json(res, 200, { lead: slimAgent(lead), specialists: specialists.map(slimAgent) });
+    } catch (e) {
+      return qaCreationDenied(ctx, res, e);
+    }
     return true;
   }
 
@@ -148,9 +177,13 @@ export async function handleQaRoutes(
       });
       return true;
     }
-    const specialist = createQaSpecialist(ctx.agents, kind as QaSpecialistKind);
-    ctx.audit.record(actor, 'QA_SPECIALIST_CREATED', 'agent', specialist.id, { kind });
-    ctx.json(res, 201, { specialist: slimAgent(specialist) });
+    try {
+      const specialist = createQaSpecialist(ctx.agents, kind as QaSpecialistKind, qaCreationGate(ctx));
+      ctx.audit.record(actor, 'QA_SPECIALIST_CREATED', 'agent', specialist.id, { kind });
+      ctx.json(res, 201, { specialist: slimAgent(specialist) });
+    } catch (e) {
+      return qaCreationDenied(ctx, res, e);
+    }
     return true;
   }
 

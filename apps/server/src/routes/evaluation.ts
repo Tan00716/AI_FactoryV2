@@ -52,6 +52,7 @@ import type { RouteContext } from './context';
 const PREFIX = '/api/evaluations';
 const PROPOSAL_PREFIX = '/api/proposals';
 const LOOP_PREFIX = '/api/loops';
+const PROFILE_PREFIX = '/api/profiles';
 
 const engine = new EvaluationEngine();
 const profiler = new AgentProfiler();
@@ -75,7 +76,10 @@ export async function handleEvaluationRoutes(
   const inScope =
     path === PREFIX || path.startsWith(PREFIX + '/') ||
     path === PROPOSAL_PREFIX || path.startsWith(PROPOSAL_PREFIX + '/') ||
-    path === LOOP_PREFIX || path.startsWith(LOOP_PREFIX + '/');
+    path === LOOP_PREFIX || path.startsWith(LOOP_PREFIX + '/') ||
+    // Agent profiles (§57): the handler below owns /api/profiles and
+    // /api/profiles/:agentId; the gate must let them through.
+    path === PROFILE_PREFIX || path.startsWith(PROFILE_PREFIX + '/');
   if (!inScope) return false;
 
   // ---- evaluations ------------------------------------------------------

@@ -29,6 +29,7 @@ import {
   TraceStep,
 } from './types';
 import type { BudgetTracker } from './limits';
+import { redactText } from '@ai-factory/events';
 
 export interface AgentLoopOptions {
   budgets: LoopBudgets;
@@ -288,7 +289,19 @@ export class AgentLoop {
   }
 
   private recordTrace(phase: string, action: string, result: string): void {
-    const step: TraceStep = { t: this.clock.now(), phase, action, result };
+    // §68 (Batch 66): trace steps are persisted (checkpoints via onTrace,
+    // outcome().trace) — free-text credential scrubbing at the single
+    // choke point, so a secret sitting in e.g. task.goal never lands
+    // verbatim in the trace. redactText masks key=value / key: value
+    // pairs; it never throws, so redaction cannot fail a run. Residual
+    // boundary: raw high-entropy strings WITHOUT a key prefix are not
+    // caught — documented, not pretended.
+    const step: TraceStep = {
+      t: this.clock.now(),
+      phase,
+      action: redactText(action),
+      result: redactText(result),
+    };
     this.traceLog.push(step);
     this.onTrace?.(step);
   }

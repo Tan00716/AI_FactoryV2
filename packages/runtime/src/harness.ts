@@ -43,6 +43,7 @@ import {
   classifyFailure,
   isAutoRetryAllowed,
 } from './failures';
+import { redactText } from '@ai-factory/events';
 
 export interface AuditEvent {
   t: number;
@@ -352,7 +353,14 @@ export class Harness {
   }
 
   private trace(phase: string, action: string, result: string): void {
-    const step: TraceStep = { t: this.clock.now(), phase, action, result };
+    // §68 (Batch 66): same desensitization as AgentLoop.recordTrace —
+    // harness tool-step notes are also persisted via onTrace.
+    const step: TraceStep = {
+      t: this.clock.now(),
+      phase,
+      action: redactText(action),
+      result: redactText(result),
+    };
     this.traceLog.push(step);
     this.options.onTrace?.(step);
   }

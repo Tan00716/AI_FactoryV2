@@ -109,6 +109,13 @@ export interface RouteContext {
   dbBroker?: import('../db-broker').DbBrokerService;
   /** System Event Bus — spec §91, shared singleton created in index.ts. */
   bus: EventBus;
+  /**
+   * Batch 66-d — project policy store for agent auto-creation gates
+   * (INV-08). The coordinator injects one instance; qa.ts reads the QA
+   * creation policy from it. Optional so embedders without one keep the
+   * previous behavior (gate passed with QA_CREATION_POLICY defaults).
+   */
+  factoryPolicyStore?: import('@ai-factory/employee-factory').FactoryPolicyStore;
   json(res: ServerResponse, status: number, body: unknown): void;
   readBody(req: IncomingMessage): Promise<Record<string, unknown>>;
 }
