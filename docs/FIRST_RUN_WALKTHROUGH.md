@@ -20,7 +20,7 @@ HTTP, zero mocks, unless the row says otherwise.
 | v7 (seventh edition) | 46 | N1 (narrative survives persistence), K1 (backup project files + tamper-422), E1(a) (env-code passthrough, package-level), E1(b) (HTTP negative control) | `npm run demo:e2e-v7` (11-package build chain), 1/1 ×3 | F22 (closed B47), F23 |
 | v8 (eighth edition) | 48 | P1(a/b/c) (F22 path-policy gate + live-DB-plant threat model), M1(on) (enqueue-only 202), M1(off) (old sync behavior) | `npm run demo:e2e-v8`, 1/1 ×4; two server boots | F24, F25 |
 | redaction leg | 49 | R1–R4 (cross-chunk redaction over terminal SSE: split value, prefix-overlap pair, exactly-once marker, audit events) | 1/1 ×3; 2 detection events — below escalation threshold, no needs-human noise by design | F26, F27 |
-| §81 full-trigger sweep | 50 | S1–S8 (all eight §81 triggers; S8 = honest negative control at Batch 50 — flipped to positive in Batch 75, see F28) | 1/1 ×3 (~3.4s each); 7 OPEN rows, no env-error row | F28, F29 |
+| §81 full-trigger sweep | 50 | S1–S8 (all eight §81 triggers; S8 = honest negative control at Batch 50 — flipped to positive in Batch 75, see F28; sweep S8 leg asserted in-file in Batch 80) | 1/1 ×3 (~3.4s each) at Batch 50 (7 OPEN rows, no env-error row); Batch 80: tally 8/8 (9 OPEN rows — the positive leg adds one repeated-failure) | F28, F29 |
 | escalation leg | 51 | E1–E4 (4 detection events ≥ threshold → exactly 1 OPEN security-issue with honest narrative) | 1/1 ×3 (~7s each) | F30, F31 |
 | audit-chain leg | 52 | A1–A2 (chain integrity: reverse API array to append order → verify → `ok:true`, `legacyCount:0`; 2nd `node:sqlite` connection tampers a middle record → `brokenAt` pinpoints it; key finding: no HTTP verify endpoint — server is writer, operator is verifier) | 1/1 ×3 | F32–F34 |
 | verify endpoint (operator) | 53 | `GET /api/audit/verify`: server-side genesis-anchored full-chain verify → `{ok, verifiedCount, legacyCount, brokenAt?}`; `?limit`/`?offset` → 400 `AUDIT_VERIFY_NO_PAGINATION` (fail-closed); `viewer → 403`, `operator → 200` | contract test 4/4 ×2 (intact, tamper, pagination refusal, role gating) | F33 (closed B53) |
@@ -671,9 +671,12 @@ zero src imports.
 | S8 | irrecoverable-env-error | Batch 50: **honest negative control** — the server's HTTP surface had no input that could put a stagnation signature into ENV_ERROR_CODES, so the run asserted ZERO records for this reason (see F28). **Batch 75: now HTTP-reachable via the operator-gated `envErrorSignal`** — the positive leg asserts exactly 1 `irrecoverable-env-error` (declared-not-observed) + 1 `repeated-failure` for the signaled run; the negative control holds when the signal is absent | the non-env stagnation from S7 produced exactly one upgrade record and nothing else |
 
 Final tally asserts the OPEN set is exactly the seven fired reasons and
-contains no `irrecoverable-env-error` row.
+contains no `irrecoverable-env-error` row. (Batch 80: the sweep now
+asserts the positive S8 leg in-file — tally is 8/8 over HTTP, 9 OPEN rows
+total — the Batch-50 sentence above is the historical snapshot.)
 
 Verified 1/1 three consecutive runs (~3.4 s each; 7 OPEN rows total).
+(Batch 80: sweep file 1/1; 59/59 with all ten needs-human test files.)
 
 ## Findings (§81 sweep)
 
@@ -708,6 +711,14 @@ probing a real host"), so no reader mistakes it for a measured host
 fact. The negative control still holds when the signal is absent, and
 the in-process true path (package-level, embedder-injected stepFn) is
 untouched.
+
+**Batch 80 — sweep asserts the positive leg in-file.** The S8 positive
+leg moved into `first-run-walkthrough-needshuman.test.ts` itself (S8a
+negative control retained, S8b operator + `envErrorSignal` →
+ESCALATED with declared-not-observed narrative); the sweep tally is now
+8/8 over HTTP (9 OPEN rows — the positive leg contributes one
+`repeated-failure` alongside the `irrecoverable-env-error`). The
+"7/8 fire" header above is the Batch-50 finding snapshot.
 
 **F29 — Info (auth-mode walk hygiene).** The whole walk runs in auth mode;
 every call carries the admin Bearer. The brute-force leg must fire its 10

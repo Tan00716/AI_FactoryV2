@@ -1,5 +1,14 @@
 # Changelog
 
+## Batch 81 (2026-10-16)
+
+联合复核 + flake 根因修复 + 文档卫生批。
+
+- **Batch 79/80 联合独立复核（gap-audit/REAUDIT_BATCH79_80.md，偏差 0 处）**：1844cd3 恰好 3 文件、f057e8c 恰好 34 文件（CHANGELOG + 走查测试 1 + AT_MAPPING 1 + walkthrough 1 + docs/testing/v2/ 22 + 根 package.json 1 + approvals 1 + runtime 6），均无 .github、无意外文件；报告资产在位（REAUDIT_BATCH76_78.md、BATCH79_SHORTLIST.md、ACCEPTANCE_INDEX.md；at-*.test.mjs 恰好 21 个，编号逐一对应；export-approval.ts、runner-export-approval.test.ts 在位）。三项改动 vs 描述全部成立：走查测试含 `tally: 8/8`（确为测试 only）；21/21 验收文件头含"逻辑层验收，非端到端"；F58 附注"the call is NOT blocked…F58 stays open"与记录式边界一致。产品代码改动面 7 个 .ts 文件与条目逐项对应；`apps/server/src` 零改动——条目"Batch 80 未动 apps/server/src"为真。B80 条目对 499/500 flake 的披露本身为真，不计偏差。REAUDIT 链：1–10 + 21–80 连续
+- **81-2：orphan-reconcile e2e flake 根因找到并修复（只动测试文件，零产品代码）**：根因是**测试的等待条件错误，不是产品 bug**。Server B 的启动 reconcile 是 fire-and-forget 异步：`await git worktree remove --force`（删目录、清 git 注册）→ `await worktreePrune` → `rmSync` → `audit.record`。`worktreeRemove` 删掉目录后会 yield 回 event loop，而 `audit.record` 在之后才执行；旧测试只轮询"目录消失"（15×1s），恰好落在目录已删、审计未写的间隙里读 DB（约 1/6 flake：目录没了、git 清了、审计表里还没有行）。决定性证据：失败时诊断导出抓到现场——断言失败时审计表无行，但几毫秒后重读 `BUILD_ORPHAN_CLEANED` 已在。修复：等待条件改为轮询审计行出现（30×500ms）——审计行是真正的完成信号（它在 `rmSync` 之后同步写入，其出现蕴含目录已删）；原断言逻辑全部保留；新增 `dumpOrphanForensics()`（失败时导出审计表/marker/git 状态到 /tmp，不改变断言）。验证：修复后 15/15 轮全过（子任务）+ 收口人亲验 4/4 全过。Batch 80 的 499/500 口径自本批起恢复为全绿基线
+- **81-3：Batch 80 后文档卫生扫荡（3 个文档文件，零产品代码）**：`docs/FIRST_RUN_WALKTHROUGH.md` 3 处事实滞后（§81 sweep 行的 "7 OPEN rows, no env-error row"、tally 断言句、F28 小节——均改为 Batch 50 历史快照 + Batch 80 附注；F58 的 80-3 附注核对在位）；`docs/KNOWN_LIMITATIONS.md` 2 处（"无真人 UAT"条追加 21/64 说明；"测试资产"条的 "`docs/testing/v2/` 不存在"已是事实错误，改为 Batch 80 更新）；`SELLABLE_CHECKLIST.md` 2 处（B 项 AT 口径更新为 21/64 + 43 NOT_RUN；新增"当前状态（2026-10-16，Batch 80 收口，基线 f057e8c）"小节）。历史快照句按惯例保留
+- **主线亲验（收口人实测）**：`npm run build` 真实 exit 0，零错误；`npm test` 2593 pass / 0 fail；`npm run test:server` 500/500（81-2 修复 flake 后收口重跑，全绿）；`npm run test:acceptance` 121/121；desktop/electron tsc 0；smoke:boot OK。全程未 git stash、未碰 .github
+
 ## Batch 80 (2026-10-16)
 
 短名单 Top 3 落地批（Batch 79-2 的调研结论）。

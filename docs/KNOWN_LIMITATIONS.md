@@ -100,11 +100,11 @@
 
 - **单机 SQLite**，无团队 PostgreSQL、无远程 Host、无 50+ 并发 Run 验证。
 - 无测试生产环境：canary 发布、灰度、故障注入、24h 稳态均未跑过。
-- **无真人 UAT / Outcome 验收**：AT-001–AT-064 没有一条达到端到端验收。
+- **无真人 UAT / Outcome 验收**：AT-001–AT-064 没有一条达到端到端验收。（Batch 80 补充：21/64 已有可执行**逻辑层**验收（`docs/testing/v2/`，`npm run test:acceptance` 121/121），文件头显式声明"逻辑层验收，非端到端"；其余 43 项仍为 NOT_RUN，环境缺口逐项见 `docs/testing/v2/ACCEPTANCE_INDEX.md`。端到端验收仍为 0。）
 
 ## 测试资产
 
-- 计划宣称的 275 条正式用例集（`docs/testing/v2/`）不存在，记为 NOT_RUN，不是"通过"。
+- 计划宣称的 275 条正式用例集（`docs/testing/v2/`）：（Batch 80 更新）该目录**现已存在**——21/64 AT 有可执行逻辑层验收（`docs/testing/v2/at-*.test.mjs` 21 个文件，`npm run test:acceptance` 121/121；文件头显式声明"逻辑层验收，非端到端"），43 项仍记为 NOT_RUN（环境缺口逐项见 `docs/testing/v2/ACCEPTANCE_INDEX.md`），不是"通过"。
 - 发现的 DEF-002 / DEF-003（API 空 body 校验）已在 `47856d7` 修复并推送；DEF-001 已关闭。
 
 ## 结论

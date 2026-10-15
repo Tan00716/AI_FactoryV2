@@ -40,6 +40,56 @@ function git(dir: string, args: string[]): string {
   return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
 }
 
+// Batch 81-2 diagnostic: on e2e audit-assertion failure, dump full forensic
+// state (audit table, marker, git admin, worktree list) to /tmp without
+// changing assertion logic — the assertion still throws after dumping.
+function dumpOrphanForensics(
+  dbFile: string,
+  repo: string,
+  workRoot: string,
+  orphanDir: string,
+): void {
+  try {
+    const lines: string[] = ['=== ORPHAN-RECONCILE FORENSICS ==='];
+    lines.push(`orphanDir exists: ${existsSync(orphanDir)}`);
+    lines.push(`workRoot exists: ${existsSync(workRoot)}`);
+    try {
+      lines.push(`workRoot entries: ${JSON.stringify(readdirSync(workRoot))}`);
+    } catch (e) {
+      lines.push(`workRoot readdir failed: ${(e as Error).message}`);
+    }
+    try {
+      lines.push(`git worktree list:\n${git(repo, ['worktree', 'list'])}`);
+    } catch (e) {
+      lines.push(`git worktree list failed: ${(e as Error).message}`);
+    }
+    try {
+      const markerPath = join(orphanDir, '.factory-build-runner.json');
+      lines.push(`marker exists: ${existsSync(markerPath)}`);
+      if (existsSync(markerPath)) lines.push(`marker: ${readFileSync(markerPath, 'utf8').trim()}`);
+    } catch (e) {
+      lines.push(`marker read failed: ${(e as Error).message}`);
+    }
+    try {
+      const fdbDbg = new FactoryDatabase(dbFile);
+      try {
+        const acts: Record<string, number> = {};
+        for (const r of fdbDbg.audit.list()) acts[r.action] = (acts[r.action] || 0) + 1;
+        lines.push(`audit actions: ${JSON.stringify(acts)}`);
+      } finally {
+        fdbDbg.close();
+      }
+    } catch (e) {
+      lines.push(`db dump failed: ${(e as Error).message}`);
+    }
+    const outPath = `/tmp/orphan-forensics-${Date.now()}.log`;
+    writeFileSync(outPath, lines.join('\n') + '\n');
+    console.log(`[forensics] wrote ${outPath}`);
+  } catch (e) {
+    console.log(`[forensics] dump failed: ${(e as Error).message}`);
+  }
+}
+
 function makeRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), 'git-orphan-'));
   git(dir, ['init', '-b', 'main', '-q']);
@@ -421,8 +471,22 @@ describe('orphan reconcile e2e (SIGKILL mid-build → reboot cleans)', () => {
       const serverB = bootServer(port, dbFile, secretsDir, workRoot);
       try {
         await waitForHealthy(serverB, port, 'serverB');
-        for (let i = 0; i < 15 && existsSync(orphanDir); i++) {
-          await new Promise((r) => setTimeout(r, 1000));
+        // Batch 81-2: wait for the reconcile's AUDIT row, not just the
+        // dir's disappearance. The startup reconcile is fire-and-forget
+        // and async: `git worktree remove --force` deletes the dir (and
+        // yields to the event loop) BEFORE `audit.record` runs. Polling
+        // only for dir disappearance races the audit write (~1/6 flake:
+        // dir gone + git pruned but no audit row yet). The audit row is
+        // the true completion signal — it is written synchronously right
+        // after rmSync, so its presence implies the dir is gone.
+        for (let i = 0; i < 30; i++) {
+          const fdbPoll = new FactoryDatabase(dbFile);
+          try {
+            if (fdbPoll.audit.list().some((a) => a.action === 'BUILD_ORPHAN_CLEANED')) break;
+          } finally {
+            fdbPoll.close();
+          }
+          await new Promise((r) => setTimeout(r, 500));
         }
         assert.ok(!existsSync(orphanDir), 'reconcile removed the orphan on reboot');
         assert.ok(
@@ -432,7 +496,12 @@ describe('orphan reconcile e2e (SIGKILL mid-build → reboot cleans)', () => {
         const fdb = new FactoryDatabase(dbFile);
         try {
           const rows = fdb.audit.list().filter((a) => a.action === 'BUILD_ORPHAN_CLEANED');
-          assert.ok(rows.length >= 1, 'BUILD_ORPHAN_CLEANED in the audit log');
+          try {
+            assert.ok(rows.length >= 1, 'BUILD_ORPHAN_CLEANED in the audit log');
+          } catch (e) {
+            dumpOrphanForensics(dbFile, repo, workRoot, orphanDir);
+            throw e;
+          }
           assert.match(
             String(rows[0].details['note'] ?? ''),
             /cleaned, never replayed/,
