@@ -1,5 +1,12 @@
 # Changelog
 
+## Batch 104 (2026-10-16)
+
+独立复核批。
+
+- **Batch 103 独立复核（gap-audit/REAUDIT_BATCH103.md，偏差 0 处）**：6a8ae83 恰好 2 个文件，与 CHANGELOG Batch 103 条目描述一致，无 .github、无意外文件。复核人独立抽点：1735496 恰好 2 文件（与 B103 条目声称一致）；REAUDIT_BATCH102.md/REAUDIT_BATCH101.md/REAUDIT_BATCH99_100.md 在位。REAUDIT 链程序化全量检查：1–10 + 21–102 全部在位无断号，本轮补上 103
+- **测试基线**：本批是纯复核批，无产品代码改动；主线数字：构建 0、包套件 2593/0、服务端 500/500、验收 121/121、desktop/server tsc 0（B100 亲跑）、smoke:boot OK（B81）。
+
 ## Batch 103 (2026-10-16)
 
 独立复核批。
