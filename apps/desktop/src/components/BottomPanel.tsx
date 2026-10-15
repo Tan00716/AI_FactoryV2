@@ -19,10 +19,13 @@ export function BottomPanel() {
       api.audit(50).then((rs) => {
         if (cancelled) return;
         setRecords(rs);
-        if (!silent) setErr(null);
+        // Always clear on success: a transient failure (e.g. the backend not
+        // yet listening when the packaged app boots) must not leave a stale
+        // pill behind once rows start streaming in on the 5s silent polls.
+        setErr(null);
       }).catch((e) => {
         if (cancelled) return;
-        if (!silent) setErr(e instanceof Error ? e.message : String(e));
+        setErr(e instanceof Error ? e.message : String(e));
       }).finally(() => {
         if (!silent && !cancelled) setLoading(false);
       });
