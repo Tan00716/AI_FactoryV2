@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 99 (2026-10-16)
+
+独立复核 + 可售清单更新批。
+
+- **Batch 97+98 联合独立复核（gap-audit/REAUDIT_BATCH97_98.md，偏差 0 处）**：7b45cb9 恰好 2 文件、a7a6699 恰好 2 文件，与 CHANGELOG Batch 97/98 条目描述一致，无 .github、无意外文件。USER_GUIDE 3 处修复在位（Design Lead、Approvals 空状态注、NeedsHuman 空状态注）；"7 步中 4 步通过、3 处指南问题、无产品 bug"记录为子任务声称。REAUDIT 链：1–10 + 21–98 连续
+- **可售清单"当前状态"小节更新（B97–98）**：`~/workspace/goals/ai-factory-app-prototype/files/SELLABLE_CHECKLIST.md`（repo 外）新增"当前状态（2026-10-16，Batch 98 收口，基线 a7a6699，本地）"小节：两批摘要（B97 复核+清单、B98 dogfood+指南修复）、复核链 1–10 + 21–96 连续（97/98 待补）、主线数字（构建 0、服务端 500/500 为 B96 亲跑；包套件 2593/0、验收 121/121 为 B93；desktop tsc 0/B89、electron tsc 0/B80-81、smoke OK/B81）、新增真实缺口 0、结论仍是"可运行的原型 + 持续收敛"（13 硬门槛未变）。数字逐项对照 CHANGELOG B97–B98 一致
+- **测试基线**：本批是复核+文档批，无产品代码改动；主线数字：构建 0、服务端 500/500（B96 亲跑）、包套件 2593/0（B93）、验收 121/121（B93）。
+
 ## Batch 98 (2026-10-16)
 
 USER_GUIDE dogfood 走查 + 指南修复批。
