@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 83 (2026-10-16)
+
+独立复核 + 包套件 flake 猎捕批。
+
+- **Batch 82 独立复核（gap-audit/REAUDIT_BATCH82.md，偏差 0 处）**：b5a38b7 恰好 2 文件（CHANGELOG.md + gap-audit/REAUDIT_BATCH81.md），与 CHANGELOG Batch 82 条目描述一致，无 .github、无意外文件。REAUDIT_BATCH81.md 在位（3832 bytes，"偏差 0 处"）；"test:server 500/500×2"记录为子任务声称（复核人不重跑）；"主线数字沿用 B80/81"口径如实，每项标了来源批次。REAUDIT 链：1–10 + 21–82 连续
+- **包套件 flake 猎捕——两轮全绿，无 flake**：`npm test` 第一轮 tests 2109（pass 2107，2 skipped）+ tests 486（pass 486），合计 2593 pass / 0 fail；第二轮同样 2593/0。基线 b5a38b7，与 Batch 80 收口口径一致（2589 + 4 个 F58 新测试）。每轮约 9 分钟，一次跑完无中断；/tmp 1%，wrapper 临时根均已自行清理。全程未 git stash、未 commit、未改任何文件
+- **测试基线**：本批是复核+猎捕批，无产品代码改动；主线数字：构建 0（沿用 B81）、包套件 2593/0×2（本批猎捕）、服务端 500/500×2（B82 猎捕）、验收 121/121（沿用 B80）、desktop/electron tsc 0（沿用 B80/81）、smoke:boot OK（沿用 B81）。
+
 ## Batch 82 (2026-10-16)
 
 独立复核 + flake 猎捕批。
