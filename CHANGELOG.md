@@ -1,5 +1,14 @@
 # Changelog
 
+## Batch 85 (2026-10-16)
+
+AppImage 重打 + 打包产物验证批。
+
+- **重打 AppImage（$HOME/b85-pkg/，130,192,632 bytes）**：Batch 77 的包已 7 个批次未更新，B80 改了 packages/runtime（服务端用包），旧包内服务端代码 stale。dist 确认为最新才打包（B80 的 export-approval.js、runner.js 的 attachExportAuthorization、approvals manager.js 的 evidence_id 均已编译进 dist；B82–84 零产品代码改动）。包内服务端确认含 B80 代码：`resources/server/node_modules/@ai-factory/runtime/dist/src/export-approval.js` 有 `DATA_EXPORT_AUTHORIZATION_RECORDED`，`runner.js` 调了 `attachExportAuthorization`。B74 图标修复仍在位。AppImage 文件头 ELF 有效；本机无 FUSE，未执行 .AppImage 本体（B77-2 同款边界）。打包流程 `npm run build:electron` → `electron-builder --linux --publish never`，exit 0，TMPDIR=$HOME。与 B77 包差值 +4,076 bytes（+0.003%），量级合理（B78–84 产品代码增量小）。`~/b77-pkg/` 原样保留
+- **打包产物验证（linux-unpacked，全部通过）**：服务端（PORT=32116）HTTP 烟雾 4/4——`/api/health` 200、legacy 任务 transition 200、WAITING_HUMAN_DISPATCH 任务 transition 403 `TASK_NOT_AUTHORIZED`（F61）、非法 envErrorSignal 400 `INVALID_ENV_ERROR_SIGNAL`（F28，run 零残留）、directive 注册 200（F12）。**F12 在打包产物上经 SIGKILL 重启确认持久化**（directive 注册 → kill -9 server → 同 DB 重启 → API 水合 ACTIVE，DB 行与 API 一致）。桌面端（Xvfb :99 + CDP）：Dashboard 实时数据零 error boundary、Board 看板完整渲染、Approvals "No pending approvals"（B69-3 修复在包内生效）；Models tab 在可视区外未目视确认（B77-2 已在打包产物确认，B78–84 未动桌面渲染代码）。全部按 PID 精确清理（无 pkill -f），端口全关，包目录恢复干净。证据 PNG 与脚本在 `~/.b85-verify/`
+- **边界**：无 FUSE（.AppImage 本体未执行）；CDP 合成点击非真人验收；无 token 本地模式。事故：一次 `pgrep -f "resources/server/index.js"` 把含该字符串的 shell 自身匹配进去，kill -9 干掉了自己（server 未受影响，验证继续）——教训已记入 `~/AGENTS.md`
+- **测试基线**：本批是打包+验证批，无产品代码改动；主线数字沿用 B80–83 收口口径（构建 0、包套件 2593/0×2、服务端 500/500×2、验收 121/121、desktop/electron tsc 0、smoke:boot OK）。
+
 ## Batch 84 (2026-10-16)
 
 独立复核 + 可售清单更新批。
