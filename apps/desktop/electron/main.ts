@@ -39,6 +39,11 @@ function createWindow(): void {
     width: 1440,
     height: 900,
     title: 'AI Factory — Engineering IDE',
+    // Product icon, shipped in the packaged app via electron-builder.yml
+    // `files` (apps/desktop/build/icon.png). Same relative layout in dev
+    // (__dirname = apps/desktop/dist-electron) and packaged
+    // (__dirname = <app>/apps/desktop/dist-electron).
+    icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: {
       // Prototype: no preload/IPC bridge yet; renderer talks to the local
       // HTTP API. A preload bridge is the planned hardening (§71).

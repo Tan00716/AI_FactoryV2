@@ -22,6 +22,10 @@ files:
   - package.json
   # Electron main process (compiled from apps/desktop/electron)
   - apps/desktop/dist-electron/**/*
+  # Window/taskbar icon for BrowserWindow (main.ts references it via
+  # path.join(__dirname, '..', 'build', 'icon.png')); electron-builder also
+  # reads apps/desktop/build/icon.png for the exe/.desktop/DMG icons.
+  - apps/desktop/build/icon.png
   # Renderer: Vite build output, relocated to the path main.ts loadFile()s
   - from: apps/desktop/dist
     to: apps/desktop/renderer
