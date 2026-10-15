@@ -299,6 +299,7 @@ export async function handleTerminalRoutes(
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      'Access-Control-Allow-Origin': '*',
     });
     const send = (event: string, payload: string): boolean => {
       try {

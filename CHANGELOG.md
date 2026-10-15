@@ -1,5 +1,14 @@
 # Changelog
 
+## Batch 95 (2026-10-16)
+
+独立复核 + 桌面全面板走查 + Terminal CORS 真 bug 修复批。
+
+- **Batch 94 独立复核（gap-audit/REAUDIT_BATCH94.md，偏差 0 处）**：787f81e 恰好 2 文件，与 CHANGELOG Batch 94 条目描述一致，无 .github、无意外文件。B93 三套数字为子任务声称；可售清单新小节在位。REAUDIT 链：1–10 + 21–94 连续
+- **桌面 27 面板全面走查——27/27 渲染，25 PASS，发现 1 个真实 bug**：真 Electron + Xvfb + CDP（electron 二进制 + vite dev，真 B94 源码；避开 B90 的旧 asar 坑），python-xlib 在 X11 层点击（标题栏偏移 dy=28）。无 error boundary、无白屏；Models 面板首次目视确认（"5 of 5 models" 表格正常）；B89 的侧栏 live-skills 在截图中目视确认。截图 `~/.b95-walk/shots/tab-*.png`（27 个）
+- **Terminal CORS bug（真实产品 bug，已修复）**：(1) `apps/server/src/index.ts` 的 `json()` 与 OPTIONS 处理器的 `Access-Control-Allow-Methods: GET,POST,OPTIONS` 缺 DELETE/PUT/PATCH——服务端实际有 10 个 DELETE / 7 个 PUT / 1 个 PATCH 路由，浏览器 preflight 全部拦截；`TerminalPanel.tsx` 的 `DELETE /api/terminal/sessions/:id`（关闭 session，含卸载清理）与 `StabilityPanel.tsx` 的 `PUT /autonomy/mode` 被拦。(2) `apps/server/src/routes/terminal.ts` 的 SSE 流 `writeHead` 缺 `Access-Control-Allow-Origin`，流被拦。修复：方法列表改为 `GET,POST,PUT,PATCH,DELETE,OPTIONS`（两处）；SSE 流加 `Access-Control-Allow-Origin: *`。**真 server 验证**：OPTIONS preflight 返回新方法列表；SSE 流响应头含 `Access-Control-Allow-Origin: *`；DELETE session 200。terminal 相关测试 9/9
+- **测试基线**：构建 0、server tsc 0；主线数字沿用 B93 亲跑（包套件 2593/0、服务端 500/500、验收 121/121）。
+
 ## Batch 94 (2026-10-16)
 
 独立复核 + 可售清单更新批。

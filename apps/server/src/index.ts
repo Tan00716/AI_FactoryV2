@@ -719,7 +719,7 @@ function json(res: ServerResponse, status: number, body: unknown): void {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(data),
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   });
   res.end(data);
@@ -760,7 +760,7 @@ const server = createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+        'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       });
       return res.end();
