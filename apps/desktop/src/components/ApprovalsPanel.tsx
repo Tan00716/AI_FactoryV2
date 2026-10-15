@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Component, useCallback, useEffect, useState } from 'react';
 import { authHeaders } from '../api';
 
 /**
@@ -16,12 +16,58 @@ export interface ApprovalItem {
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   evidenceIds: string[];
   requiredApprover: string;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED' | 'CANCELLED';
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED' | 'CANCELLED' | 'INVALIDATED';
   decision: '' | 'APPROVED' | 'REJECTED';
   decidedBy: string;
   createdAt: string;
   decidedAt: string | null;
   expiresAt: string | null;
+}
+
+/**
+ * The server (`GET/POST /api/approvals*`) returns the manager's raw
+ * `Approval` record (§23.3), which uses snake_case field names and has no
+ * `agentId`/`evidenceIds` fields. Without a mapping the panel read
+ * `a.evidenceIds.length` off `undefined` and crashed the whole React tree
+ * (Batch 58-2 walkthrough: black screen on real data).
+ */
+interface RawApproval {
+  approval_id: string;
+  action: string;
+  requester: string;
+  task_id: string;
+  risk_level: ApprovalItem['riskLevel'];
+  required_approvers?: unknown;
+  status: string;
+  decision: '' | 'APPROVED' | 'REJECTED';
+  decided_by: string;
+  created_at: string;
+  decided_at: string | null;
+  deadline: string | null;
+}
+
+function toApprovalItem(raw: RawApproval): ApprovalItem {
+  const approvers = Array.isArray(raw.required_approvers)
+    ? raw.required_approvers.filter((e): e is string => typeof e === 'string')
+    : [];
+  return {
+    id: raw.approval_id,
+    action: raw.action,
+    requestedBy: raw.requester,
+    agentId: '',
+    taskId: raw.task_id,
+    riskLevel: raw.risk_level,
+    // The server has no per-evidence id list (only evidence_manifest_hash);
+    // default to [] so `evidenceIds.length` never throws.
+    evidenceIds: [],
+    requiredApprover: approvers.join(', '),
+    status: (raw.status === 'INVALIDATED' ? 'INVALIDATED' : raw.status) as ApprovalItem['status'],
+    decision: raw.decision,
+    decidedBy: raw.decided_by,
+    createdAt: raw.created_at,
+    decidedAt: raw.decided_at,
+    expiresAt: raw.deadline,
+  };
 }
 
 export interface ActionEvaluation {
@@ -69,19 +115,23 @@ export function createApprovalsApi(base = 'http://localhost:3100/api'): Approval
   }
   const q = (status?: string) => (status ? `?status=${encodeURIComponent(status)}` : '');
   return {
-    list: (status) => req<ApprovalItem[]>(`/approvals${q(status)}`),
-    get: (id) => req<ApprovalItem>(`/approvals/${encodeURIComponent(id)}`),
-    request: (input) => req<ApprovalItem>('/approvals', { method: 'POST', body: JSON.stringify(input) }),
-    decide: (id, approved, decidedBy) =>
-      req<{ approval: ApprovalItem }>(`/approvals/${encodeURIComponent(id)}/decision`, {
+    list: async (status) => (await req<RawApproval[]>(`/approvals${q(status)}`)).map(toApprovalItem),
+    get: async (id) => toApprovalItem(await req<RawApproval>(`/approvals/${encodeURIComponent(id)}`)),
+    request: async (input) => toApprovalItem(await req<RawApproval>('/approvals', { method: 'POST', body: JSON.stringify(input) })),
+    decide: async (id, approved, decidedBy) => {
+      const r = await req<{ approval: RawApproval }>(`/approvals/${encodeURIComponent(id)}/decision`, {
         method: 'POST',
         body: JSON.stringify({ approved, decidedBy }),
-      }),
-    cancel: (id, by) =>
-      req<{ approval: ApprovalItem }>(`/approvals/${encodeURIComponent(id)}/cancel`, {
+      });
+      return { approval: toApprovalItem(r.approval) };
+    },
+    cancel: async (id, by) => {
+      const r = await req<{ approval: RawApproval }>(`/approvals/${encodeURIComponent(id)}/cancel`, {
         method: 'POST',
         body: JSON.stringify({ by }),
-      }),
+      });
+      return { approval: toApprovalItem(r.approval) };
+    },
     evaluate: (action, riskLevel) =>
       req<ActionEvaluation>('/approvals/evaluate', {
         method: 'POST',
@@ -108,7 +158,7 @@ export interface ApprovalsPanelProps {
   pollMs?: number;
 }
 
-export function ApprovalsPanel({ api, pollMs = 5000 }: ApprovalsPanelProps) {
+export function ApprovalsPanelInner({ api, pollMs = 5000 }: ApprovalsPanelProps) {
   const client = api ?? createApprovalsApi();
   const [items, setItems] = useState<ApprovalItem[]>([]);
   const [decidedBy, setDecidedBy] = useState('human');
@@ -172,9 +222,9 @@ export function ApprovalsPanel({ api, pollMs = 5000 }: ApprovalsPanelProps) {
             <span>approver: {a.requiredApprover}</span>
           </div>
           {a.taskId && <div className="card-meta"><span>task: {a.taskId.slice(0, 8)}</span></div>}
-          {a.evidenceIds.length > 0 && (
+          {(a.evidenceIds ?? []).length > 0 && (
             <div className="card-meta">
-              <span>evidence: {a.evidenceIds.map((e) => e.slice(0, 8)).join(', ')}</span>
+              <span>evidence: {(a.evidenceIds ?? []).map((e) => e.slice(0, 8)).join(', ')}</span>
             </div>
           )}
           <div className="card-meta"><span>expires: {fmtTs(a.expiresAt)}</span></div>
@@ -206,5 +256,44 @@ export function ApprovalsPanel({ api, pollMs = 5000 }: ApprovalsPanelProps) {
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * Error boundary: a render failure inside the approvals panel must not
+ * unmount the whole React tree (Batch 58-2: real server data once caused a
+ * full black screen here). The panel degrades to a visible error card.
+ */
+class ApprovalsErrorBoundary extends Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error) {
+    // eslint-disable-next-line no-console
+    console.error('[ApprovalsPanel] render failure contained', error);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="approvals">
+          <div className="banner err">
+            审批面板渲染失败（{this.state.error.message}），其余面板未受影响。
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export function ApprovalsPanel(props: ApprovalsPanelProps) {
+  return (
+    <ApprovalsErrorBoundary>
+      <ApprovalsPanelInner {...props} />
+    </ApprovalsErrorBoundary>
   );
 }
