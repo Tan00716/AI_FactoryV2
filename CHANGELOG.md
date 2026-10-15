@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 88 (2026-10-16)
+
+独立复核 + 性能冒烟批。
+
+- **Batch 86+87 联合独立复核（gap-audit/REAUDIT_BATCH86_87.md，偏差 0 处）**：77e30ad 恰好 4 文件、f8e38a5 恰好 1 文件，与 CHANGELOG Batch 86/87 条目描述一致，无 .github、无意外文件。REAUDIT_BATCH84_85.md 在位；docs/USER_GUIDE.md 在位（5399 bytes）；ops-manual.md 的 `npm i -D electron` 行确已去掉；B87"零漏洞"记录为子任务声称（复核人不重跑 Advisory 查询），方法学与边界如实披露。REAUDIT 链：1–10 + 21–87 连续
+- **性能冒烟——无离谱慢点，无需优化，只记录基线**：真 server（临时 DB/secrets，loopback，每端点 20 次）——GET /api/health p50 10.89ms/p95 26.38ms；GET /api/tasks 3.64/30.43ms；GET /api/audit 4.20/11.89ms；POST /api/tasks 47.36/64.92ms；POST transition 73.36/106.94ms（写操作因审计写入、证据检查比读慢，但全部 <200ms，远低于 2s 线）。桌面冷启动（b85-pkg linux-unpacked，Xvfb+CDP）：窗口创建 10.8s，低于 30s 线（B85-2 已用真 PNG 证明渲染正常）。`npm run build` 全量 233.6s（约 3m54s，桌面 vite 1m28s）。全部按 PID 精确清理，端口全关，包目录恢复干净
+- **测试基线**：本批是复核+测量批，无产品代码改动；主线数字沿用 B80–83 收口口径（构建 0、包套件 2593/0×2、服务端 500/500×2、验收 121/121、desktop/electron tsc 0、smoke:boot OK）。
+
 ## Batch 87 (2026-10-16)
 
 依赖安全审计批。
