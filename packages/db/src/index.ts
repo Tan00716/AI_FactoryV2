@@ -22,6 +22,7 @@ export * from './project-knowledge';
 export * from './project-templates';
 export * from './escalations';
 export * from './needs-human-upgrades';
+export * from './authority-conflicts';
 export * from './proposals';
 export * from './management-reports';
 export * from './organization-relationships';

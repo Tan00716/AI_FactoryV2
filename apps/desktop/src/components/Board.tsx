@@ -166,6 +166,10 @@ export function Board({ tasks, onChanged, onCreate, onSelectTask }: {
         const err = e as Error & { missing?: string[]; status?: number };
         if (err.status === 422 && err.missing) {
           showToast('err', `⛔ 门禁拒绝（缺证据）: ${err.missing.join('；')}`);
+        } else if (err.status === 403) {
+          // Batch 75 (F61)：v1 transition 现在查 §17.2 授权轴。任务未授权时
+          // 拖拽被拒，这里明示去处而不是只报"流转失败"。
+          showToast('err', `⛔ 未授权（§17.2）: ${err.message} —— 请先在 Dispatch 页签完成派发`);
         } else {
           showToast('err', `流转失败: ${err.message}`);
         }

@@ -150,6 +150,47 @@ const LEVELS: ReadonlyArray<AuthorityLevel> = [
   'viewer',
 ];
 const EFFECTS: ReadonlyArray<DirectiveEffect> = ['ALLOW', 'BLOCK', 'PAUSE', 'RESUME', 'CANCEL'];
+const DIRECTIVE_STATUSES: ReadonlyArray<DirectiveStatus> = ['ACTIVE', 'SUPERSEDED', 'OVERRIDDEN'];
+const CONFLICT_STATUSES: ReadonlyArray<ConflictStatus> = ['OPEN', 'RESOLVED'];
+
+function assertHydrateDirective(d: Directive): void {
+  if (typeof d.directiveId !== 'string' || d.directiveId === '') {
+    throw new Error('hydrate: corrupt directive row (directiveId)');
+  }
+  if (!LEVELS.includes(d.authorityLevel)) {
+    throw new Error(`hydrate: corrupt directive row "${d.directiveId}" (authorityLevel)`);
+  }
+  if (d.targetKind !== 'run' && d.targetKind !== 'task') {
+    throw new Error(`hydrate: corrupt directive row "${d.directiveId}" (targetKind)`);
+  }
+  if (!EFFECTS.includes(d.effect)) {
+    throw new Error(`hydrate: corrupt directive row "${d.directiveId}" (effect)`);
+  }
+  if (!DIRECTIVE_STATUSES.includes(d.status)) {
+    throw new Error(`hydrate: corrupt directive row "${d.directiveId}" (status)`);
+  }
+}
+
+function assertHydrateConflict(c: AuthorityConflict): void {
+  if (typeof c.conflictId !== 'string' || c.conflictId === '') {
+    throw new Error('hydrate: corrupt conflict row (conflictId)');
+  }
+  if (c.targetKind !== 'run' && c.targetKind !== 'task') {
+    throw new Error(`hydrate: corrupt conflict row "${c.conflictId}" (targetKind)`);
+  }
+  if (!CONFLICT_STATUSES.includes(c.status)) {
+    throw new Error(`hydrate: corrupt conflict row "${c.conflictId}" (status)`);
+  }
+  if (!Array.isArray(c.directiveIds) || c.directiveIds.some((id) => typeof id !== 'string')) {
+    throw new Error(`hydrate: corrupt conflict row "${c.conflictId}" (directiveIds)`);
+  }
+}
+
+/** Largest numeric suffix of the default `id-N` generator found in an id. */
+function idSuffixSeq(id: string): number {
+  const m = /-id-(\d+)$/.exec(id);
+  return m ? Number(m[1]) : 0;
+}
 
 export class AuthorityConflictRegistry {
   private directives = new Map<string, Directive>();
@@ -430,5 +471,50 @@ export class AuthorityConflictRegistry {
       winningDirectiveId: input.winningDirectiveId,
     });
     return { ok: true, conflict };
+  }
+
+  /**
+   * Boot hydrate (Batch 75, F12): load persisted directives + conflicts
+   * into a fresh registry.
+   *
+   * Silent by design: emits no audit events and never fires
+   * onConflictOpened — a restart must not re-raise the §81 needsHuman
+   * 'ai-disagreement' upgrade for a conflict that already emitted one
+   * before the restart. Hydrate is *learning*, not redoing.
+   *
+   * Boot-only: throws unless the registry is empty (the server always
+   * hydrates a freshly-created registry in initAuthorityRoutes).
+   *
+   * The default id generator continues past the largest hydrated
+   * `id-N` suffix, so post-hydrate ids never collide with hydrated
+   * ones.
+   */
+  hydrate(directives: Directive[], conflicts: AuthorityConflict[]): void {
+    if (this.directives.size !== 0 || this.conflicts.size !== 0) {
+      throw new Error('hydrate is boot-only: registry is not empty');
+    }
+    let maxSeq = 0;
+    for (const d of directives) {
+      assertHydrateDirective(d);
+      this.directives.set(d.directiveId, { ...d });
+      maxSeq = Math.max(maxSeq, idSuffixSeq(d.directiveId));
+    }
+    for (const c of conflicts) {
+      assertHydrateConflict(c);
+      // No resolution key at all when undefined: the hydrated shape
+      // must stay deep-equal to the persisted one (an explicit
+      // `resolution: undefined` key is not deep-equal to a missing
+      // key under assert/strict).
+      const hydrated: AuthorityConflict = {
+        ...c,
+        directiveIds: [...c.directiveIds],
+      };
+      if (c.resolution !== undefined) {
+        hydrated.resolution = { ...c.resolution };
+      }
+      this.conflicts.set(c.conflictId, hydrated);
+      maxSeq = Math.max(maxSeq, idSuffixSeq(c.conflictId));
+    }
+    this.seq = Math.max(this.seq, maxSeq);
   }
 }

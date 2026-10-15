@@ -1,7 +1,7 @@
 /**
  * Agent Runtime routes — spec §24–§27.
  *
- *  POST /api/runtime/runs        {agentId, taskId, script?, routeRequest?, budgets?}
+ *  POST /api/runtime/runs        {agentId, taskId, script?, routeRequest?, budgets?, envErrorSignal?}
  *                               → executes an agent loop with the StubAdapter.
  *                               `budgets` (Batch 49, F14) optionally overrides
  *                               the loop budgets {maxSteps, timeMs,
@@ -11,6 +11,21 @@
  *                               reachable over HTTP: the default stepFn
  *                               completes at the first EVALUATE, so the
  *                               fixed 40-step budget could never be hit.
+ *                               `envErrorSignal` (Batch 75, F28) optionally
+ *                               declares an environment-error code
+ *                               (ENV_ERROR_CODES member); the run's step
+ *                               function then throws the declared env
+ *                               FactoryError on every step, so the loop
+ *                               stagnates on the env code, escalates, and
+ *                               §81 'irrecoverable-env-error' fires — the
+ *                               S8 flip point (previously a pinned negative
+ *                               control; Tan's decision "A A A"). Unknown /
+ *                               non-string codes → 400
+ *                               INVALID_ENV_ERROR_SIGNAL; the endpoint is
+ *                               operator-gated (viewer → 403); every use is
+ *                               audited (RUNTIME_ENV_ERROR_SIGNAL_USED) and
+ *                               the emitted record is qualified as
+ *                               declared-not-observed.
  *  GET  /api/runtime/runs        list runs — each record joined server-side
  *                               with its manifest's key columns, the live
  *                               checkpoint count, the process-live flag and
@@ -127,11 +142,15 @@ import {
   BudgetTracker,
   CheckpointLog,
   DEFAULT_EXTENDED_BUDGETS,
+  ENV_ERROR_CODES,
   Harness,
+  MissingBinaryError,
+  SandboxUnavailableError,
   StubAdapter,
   isEnvErrorCode,
   runAgent,
   type CheckpointV2,
+  type StepFn,
   type StepIntent,
   type ToolImpl,
   type TraceStep,
@@ -385,6 +404,76 @@ export function resolveRunLoopBudgets(
 }
 
 /**
+ * Batch 75 (F28) — the operator-declared environment-error signal.
+ *
+ * `POST /api/runtime/runs` accepts an optional `envErrorSignal` body
+ * field: a string naming a member of ENV_ERROR_CODES
+ * (`ENV_SANDBOX_UNAVAILABLE` | `ENV_BINARY_MISSING`). When set, the
+ * run's step function throws the declared env FactoryError on every
+ * step, so the loop stagnates on the env code (stagnationLimit 3),
+ * escalates, and the Batch-43 emission block fires — this is the S8
+ * flip point: §81 'irrecoverable-env-error' becomes deterministically
+ * reachable over HTTP for the first time (previously a pinned
+ * negative control; Tan's decision "A A A", 2026-10-15).
+ *
+ * This is a declared footgun by design, and the protections are
+ * layered: (1) the endpoint is operator-gated by the existing
+ * route→role table (viewer → 403, unauthenticated → 401); (2)
+ * fail-closed validation here — an unknown or non-string code is a
+ * 400 INVALID_ENV_ERROR_SIGNAL, never silently ignored or defaulted;
+ * (3) every use is audited (RUNTIME_ENV_ERROR_SIGNAL_USED) and stamped
+ * on the run manifest's driver; (4) the emitted record's narrative is
+ * qualified as declared-not-observed (see buildEnvErrorUpgradeRecord).
+ */
+export function resolveEnvErrorSignal(
+  body: Record<string, unknown>,
+): { ok: true; signal: string | null } | { ok: false; error: string; code: string } {
+  const raw = body['envErrorSignal'];
+  if (raw === undefined || raw === null) return { ok: true, signal: null };
+  if (typeof raw !== 'string' || !isEnvErrorCode(raw)) {
+    return {
+      ok: false,
+      error: `envErrorSignal must be one of: ${[...ENV_ERROR_CODES].sort().join(', ')}`,
+      code: 'INVALID_ENV_ERROR_SIGNAL',
+    };
+  }
+  return { ok: true, signal: raw };
+}
+
+/**
+ * The step function for a signal-declared run (Batch 75, F28): every
+ * step throws the declared env FactoryError, so the AgentLoop records
+ * the env code as the step's errorSignature
+ * (`err instanceof FactoryError ? err.code : 'step-throw'`) and, after
+ * `stagnationLimit` identical signatures, escalates with
+ * LoopStagnation(<env code>) — exactly the package-level true path
+ * pinned in packages/runtime/tests/env-error-codes.test.ts, reached
+ * here through the HTTP signal instead of an embedder-injected
+ * stepFn. The error messages say "declared via the HTTP env-error
+ * signal" so no one mistakes a declared failure for a probed host.
+ */
+export function makeEnvErrorSignalStepFn(envErrorCode: string): StepFn {
+  return () => {
+    switch (envErrorCode) {
+      case 'ENV_SANDBOX_UNAVAILABLE':
+        throw new SandboxUnavailableError(
+          'declared via the HTTP env-error signal (Batch 75, F28) — operator-injected, not a host probe',
+        );
+      case 'ENV_BINARY_MISSING':
+        throw new MissingBinaryError(
+          'env-signal-declared',
+          'declared via the HTTP env-error signal (Batch 75, F28) — operator-injected, not a host probe',
+        );
+      default:
+        // Unreachable through the route (resolveEnvErrorSignal gates
+        // membership first); fail-closed rather than mapping an
+        // unknown code onto a wrong FactoryError.
+        throw new Error(`no env-error signal factory for code '${envErrorCode}'`);
+    }
+  };
+}
+
+/**
  * The active manifest store. Module-level for the same reason as the
  * run registry: the coordinator installs the SQLite store
  * (FactoryDatabase.runManifests) at startup via
@@ -612,18 +701,39 @@ export function buildEnvErrorUpgradeRecord(args: {
   envErrorCode: string;
   reason: string | undefined;
   steps: number;
+  /**
+   * Batch 75 (F28) — the env code the caller declared through the HTTP
+   * `envErrorSignal` (operator-gated). When set, the run never probed a
+   * real host: the env failure was injected by declaration, and the
+   * narrative must say so explicitly (declared-not-observed), so a
+   * governance reader never mistakes the record for a measured host
+   * fact. Null = the in-process true path (a real env failure the loop
+   * actually hit), whose narrative is unchanged.
+   */
+  declaredViaSignal?: string | null;
 }): NeedsHumanDbRecord {
   // F19 follow-up (Batch 45): the honest narrative must survive persistence —
   // it goes in detailJson as `narrative` (the transient `detail` field is not
   // persisted; NeedsHumanDbRecord has no `detail` column).
-  const narrative =
-    `run ${args.runId} hit an irrecoverable environment error: '${args.envErrorCode}' ` +
-    `repeated with no progress until the loop's stagnation limit tripped and the run escalated ` +
-    `(agent ${args.agentId}, task ${args.taskId}). ` +
-    `A 'repeated-failure' record was also raised for the stagnation itself. ` +
-    `'Irrecoverable' describes the loop's own recovery being exhausted — a fact about the run's ` +
-    `terminal state, not a prediction about the environment; no completed breach is asserted. ` +
-    `${args.reason ?? 'no reason recorded'}`;
+  const declared = args.declaredViaSignal ?? null;
+  const narrative = declared
+    ? `run ${args.runId} escalated on a DECLARED environment error: '${args.envErrorCode}' ` +
+      `was injected by the caller through the HTTP env-error signal (Batch 75, Tan's F28 decision — ` +
+      `operator-gated, audited RUNTIME_ENV_ERROR_SIGNAL_USED), NOT observed by probing a real host. ` +
+      `The loop retried the declared failure with no progress until the stagnation limit tripped ` +
+      `(agent ${args.agentId}, task ${args.taskId}). ` +
+      `A 'repeated-failure' record was also raised for the stagnation itself. ` +
+      `'Irrecoverable' describes the loop's own recovery being exhausted — a fact about the run's ` +
+      `terminal state, not a measured fact about the environment; no completed breach is asserted, ` +
+      `and no host repair is implied — verify the host independently before acting. ` +
+      `${args.reason ?? 'no reason recorded'}`
+    : `run ${args.runId} hit an irrecoverable environment error: '${args.envErrorCode}' ` +
+      `repeated with no progress until the loop's stagnation limit tripped and the run escalated ` +
+      `(agent ${args.agentId}, task ${args.taskId}). ` +
+      `A 'repeated-failure' record was also raised for the stagnation itself. ` +
+      `'Irrecoverable' describes the loop's own recovery being exhausted — a fact about the run's ` +
+      `terminal state, not a prediction about the environment; no completed breach is asserted. ` +
+      `${args.reason ?? 'no reason recorded'}`;
   const rec = needsHuman('irrecoverable-env-error', {
     detail: narrative,
     context: {
@@ -633,11 +743,18 @@ export function buildEnvErrorUpgradeRecord(args: {
       reasonCode: 'LOOP_STAGNATION',
       envErrorCode: args.envErrorCode,
       steps: String(args.steps),
+      // Batch 75 (F28): when the env code was caller-declared through
+      // the HTTP signal, the context says so — machine-readable, so
+      // downstream consumers never treat it as a probed host fact.
+      ...(declared ? { envErrorSignal: declared } : {}),
     },
-    impactScope: `run ${args.runId} is terminal; the host environment needs repair before any re-run can succeed`,
+    impactScope: declared
+      ? `run ${args.runId} is terminal; the env error '${args.envErrorCode}' was caller-declared via the HTTP env-error signal, NOT observed on the host — verify the host independently before repairing anything`
+      : `run ${args.runId} is terminal; the host environment needs repair before any re-run can succeed`,
     stoppedActions: [`run ${args.runId} — terminated on irrecoverable environment error ${args.envErrorCode}`],
-    suggestion:
-      'Repair the host environment (install the missing binary / restore the sandbox / free disk / fix network), then re-run; or revise the task to avoid the missing capability; or abandon the run. Mark this upgrade resolved via POST /api/needs-human/:id/resolve.',
+    suggestion: declared
+      ? 'This record reflects a caller-declared signal, not a measured host failure: verify the host environment independently (install the missing binary / restore the sandbox / free disk / fix network) before acting on it; if the host is healthy, treat this run as a signal test. Mark this upgrade resolved via POST /api/needs-human/:id/resolve.'
+      : 'Repair the host environment (install the missing binary / restore the sandbox / free disk / fix network), then re-run; or revise the task to avoid the missing capability; or abandon the run. Mark this upgrade resolved via POST /api/needs-human/:id/resolve.',
   });
   return {
     id: rec.id,
@@ -656,6 +773,9 @@ export function buildEnvErrorUpgradeRecord(args: {
       envErrorCode: args.envErrorCode,
       steps: args.steps,
       reason: args.reason ?? null,
+      // Batch 75 (F28): the caller-declared signal code, or null for
+      // the in-process true path (a real env failure the loop hit).
+      envErrorSignal: declared,
       // Cross-reference: this fires additively alongside the Batch-38
       // 'repeated-failure' record for the same stagnation (same runId,
       // same source, different record id) — both records are true.
@@ -1205,6 +1325,16 @@ export interface ExecuteRuntimeRunDeps {
    * under (the Batch-15 invariant, now per-request).
    */
   budgets?: RunLoopBudgets;
+  /**
+   * Batch 75 (F28) — the operator-declared environment-error signal
+   * carried by the POST body (resolveEnvErrorSignal). When set, the
+   * run executes under a step function that throws the declared env
+   * FactoryError every step, so the loop stagnates on the env code
+   * and §81 'irrecoverable-env-error' fires (the S8 flip point). The
+   * emission is qualified as declared-not-observed. Only the POST
+   * creation route sets this; the resume path never does.
+   */
+  envErrorSignal?: string | null;
 }
 
 /**
@@ -1322,6 +1452,13 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
         adapter,
         loop,
         tools: RUNTIME_TOOLS,
+        // Batch 75 (F28) — the operator-declared env-error signal: the
+        // run's step function throws the declared env FactoryError on
+        // every step (see makeEnvErrorSignalStepFn). Absent → runAgent
+        // uses its internal default stepFn, exactly as before.
+        stepFn: deps.envErrorSignal
+          ? makeEnvErrorSignalStepFn(deps.envErrorSignal)
+          : undefined,
         routeRequest:
           deps.routeRequest != null ? (deps.routeRequest as never) : undefined,
         // §28.4 — the resumed run's seeded baseline; absent for a
@@ -1399,6 +1536,9 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
       // when an env FactoryError escapes the loop) is deliberately NOT
       // matched: no live production path produces it today, and wiring it
       // would be definition-without-implementation.
+      // Batch 75 (F28): when the run was created with the HTTP
+      // env-error signal, the record is qualified as declared-not-observed
+      // (the env failure was injected by declaration, not probed).
       if (shouldEmitEnvErrorUpgrade(result)) {
         emitRunNeedsHuman(
           ctx,
@@ -1409,6 +1549,7 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
             envErrorCode: result.stagnationSignature as string,
             reason: result.reason,
             steps: result.steps,
+            declaredViaSignal: deps.envErrorSignal ?? null,
           }),
         );
       }
@@ -1721,6 +1862,7 @@ export async function handleRuntimeRoutes(
       return true;
     }
     const loopBudgets = resolvedBudgets.budgets;
+
     const source = runStore.get(sourceId);
     if (!source) {
       return ctx.json(res, 404, { error: 'run not found' }), true;
@@ -1950,6 +2092,20 @@ export async function handleRuntimeRoutes(
     }
     const loopBudgets = resolvedBudgets.budgets;
 
+    // Batch 75 (F28) — the operator-declared environment-error signal.
+    // Validated before any work happens: an unknown or non-string code
+    // is a 400 INVALID_ENV_ERROR_SIGNAL, never silently ignored. The
+    // endpoint is operator-gated by the route→role table
+    // (viewer → 403, unauthenticated → 401) — that gate is the
+    // authorization protection for this declared footgun. The resume
+    // route deliberately does NOT accept this signal (creation only).
+    const resolvedSignal = resolveEnvErrorSignal(b);
+    if (!resolvedSignal.ok) {
+      ctx.json(res, 400, { error: resolvedSignal.error, code: resolvedSignal.code });
+      return true;
+    }
+    const envErrorSignal = resolvedSignal.signal;
+
     // §26 — resolve the operator tool allowlist for this run. An entry
     // naming an unregistered tool is a configuration error: audit it
     // and refuse the run (500) instead of silently granting less than
@@ -2086,6 +2242,11 @@ export async function handleRuntimeRoutes(
         kind: scriptProvided ? 'script' : 'default-script',
         adapter: adapter.name,
         routeRequestProvided: b['routeRequest'] != null,
+        // Batch 75 (F28) — stamped only when the caller declared a
+        // signal; the no-signal driver shape is unchanged, so a
+        // declared-not-observed record is always traceable to the
+        // request that declared it.
+        ...(envErrorSignal ? { envErrorSignal } : {}),
       },
       grantedTools: [...grantedTools],
       budgetLimits: {
@@ -2154,6 +2315,18 @@ export async function handleRuntimeRoutes(
       taskId,
       grantedTools,
     });
+    // Batch 75 (F28) — the env-error signal is a declared footgun: audit
+    // every use so the declaration is always traceable to the request
+    // that made it (the emitted §81 record cross-references this too).
+    if (envErrorSignal) {
+      ctx.audit.record(agentId, 'RUNTIME_ENV_ERROR_SIGNAL_USED', 'runtime_run', id, {
+        runId: id,
+        actor: agentId,
+        agentId,
+        taskId,
+        envErrorCode: envErrorSignal,
+      });
+    }
 
     // Execution is shared with the resume route (§28.4): one path
     // drives every HTTP run to its terminal write (executeRuntimeRun).
@@ -2168,6 +2341,9 @@ export async function handleRuntimeRoutes(
       routeRequest: b['routeRequest'] != null ? b['routeRequest'] : undefined,
       completeManifest,
       budgets: loopBudgets,
+      // Batch 75 (F28) — the declared env-error signal (null = no
+      // signal; the run executes under the default stepFn).
+      envErrorSignal,
     });
 
     return ctx.json(res, 202, { id, status: 'RUNNING' }), true;

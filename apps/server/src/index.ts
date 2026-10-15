@@ -537,8 +537,15 @@ initDisputesPersistence(fdb, audit);
  * records: nothing auto-resolves them; a human marks
  * 'acknowledged'/'resolved' via POST /api/needs-human/:id/resolve.
  * Open rows hydrate as-is (nothing to demote).
+ *
+ * F12 persistence (Batch 75): the registry itself is also durable now —
+ * every directive/conflict mutation is upserted to
+ * fdb.authorityConflicts (write-through; persist failures are audited
+ * as AUTHORITY_CONFLICT_PERSIST_FAILED, never roll back the response)
+ * and the rows are loaded into a fresh registry at boot (silent
+ * hydrate — no audit events, no §81 re-emission).
  */
-initAuthorityRoutes(fdb);
+initAuthorityRoutes(fdb, audit);
 
 /**
  * Organization graph durability (§48.2 + §9, Batch 34): nodes and the
@@ -1230,6 +1237,26 @@ const server = createServer(async (req, res) => {
         const actor = String(b['actor'] ?? 'human');
         if (!to) return json(res, 400, { error: 'to (target state) is required' });
         try {
+          // §17.2 (Batch 75, F61) — creation is not execution authorization:
+          // the v1 transition contract now checks the task's authorization
+          // axis, reusing the G5 gate shape from POST /api/runtime/runs
+          // (403 TASK_NOT_AUTHORIZED). Tasks persisted before the axis
+          // existed carry no value and read as AUTHORIZED (the legacy
+          // path is unchanged); tasks created without an explicit
+          // authorizationStatus are also AUTHORIZED, so only tasks
+          // explicitly held in DRAFT / WAITING_HUMAN_DISPATCH / REVOKED /
+          // EXPIRED refuse. Fail-closed: an unknown status cannot pass.
+          const axisStatus = effectiveAuthorizationStatus(tasks.get(id));
+          if (axisStatus !== 'AUTHORIZED') {
+            return json(res, 403, {
+              error:
+                `task is not authorized for a workflow transition (authorization_status: ${axisStatus}); ` +
+                'a Human Dispatch is required first (§17.2)',
+              code: 'TASK_NOT_AUTHORIZED',
+              taskId: id,
+              authorizationStatus: axisStatus,
+            });
+          }
           const r = engine.requestTransition(id, to, actor);
           if (!r.ok) return json(res, 422, r);
           // Notification trigger (module 30): a task entering BLOCKED pings

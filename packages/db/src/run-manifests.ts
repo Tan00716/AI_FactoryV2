@@ -78,6 +78,16 @@ export interface RunManifestDriver {
   adapter: string;
   /** Whether the POST carried a model routeRequest. */
   routeRequestProvided: boolean;
+  /**
+   * Batch 75 (F28) — the operator-declared environment-error signal
+   * carried by the POST body, if any (null/undefined = no signal).
+   * The signal makes the run's step function throw the declared env
+   * FactoryError on every step, so the run stagnates on the env code
+   * and §81 'irrecoverable-env-error' fires (the S8 flip point).
+   * Recorded so a declared-not-observed record is always traceable
+   * to the request that declared it.
+   */
+  envErrorSignal?: string | null;
 }
 
 /** The budget limits the run executed under, snapshotted at creation. */

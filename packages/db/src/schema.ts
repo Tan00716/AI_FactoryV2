@@ -920,6 +920,43 @@ CREATE TABLE IF NOT EXISTS needs_human_upgrades (
 CREATE INDEX IF NOT EXISTS idx_needs_human_status
   ON needs_human_upgrades(status);
 
+-- §8.1 authority-conflict registry (Batch 75, F12): directives and
+-- conflicts are no longer process-local. Every registry mutation is
+-- upserted here by the server (write-through; a persist failure is
+-- audited loudly but never rolls back the response). At boot the rows
+-- are loaded into a fresh registry (silent hydrate: no audit events,
+-- no onConflictOpened re-emission — the §81 'ai-disagreement' upgrade
+-- is raised exactly once, when the conflict opens). OPEN rows hydrate
+-- as-is (a paused target awaiting a higher-ranked human is not
+-- process state); RESOLVED rows hydrate as read-only history. Both
+-- tables are new in Batch 75, so CREATE TABLE IF NOT EXISTS covers
+-- old DB files on open — no column migration needed.
+CREATE TABLE IF NOT EXISTS authority_directives (
+  directive_id TEXT PRIMARY KEY,
+  principal_id TEXT NOT NULL,
+  authority_level TEXT NOT NULL,
+  target_kind TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  effect TEXT NOT NULL,
+  instruction TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  status TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_authority_directives_target
+  ON authority_directives(target_kind, target_id);
+
+CREATE TABLE IF NOT EXISTS authority_conflicts (
+  conflict_id TEXT PRIMARY KEY,
+  target_kind TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  directive_ids_json TEXT NOT NULL,
+  detected_at TEXT NOT NULL,
+  resolution_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_authority_conflicts_status
+  ON authority_conflicts(status);
+
 -- Organization graph (§48.2 Organization domain, §9, Batch 34):
 -- organization_nodes + organization_relationships. The edge table is
 -- authoritative (§9: the edge table is authoritative; parent_agent/

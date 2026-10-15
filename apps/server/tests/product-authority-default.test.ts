@@ -25,10 +25,11 @@
  * Honest boundary: there is no dedicated product-direction decision
  * API — "AI 提案，Human 决定" is realized through the §17.2
  * authorization axis and the dispatch flow. The v1 transition endpoint
- * does not consult the axis (the desktop Board still uses v1; see
- * docs/KNOWN_LIMITATIONS.md) — only the v2 engine treats the axis as a
- * server-side fact. Changing the v1 path is a product decision with
- * Board UX impact, not a test fix.
+ * now also consults the axis (Batch 75, F61 — Tan's 2026-10-15 "A A A"
+ * decision: non-AUTHORIZED tasks are refused with 403
+ * TASK_NOT_AUTHORIZED, the G5 gate shape; see
+ * v1-transition-authorization.test.ts); only the v2 engine's richer
+ * gate predicates remain v2-only.
  *
  * Requires the workspace build (root `npm run build`): boots
  * ../dist/index.js. Hermetic: temp DB_PATH + temp FACTORY_SECRETS_DIR

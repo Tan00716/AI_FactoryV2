@@ -20,7 +20,7 @@ HTTP, zero mocks, unless the row says otherwise.
 | v7 (seventh edition) | 46 | N1 (narrative survives persistence), K1 (backup project files + tamper-422), E1(a) (env-code passthrough, package-level), E1(b) (HTTP negative control) | `npm run demo:e2e-v7` (11-package build chain), 1/1 ×3 | F22 (closed B47), F23 |
 | v8 (eighth edition) | 48 | P1(a/b/c) (F22 path-policy gate + live-DB-plant threat model), M1(on) (enqueue-only 202), M1(off) (old sync behavior) | `npm run demo:e2e-v8`, 1/1 ×4; two server boots | F24, F25 |
 | redaction leg | 49 | R1–R4 (cross-chunk redaction over terminal SSE: split value, prefix-overlap pair, exactly-once marker, audit events) | 1/1 ×3; 2 detection events — below escalation threshold, no needs-human noise by design | F26, F27 |
-| §81 full-trigger sweep | 50 | S1–S8 (all eight §81 triggers; S8 = honest negative control) | 1/1 ×3 (~3.4s each); 7 OPEN rows, no env-error row | F28, F29 |
+| §81 full-trigger sweep | 50 | S1–S8 (all eight §81 triggers; S8 = honest negative control at Batch 50 — flipped to positive in Batch 75, see F28) | 1/1 ×3 (~3.4s each); 7 OPEN rows, no env-error row | F28, F29 |
 | escalation leg | 51 | E1–E4 (4 detection events ≥ threshold → exactly 1 OPEN security-issue with honest narrative) | 1/1 ×3 (~7s each) | F30, F31 |
 | audit-chain leg | 52 | A1–A2 (chain integrity: reverse API array to append order → verify → `ok:true`, `legacyCount:0`; 2nd `node:sqlite` connection tampers a middle record → `brokenAt` pinpoints it; key finding: no HTTP verify endpoint — server is writer, operator is verifier) | 1/1 ×3 | F32–F34 |
 | verify endpoint (operator) | 53 | `GET /api/audit/verify`: server-side genesis-anchored full-chain verify → `{ok, verifiedCount, legacyCount, brokenAt?}`; `?limit`/`?offset` → 400 `AUDIT_VERIFY_NO_PAGINATION` (fail-closed); `viewer → 403`, `operator → 200` | contract test 4/4 ×2 (intact, tamper, pagination refusal, role gating) | F33 (closed B53) |
@@ -61,7 +61,7 @@ fix expected.
 | F9 | Low | closed (B31) | no `/api/builds` read route — added read-only builds surface |
 | F10 | Low | open | mid-run pipeline chain uses honestly-labeled row-shape simulation (real SIGKILL can't land mid-run) |
 | F11 | Low | open | `GET /api/pipelines/:id` prefers the live in-memory record; persisted view authoritative only after restart |
-| F12 | Low | open | authority-conflict registry is in-memory; OPEN conflicts lost on restart |
+| F12 | Low | closed (B75) | authority-conflict registry persisted (Batch 75): directives+conflicts upserted to SQLite, OPEN conflicts survive restart |
 | F13 | Info | hygiene | scope contract is enforced, not approximated (server's 403 names the missing permission) |
 | F14 | Medium | closed (B49) | `budget-exceeded` had no deterministic HTTP trigger — `budgets: {maxSteps,timeMs,maxRetries}` added, fail-closed |
 | F15 | Low | open | M1 leg needs the npm registry (loud skip in this environment) |
@@ -77,7 +77,7 @@ fix expected.
 | F25 | Info | hygiene | parallel walkthroughs share the 24xxx–44xxx random port pool; collisions fail boot loudly |
 | F26 | Info | hygiene | metadata-only contract = absence of a `value` key, not string containment |
 | F27 | Info | hygiene | `GET /api/audit` rows are camelCase (`entityType`/`entityId`) |
-| F28 | Info | open | 7/8 §81 triggers fire over HTTP; `irrecoverable-env-error` is a pinned negative control — S8 is the flip point |
+| F28 | Info | closed (B75) | S8 flip point implemented (Tan decision "A A A", 2026-10-15): operator-gated `envErrorSignal` on `POST /api/runtime/runs` makes `irrecoverable-env-error` deterministically reachable over HTTP; fail-closed 400 `INVALID_ENV_ERROR_SIGNAL`, audited `RUNTIME_ENV_ERROR_SIGNAL_USED`, record qualified as declared-not-observed |
 | F29 | Info | hygiene | auth-mode walk ordering: brute-force leg's 10 bad requests must be back-to-back |
 | F30 | Info | hygiene | escalation threshold counts detection *events*, not summed hit totals |
 | F31 | Info | hygiene | escalate-once-per-pattern; window-expiry reset covered by package unit tests |
@@ -110,7 +110,7 @@ fix expected.
 | F58 | Info | hygiene | G11 honest boundary: `DATA_EXPORT` is an evidence-level audit record, not an approvals-package authorization ticket; a real pre-send export authorization ticket needs approvals integration (follow-up item) |
 | F59 | Info | hygiene | this machine has no `/dev/null` (`mknod` blocked by the container) — a regular file stands in (625 bytes and accumulating, not auto-discarded) so git works; environment issue, unfixable from here |
 | F60 | Info | hygiene | G2 mechanics boundary: build-runner's git subprocess is downstream mechanics of a broker-authorized merge decision — gating it again would be double-gating the same decision (noted in the test file header) |
-| F61 | Info | open | G5 honest boundary: v1 `POST /transition` doesn't check the §17.2 axis (Board still runs on v1); changing v1 is a product decision affecting Board UX, recorded in KNOWN_LIMITATIONS |
+| F61 | Info | closed (B75) | G5 honest boundary: v1 `POST /transition` didn't check the §17.2 axis (Board still runs on v1); Tan decided 2026-10-15 21:15 +08 (decision card "A A A") to add the check. Fixed B75: the v1 handler now refuses non-AUTHORIZED tasks with 403 `TASK_NOT_AUTHORIZED` (the G5 gate shape from `POST /api/runtime/runs`; legacy rows read AUTHORIZED so the default path is unchanged); regression test `v1-transition-authorization.test.ts` A/B/C/D (legacy default 200 / WAITING → 403 row untouched / REVOKED → 403 / human dispatch re-authorizes → 200). Board drag UX: an unauthorized task's drag now shows a dedicated "⛔ 未授权（§17.2）…请先在 Dispatch 页签完成派发" toast (was the generic 流转失败 toast); documented in KNOWN_LIMITATIONS (§17.2 entry, Batch 75) |
 | F62 | Info | hygiene | G7 honest boundary: the compatibility statement is caller-provided — the system records and audits it (`RELEASE_COMPATIBILITY_DECLARED`), never verifies its truth |
 | F63 | Medium | closed (B66) | `/api/profiles` (Agent leaderboard) 404'd forever: the server's own documented route (`routes/evaluation.ts` lines 7–8: `GET /api/profiles`) with a working handler was blocked by its own `inScope` gate (only放行 `/api/evaluations`, `/api/proposals`, `/api/loops`); the Evaluation panel showed a permanent red "Not found" banner (caught — no tree crash, but the leaderboard could never load). Fixed B66 (6 lines: `PROFILE_PREFIX` constant + gate放行 — the server's own contract, zero contract change, zero desktop changes); regression test `evaluation-profiles-gate.test.ts` 2/2 × 3 rounds (A: `/api/profiles` → 200 with a `profiles` array; B: unknown id → the handler's own 404 text, not the generic one); B67-2 verified the fix inside the packaged build (red banner gone, leaderboard renders 「暂无画像数据。」) |
 | F64 | Medium | closed (B68) | BottomPanel stale 「审计日志加载失败：Failed to fetch」 pill: the 67-2 packaged walkthrough spotted the small error pill while audit rows scrolled normally. Root cause (68-2): startup race — the renderer polls before the spawned backend is up, so the initial non-silent `load(false)` set `err`; subsequent silent `load(true)` polls succeeded but never cleared it (`if (!silent) setErr(null)`), leaving the pill stuck forever. Fixed B68 (6 lines, desktop only, server untouched: unconditional `setErr(null)` on success / `setErr(...)` on failure; `silent` now only guards the loading spinner, no longer the error state). Verified B69-2 on real Electron: backend down → pill appears with 0 rows; backend back → pill gone after one 5s silent poll, 17 audit events scroll (the pre-fix permanent residue no longer occurs); B70-2 confirmed zero residue on the normal packaged startup path (the race is intermittent, not guaranteed). Desktop has zero test infra — no repo regression test was added; honestly stated, not pretended |
@@ -371,12 +371,21 @@ pipeline over HTTP always sees the live view; the persisted view only
 becomes authoritative after a restart. This is the designed "live
 records win on id clashes" convention, not drift.
 
-**F12 — Low (honest boundary, no product-code change).**
-The authority-conflict registry is in-memory (same as `/api/disputes`):
-an OPEN conflict that survives a SIGKILL is lost. The walkthrough
-resolves the conflict *before* the kill on purpose — an operator must
-know that un-resolved conflicts do not survive a restart. The pause
-state of an un-resolved conflict is the known §8.1 gap item.
+**F12 — Low (closed, Batch 75).**
+The authority-conflict registry is now durable: every registry mutation
+(register / supersede / override / attach / resolve) is upserted to the
+`authority_directives` / `authority_conflicts` tables by the server
+(write-through; a persist failure is audited as
+`AUTHORITY_CONFLICT_PERSIST_FAILED` but never rolls back the response —
+the decision happened, the row is the record of it). At boot the rows
+are loaded into a fresh registry (silent hydrate — no audit events, no
+`onConflictOpened` re-emission, so the §81 'ai-disagreement' upgrade is
+raised exactly once, when the conflict opens). OPEN conflicts hydrate
+as-is and pause their targets again; RESOLVED conflicts hydrate as
+read-only history. Both tables are new in Batch 75, so old DB files get
+them via `CREATE TABLE IF NOT EXISTS` on open — no column migration.
+The walkthrough still resolves the conflict before the kill — now as a
+demonstration of the resolve path, not a workaround for lost state.
 
 **F13 — Info (walkthrough hygiene).**
 The walkthrough's covering task scope was first written too narrow
@@ -659,7 +668,7 @@ zero src imports.
 | S5 | high-risk-deployment | `POST /api/pipelines/:id/deploy` with no risk signals → assessRisk computes HIGH (unknown → strict) → parked at AWAITING_APPROVAL | exactly 1 OPEN, narrative carries "no deployment was executed — the gate held" |
 | S6 | budget-exceeded | `POST /api/runtime/runs` with `budgets: {maxSteps: 3}` → run FAILED / BUDGET_EXCEEDED (Batch 49 F14 deterministic trigger) | exactly 1 OPEN for the run, narrative carries "resource fact" |
 | S7 | repeated-failure | script with 4 × unknown-tool calls → stagnation → LOOP_STAGNATION → ESCALATED | exactly 1 OPEN for the run, narrative carries "retry budget was exhausted" |
-| S8 | irrecoverable-env-error | **honest negative control** — the server's HTTP surface has no input that can put a stagnation signature into ENV_ERROR_CODES, so the run asserts ZERO records for this reason (see F28) | the non-env stagnation from S7 produced exactly one upgrade record and nothing else |
+| S8 | irrecoverable-env-error | Batch 50: **honest negative control** — the server's HTTP surface had no input that could put a stagnation signature into ENV_ERROR_CODES, so the run asserted ZERO records for this reason (see F28). **Batch 75: now HTTP-reachable via the operator-gated `envErrorSignal`** — the positive leg asserts exactly 1 `irrecoverable-env-error` (declared-not-observed) + 1 `repeated-failure` for the signaled run; the negative control holds when the signal is absent | the non-env stagnation from S7 produced exactly one upgrade record and nothing else |
 
 Final tally asserts the OPEN set is exactly the seven fired reasons and
 contains no `irrecoverable-env-error` row.
@@ -677,6 +686,28 @@ registered, StubAdapter never throws). The sweep asserts the negative
 boundary explicitly rather than faking a positive path. If a future batch
 adds an HTTP-reachable env signal, this leg is the place to flip S8 to
 positive.
+
+**Batch 75 — flipped to positive (Tan's decision "A A A", 2026-10-15).**
+`POST /api/runtime/runs` now accepts an optional `envErrorSignal`
+(`ENV_SANDBOX_UNAVAILABLE` | `ENV_BINARY_MISSING`). When set, the run's
+step function throws the declared env FactoryError on every step, the
+loop stagnates on the env code (stagnationLimit 3), escalates, and the
+Batch-43 emission block fires — S8 is now a positive trigger. The
+footgun risk was named explicitly (an HTTP caller can declare "the
+environment is irrecoverable") and Tan chose to build it anyway; the
+protections are layered and pinned by tests
+(`needs-human-irrecoverable-env-error-http.test.ts`): (1)
+operator-gated — the endpoint already requires the operator role
+(viewer → 403, unauthenticated → 401); (2) fail-closed validation —
+unknown/non-string codes are 400 `INVALID_ENV_ERROR_SIGNAL`, never
+silently ignored; (3) every use is audited
+(`RUNTIME_ENV_ERROR_SIGNAL_USED`) and stamped on the run manifest's
+driver; (4) the emitted record's narrative is qualified as
+declared-not-observed ("DECLARED environment error … NOT observed by
+probing a real host"), so no reader mistakes it for a measured host
+fact. The negative control still holds when the signal is absent, and
+the in-process true path (package-level, embedder-injected stepFn) is
+untouched.
 
 **F29 — Info (auth-mode walk hygiene).** The whole walk runs in auth mode;
 every call carries the admin Bearer. The brute-force leg must fire its 10
@@ -1331,9 +1362,15 @@ subprocess is downstream mechanics of a broker-authorized merge
 decision — gating it again would be double-gating the same decision
 (noted in the test file header).
 
-**F61 — Info: G5 honest boundary (open).** v1 `POST /transition`
-doesn't check the §17.2 axis (Board still runs on v1); changing v1 is a
-product decision affecting Board UX (KNOWN_LIMITATIONS).
+**F61 — Info: G5 honest boundary (closed B75).** v1 `POST /transition`
+didn't check the §17.2 axis (Board still runs on v1); changing v1 was a
+product decision affecting Board UX. Tan decided 2026-10-15 21:15 +08
+(decision card "A A A") to add the check — done in B75: the v1 handler
+refuses non-AUTHORIZED tasks with 403 `TASK_NOT_AUTHORIZED` (the G5 gate
+shape), legacy rows read AUTHORIZED so the default Board path is
+unchanged. Board drag UX change: dragging an unauthorized task now
+shows a dedicated "⛔ 未授权（§17.2）…请先在 Dispatch 页签完成派发"
+toast; documented in KNOWN_LIMITATIONS (§17.2 entry, Batch 75).
 
 **F62 — Info: G7 honest boundary (hygiene).** The compatibility
 statement is caller-provided — the system records and audits it

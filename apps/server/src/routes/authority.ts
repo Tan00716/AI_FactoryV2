@@ -13,12 +13,14 @@
  * (documented boundary).
  */
 import type { IncomingMessage, ServerResponse } from 'http';
+import type { AuditLog } from '@ai-factory/core';
 import {
   AuthorityConflictRegistry,
   AUTHORITY_RANK,
   type AuthorityAuditEvent,
   type AuthorityConflict,
   type AuthorityLevel,
+  type Directive,
   type DirectiveEffect,
   type AuthorityTargetKind,
 } from '@ai-factory/policy';
@@ -45,6 +47,13 @@ const pendingAudit: AuthorityAuditEvent[] = [];
 const pendingUpgrades: NeedsHumanDbRecord[] = [];
 
 let needsHumanDb: FactoryDatabase | null = null;
+
+/**
+ * F12 (Batch 75): the durable registry store. Null pre-boot — the
+ * registry then works exactly as before (pure memory,
+ * storage-agnostic, no manufactured emissions).
+ */
+let authorityDb: FactoryDatabase | null = null;
 
 const LEVEL_BY_RANK: Record<number, AuthorityLevel> = {
   4: 'owner',
@@ -159,10 +168,65 @@ let registry: AuthorityConflictRegistry = createRegistry(null);
  * hook so freshly-opened conflicts write needsHuman upgrade records to
  * fdb. Called once at server boot; before boot the registry works
  * exactly as before (no emission, storage-agnostic).
+ *
+ * F12 (Batch 75): also loads the persisted registry rows into the
+ * fresh registry (silent hydrate — no audit events, no §81
+ * re-emission; an OPEN conflict simply pauses its target again). A
+ * hydrate failure is an honest boot condition: it is audited loudly
+ * and the registry keeps working in-memory, exactly as pre-Batch-75.
  */
-export function initAuthorityRoutes(db: FactoryDatabase): void {
+export function initAuthorityRoutes(db: FactoryDatabase, audit: AuditLog): void {
   needsHumanDb = db;
+  authorityDb = db;
   registry = createRegistry(db);
+  try {
+    const directives = db.authorityConflicts.listDirectives();
+    const conflicts = db.authorityConflicts.listConflicts();
+    registry.hydrate(directives, conflicts);
+    if (directives.length > 0 || conflicts.length > 0) {
+      audit.record('system', 'AUTHORITY_CONFLICT_HYDRATED', 'authority-conflict', '(registry)', {
+        directives: directives.length,
+        conflicts: conflicts.length,
+        open: conflicts.filter((c) => c.status === 'OPEN').length,
+      });
+    }
+  } catch (err) {
+    audit.record('system', 'AUTHORITY_CONFLICT_HYDRATE_FAILED', 'authority-conflict', '(registry)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
+ * F12 (Batch 75): write-through. Every registry mutation is upserted
+ * to the durable store. A persist failure is audited loudly but never
+ * rolls back the response — the decision happened; the row is the
+ * record of it (same "persist failure never un-happens the decision"
+ * pattern as Batch 31 pipelines / Batch 33 escalations).
+ */
+function persistAuthorityRows(
+  ctx: RouteContext,
+  directives: Directive[],
+  conflicts: AuthorityConflict[],
+): void {
+  const db = authorityDb;
+  if (!db) return; // pre-boot: pure memory, exactly as before
+  try {
+    for (const d of directives) db.authorityConflicts.saveDirective(d);
+    for (const c of conflicts) db.authorityConflicts.saveConflict(c);
+  } catch (err) {
+    ctx.audit.record(
+      'system',
+      'AUTHORITY_CONFLICT_PERSIST_FAILED',
+      'authority-conflict',
+      conflicts.length > 0 ? conflicts[0].conflictId : '(registry)',
+      {
+        error: err instanceof Error ? err.message : String(err),
+        directives: directives.map((d) => d.directiveId),
+        conflicts: conflicts.map((c) => c.conflictId),
+      },
+    );
+  }
 }
 
 function flushNeedsHuman(ctx: RouteContext): void {
@@ -229,6 +293,22 @@ export async function handleAuthorityRoutes(
         instruction: typeof instruction === 'string' ? instruction : '',
       });
       flushAudit(ctx);
+      // F12 (Batch 75): write-through — the new directive, the
+      // superseded one (status changed), the conflict (new / attached /
+      // auto-resolved) and every directive it references (the auto-rule
+      // path overrides the loser).
+      {
+        const dirtyDirectives: Directive[] = [directive];
+        if (superseded) dirtyDirectives.push(superseded);
+        if (conflict) {
+          for (const id of conflict.directiveIds) {
+            if (id === directive.directiveId) continue;
+            const d = registry.getDirective(id);
+            if (d) dirtyDirectives.push(d);
+          }
+        }
+        persistAuthorityRows(ctx, dirtyDirectives, conflict ? [conflict] : []);
+      }
       // §81 emission (Batch 36): an OPEN conflict just raised a
       // needsHuman upgrade. Write-through happens here, after the
       // conflict response is committed — failures are audited, never
@@ -282,6 +362,18 @@ export async function handleAuthorityRoutes(
     if (!result.ok) {
       ctx.json(res, 400, { error: result.reason });
       return true;
+    }
+    // F12 (Batch 75): write-through — the conflict (RESOLVED +
+    // resolution) and every directive it references (the losers were
+    // just OVERRIDDEN).
+    {
+      const resolved = result.conflict;
+      const dirtyDirectives: Directive[] = [];
+      for (const id of resolved.directiveIds) {
+        const d = registry.getDirective(id);
+        if (d) dirtyDirectives.push(d);
+      }
+      persistAuthorityRows(ctx, dirtyDirectives, [resolved]);
     }
     flushAudit(ctx);
     ctx.json(res, 200, { conflict: result.conflict });

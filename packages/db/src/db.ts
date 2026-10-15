@@ -43,6 +43,7 @@ import { SqliteProjectKnowledgeStore } from './project-knowledge';
 import { SqliteProjectTemplateDbStore } from './project-templates';
 import { SqliteEscalationStore } from './escalations';
 import { SqliteNeedsHumanStore } from './needs-human-upgrades';
+import { SqliteAuthorityConflictStore } from './authority-conflicts';
 import { SqliteProposalStore } from './proposals';
 import { SqliteManagementReportStore } from './management-reports';
 import { SqliteOrgGraphStore } from './organization-relationships';
@@ -1143,6 +1144,14 @@ export class FactoryDatabase {
    */
   readonly needsHuman: SqliteNeedsHumanStore;
   /**
+   * §8.1 (Batch 75, F12) — durable authority-conflict registry rows:
+   * directives + conflicts upserted on every registry mutation by the
+   * server; OPEN rows hydrate as-is at boot (a paused target awaiting
+   * a higher-ranked human is not process state), RESOLVED rows hydrate
+   * as read-only history.
+   */
+  readonly authorityConflicts: SqliteAuthorityConflictStore;
+  /**
    * §59 / §48.2 (Batch 33) — durable self-modification proposals:
    * the proposal decision for every POST /api/workforce/proposals.
    * Statuses are terminal at decision time (auto-approved / denied /
@@ -1241,6 +1250,7 @@ export class FactoryDatabase {
     this.projectTemplates = new SqliteProjectTemplateDbStore(this.db);
     this.escalations = new SqliteEscalationStore(this.db);
     this.needsHuman = new SqliteNeedsHumanStore(this.db);
+    this.authorityConflicts = new SqliteAuthorityConflictStore(this.db);
     this.proposals = new SqliteProposalStore(this.db);
     this.managementReports = new SqliteManagementReportStore(this.db);
     this.policyVersions = new SqlitePolicyVersionStore(this.db);
