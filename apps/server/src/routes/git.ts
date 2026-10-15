@@ -59,7 +59,6 @@ import {
   GitBroker,
   GIT_ACTIONS,
   MergeQueue,
-  taskBranchName,
   ensureTaskBranch,
   assertPushAllowed,
   ProtectedBranchError,
@@ -732,9 +731,4 @@ export async function handleGitRoutes(
       true
     );
   }
-}
-
-/** Expected branch-name for a task (exported for reuse by other route modules). */
-export function gitTaskBranchName(taskId: string, title: string): string {
-  return taskBranchName(taskId, title);
 }

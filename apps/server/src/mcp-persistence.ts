@@ -24,7 +24,6 @@
  * child fate unknown") instead of forgetting them.
  */
 import type {
-  FactoryDatabase,
   McpServerDbRecord,
   McpInstallDbRecord,
   McpServerStore,
@@ -416,4 +415,3 @@ export function attachLaunchPersistence(deps: {
 }
 
 export type { McpServerStore };
-export type FactoryDatabaseRef = FactoryDatabase;

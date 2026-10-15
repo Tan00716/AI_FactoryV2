@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { OrgNode } from '../api';
+import { useEffect, useState } from 'react';
+import { api, OrgNode } from '../api';
 
 function OrgTreeNode({ node, depth, onSelectAgent }: {
   node: OrgNode; depth: number; onSelectAgent?: (agentId: string) => void;
@@ -27,11 +27,20 @@ function OrgTreeNode({ node, depth, onSelectAgent }: {
   );
 }
 
-/** §3 left rail: project tree, AI organization (§84 simplified), skills placeholders. */
+/** §3 left rail: project tree, AI organization (§84 simplified), skills (live from /api/skills). */
 export function Sidebar({ org, onSelectAgent }: {
   org: OrgNode[];
   onSelectAgent?: (agentId: string) => void;
 }) {
+  // Batch 89：SKILLS 摘要走真实数据；拉取失败时回退到硬编码文本（旧服务端/未连通），不猜测。
+  const [skillNames, setSkillNames] = useState<string[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.skills()
+      .then((r) => { if (alive) setSkillNames(r.skills.map((s) => s.id)); })
+      .catch(() => { if (alive) setSkillNames([]); });
+    return () => { alive = false; };
+  }, []);
   return (
     <aside className="sidebar">
       <section>
@@ -50,7 +59,9 @@ export function Sidebar({ org, onSelectAgent }: {
       </section>
       <section>
         <h3>SKILLS</h3>
-        <div className="muted">clean-code · debugging · git</div>
+        <div className="muted">
+          {skillNames === null ? '…' : skillNames.length > 0 ? skillNames.join(' · ') : 'clean-code · debugging · git'}
+        </div>
         <h3>MCP</h3>
         <div className="muted">github · filesystem <span className="pill">stub</span></div>
         <h3>KNOWLEDGE</h3>

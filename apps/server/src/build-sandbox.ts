@@ -182,13 +182,6 @@ export async function assertSandboxAvailable(bin: string = 'bwrap'): Promise<voi
   }
 }
 
-export interface SandboxRunOptions {
-  network: boolean;
-  bwrapBin: string;
-  extraRoBinds: string[];
-  timeoutMs: number;
-}
-
 /**
  * Build the bwrap argv for running `tokens` with the worktree at /work.
  * The command itself was already execution-policy-checked by the caller

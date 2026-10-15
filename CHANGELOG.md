@@ -1,5 +1,14 @@
 # Changelog
 
+## Batch 89 (2026-10-16)
+
+TODO 扫荡 + 死代码删除批。
+
+- **TODO/FIXME 大扫荡——实质 0 个真 TODO**：原始命中 121 个几乎全是领域概念 `'TODO'` 任务状态字面量（工作流状态机状态名），真正的 TODO 注释为 0（2 个精确命中均为误报：review 包测试夹具里故意写的 TODO 用来测试 review 规则）。代码库 TODO 卫生干净——`packages/review` 有 lint 规则拦截无 issue 引用的裸 TODO。**附带修了 1 个真实 stale 问题**：侧栏 SKILLS 区硬编码 `clean-code · debugging · git`，而服务端 `/api/skills` 真实返回 8 个 builtin 技能——`apps/desktop/src/api.ts` 新增 `api.skills()`（`GET /api/skills` 类型化客户端），`Sidebar.tsx` 用 `useEffect` 拉取真实列表渲染，拉取失败（旧服务端/未连通）回退原硬编码文本，不猜测。真 server 烟雾确认 `/api/skills` 返回 8 个 id（证实旧硬编码 stale）
+- **死代码删除（4 处，均为确认零引用）**：`applyPlanChange`（packages/progress/src/engine.ts，`updatePlanItems` 的别名）；`FactoryDatabaseRef`（apps/server/src/mcp-persistence.ts，无用的 type 别名，顺带删多余 import）；`SandboxRunOptions`（apps/server/src/build-sandbox.ts，无用的 interface，实际函数用内联对象类型）；`gitTaskBranchName`（apps/server/src/routes/git.ts，零复用的透传包装，顺带删多余 import）。20 个"未被引用"的公开 API（各包 barrel 导出）未动——删公开 API 收益小风险大。附带发现：`packages/runtime/src/durable.ts` 的 NUL 字节是故意的（Map key 分隔符），非文件损坏
+- **验证（收口人亲跑）**：desktop tsc 0；packages/progress 35/35；子任务已验 apps/server tsc --noEmit 0、`npm run build` 0、相关服务端测试 34/34
+- **测试基线**：主线数字沿用 B80–83 收口口径（构建 0、包套件 2593/0×2、服务端 500/500×2、验收 121/121、electron tsc 0、smoke:boot OK）。
+
 ## Batch 88 (2026-10-16)
 
 独立复核 + 性能冒烟批。

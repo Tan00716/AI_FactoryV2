@@ -274,8 +274,6 @@ export function updatePlanItems(
   };
 }
 
-/** Alias matching the change-entry naming used in the gap audit (G-27). */
-export const applyPlanChange = updatePlanItems;
 
 export interface SupersedePlanOptions extends EngineOptions {
   /** Authorized actor — required. */

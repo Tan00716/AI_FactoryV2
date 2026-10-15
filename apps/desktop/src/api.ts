@@ -668,6 +668,9 @@ export const api = {
     req<{ root: string; entries: FileEntry[] }>(`/files?root=${encodeURIComponent(root)}`),
   policyEffective: () => req<unknown>('/policy/effective'),
   mcpServers: () => req<{ servers?: Array<{ name: string; status?: string; [k: string]: unknown }> } | Array<{ name: string }>>('/mcp'),
+  /** Batch 89：侧栏 SKILLS 摘要走真实数据（GET /api/skills）；拉取失败由调用方回退到硬编码文本，不猜测。 */
+  skills: () =>
+    req<{ skills: Array<{ id: string; status: string; trustLevel: string }> }>('/skills'),
   evaluations: (taskId: string) =>
     req<{ evaluations: Array<{ evaluationId: string; verdict: string; score?: number; createdAt?: string; [k: string]: unknown }> }>(
       `/evaluations?taskId=${encodeURIComponent(taskId)}`,
