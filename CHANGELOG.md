@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 96 (2026-10-16)
+
+CORS 修复后回归 + AppImage 重打批。
+
+- **服务端全套回归（CORS 修复后）**：`npm run build` exit 0（约 3m42s）；`npm run test:server` → **tests 500 / pass 500 / fail 0**（约 13.7 分钟）。B95 的 CORS 改动（`index.ts` 两处 Allow-Methods 补 PUT/PATCH/DELETE——`json()` 是所有 JSON 响应的热路径；`terminal.ts` SSE 流加 Allow-Origin）经全套确认无回归。/tmp 1%，无残留
+- **重打 AppImage（含 B95，$HOME/b96-pkg/，130,192,527 bytes）**：b91-pkg 在 B95 后 stale。dist 确认为最新才打包。**B95 修复在位确认**：静态（`resources/server/index.js` 中 `"PUT,PATCH,DELETE"` 2 处命中；`resources/server/routes/terminal.js` 中 `Access-Control-Allow-Origin` 命中）；动态（包内 server：`/api/health` 200、OPTIONS preflight 返回 `GET,POST,PUT,PATCH,DELETE,OPTIONS`）。与 B91 包差值 +16 bytes（B95 只是两处 CORS 头字符串改动）。b91-pkg 原样保留；无 FUSE 未执行本体（同款边界）。按 PID 精确清理，无残留
+- **测试基线（本批亲跑，更新）**：构建 0、服务端 500/500；包套件 2593/0（B93）、验收 121/121（B93）、desktop/electron tsc 0（B89/B80-81）、smoke:boot OK（B81）。
+
 ## Batch 95 (2026-10-16)
 
 独立复核 + 桌面全面板走查 + Terminal CORS 真 bug 修复批。
