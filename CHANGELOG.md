@@ -1,5 +1,14 @@
 # Changelog
 
+## Batch 91 (2026-10-16)
+
+AppImage 重打 + 可售清单更新批。
+
+- **重打 AppImage（含 B89，$HOME/b91-pkg/，130,192,511 bytes）**：b85-pkg 是 B85 打的，B89 改了桌面端产品代码——包又 stale 了。打包前发现 desktop dist 是 stale 的（B89 commit 在上次构建之后），已重建构建（exit 0）再打包。`electron-builder --linux --publish never` exit 0，TMPDIR=$HOME。与 B85 包差值 -121 bytes（B89 是小改动：Sidebar live-skills + 4 处死代码删除）。b85-pkg 原样保留；本机无 FUSE，未执行 .AppImage 本体（B85-1 同款边界）
+- **B89 代码在位确认（解包 resources/app.asar 亲验）**：包内 renderer 含 live fetch 逻辑（`skills().then(r=>{...r.skills.map(o=>o.id)...})`）；包内 server 含 B80 的 `DATA_EXPORT_AUTHORIZATION_RECORDED`；包内 server 的 `gitTaskBranchName` grep 零命中（B89 死代码删除已进包）。包内 server 冒烟（PORT=32121，临时 DB/secrets）：`/api/health` 200、`/api/skills` 返回 8 个技能。按 PID 精确清理，端口已关，无残留
+- **可售清单"当前状态"小节更新（B84–90）**：`~/workspace/goals/ai-factory-app-prototype/files/SELLABLE_CHECKLIST.md`（repo 外）新增"当前状态（2026-10-16，Batch 90 收口，基线 b3ff7d3，本地）"小节：七批摘要、复核链 1–10 + 21–89 连续、主线数字（构建 0/B81、包套件 2593/0/B83×2、服务端 500/500/B82×2、验收 121/121/B80、desktop tsc 0/B89、electron tsc 0/B80-81、smoke OK/B81）、新增真实缺口 0、结论仍是"可运行的原型 + 持续收敛"（13 硬门槛未变）。数字逐项对照 CHANGELOG B84–B90 一致
+- **测试基线**：本批是打包+文档批，无产品代码改动；主线数字沿用 B80–83 收口口径。
+
 ## Batch 90 (2026-10-16)
 
 独立复核 + B89 桌面改动冒烟批。
