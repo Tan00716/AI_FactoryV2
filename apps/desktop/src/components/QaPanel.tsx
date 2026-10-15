@@ -49,6 +49,8 @@ export interface QaRun {
     skipped: number;
     categories: QaCategorySummary[];
     failures: QaFailure[];
+    /** 仅 QA run 异常失败路径（routes/qa.ts catch）出现；成功路径无此字段。 */
+    error?: string;
   } | null;
 }
 
@@ -210,8 +212,13 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
           </h4>
           {run.summary && (
             <>
+              {run.summary.error && (
+                <div className="pill warn" style={{ marginBottom: 8 }}>
+                  ⚠ QA run 异常失败：{run.summary.error}
+                </div>
+              )}
               <ul className="ev-list">
-                {run.summary.categories.map((c) => (
+                {(run.summary.categories ?? []).map((c) => (
                   <li key={c.category}>
                     <span className={`status-dot ${verdictClass(c.verdict)}`} style={{ display: 'inline-block', marginRight: 6 }} />
                     <b>{c.category}</b>{' '}
@@ -221,11 +228,11 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
                   </li>
                 ))}
               </ul>
-              {run.summary.failures.length > 0 && (
+              {(run.summary.failures ?? []).length > 0 && (
                 <>
                   <h4 className="muted" style={{ margin: '8px 0 4px' }}>Failures</h4>
                   <ul className="ev-list">
-                    {run.summary.failures.map((f, i) => (
+                    {(run.summary.failures ?? []).map((f, i) => (
                       <li key={i}>
                         <span className="pill">{f.classification}</span>{' '}
                         <span className="pill">owner: {f.owner}</span>{' '}

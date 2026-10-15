@@ -289,7 +289,18 @@ export async function handleQaRoutes(
     } catch (err) {
       record.status = 'FAILED';
       record.finishedAt = new Date().toISOString();
-      record.summary = { error: (err as Error).message };
+      // 失败路径的 summary 必须与成功路径同形（categories/failures 为空数组），
+      // 只多一个 error 字段——否则桌面 QaPanel 的 run.summary.categories.map
+      // 会对 undefined 抛 TypeError（Batch 59-3 真 bug：整树崩溃）。
+      record.summary = {
+        total: 0,
+        passed: 0,
+        failed: 0,
+        skipped: 0,
+        categories: [],
+        failures: [],
+        error: (err as Error).message,
+      };
     }
     ctx.json(res, 200, { run: record });
     return true;
