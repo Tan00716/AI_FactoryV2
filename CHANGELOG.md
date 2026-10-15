@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 82 (2026-10-16)
+
+独立复核 + flake 猎捕批。
+
+- **Batch 81 独立复核（gap-audit/REAUDIT_BATCH81.md，偏差 0 处）**：1384bf8 恰好 5 文件（CHANGELOG.md、gap-audit/REAUDIT_BATCH79_80.md、apps/server/tests/build-orphan-reconcile.test.ts、docs/FIRST_RUN_WALKTHROUGH.md、docs/KNOWN_LIMITATIONS.md），与 CHANGELOG Batch 81 条目描述一致，无 .github、无意外文件（SELLABLE_CHECKLIST.md 的 2 处改动在 repo 外 goals 目录，条目如实描述，非偏差）。报告资产在位（REAUDIT_BATCH79_80.md 4507 bytes，"偏差 0 处"）；flake 修复 diff 亲验：等待条件确改为轮询审计行（30×500ms），原断言全部保留，dumpOrphanForensics 仅失败时调用，只动测试文件；文档 3+2+2 处改动与条目逐项对应。"test:server 500/500"记录为收口人声称（复核人不重跑）。REAUDIT 链：1–10 + 21–81 连续
+- **服务端套件 flake 猎捕（第二轮）——两轮全绿，无新 flake**：`npm run test:server` 第一轮 tests 500 / pass 500 / fail 0，第二轮 500/500/0；Batch 81 修复的 build-orphan-reconcile e2e 在两轮中均稳定通过。过程注记：第一轮中途遇到一次 runtime 重启（321/500 处中断，0 fail），残留临时目录确认无进程占用后已删，/tmp 恢复正常后完整重跑；两轮后 /tmp 1%，wrapper 临时根均已自行清理。全程未 git stash、未 commit、未改任何文件
+- **测试基线**：本批是复核+猎捕批，无产品代码改动；主线数字：构建 0（沿用 B81）、包套件 2589+4=2593/0（沿用 B80/81）、服务端 500/500×2、验收 121/121（沿用 B80）、desktop/electron tsc 0（沿用 B80/81）、smoke:boot OK（沿用 B81）。
+
 ## Batch 81 (2026-10-16)
 
 联合复核 + flake 根因修复 + 文档卫生批。
