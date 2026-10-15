@@ -24,7 +24,7 @@
  * which is exactly what we want for a smoke.
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +41,15 @@ if (!existsSync(serverMain)) {
 
 const port = 31_000 + Math.floor(Math.random() * 20_000);
 const dir = mkdtempSync(join(tmpdir(), 'factory-boot-smoke-'));
+// Hygiene (Batch 73-2): always remove the temp DB/secrets dir, on every
+// exit path — it accumulates in /tmp across runs and fills small tmpfs.
+function cleanupTmp() {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* best-effort */
+  }
+}
 const child = spawn(process.execPath, [serverMain], {
   cwd: join(root, 'apps', 'server'),
   env: {
@@ -64,6 +73,7 @@ for (;;) {
       `[boot-smoke] FAIL: server exited early (code=${earlyExit.code}, signal=${earlyExit.signal}) ` +
         `before /api/health ever returned 200 — see the crash output above`,
     );
+    cleanupTmp();
     process.exit(1);
   }
   try {
@@ -75,6 +85,7 @@ for (;;) {
   if (Date.now() > deadline) {
     child.kill('SIGKILL');
     console.error('[boot-smoke] FAIL: /api/health never returned 200 within 60s');
+    cleanupTmp();
     process.exit(1);
   }
   await new Promise((r) => setTimeout(r, 250));
@@ -86,4 +97,5 @@ await new Promise((r) => {
   setTimeout(r, 5_000);
 });
 console.log('[boot-smoke] OK: compiled server booted, GET /api/health -> 200');
+cleanupTmp();
 process.exit(0);
