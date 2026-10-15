@@ -1,5 +1,12 @@
 # Changelog
 
+## Batch 113 (2026-10-16)
+
+独立复核批。
+
+- **Batch 112 独立复核（gap-audit/REAUDIT_BATCH112.md，偏差 0 处）**：fb19ca4 恰好 2 个文件，与 CHANGELOG Batch 112 条目描述一致，无 .github、无意外文件。复核人独立抽点：f069477/19f0105/f2b0696 均恰好 2 文件（与 B112/B111 条目声称一致）；REAUDIT_BATCH111.md/REAUDIT_BATCH105_110.md/REAUDIT_BATCH104.md/REAUDIT_BATCH108_109.md 在位且首行均为"偏差 0 处"；B105 缺口确已填补；REAUDIT 链：1–10 + 21–112 连续
+- **测试基线**：本批是纯复核批，无产品代码改动；主线数字：构建 0、包套件 2593/0、服务端 500/500（B100 亲跑）、验收 138/138（B107 亲跑）、desktop/server tsc 0（B100）、smoke:boot OK（B81）。
+
 ## Batch 112 (2026-10-16)
 
 独立复核批。
