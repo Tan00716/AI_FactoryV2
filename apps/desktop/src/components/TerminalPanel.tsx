@@ -12,12 +12,12 @@
  * nothing is emulated client-side anymore.
  */
 import { useEffect, useRef } from 'react';
-import { authHeaders } from '../api';
+import { defaultApiBase, authHeaders } from '../api';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
 
-const API_BASE = 'http://localhost:3100/api';
+const API_BASE = defaultApiBase();
 
 interface SseFrame {
   event: string;

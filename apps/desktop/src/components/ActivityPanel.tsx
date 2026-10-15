@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { authHeaders } from '../api';
+import { defaultApiBase, authHeaders } from '../api';
 
 /**
  * Activity center — spec §67 (Agent Activity) + §68 (Run / Trace System).
@@ -60,7 +60,7 @@ export interface ActivityApi {
 }
 
 /** fetch client mirroring apps/desktop/src/api.ts `req`. */
-export function createActivityApi(base = 'http://localhost:3100/api'): ActivityApi {
+export function createActivityApi(base = defaultApiBase()): ActivityApi {
   async function req<T>(path: string): Promise<T> {
     const res = await fetch(`${base}${path}`, {
       headers: { 'Content-Type': 'application/json', ...authHeaders() },

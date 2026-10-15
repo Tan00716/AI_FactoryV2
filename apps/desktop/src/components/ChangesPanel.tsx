@@ -8,10 +8,10 @@
  * opens the Monaco DiffEditor (DiffViewer.tsx).
  */
 import { useCallback, useEffect, useState } from 'react';
-import { authHeaders } from '../api';
+import { defaultApiBase, authHeaders } from '../api';
 import { DiffViewer } from './DiffViewer';
 
-const API_BASE = 'http://localhost:3100/api';
+const API_BASE = defaultApiBase();
 
 // ------------------------------------------------------------- API ----
 

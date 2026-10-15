@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { authHeaders, type CheckpointV2 } from '../api';
+import { defaultApiBase, authHeaders, type CheckpointV2 } from '../api';
 import { RunCheckpointsSection } from './RunCheckpointsView';
 
 /** Typed client for orchestrator + model-router + runtime endpoints. */
@@ -52,7 +52,7 @@ export interface RuntimeRun {
   error: string | null;
 }
 
-const DEFAULT_BASE = 'http://localhost:3100/api';
+const DEFAULT_BASE = defaultApiBase();
 
 async function req<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base}${path}`, {

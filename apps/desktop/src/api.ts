@@ -1,5 +1,30 @@
 /** Typed client for the local @ai-factory/server API. */
-const BASE = 'http://localhost:3100/api';
+
+/**
+ * The renderer talks to the backend over plain HTTP. The default port is
+ * 3100, but a packaged app may spawn its backend on a different PORT (see
+ * electron/main.ts): the main process injects the real port as the `apiPort`
+ * query parameter when it loads the renderer (`loadFile(..., { query })` /
+ * `loadURL(...?apiPort=…)`). Prefer the injected value; fall back to 3100.
+ * Resolved once and cached so every panel shares one base.
+ */
+let cachedBase: string | null = null;
+export function defaultApiBase(): string {
+  if (cachedBase) return cachedBase;
+  try {
+    const port =
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('apiPort')
+        : null;
+    cachedBase =
+      port && /^\d+$/.test(port) ? `http://localhost:${port}/api` : 'http://localhost:3100/api';
+  } catch {
+    cachedBase = 'http://localhost:3100/api';
+  }
+  return cachedBase;
+}
+
+const BASE = defaultApiBase();
 
 /**
  * Operator API token for a server started with FACTORY_API_TOKEN

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { authHeaders } from '../api';
+import { defaultApiBase, authHeaders } from '../api';
 
 /** Typed client for the knowledge endpoints. */
 export interface KnowledgeHit {
@@ -48,7 +48,7 @@ export interface KnowledgeApi {
   decide(cardId: string, decision: 'adopt' | 'ignore'): Promise<{ ok: boolean }>;
 }
 
-const DEFAULT_BASE = 'http://localhost:3100/api';
+const DEFAULT_BASE = defaultApiBase();
 
 async function req<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base}${path}`, {

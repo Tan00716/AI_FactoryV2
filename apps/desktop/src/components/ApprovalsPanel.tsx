@@ -1,5 +1,5 @@
 import { Component, useCallback, useEffect, useState } from 'react';
-import { authHeaders } from '../api';
+import { defaultApiBase, authHeaders } from '../api';
 
 /**
  * Approvals panel — spec §45 (Tool Approval) + §69 (Approval System).
@@ -97,7 +97,7 @@ export interface ApprovalsApi {
 }
 
 /** fetch client mirroring apps/desktop/src/api.ts `req`. */
-export function createApprovalsApi(base = 'http://localhost:3100/api'): ApprovalsApi {
+export function createApprovalsApi(base = defaultApiBase()): ApprovalsApi {
   async function req<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await fetch(`${base}${path}`, {
       ...init,

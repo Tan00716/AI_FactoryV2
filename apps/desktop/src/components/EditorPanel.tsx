@@ -9,10 +9,10 @@
  * Diff views for the Change Review UI (§66) live in DiffViewer.tsx.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { authHeaders } from '../api';
+import { defaultApiBase, authHeaders } from '../api';
 import monaco, { languageOf } from '../monacoSetup';
 
-const API_BASE = 'http://localhost:3100/api';
+const API_BASE = defaultApiBase();
 
 interface Entry {
   name: string;

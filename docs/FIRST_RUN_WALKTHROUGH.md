@@ -1,9 +1,10 @@
-# Walkthrough index (Batch 56)
+# Walkthrough index (Batch 60)
 
 One line per walkthrough edition below; each edition is cumulative
 across files, not a replacement — `demo:e2e-v4` remains the authority
 for the B31–B36 governance chains, v5 for B37–B40, v6 for B41–B42 §81,
-v7 for B43–B45, v8 for B47, and the audit-chain legs for B52–B56. Every edition runs the real compiled
+v7 for B43–B45, v8 for B47, the audit-chain legs for B52–B56, and the
+usability/response-shape legs for B58–B59. Every edition runs the real compiled
 server (fresh temp SQLite, hermetic `FACTORY_SECRETS_DIR`) over pure
 HTTP, zero mocks, unless the row says otherwise.
 
@@ -24,8 +25,13 @@ HTTP, zero mocks, unless the row says otherwise.
 | verify endpoint (operator) | 53 | `GET /api/audit/verify`: server-side genesis-anchored full-chain verify → `{ok, verifiedCount, legacyCount, brokenAt?}`; `?limit`/`?offset` → 400 `AUDIT_VERIFY_NO_PAGINATION` (fail-closed); `viewer → 403`, `operator → 200` | contract test 4/4 ×2 (intact, tamper, pagination refusal, role gating) | F33 (closed B53) |
 | audit-chain verify leg | 54 | V1–V3 (endpoint → `ok:true`; mid-chain DB tamper → `ok:false` + `brokenAt` at the midpoint index; `?limit=1` → 400) | 1/1 ×3 (~2s each); detection-not-prevention, unchanged | F35–F37 |
 | audit-chain watch leg | 56 | A–C (healthy boot → 0 OPEN; tamper + reboot → exactly 1 OPEN `security-issue` via the boot-time check; reboot while still broken → still 1; `WATCH=0` + tamper → 0 OPEN with broken-chain control) | 1/1 ×3 (~9s each); real server boot path, not module-level tick | F39–F40 |
+| usability-fix screenshot leg | 58 | real Electron+Xvfb + vite dev renderer + real compiled server: NeedsHuman empty state ("当前没有 OPEN 的升级记录" + honest §81 trigger list); QaPanel `orgErr` red pill (network-layer fetch patch on `/qa/org`, component code untouched); Approvals row-level busy **blocked** — a real bug crashed the panel on real approval data | real-machine PNGs, 2/3 verified; black-screen crash captured as evidence | F41 |
+| AppImage main-window screenshot | 58 | `linux-unpacked` boot under xvfb (no FUSE on this machine, so the unpacked tree, not the `.AppImage` itself): CDP page target verified as the **built dist** renderer (`file:///…/app.asar/apps/desktop/renderer/index.html`, not vite dev); main window + backend healthy + real audit events | 1 real PNG (1439×871) | F42, F45, F46 |
+| ApprovalsPanel response-shape fix | 58-5 | root-cause fix for F41: `RawApproval` + `toApprovalItem()` snake_case→camelCase mapping on all 5 paths (`id←approval_id`, `requestedBy←requester`, `riskLevel←risk_level`, `requiredApprover←required_approvers.join(', ')`, `status` + `INVALIDATED`); `(a.evidenceIds ?? []).length` guards; `ApprovalsErrorBoundary` in the same file | desktop tsc 0; real server response shape re-verified (exactly 20 snake_case keys, no `evidenceIds`/`agentId`) | F41 (closed B58), F43 |
+| response-shape compatibility audit | 59 | all 38 desktop panels read against real server responses (20+ GET endpoints probed with seeded data): 1 more real bug of the F41 class — QaPanel whole-tree crash on failed QA runs (`summary={error}` passes the `{run.summary && ...}` guard, `categories.map` on undefined); fixed server-side (failure summary normalized to success shape + `error` field) and panel-side (red pill + `?? []`); other 37 panels clean | desktop tsc 0, server tsc 0 | F44, F48 |
+| QA failure-path leg | 60 | A–C (failed QA run → server writes the normalized failure summary: `TMPDIR` under a regular file = deterministic ENOTDIR at the auto-fix step; summary is the success shape with zeros/empty arrays + non-empty `error` naming the qa-run dir, `Array.isArray(categories)` holds, record retrievable via `GET /api/qa/runs/:id`; success control → auto-fix applies, verdict PASS, no `error` key; key-set relationship pinned: failure keys = success keys + `error`); real server boot path, pure HTTP | 1/1 ×3; pins the F44 server-side fix (the panel's `categories.map` contract) | F49 |
 
-## Findings index (F1–F40)
+## Findings index (F1–F49)
 
 Status: `closed` = fixed and pinned by tests; `open` = still true today
 (includes by-design and environment notes); `hygiene` = process note, no
@@ -73,6 +79,15 @@ fix expected.
 | F38 | Info | closed (B55) | F36's 'operator policy choice' is now the server default: periodic in-process `audit.verify()` (60s, `FACTORY_AUDIT_CHAIN_WATCH_INTERVAL_MS`) raises one §81 `security-issue` on a break (`AUDIT_CHAIN_VERIFY_FAILED` + `NEEDS_HUMAN_RAISED`, dedup by open list); silent on success; `FACTORY_AUDIT_CHAIN_WATCH=0` opts out — default-on because detection-not-prevention means nothing unless detection runs |
 | F39 | Info | hygiene | watch walkthrough boots the real compiled server process (not just the exported tick function): slower (~9s) but exercises the boot-time check that ships, plus SIGTERM handling and port rebinding |
 | F40 | Info | hygiene | the WATCH=0 leg keeps a broken-chain control (`GET /api/audit/verify → ok:false`) so '0 OPEN' means the opt-out, not a failed tamper |
+| F41 | High | closed (B58) | ApprovalsPanel whole-tree crash on real approval data: the panel's `createApprovalsApi` invented a camelCase `ApprovalItem` contract with zero mapping; `GET /api/approvals` returns the manager's native snake_case `Approval` (`approval_id`, `requester`, `risk_level`, …); `a.evidenceIds.length` on `undefined` → TypeError → no error boundary → the whole React tree unmounts (black screen). The B57-3 'zero 404 dead buttons' audit only checked endpoint existence, never response-shape compatibility; tsc cannot catch a type assertion |
+| F42 | Info | hygiene | the AppImage main-window screenshot is the first packaged-renderer screenshot (built dist, verified by CDP page target `file:///…/app.asar/apps/desktop/renderer/index.html`) — distinguishable from the vite-dev screenshots of earlier legs |
+| F43 | Info | closed (B59) | post-fix real-machine walkthrough for F41: no more crash (panel renders mapped fields), row-level busy captured ("处理中…", all three buttons disabled, network-layer delay 2.5s, component code untouched), full approve→decided loop with real audit events (`APPROVAL_DECIDED`, `APPROVAL_EVIDENCE_ATTACHED`); the 58-2 'black screen after 20s' phenomenon is gone; `ApprovalsErrorBoundary` never triggered |
+| F44 | High | closed (B59) | QaPanel whole-tree crash on failed QA runs (same class as F41): `loop.execute` throws → server wrote `record.summary = { error: message }`; the panel's `{run.summary && ...}` guard lets an `{error}` object through → `run.summary.categories.map` on `undefined` → no error boundary → whole tree down. Fixed on both ends: server failure summary now matches the success shape (`total/passed/failed/skipped: 0`, `categories: []`, `failures: []`) plus an `error` field; the panel renders a red pill 「⚠ QA run 异常失败：…」 and guards `categories`/`failures` with `?? []` |
+| F45 | Info | hygiene | this machine's `/tmp` is a 512MB tmpfs (474M used): AppImage staging needs ~2GB and heavy SQLite writes fail with `ERR_SQLITE_ERROR disk I/O error` — reroute to `$HOME`; environment constraint, not build-code rot |
+| F46 | Info | hygiene | no FUSE on this machine (`libfuse.so.2` missing): the `.AppImage` binary itself cannot execute here; the `linux-unpacked` tree runs the same bundled code — recorded as a boundary, not a product defect |
+| F47 | Info | hygiene | SIGKILL of the packaged main process leaves its spawned backend child reparented (main.ts's `window-all-closed` `backend?.kill()` only fires on normal exit): kill the backend child by exact PID too |
+| F48 | Low | open | `/api/projects` returns snake_case bare rows (`created_at`, …) while the desktop `Project` interface only reads `id`/`name`/`description`/`path` — safe today, silent `undefined` if someone later reads `project.createdAt` |
+| F49 | Info | closed (B60) | QA failure-path leg pins the F44 server-side fix end to end: with `TMPDIR` under a regular file (a real, deterministic environment failure), `POST /api/qa/runs` fails at the auto-fix step (`ENOTDIR` naming the `qa-run-<id>` dir) and the run record's summary is exactly the success shape (`total/passed/failed/skipped: 0`, `categories: []`, `failures: []`) plus a non-empty string `error` — key set = success keys + `error`; the record is retrievable via `GET /api/qa/runs/:id`; `Array.isArray(categories)` holds (the panel's `categories.map` contract, the exact thing that crashed the tree pre-fix). Success control (normal `TMPDIR`): auto-fix applies, verdict PASS, no `error` key. Test-hygiene note: `node --test` exports `NODE_TEST_CONTEXT`/`NODE_TEST_WORKER_ID`, which makes the QA loop's spawned `node --test` children refuse to run ("recursively within a test file") — the walkthrough boots its servers without those vars (production never has them); env hygiene, not a mock |
 
 ---
 
@@ -868,3 +883,135 @@ DB with the watch off) is what makes "0 OPEN" meaningful: without it,
 a no-op tamper would be indistinguishable from a disabled watch. Any
 future opt-out or flag test for the watch should keep a broken-chain
 control assertion.
+
+---
+
+## Walkthrough: usability-fix screenshot leg (Batch 58)
+
+Batch 57-3 audited the desktop for "usable" (36 panels read, 60+ endpoints
+grep-verified to exist, 18 files fixed for swallowed errors /
+double-submit / misleading empty states) but only ran `tsc` — no
+real-machine check. This leg puts the Batch 57-3 fixes on a real
+machine: repo Electron binary + vite dev renderer + real compiled
+server + xvfb, `--no-sandbox`, fresh temp DB/secrets/projects.
+
+| Leg | What the walkthrough does |
+|---|---|
+| D1 | NeedsHuman panel: **verified** — "当前没有 OPEN 的升级记录" + honest empty-state copy (the 8 §81 triggers listed, so empty list ≠ disabled mechanism); audit-chain watch is on and healthy, so silence is the correct state |
+| D2 | QaPanel `orgErr`: **verified** — an in-page `window.fetch` patch rejects `/qa/org` at the network layer (the component's real `.catch → setOrgErr` path; component code untouched); the panel shows a red pill 「⚠ QA org 加载失败：…」 instead of the old permanent "Loading QA org…"; rest of the panel (Categories, Run QA) renders normally |
+| D3 | Approvals row-level busy: **not covered** — blocked by a real bug. A real PENDING approval was created over HTTP (`7bde6eff…`, HIGH, "deploy production", verified in place via `GET /api/approvals`); clicking the Approvals tab waited 20s for the Approve button and instead the whole React tree unmounted (black screen, empty `body.innerText`) |
+
+D3's crash is the walkthrough's real catch, not a gap: see F41.
+
+## Walkthrough: AppImage main-window screenshot (Batch 58)
+
+Batch 57-4 verified the Linux AppImage package boots to a main window +
+healthy backend but took no screenshot. This leg launches the
+`~/appimage-out/linux-unpacked` tree (Batch 57 product; no FUSE here, so
+the unpacked tree, not the `.AppImage` itself) under xvfb with a fresh
+`HOME`/`DB_PATH`/`FACTORY_SECRETS_DIR`/`FACTORY_PROJECTS_ROOT` and
+captures the main window via CDP `Page.captureScreenshot`.
+
+The CDP page target is `file:///…/linux-unpacked/resources/app.asar/apps/desktop/renderer/index.html` — the **built dist** renderer, not
+the vite dev server. That is the key difference from the B51/B52/B54
+real-machine screenshots. The screenshot shows the real factory home:
+"AI FACTORY" top bar, Project: MyApp, 6 Agents, "本地模式（无令牌）",
+"● Running", the full tab bar, the AI ORG tree, SKILLS/MCP/KNOWLEDGE
+stub badges, and a live AI Activity stream with real audit events
+(`PROJECT_CREATED`, `PROJECT_SEEDED`, `WORKFLOW_TRANSITIONED`).
+
+## Walkthrough: ApprovalsPanel response-shape fix (Batch 58-5) and post-fix walkthrough (Batch 59-2)
+
+The root-cause fix for F41 (desktop only, zero server changes):
+`RawApproval` interface + `toApprovalItem()` snake_case→camelCase
+mapping applied on all 5 paths (`list/get/request/decide/cancel`,
+including the `{ approval }` wrapper on decision/cancel):
+`id←approval_id`, `requestedBy←requester`, `taskId←task_id`,
+`riskLevel←risk_level`, `requiredApprover←required_approvers.join(', ')`,
+`agentId←''` (the server has no such field), `evidenceIds←[]` (the
+server only has `evidence_manifest_hash`), `status` extended with
+`'INVALIDATED'` (a real server status the panel's union lacked),
+`decidedBy←decided_by`, `createdAt←created_at`, `decidedAt←decided_at`,
+`expiresAt←deadline`. Defensive guards: `(a.evidenceIds ?? []).length`.
+Plus `ApprovalsErrorBoundary` in the same file (no new files): a panel
+render failure now shows a red error card instead of taking the whole
+tree down.
+
+The post-fix walkthrough (real Electron+Xvfb+vite dev+real server)
+closes the 58-2 gap: a real HIGH-risk PENDING approval
+(`630313ac…`, "deploy production (b59-2 walkthrough)") created over
+HTTP, then Approvals tab → **no crash** (card renders `HIGH`, requester,
+task id, approver, three buttons in place); Approve → **row-level busy
+captured** (all three buttons "处理中…" disabled; network-layer 2.5s
+delay to make the busy state photographable, component code untouched);
+decision → Pending (0), History (1), `APPROVED … 10/15/2026, 2:20:15 AM`,
+real `APPROVAL_DECIDED`/`APPROVAL_EVIDENCE_ATTACHED` in AI Activity, and
+`GET /api/approvals?status=PENDING → []` confirms the queue drained.
+
+## Walkthrough: response-shape compatibility audit (Batch 59)
+
+F41 showed the B57-3 audit's blind spot: endpoint-existence checks do
+not cover response-shape compatibility. This audit closes it: all 38
+desktop panels were read against real server responses — a real compiled
+server seeded with real data (tasks, a HIGH-risk approval, memory
+entries, evidence), 20+ GET endpoints probed for their actual JSON keys,
+each panel-local type assertion checked, server source cross-confirmed
+for variable shapes.
+
+One more real bug of the F41 class was found (see F44): QaPanel
+crashed the whole tree on failed QA runs. Fixed on both ends
+(`apps/server/src/routes/qa.ts` + `QaPanel.tsx`). The other 37 panels
+are clean (spot-verified in place, including `ManagerPanel`'s correct
+snake_case use of `QueueApproval`, `OpsPanel`'s `control_epoch` /
+`updated_at` snake_case, and `ObservatoryPanel`'s `?? {}` +
+`Array.isArray` guards). Residual low risks recorded in F48.
+
+## Findings (usability / response-shape legs, Batch 58–59)
+
+**F41 — High: ApprovalsPanel whole-tree crash on real approval data (closed B58).**
+The panel's own `createApprovalsApi` defined a camelCase `ApprovalItem`
+contract and asserted it with a type — but `GET /api/approvals` returns
+the manager's native snake_case `Approval` (`approval_id`, `requester`,
+`risk_level`, `task_id`, … — 20 keys, re-verified by the Batch 58
+re-auditor, with no `evidenceIds` and no `agentId`). `a.evidenceIds.length`
+on `undefined` threw, and with no error boundary the entire React tree
+unmounted — a black screen, no recovery except reload. The B57-3
+"zero 404 dead buttons" conclusion only proved endpoints *exist*; a
+green `tsc` proved nothing because the mismatch hides behind a type
+assertion. This is the class of bug only a real-machine walkthrough
+catches.
+
+**F42 — Info (packaged-renderer screenshot).**
+The AppImage main-window screenshot is the first screenshot of the
+*packaged* renderer — built dist, CDP-verified — rather than the vite
+dev renderer used in earlier real-machine legs. Keep this distinction
+when citing screenshots as evidence.
+
+**F43 — Info: post-fix walkthrough closes the 58-2 gap (closed B59).**
+The 58-5 mapping + guards + error boundary were verified on a real
+machine: no crash, correct field mapping, row-level busy ("处理中…",
+three disabled buttons), and a complete approve→decided loop with real
+audit events. The 58-2 "black screen after 20s" phenomenon is gone;
+`ApprovalsErrorBoundary` never triggered, which is the desired outcome
+for a safety net.
+
+**F44 — High: QaPanel whole-tree crash on failed QA runs (closed B59).**
+`qa.runQa()` → `POST /api/qa/runs` → `loop.execute(factory)` throws →
+the server wrote `record.summary = { error: message }` →
+`setRun(r)` → the panel's `{run.summary && ...}` guard passes an
+`{error}` object → `run.summary.categories.map` on `undefined` →
+TypeError → whole tree down. Same failure class as F41 (fabricated
+contract + no error boundary), found because the 59-3 audit probed
+*response shapes* instead of endpoint existence. Fixed on both ends:
+the server's failure summary now matches the success shape plus an
+`error` field; the panel renders a red pill and guards with `?? []`.
+desktop tsc 0, server tsc 0.
+
+**F45–F48 — Info/low hygiene:** F45 (`/tmp` 512MB tmpfs: reroute AppImage
+staging and heavy SQLite work to `$HOME`); F46 (no FUSE: the
+`.AppImage` itself cannot execute here, linux-unpacked runs the same
+code); F47 (SIGKILL of the packaged main leaves the spawned backend
+reparented — kill it by exact PID); F48 (open, low: `/api/projects`
+returns snake_case bare rows; the desktop `Project` interface only
+reads `id`/`name`/`description`/`path` — silent `undefined` risk if
+`project.createdAt` is ever read).

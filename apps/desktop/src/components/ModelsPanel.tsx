@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { authHeaders } from '../api';
+import { defaultApiBase, authHeaders } from '../api';
 
 /**
  * Model Registry — spec §90.
@@ -24,7 +24,7 @@ export interface ModelsApi {
 }
 
 /** fetch client mirroring apps/desktop/src/api.ts `req`. */
-export function createModelsApi(base = 'http://localhost:3100/api'): ModelsApi {
+export function createModelsApi(base = defaultApiBase()): ModelsApi {
   async function req<T>(path: string): Promise<T> {
     const res = await fetch(`${base}${path}`, {
       headers: { 'Content-Type': 'application/json', ...authHeaders() },

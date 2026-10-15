@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { authHeaders } from '../api';
+import { defaultApiBase, authHeaders } from '../api';
 
 /**
  * System Event Bus panel — spec §91.
@@ -22,7 +22,7 @@ export interface EventsApi {
 }
 
 /** fetch client mirroring apps/desktop/src/api.ts `req`. */
-export function createEventsApi(base = 'http://localhost:3100/api'): EventsApi {
+export function createEventsApi(base = defaultApiBase()): EventsApi {
   async function req<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await fetch(`${base}${path}`, {
       ...init,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { authHeaders } from '../api';
+import { defaultApiBase, authHeaders } from '../api';
 
 /** Typed client for the evaluation endpoints. */
 export interface EvaluationApi {
@@ -14,7 +14,7 @@ export interface EvaluationApi {
   apply(id: string): Promise<{ proposal: any }>;
 }
 
-const DEFAULT_BASE = 'http://localhost:3100/api';
+const DEFAULT_BASE = defaultApiBase();
 
 async function req<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base}${path}`, {

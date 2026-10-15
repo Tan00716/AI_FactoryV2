@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { authHeaders } from '../api';
+import { defaultApiBase, authHeaders } from '../api';
 
 /** Typed client for the MCP endpoints. */
 export interface McpServerSummary {
@@ -23,7 +23,7 @@ export interface McpApi {
   gate(server: string, tool: string, version?: string): Promise<{ allowed: boolean; reason: string; usedVersion?: string }>;
 }
 
-const DEFAULT_BASE = 'http://localhost:3100/api';
+const DEFAULT_BASE = defaultApiBase();
 
 async function req<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base}${path}`, {

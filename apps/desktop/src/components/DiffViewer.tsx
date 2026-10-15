@@ -5,10 +5,10 @@
  * GET /api/changes/:id/file?repo=&file= and shows the side-by-side diff.
  */
 import { useEffect, useRef, useState } from 'react';
-import { authHeaders } from '../api';
+import { defaultApiBase, authHeaders } from '../api';
 import monaco, { languageOf } from '../monacoSetup';
 
-const API_BASE = 'http://localhost:3100/api';
+const API_BASE = defaultApiBase();
 
 export function DiffViewer({
   repo,

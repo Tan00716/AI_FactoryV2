@@ -47,9 +47,11 @@ function createWindow(): void {
   });
 
   if (isDev) {
-    win.loadURL(`http://localhost:${UI_PORT}`);
+    win.loadURL(`http://localhost:${UI_PORT}?apiPort=${API_PORT}`);
   } else {
-    win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+    win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'), {
+      query: { apiPort: String(API_PORT) },
+    });
   }
 }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { OrgNode as AgentOrgNode, authHeaders } from '../api';
+import { defaultApiBase, OrgNode as AgentOrgNode, authHeaders } from '../api';
 import { OrgGraph } from './OrgGraph';
 
 /** Typed client for the workforce endpoints (§14, §18–§20, §59). */
@@ -31,7 +31,7 @@ export interface OrgNode {
   status: string;
 }
 
-const DEFAULT_BASE = 'http://localhost:3100/api';
+const DEFAULT_BASE = defaultApiBase();
 
 async function req<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base}${path}`, {

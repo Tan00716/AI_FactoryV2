@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, identityLabel, BoardCard, OrgNode, Project, TaskSummary } from './api';
+import { api, defaultApiBase, identityLabel, BoardCard, OrgNode, Project, TaskSummary } from './api';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { Board } from './components/Board';
@@ -36,7 +36,7 @@ import { ModelsPanel } from './components/ModelsPanel';
 import { NeedsHumanPanel } from './components/NeedsHumanPanel';
 import './styles.css';
 
-const API_BASE = 'http://localhost:3100/api';
+const API_BASE = defaultApiBase();
 
 /**
  * IDE shell per spec §3:
@@ -107,11 +107,25 @@ export default function App() {
       setBootError('');
     } catch (e) {
       setConnected(false);
-      setBootError(`Cannot reach the local API at http://localhost:3100 — is the backend running? (${(e as Error).message})`);
+      setBootError(`Cannot reach the local API at ${API_BASE} — is the backend running? (${(e as Error).message})`);
     }
   }, [projectId]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  /**
+   * Boot race: the packaged app spawns the backend concurrently with window
+   * creation, so the first health probe can legitimately fail while the
+   * backend is still listening. Keep probing until the first success so a
+   * transient startup race never freezes a permanent "Cannot reach the local
+   * API" misreport: a successful refresh clears bootError, which tears this
+   * interval down.
+   */
+  useEffect(() => {
+    if (!bootError) return;
+    const t = setInterval(() => { void refresh(); }, 2000);
+    return () => clearInterval(t);
+  }, [bootError, refresh]);
 
   return (
     <div className="ide">

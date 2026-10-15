@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { authHeaders } from '../api';
+import { defaultApiBase, authHeaders } from '../api';
 
 /** Typed client for the notification endpoints (spec module 30). */
 export interface NotificationItem {
@@ -34,7 +34,7 @@ async function req<T>(base: string, path: string, init?: RequestInit): Promise<T
   return body;
 }
 
-export function createNotificationsApi(base: string = 'http://localhost:3100/api'): NotificationsApi {
+export function createNotificationsApi(base: string = defaultApiBase()): NotificationsApi {
   return {
     list: () => req(base, '/notifications'),
     read: (id) => req(base, `/notifications/${encodeURIComponent(id)}/read`, { method: 'POST' }),
