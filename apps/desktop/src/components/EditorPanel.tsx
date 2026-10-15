@@ -40,6 +40,8 @@ export function EditorPanel() {
   const [err, setErr] = useState<string | null>(null);
   const openPathRef = useRef<string | null>(null);
   openPathRef.current = openPath;
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 
   // --- Monaco lifecycle -------------------------------------------------
   useEffect(() => {
@@ -116,6 +118,9 @@ export function EditorPanel() {
   const saveFile = useCallback(async () => {
     const editor = editorRef.current;
     if (!editor || !openPath) return;
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
     setErr(null);
     try {
       const res = await fetch(`${API_BASE}/file`, {
@@ -128,6 +133,9 @@ export function EditorPanel() {
       setStatus(`Saved ${openPath}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'save failed');
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   }, [openPath]);
 
@@ -146,6 +154,13 @@ export function EditorPanel() {
   const renderEntries = (dir: string, depth: number): React.ReactNode[] => {
     const cache = dirs[dir];
     if (!cache || !cache.expanded) return [];
+    if (cache.entries.length === 0) {
+      return [
+        <div key={`${dir}:empty`} className="muted" style={{ padding: '3px 8px', paddingLeft: 8 + depth * 14, fontSize: 12 }}>
+          （目录为空）
+        </div>,
+      ];
+    }
     return cache.entries.map((e) => (
       <div key={e.path}>
         <div
@@ -183,8 +198,8 @@ export function EditorPanel() {
           <>
             <span className="pill" style={{ fontFamily: 'monospace' }}>{openPath}</span>
             {dirty && <span className="pill">unsaved</span>}
-            <button onClick={() => void saveFile()} disabled={!dirty}>
-              Save (Ctrl+S)
+            <button onClick={() => void saveFile()} disabled={!dirty || saving}>
+              {saving ? 'Saving…' : 'Save (Ctrl+S)'}
             </button>
           </>
         )}

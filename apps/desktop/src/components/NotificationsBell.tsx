@@ -113,7 +113,8 @@ export function NotificationsBell({ base }: { base: string }) {
             <b>Notifications</b>
             <button onClick={markAll} disabled={unread === 0}>Mark all read</button>
           </div>
-          {items.length === 0 && <div className="muted" style={{ padding: 8 }}>No notifications.</div>}
+          {error && <div className="pill warn" style={{ margin: 8 }}>通知加载/更新失败：{error}</div>}
+          {!error && items.length === 0 && <div className="muted" style={{ padding: 8 }}>No notifications.</div>}
           <ul className="ev-list notif-list">
             {items.slice(0, 20).map((n) => (
               <li

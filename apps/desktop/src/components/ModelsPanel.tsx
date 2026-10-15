@@ -58,12 +58,14 @@ export function ModelsPanel({ api, pollMs = 15000 }: ModelsPanelProps) {
   const [error, setError] = useState('');
   const [caps, setCaps] = useState<Set<string>>(new Set());
   const [provider, setProvider] = useState('');
+  const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(() => {
     client
       .list()
-      .then((r) => setModels(r.models))
-      .catch((e: Error) => setError(e.message));
+      .then((r) => { setModels(r.models); setError(''); })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoaded(true));
   }, [client]);
 
   useEffect(() => {
@@ -171,7 +173,8 @@ export function ModelsPanel({ api, pollMs = 15000 }: ModelsPanelProps) {
           ))}
         </tbody>
       </table>
-      {visible.length === 0 && <div className="muted">No models match the filter.</div>}
+      {!loaded && visible.length === 0 && <div className="muted">加载中…</div>}
+      {loaded && !error && visible.length === 0 && <div className="muted">No models match the filter.</div>}
       <div className="muted" style={{ marginTop: 8 }}>
         The router (§30) uses this capability metadata rather than hard-coded model names.
       </div>

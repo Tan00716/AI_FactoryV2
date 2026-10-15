@@ -227,6 +227,9 @@ export function GitPanel({ api }: { api: GitApi }) {
         </button>
       </div>
 
+      {!status && !err && (
+        <div className="muted" style={{ marginBottom: 8 }}>输入仓库路径后点 Refresh 查看状态（§64）。</div>
+      )}
       {status && (
         <div style={{ marginBottom: 8 }}>
           Branch: <span className="pill">{status.branch}</span>

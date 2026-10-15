@@ -267,7 +267,7 @@ export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
           <div className="row" style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="search knowledge…" style={{ flex: 2 }} />
             <input value={projectId} onChange={(e) => setProjectId(e.target.value)} placeholder="projectId" style={{ flex: 1 }} />
-            <button disabled={busy} onClick={() => run(async () => {})}>Search</button>
+            <button disabled={busy} onClick={() => run(() => refresh())}>Search</button>
           </div>
           <div className="knowledge-layout">
             <div className="knowledge-cats">
@@ -280,6 +280,7 @@ export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
             </div>
             <div className="knowledge-list">
               <h4 style={{ margin: '4px 0' }}>Knowledge <span className="muted">({filtered.length})</span></h4>
+              {filtered.length === 0 && <div className="muted">暂无知识条目（可调整搜索或分类）。</div>}
               <ul className="ev-list">
                 {filtered.map((h) => (
                   <li key={h.item.id} style={{ marginBottom: 6 }}>

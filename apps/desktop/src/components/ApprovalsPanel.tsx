@@ -113,6 +113,8 @@ export function ApprovalsPanel({ api, pollMs = 5000 }: ApprovalsPanelProps) {
   const [items, setItems] = useState<ApprovalItem[]>([]);
   const [decidedBy, setDecidedBy] = useState('human');
   const [error, setError] = useState('');
+  /** 正在提交的审批 id —— 提交期间整行按钮禁用，防止连击重复提交。 */
+  const [acting, setActing] = useState<Record<string, boolean>>({});
 
   const refresh = useCallback(() => {
     client
@@ -128,9 +130,14 @@ export function ApprovalsPanel({ api, pollMs = 5000 }: ApprovalsPanelProps) {
     return () => clearInterval(t);
   }, [refresh, pollMs]);
 
-  const act = (fn: () => Promise<unknown>) => {
+  const act = (id: string, fn: () => Promise<unknown>) => {
+    if (acting[id]) return;
     setError('');
-    fn().then(refresh).catch((e: Error) => setError(e.message));
+    setActing((p) => ({ ...p, [id]: true }));
+    fn()
+      .then(refresh)
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setActing((p) => ({ ...p, [id]: false })));
   };
 
   const pending = items.filter((a) => a.status === 'PENDING');
@@ -172,14 +179,14 @@ export function ApprovalsPanel({ api, pollMs = 5000 }: ApprovalsPanelProps) {
           )}
           <div className="card-meta"><span>expires: {fmtTs(a.expiresAt)}</span></div>
           <div className="btn-row" style={{ marginTop: 6 }}>
-            <button onClick={() => act(() => client.decide(a.id, true, decidedBy || 'human'))}>
-              Approve
+            <button disabled={!!acting[a.id]} onClick={() => act(a.id, () => client.decide(a.id, true, decidedBy || 'human'))}>
+              {acting[a.id] ? '处理中…' : 'Approve'}
             </button>
-            <button onClick={() => act(() => client.decide(a.id, false, decidedBy || 'human'))}>
-              Reject
+            <button disabled={!!acting[a.id]} onClick={() => act(a.id, () => client.decide(a.id, false, decidedBy || 'human'))}>
+              {acting[a.id] ? '处理中…' : 'Reject'}
             </button>
-            <button onClick={() => act(() => client.cancel(a.id, decidedBy || 'human'))}>
-              Cancel
+            <button disabled={!!acting[a.id]} onClick={() => act(a.id, () => client.cancel(a.id, decidedBy || 'human'))}>
+              {acting[a.id] ? '处理中…' : 'Cancel'}
             </button>
           </div>
         </div>

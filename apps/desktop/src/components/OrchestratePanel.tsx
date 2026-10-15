@@ -104,6 +104,8 @@ export function OrchestratePanel({
   const [ckptErr, setCkptErr] = useState('');
   const [account, setAccount] = useState<unknown>(null);
   const [err, setErr] = useState('');
+  /** 正在进行的动作（decompose/route/run）—— 期间对应按钮禁用防重提交。 */
+  const [busy, setBusy] = useState<'' | 'decompose' | 'route' | 'run'>('');
   const [kind, setKind] = useState<'bugfix' | 'feature' | 'refactor' | 'research'>('bugfix');
 
   // §28.3 — whenever a run is on display, load its checkpoints. An empty
@@ -142,6 +144,8 @@ export function OrchestratePanel({
   }, [loadAccount]);
 
   const doDecompose = async () => {
+    if (busy) return;
+    setBusy('decompose');
     setErr('');
     try {
       setPlan(
@@ -153,10 +157,14 @@ export function OrchestratePanel({
       );
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      setBusy('');
     }
   };
 
   const doRoute = async () => {
+    if (busy) return;
+    setBusy('route');
     setErr('');
     try {
       setDecision(
@@ -170,13 +178,18 @@ export function OrchestratePanel({
       );
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      setBusy('');
     }
   };
 
   const doRun = async () => {
+    if (busy) return;
+    setBusy('run');
     setErr('');
     if (!agentId || !taskId) {
       setErr('Need an agent and a task — create them first (Board / Workforce tabs).');
+      setBusy('');
       return;
     }
     try {
@@ -190,6 +203,8 @@ export function OrchestratePanel({
       }
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      setBusy('');
     }
   };
 
@@ -206,7 +221,7 @@ export function OrchestratePanel({
               <option key={k} value={k}>{k}</option>
             ))}
           </select>
-          <button onClick={doDecompose}>Decompose sample task</button>
+          <button onClick={doDecompose} disabled={busy !== ''}>{busy === 'decompose' ? '分解中…' : 'Decompose sample task'}</button>
         </div>
         {plan && (
           <div>
@@ -225,7 +240,7 @@ export function OrchestratePanel({
       <section>
         <h3>Model router (§30)</h3>
         <div className="row">
-          <button onClick={doRoute}>Route a coding task</button>
+          <button onClick={doRoute} disabled={busy !== ''}>{busy === 'route' ? '路由中…' : 'Route a coding task'}</button>
           {account != null && <span className="muted">account: {JSON.stringify(account).slice(0, 120)}…</span>}
         </div>
         {decision && (
@@ -241,7 +256,7 @@ export function OrchestratePanel({
       <section>
         <h3>Agent run (§24–27, scripted)</h3>
         <div className="row">
-          <button onClick={doRun} disabled={!agentId || !taskId}>Run agent loop</button>
+          <button onClick={doRun} disabled={!agentId || !taskId || busy !== ''}>{busy === 'run' ? '运行中…' : 'Run agent loop'}</button>
           <span className="muted">
             agent: {agentId?.slice(0, 8) ?? '—'} · task: {taskId?.slice(0, 8) ?? '—'}
           </span>

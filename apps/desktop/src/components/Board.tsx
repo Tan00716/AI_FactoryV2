@@ -79,6 +79,8 @@ export function Board({ tasks, onChanged, onCreate, onSelectTask }: {
   const [dragOver, setDragOver] = useState<string | null>(null);
   /** taskId → 下一步门禁所需的证据标签（当前门禁）。 */
   const [gates, setGates] = useState<Record<string, string[]>>({});
+  /** 门禁拉取失败的卡片 id —— 与"确实无门禁"区分，避免误导用户直接流转。 */
+  const [gateErr, setGateErr] = useState<Record<string, true>>({});
   /** taskId → nextStates，供多态列拖拽解析合法目标。 */
   const [nextStates, setNextStates] = useState<Record<string, NextState[]>>({});
 
@@ -96,25 +98,31 @@ export function Board({ tasks, onChanged, onCreate, onSelectTask }: {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const entries: [string, string[], NextState[]][] = await Promise.all(
-        tasks.map(async (t): Promise<[string, string[], NextState[]]> => {
+      const entries: [string, string[] | null, NextState[]][] = await Promise.all(
+        tasks.map(async (t): Promise<[string, string[] | null, NextState[]]> => {
           try {
             const d = await api.task(t.id);
             const reqs = [...new Set(d.nextStates.flatMap((n) => n.requires))];
             return [t.id, reqs, d.nextStates];
           } catch {
-            return [t.id, [], []];
+            return [t.id, null, []] as [string, string[] | null, NextState[]];
           }
         }),
       );
       if (cancelled) return;
       const g: Record<string, string[]> = {};
+      const ge: Record<string, true> = {};
       const n: Record<string, NextState[]> = {};
       for (const [id, reqs, ns] of entries) {
+        if (reqs === null) {
+          ge[id] = true;
+          continue;
+        }
         g[id] = reqs;
         n[id] = ns;
       }
       setGates(g);
+      setGateErr(ge);
       setNextStates(n);
     })();
     return () => { cancelled = true; };
@@ -196,6 +204,7 @@ export function Board({ tasks, onChanged, onCreate, onSelectTask }: {
                 key={c.id}
                 task={c}
                 gates={gates[c.id]}
+                gateErr={gateErr[c.id]}
                 onOpen={() => onSelectTask(c.id)}
               />
             ))}
@@ -212,9 +221,10 @@ export function Board({ tasks, onChanged, onCreate, onSelectTask }: {
   );
 }
 
-function TaskCard({ task, gates, onOpen }: {
+function TaskCard({ task, gates, gateErr, onOpen }: {
   task: TaskSummary;
   gates?: string[];
+  gateErr?: boolean;
   onOpen: () => void;
 }) {
   const progress = progressOf(task.status);
@@ -253,7 +263,9 @@ function TaskCard({ task, gates, onOpen }: {
       )}
       <div className="card-gate">
         <span className="muted">门禁: </span>
-        {gates === undefined ? (
+        {gateErr ? (
+          <span className="gate-req">门禁拉取失败（请重试）</span>
+        ) : gates === undefined ? (
           <span className="muted">…</span>
         ) : gates.length === 0 ? (
           <span className="gate-ok">无（可直接流转）</span>

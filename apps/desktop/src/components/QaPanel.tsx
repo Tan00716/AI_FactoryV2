@@ -121,8 +121,10 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
   const [run, setRun] = useState<QaRun | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [orgErr, setOrgErr] = useState<string | null>(null);
+
   useEffect(() => {
-    qa.org().then(setOrg).catch(() => setOrg(null));
+    qa.org().then((o) => { setOrg(o); setOrgErr(null); }).catch((e) => setOrgErr((e as Error).message));
   }, [qa]);
 
   const toggleCat = (c: string) =>
@@ -147,7 +149,8 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
       <h3 style={{ margin: '0 0 8px' }}>QA <span className="muted">§36–§38</span></h3>
 
       <h4 className="muted" style={{ margin: '8px 0 4px' }}>Organization</h4>
-      {!org && <div className="muted">Loading QA org…</div>}
+      {!org && !orgErr && <div className="muted">Loading QA org…</div>}
+      {orgErr && <div className="pill warn">QA org 加载失败：{orgErr}</div>}
       {org && (
         <div>
           {org.lead && (

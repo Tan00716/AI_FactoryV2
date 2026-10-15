@@ -83,6 +83,8 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
   const [taskId, setTaskId] = useState('TASK-1042');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+  /** 动作进行中（hire/assemble/archive 共享）—— 防连击重复提交。 */
+  const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -101,6 +103,8 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
   }, [refresh]);
 
   const hire = async () => {
+    if (busy) return;
+    setBusy(true);
     setMsg('');
     setErr('');
     try {
@@ -109,10 +113,14 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
       await refresh();
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   };
 
   const assemble = async () => {
+    if (busy) return;
+    setBusy(true);
     setMsg('');
     setErr('');
     try {
@@ -121,15 +129,21 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
       await refresh();
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   };
 
   const archive = async (id: string) => {
+    if (busy) return;
+    setBusy(true);
     try {
       await client.archiveSquad(id);
       await refresh();
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -182,7 +196,7 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
         <div className="row">
           <input value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="Job title" />
           <input value={specialty} onChange={(e) => setSpecialty(e.target.value)} placeholder="Specialty" />
-          <button onClick={hire}>Create</button>
+          <button onClick={hire} disabled={busy}>{busy ? '创建中…' : 'Create'}</button>
         </div>
         <p className="muted">Governance (§19): max 6 children, depth 3, privileged roles denied.</p>
       </section>
@@ -191,13 +205,13 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
         <h3>Task squads (§20)</h3>
         <div className="row">
           <input value={taskId} onChange={(e) => setTaskId(e.target.value)} placeholder="Task ID" />
-          <button onClick={assemble}>Assemble squad</button>
+          <button onClick={assemble} disabled={busy}>{busy ? '组建中…' : 'Assemble squad'}</button>
         </div>
         <ul className="plain">
           {(squads.active as Array<{ id: string; taskId: string; memberIds: string[] }>).map((s) => (
             <li key={s.id}>
               <span className="pill">active</span> {s.taskId} — {s.memberIds.length} members
-              <button className="link" onClick={() => archive(s.taskId)}>archive</button>
+              <button className="link" onClick={() => archive(s.taskId)} disabled={busy}>archive</button>
             </li>
           ))}
         </ul>
@@ -217,6 +231,7 @@ function AddNodeForm({
 }) {
   const [title, setTitle] = useState('');
   const [parentId, setParentId] = useState('');
+  const [adding, setAdding] = useState(false);
   return (
     <div className="row">
       <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Node title (e.g. Tech Lead)" />
@@ -227,11 +242,14 @@ function AddNodeForm({
         ))}
       </select>
       <button
+        disabled={adding}
         onClick={() => {
-          if (title.trim()) void onAdd(title.trim(), parentId || undefined).then(() => setTitle(''));
+          if (!title.trim() || adding) return;
+          setAdding(true);
+          void onAdd(title.trim(), parentId || undefined).then(() => setTitle('')).finally(() => setAdding(false));
         }}
       >
-        Add node
+        {adding ? '添加中…' : 'Add node'}
       </button>
     </div>
   );

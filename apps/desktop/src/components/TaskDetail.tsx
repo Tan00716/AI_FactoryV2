@@ -54,10 +54,13 @@ function useTaskAudit(taskId: string): AuditRecord[] | null {
 function OverviewTab({ task, onMoved }: { task: TaskDetail; onMoved: () => void }) {
   const [denied, setDenied] = useState<string[]>([]);
   const [error, setError] = useState('');
+  const [moving, setMoving] = useState<string | null>(null);
 
   const move = async (to: string) => {
+    if (moving) return;
     setDenied([]);
     setError('');
+    setMoving(to);
     try {
       await api.transition(task.id, to);
       onMoved();
@@ -68,6 +71,8 @@ function OverviewTab({ task, onMoved }: { task: TaskDetail; onMoved: () => void 
       } else {
         setError(err.message);
       }
+    } finally {
+      setMoving(null);
     }
   };
 
@@ -93,8 +98,8 @@ function OverviewTab({ task, onMoved }: { task: TaskDetail; onMoved: () => void 
       {task.nextStates.length === 0 && <p className="muted">暂无可用流转（终态）</p>}
       <div className="btn-row">
         {task.nextStates.map((n) => (
-          <button key={n.to} title={n.requires.join('\n') || n.note} onClick={() => move(n.to)}>
-            → {n.to}
+          <button key={n.to} title={n.requires.join('\n') || n.note} onClick={() => move(n.to)} disabled={moving !== null}>
+            → {moving === n.to ? '流转中…' : n.to}
           </button>
         ))}
       </div>
@@ -130,12 +135,16 @@ function TimelineTab({ taskId }: { taskId: string }) {
 // ---------------------------------------------------------------- AI团队 --
 function TeamTab({ task, onSelectAgent }: { task: TaskDetail; onSelectAgent?: (id: string) => void }) {
   const [agents, setAgents] = useState<AgentFull[] | null>(null);
+  const [agentsErr, setAgentsErr] = useState<string | null>(null);
   useEffect(() => {
     let dead = false;
-    api.agents().then((a) => { if (!dead) setAgents(a); }).catch(() => { if (!dead) setAgents([]); });
+    api.agents()
+      .then((a) => { if (!dead) { setAgents(a); setAgentsErr(null); } })
+      .catch((e) => { if (!dead) { setAgents([]); setAgentsErr((e as Error).message); } });
     return () => { dead = true; };
   }, []);
   if (agents === null) return <p className="muted">加载中…</p>;
+  if (agentsErr) return <p className="pill warn">员工列表加载失败：{agentsErr}</p>;
   const ids = [...new Set([task.currentAgentId, ...task.assignedAgentIds].filter(Boolean) as string[])];
   if (ids.length === 0) return <Empty />;
   return (
@@ -165,14 +174,21 @@ function TeamTab({ task, onSelectAgent }: { task: TaskDetail; onSelectAgent?: (i
 // ---------------------------------------------------------------- 子任务 --
 function SubtasksTab({ task, onSelectTask }: { task: TaskDetail; onSelectTask: (id: string) => void }) {
   const [subs, setSubs] = useState<TaskDetail[] | null>(null);
+  const [subsErr, setSubsErr] = useState<string | null>(null);
   useEffect(() => {
     let dead = false;
     if (task.subtaskIds.length === 0) { setSubs([]); return; }
-    Promise.all(task.subtaskIds.map((id) => api.task(id).catch(() => null)))
-      .then((list) => { if (!dead) setSubs(list.filter(Boolean) as TaskDetail[]); });
+    Promise.all(task.subtaskIds.map((id) => api.task(id).catch((e) => ({ __err: (e as Error).message } as const))))
+      .then((list) => {
+        if (dead) return;
+        const failed = list.find((x) => x !== null && typeof x === 'object' && '__err' in x);
+        if (failed) setSubsErr((failed as { __err: string }).__err);
+        setSubs(list.filter((x) => x !== null && !(typeof x === 'object' && '__err' in x)) as TaskDetail[]);
+      });
     return () => { dead = true; };
   }, [task]);
   if (subs === null) return <p className="muted">加载中…</p>;
+  if (subsErr) return <p className="pill warn">子任务加载失败：{subsErr}</p>;
   if (subs.length === 0) return <Empty />;
   return (
     <ul className="plain">
@@ -236,14 +252,16 @@ function DiffTab({ task }: { task: TaskDetail }) {
 // ---------------------------------------------------------------- 测试 --
 function TestsTab({ taskId }: { taskId: string }) {
   const [runs, setRuns] = useState<QaRun[] | null>(null);
+  const [runsErr, setRunsErr] = useState<string | null>(null);
   useEffect(() => {
     let dead = false;
     createQaApi().runs()
-      .then((r) => { if (!dead) setRuns(r.runs.filter((x) => x.taskId === taskId)); })
-      .catch(() => { if (!dead) setRuns([]); });
+      .then((r) => { if (!dead) { setRuns(r.runs.filter((x) => x.taskId === taskId)); setRunsErr(null); } })
+      .catch((e) => { if (!dead) { setRuns([]); setRunsErr((e as Error).message); } });
     return () => { dead = true; };
   }, [taskId]);
   if (runs === null) return <p className="muted">加载中…</p>;
+  if (runsErr) return <p className="pill warn">测试记录加载失败：{runsErr}</p>;
   if (runs.length === 0) return <Empty />;
   return (
     <div>
@@ -274,6 +292,7 @@ function TestsTab({ taskId }: { taskId: string }) {
 function SecurityTab({ task, taskId }: { task: TaskDetail; taskId: string }) {
   const reports = task.evidence.filter((e) => e.type === 'security_report');
   const [secCats, setSecCats] = useState<{ category: string; verdict: string }[] | null>(null);
+  const [secErr, setSecErr] = useState<string | null>(null);
   useEffect(() => {
     let dead = false;
     createQaApi().runs()
@@ -284,12 +303,14 @@ function SecurityTab({ task, taskId }: { task: TaskDetail; taskId: string }) {
           .flatMap((x) => x.summary?.categories ?? [])
           .filter((c) => c.category === 'security');
         setSecCats(cats);
+        setSecErr(null);
       })
-      .catch(() => { if (!dead) setSecCats([]); });
+      .catch((e) => { if (!dead) { setSecCats([]); setSecErr((e as Error).message); } });
     return () => { dead = true; };
   }, [taskId]);
   if (reports.length === 0 && (secCats === null || secCats.length === 0)) {
-    return secCats === null ? <p className="muted">加载中…</p> : <Empty />;
+    return secErr ? <p className="pill warn">安全分类加载失败：{secErr}</p>
+      : secCats === null ? <p className="muted">加载中…</p> : <Empty />;
   }
   return (
     <div>
@@ -315,14 +336,16 @@ function SecurityTab({ task, taskId }: { task: TaskDetail; taskId: string }) {
 // ---------------------------------------------------------------- 部署 --
 function DeploymentsTab({ taskId }: { taskId: string }) {
   const [deps, setDeps] = useState<DeploymentRecord[] | null>(null);
+  const [depsErr, setDepsErr] = useState<string | null>(null);
   useEffect(() => {
     let dead = false;
     api.deployments()
-      .then((d) => { if (!dead) setDeps(d.filter((x) => x.taskId === taskId)); })
-      .catch(() => { if (!dead) setDeps([]); });
+      .then((d) => { if (!dead) { setDeps(d.filter((x) => x.taskId === taskId)); setDepsErr(null); } })
+      .catch((e) => { if (!dead) { setDeps([]); setDepsErr((e as Error).message); } });
     return () => { dead = true; };
   }, [taskId]);
   if (deps === null) return <p className="muted">加载中…</p>;
+  if (depsErr) return <p className="pill warn">部署记录加载失败：{depsErr}</p>;
   if (deps.length === 0) return <Empty />;
   return (
     <ul className="plain">
@@ -342,16 +365,26 @@ function EvidenceTab({ task, onAttached }: { task: TaskDetail; onAttached: () =>
   const [evType, setEvType] = useState('qa_result');
   const [evTitle, setEvTitle] = useState('');
   const [evPass, setEvPass] = useState(true);
+  const [evError, setEvError] = useState('');
+  const [evBusy, setEvBusy] = useState(false);
 
   const attach = async () => {
-    if (!evTitle.trim()) return;
-    await api.attachEvidence(task.id, {
-      type: evType,
-      title: evTitle.trim(),
-      payload: { verdict: evPass ? 'PASS' : 'FAIL' },
-    });
-    setEvTitle('');
-    onAttached();
+    if (!evTitle.trim() || evBusy) return;
+    setEvBusy(true);
+    setEvError('');
+    try {
+      await api.attachEvidence(task.id, {
+        type: evType,
+        title: evTitle.trim(),
+        payload: { verdict: evPass ? 'PASS' : 'FAIL' },
+      });
+      setEvTitle('');
+      onAttached();
+    } catch (e) {
+      setEvError((e as Error).message);
+    } finally {
+      setEvBusy(false);
+    }
   };
 
   return (
@@ -367,13 +400,14 @@ function EvidenceTab({ task, onAttached }: { task: TaskDetail; onAttached: () =>
         ))}
       </ul>
       <h4>附加证据 §42</h4>
+      {evError && <p className="pill warn">附加失败：{evError}</p>}
       <div className="ev-form">
         <select value={evType} onChange={(e) => setEvType(e.target.value)}>
           {EVIDENCE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
         <input placeholder="证据标题" value={evTitle} onChange={(e) => setEvTitle(e.target.value)} />
         <label><input type="checkbox" checked={evPass} onChange={(e) => setEvPass(e.target.checked)} /> PASS</label>
-        <button onClick={attach}>附加</button>
+        <button onClick={attach} disabled={!evTitle.trim() || evBusy}>{evBusy ? '附加中…' : '附加'}</button>
       </div>
     </div>
   );
@@ -382,14 +416,16 @@ function EvidenceTab({ task, onAttached }: { task: TaskDetail; onAttached: () =>
 // ---------------------------------------------------------------- Memory --
 function MemoryTab({ taskId }: { taskId: string }) {
   const [entries, setEntries] = useState<MemoryEntry[] | null>(null);
+  const [memErr, setMemErr] = useState<string | null>(null);
   useEffect(() => {
     let dead = false;
     api.memoryEntries('task', taskId)
-      .then((e) => { if (!dead) setEntries(e); })
-      .catch(() => { if (!dead) setEntries([]); });
+      .then((e) => { if (!dead) { setEntries(e); setMemErr(null); } })
+      .catch((e) => { if (!dead) { setEntries([]); setMemErr((e as Error).message); } });
     return () => { dead = true; };
   }, [taskId]);
   if (entries === null) return <p className="muted">加载中…</p>;
+  if (memErr) return <p className="pill warn">记忆条目加载失败：{memErr}</p>;
   if (entries.length === 0) return <Empty />;
   return (
     <ul className="plain">

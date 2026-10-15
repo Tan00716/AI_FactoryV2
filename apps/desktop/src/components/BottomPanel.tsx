@@ -7,14 +7,29 @@ const TABS = ['AI Activity', 'Terminal', 'Tests', 'Logs', 'Evidence'] as const;
 export function BottomPanel() {
   const [tab, setTab] = useState<(typeof TABS)[number]>('AI Activity');
   const [records, setRecords] = useState<AuditRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (tab !== 'AI Activity') return;
-    api.audit(50).then(setRecords).catch(() => setRecords([]));
-    const t = setInterval(() => {
-      api.audit(50).then(setRecords).catch(() => undefined);
-    }, 5000);
-    return () => clearInterval(t);
+    let cancelled = false;
+    setLoading(true);
+    setErr(null);
+    const load = (silent: boolean) => {
+      api.audit(50).then((rs) => {
+        if (cancelled) return;
+        setRecords(rs);
+        if (!silent) setErr(null);
+      }).catch((e) => {
+        if (cancelled) return;
+        if (!silent) setErr(e instanceof Error ? e.message : String(e));
+      }).finally(() => {
+        if (!silent && !cancelled) setLoading(false);
+      });
+    };
+    load(false);
+    const t = setInterval(() => load(true), 5000);
+    return () => { cancelled = true; clearInterval(t); };
   }, [tab]);
 
   return (
@@ -27,7 +42,9 @@ export function BottomPanel() {
       <div className="bottom-body">
         {tab === 'AI Activity' && (
           <div className="activity">
-            {records.length === 0 && <span className="muted">No activity yet.</span>}
+            {err && <span className="pill warn">审计日志加载失败：{err}</span>}
+            {!err && loading && records.length === 0 && <span className="muted">加载中…</span>}
+            {!err && !loading && records.length === 0 && <span className="muted">No activity yet.</span>}
             {records.map((r) => (
               <div key={r.id} className="act-row">
                 <span className="muted">{new Date(r.ts).toLocaleTimeString()}</span>

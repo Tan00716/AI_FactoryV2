@@ -68,6 +68,7 @@ export function EventsPanel({ api, pollMs = 3000 }: EventsPanelProps) {
   const [types, setTypes] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
+  const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(() => {
     client
@@ -75,8 +76,10 @@ export function EventsPanel({ api, pollMs = 3000 }: EventsPanelProps) {
       .then((r) => {
         setEvents(r.events);
         setTypes(r.types ?? []);
+        setError('');
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoaded(true));
   }, [client]);
 
   useEffect(() => {
@@ -133,7 +136,8 @@ export function EventsPanel({ api, pollMs = 3000 }: EventsPanelProps) {
         </div>
       </div>
 
-      {visible.length === 0 && <div className="muted">No events yet.</div>}
+      {!loaded && visible.length === 0 && <div className="muted">加载中…</div>}
+      {loaded && !error && visible.length === 0 && <div className="muted">No events yet.</div>}
       {visible.map((e) => (
         <div key={e.seq} className="act-row">
           <span className="muted act-ts">{fmtTime(e.ts)}</span>

@@ -8,15 +8,20 @@ export function CreateTaskModal({ projectId, onClose, onCreated }: {
   const [goal, setGoal] = useState('');
   const [priority, setPriority] = useState('P2');
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
 
   const submit = async () => {
     if (!title.trim()) { setError('Title is required'); return; }
+    if (busy) return;
+    setBusy(true);
+    setError('');
     try {
       await api.createTask({ projectId, title: title.trim(), goal: goal.trim(), priority });
       onCreated();
       onClose();
     } catch (e) {
       setError((e as Error).message);
+      setBusy(false);
     }
   };
 
@@ -33,7 +38,7 @@ export function CreateTaskModal({ projectId, onClose, onCreated }: {
         </label>
         {error && <p className="err">{error}</p>}
         <div className="btn-row">
-          <button className="primary" onClick={submit}>Create (§9 — AI PM takes it from here)</button>
+          <button className="primary" onClick={submit} disabled={busy}>{busy ? '创建中…' : 'Create (§9 — AI PM takes it from here)'}</button>
           <button onClick={onClose}>Cancel</button>
         </div>
       </div>

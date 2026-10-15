@@ -1,4 +1,4 @@
-# Walkthrough index (Batch 54)
+# Walkthrough index (Batch 56)
 
 One line per walkthrough edition below; each edition is cumulative
 across files, not a replacement — `demo:e2e-v4` remains the authority

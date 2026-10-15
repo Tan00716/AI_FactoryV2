@@ -68,6 +68,7 @@ export function EvaluationPanel(props: { evaluation?: EvaluationApi; taskId?: st
   const [proposals, setProposals] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [eTaskId, setETaskId] = useState(props.taskId ?? 'task-demo-1');
   const [eAgentId, setEAgentId] = useState('agent-coder-01');
   const [pTitle, setPTitle] = useState('Raise retry budget for flaky e2e');
@@ -81,6 +82,8 @@ export function EvaluationPanel(props: { evaluation?: EvaluationApi; taskId?: st
       setError(null);
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setLoaded(true);
     }
   }, [api]);
 
@@ -135,6 +138,8 @@ export function EvaluationPanel(props: { evaluation?: EvaluationApi; taskId?: st
         <button disabled={busy} onClick={doEvaluate}>Run evaluation</button>
       </div>
       <h4 style={{ margin: '4px 0' }}>Evaluations <span className="muted">({evaluations.length})</span></h4>
+      {!loaded && <div className="muted">加载中…</div>}
+      {loaded && !error && evaluations.length === 0 && <div className="muted">暂无评估记录。</div>}
       <ul className="ev-list">
         {evaluations.slice(-8).reverse().map((e: any) => (
           <li key={e.evaluationId} style={{ marginBottom: 4 }}>
@@ -146,6 +151,7 @@ export function EvaluationPanel(props: { evaluation?: EvaluationApi; taskId?: st
         ))}
       </ul>
       <h4 style={{ margin: '12px 0 4px' }}>Agent leaderboard</h4>
+      {loaded && !error && profiles.length === 0 && <div className="muted">暂无画像数据。</div>}
       <ul className="ev-list">
         {profiles.map((p: any) => (
           <li key={p.agentId} style={{ marginBottom: 4 }}>
@@ -162,6 +168,7 @@ export function EvaluationPanel(props: { evaluation?: EvaluationApi; taskId?: st
         <input value={pTitle} onChange={(e) => setPTitle(e.target.value)} placeholder="proposal title" style={{ flex: 1 }} />
         <button disabled={busy} onClick={doPropose}>Propose</button>
       </div>
+      {loaded && !error && proposals.length === 0 && <div className="muted">暂无改进提案。</div>}
       <ul className="ev-list">
         {proposals.map((p: any) => (
           <li key={p.proposalId} style={{ marginBottom: 6 }}>

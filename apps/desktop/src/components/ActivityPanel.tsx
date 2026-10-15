@@ -240,16 +240,19 @@ export function ActivityPanel({ api, pollMs = 3000 }: ActivityPanelProps) {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [error, setError] = useState('');
   const [openRun, setOpenRun] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(() => {
     client
       .stream(100)
-      .then((r) => setItems(r.items))
-      .catch((e: Error) => setError(e.message));
+      .then((r) => { setItems(r.items); setError(''); })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoaded(true));
     client
       .runs()
-      .then((r) => setRuns(r.runs))
-      .catch((e: Error) => setError(e.message));
+      .then((r) => { setRuns(r.runs); setError(''); })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoaded(true));
   }, [client]);
 
   useEffect(() => {
@@ -288,7 +291,8 @@ export function ActivityPanel({ api, pollMs = 3000 }: ActivityPanelProps) {
       )}
 
       <h4>Realtime stream</h4>
-      {items.length === 0 && <div className="muted">No activity yet.</div>}
+      {!loaded && items.length === 0 && <div className="muted">加载中…</div>}
+      {loaded && !error && items.length === 0 && <div className="muted">No activity yet.</div>}
       {items.map((it) => (
         <div key={it.id} className="act-row">
           <span className="muted act-ts">{fmtTime(it.ts)}</span>
