@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 101 (2026-10-16)
+
+独立复核 + 可售清单更新批。
+
+- **Batch 99+100 联合独立复核（gap-audit/REAUDIT_BATCH99_100.md，偏差 0 处）**：e263e90 恰好 2 文件、fb6ed6c 恰好 1 文件，与 CHANGELOG Batch 99/100 条目描述一致，无 .github、无意外文件。REAUDIT_BATCH97_98.md 在位；USER_GUIDE 3 处修复在位；B100 的"2593/0、500/500、121/121、tsc 0"记录为子任务声称。REAUDIT 链：1–10 + 21–100 连续
+- **可售清单"当前状态"小节更新（B99–100）**：`~/workspace/goals/ai-factory-app-prototype/files/SELLABLE_CHECKLIST.md`（repo 外）新增"当前状态（2026-10-16，Batch 100 收口，基线 fb6ed6c，本地）"小节：两批摘要（B99 复核+清单、B100 百批全量回归）、复核链 1–10 + 21–100 连续（99/100 待补）、主线数字全部为 B100 亲跑（构建 0、包套件 2593/0、服务端 500/500、验收 121/121、desktop/server tsc 0；smoke:boot OK 沿用 B81）、新增真实缺口 0、结论仍是"可运行的原型 + 持续收敛"（13 硬门槛未变）。数字逐项对照 CHANGELOG B99–B100 一致
+- **测试基线**：本批是复核+文档批，无产品代码改动；主线数字：构建 0、包套件 2593/0、服务端 500/500、验收 121/121、desktop/server tsc 0（B100 亲跑）、smoke:boot OK（B81）。
+
 ## Batch 100 (2026-10-16)
 
 百批里程碑——三套测试全量亲跑。
