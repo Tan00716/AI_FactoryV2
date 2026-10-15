@@ -418,6 +418,10 @@ CREATE TABLE IF NOT EXISTS run_manifests (
   driver TEXT NOT NULL,
   granted_tools TEXT NOT NULL,
   budget_limits TEXT NOT NULL,
+  -- INV-10 (Batch 63) — version pins JSON, TEXT so legacy databases
+  -- migrate in place with ALTER TABLE; NULL on rows written before
+  -- pins existed (read back as all-null pins, never backfilled).
+  version_pins TEXT,
   context_manifest_hash TEXT NOT NULL,
   status TEXT NOT NULL,
   outcome TEXT,

@@ -356,6 +356,20 @@ export function migrateMcpServersTable(db: DatabaseSync): void {
   if (!cols.has('row_version')) db.exec('ALTER TABLE mcp_servers ADD COLUMN row_version INTEGER NOT NULL DEFAULT 1');
 }
 /**
+ * INV-10 (Batch 63) — version_pins on run_manifests. Existing local
+ * DBs are migrated in place: only the missing column is added, and
+ * pre-pin rows read back as all-null pins (never backfilled).
+ */
+export function migrateRunManifestsTable(db: DatabaseSync): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(run_manifests)').all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  if (cols.size === 0) return; // table missing entirely — SCHEMA creates it fresh
+  if (!cols.has('version_pins')) db.exec('ALTER TABLE run_manifests ADD COLUMN version_pins TEXT');
+}
+/**
  * SPEC v2 §23.3 columns. Existing local DBs are migrated in place: only
  * missing columns are added. rowToApproval falls back to the v1 column names
  * (id, requested_by, required_approver, expires_at) so pre-v2 databases keep
@@ -1192,6 +1206,7 @@ export class FactoryDatabase {
     migrateMergeQueueTable(this.db);
     migrateBuildsTable(this.db);
     migrateMcpServersTable(this.db);
+    migrateRunManifestsTable(this.db);
     this.tasks = new SqliteTaskStore(this.db);
     this.evidence = new SqliteEvidenceStore(this.db);
     this.agents = new SqliteAgentStore(this.db);

@@ -61,6 +61,13 @@ function freshManifest(runId: string): RunManifest {
       loop: { maxSteps: 40, timeMs: 60_000, maxRetries: 3 },
       extended: { maxSteps: 60, maxModelCalls: 40, maxToolCalls: 120 },
     },
+    // INV-10 (Batch 63) — version pins, fixed at creation.
+    versionPins: {
+      employeeVersion: 3,
+      organizationVersion: 7,
+      policyVersion: 'pv-2',
+      requirementVersion: 'REQ-001@2',
+    },
     contextManifestHash: 'a'.repeat(64),
     status: 'RUNNING',
     outcome: null,
@@ -198,7 +205,8 @@ describe('SqliteRunManifestStore durability (Batch 15)', () => {
         ).map((c) => c.name);
         for (const c of [
           'run_id', 'agent_id', 'task_id', 'project_id', 'created_at',
-          'driver', 'granted_tools', 'budget_limits', 'context_manifest_hash',
+          'driver', 'granted_tools', 'budget_limits', 'version_pins',
+          'context_manifest_hash',
           'status', 'outcome', 'finished_at', 'error', 'steps', 'model',
           'model_source', 'budget_usage', 'intents', 'evidence', 'checkpoints',
         ]) {
@@ -206,6 +214,64 @@ describe('SqliteRunManifestStore durability (Batch 15)', () => {
         }
         fdb.runManifests.put(freshManifest('run-9'));
         assert.deepEqual(fdb.runManifests.get('run-9'), freshManifest('run-9'));
+      } finally {
+        fdb.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a pre-pin database (run_manifests without version_pins) migrates in place: old rows read all-null pins', () => {
+    // INV-10 (Batch 63) — the old 20-column DDL, exactly as it was
+    // before version_pins existed.
+    const OLD_DDL = `CREATE TABLE run_manifests (
+      run_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, task_id TEXT NOT NULL,
+      project_id TEXT NOT NULL, created_at TEXT NOT NULL, driver TEXT NOT NULL,
+      granted_tools TEXT NOT NULL, budget_limits TEXT NOT NULL,
+      context_manifest_hash TEXT NOT NULL, status TEXT NOT NULL, outcome TEXT,
+      finished_at TEXT, error TEXT, steps INTEGER, model TEXT, model_source TEXT,
+      budget_usage TEXT, intents TEXT, evidence TEXT, checkpoints TEXT
+    )`;
+    const { dir, file } = tmpDbFile();
+    try {
+      const raw = new DatabaseSync(file);
+      raw.exec(OLD_DDL);
+      raw
+        .prepare(
+          `INSERT INTO run_manifests
+             (run_id, agent_id, task_id, project_id, created_at, driver,
+              granted_tools, budget_limits, context_manifest_hash, status)
+           VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        )
+        .run(
+          'old-run', 'agent-1', 'task-1', 'proj-1', '2026-10-12T10:00:00.000Z',
+          JSON.stringify({ kind: 'script', adapter: 'stub', routeRequestProvided: false }),
+          JSON.stringify(['echo']),
+          JSON.stringify({ loop: { maxSteps: 1, timeMs: 1, maxRetries: 1 }, extended: {} }),
+          'b'.repeat(64),
+          'RUNNING',
+        );
+      raw.close();
+
+      const fdb = new FactoryDatabase(file);
+      try {
+        const cols = (
+          fdb.db.prepare('PRAGMA table_info(run_manifests)').all() as { name: string }[]
+        ).map((c) => c.name);
+        assert.ok(cols.includes('version_pins'), 'migration adds version_pins');
+        const read = fdb.runManifests.get('old-run');
+        assert.ok(read, 'old row still readable');
+        // Never recorded, never backfilled with an invented version.
+        assert.deepEqual(read!.versionPins, {
+          employeeVersion: null,
+          organizationVersion: null,
+          policyVersion: null,
+          requirementVersion: null,
+        });
+        // And a new pinned manifest round-trips on the migrated table.
+        fdb.runManifests.put(freshManifest('new-run'));
+        assert.deepEqual(fdb.runManifests.get('new-run'), freshManifest('new-run'));
       } finally {
         fdb.close();
       }

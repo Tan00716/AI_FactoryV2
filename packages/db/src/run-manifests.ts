@@ -136,9 +136,42 @@ export interface RunManifestCheckpoints {
 }
 
 /**
+ * INV-10 (Batch 63) — the versions the run is pinned to, snapshotted
+ * at creation. A null means "no version recorded": the entity did not
+ * exist, carried no version, or recorded none — never an invented one.
+ * Field names follow the task's snake_case naming in camelCase, matching
+ * the RunManifest interface convention.
+ */
+export interface RunManifestVersionPins {
+  /** The employee (agent) record's own version at creation. */
+  employeeVersion: number | null;
+  /**
+   * The org graph's version at creation (org_version_snapshots'
+   * max graph_version); null when no snapshot was ever recorded.
+   */
+  organizationVersion: number | null;
+  /** The run's project row policy_version at creation. */
+  policyVersion: string | null;
+  /**
+   * The task's requirement pin verbatim (the established
+   * 'REQ-001@2' ref form) at creation.
+   */
+  requirementVersion: string | null;
+}
+
+/** A RunManifestVersionPins with every pin null — the honest shape for
+ * legacy rows written before pins existed. */
+export const NULL_VERSION_PINS: RunManifestVersionPins = {
+  employeeVersion: null,
+  organizationVersion: null,
+  policyVersion: null,
+  requirementVersion: null,
+};
+
+/**
  * One run's manifest. The creation block (identity, driver, grant,
- * budget limits, context hash) is written when the run is created;
- * the completion block stays null until the run's terminal/error
+ * budget limits, version pins, context hash) is written when the run is
+ * created; the completion block stays null until the run's terminal/error
  * write fills it. `status` starts RUNNING and ends mirroring the
  * run record's terminal status.
  */
@@ -153,6 +186,12 @@ export interface RunManifest {
   /** Operator-granted tools for this run (FACTORY_RUNTIME_TOOLS). */
   grantedTools: string[];
   budgetLimits: RunManifestBudgetLimits;
+  /**
+   * INV-10 (Batch 63) — the versions this run is pinned to, fixed at
+   * creation: employee (agent) version, org graph version, project
+   * policy_version, task requirement pin.
+   */
+  versionPins: RunManifestVersionPins;
   /**
    * sha256 over the run's assembled context — assembled exactly as
    * the §28.3 checkpoint capture assembles it, so it equals the
@@ -224,6 +263,7 @@ export class InMemoryRunManifestStore implements RunManifestStore {
 function rowToManifest(r: Record<string, unknown>): RunManifest {
   const jsonOrNull = <T>(v: unknown): T | null =>
     v === null || v === undefined ? null : (JSON.parse(v as string) as T);
+  const pins = jsonOrNull<RunManifestVersionPins>(r['version_pins']);
   return {
     runId: r['run_id'] as string,
     agentId: r['agent_id'] as string,
@@ -233,6 +273,9 @@ function rowToManifest(r: Record<string, unknown>): RunManifest {
     driver: JSON.parse(r['driver'] as string) as RunManifestDriver,
     grantedTools: JSON.parse(r['granted_tools'] as string) as string[],
     budgetLimits: JSON.parse(r['budget_limits'] as string) as RunManifestBudgetLimits,
+    // Pre-pin rows (column missing or NULL) read back as all-null
+    // pins — never recorded, never backfilled with an invented version.
+    versionPins: pins ?? { ...NULL_VERSION_PINS },
     contextManifestHash: r['context_manifest_hash'] as string,
     status: r['status'] as RunManifestStatus,
     outcome: (r['outcome'] as string | null) ?? null,
@@ -270,15 +313,16 @@ export class SqliteRunManifestStore implements RunManifestStore {
       .prepare(
         `INSERT INTO run_manifests
            (run_id, agent_id, task_id, project_id, created_at, driver,
-            granted_tools, budget_limits, context_manifest_hash, status,
+            granted_tools, budget_limits, version_pins, context_manifest_hash, status,
             outcome, finished_at, error, steps, model, model_source,
             budget_usage, intents, evidence, checkpoints)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(run_id) DO UPDATE SET
            agent_id=excluded.agent_id, task_id=excluded.task_id,
            project_id=excluded.project_id, created_at=excluded.created_at,
            driver=excluded.driver, granted_tools=excluded.granted_tools,
            budget_limits=excluded.budget_limits,
+           version_pins=excluded.version_pins,
            context_manifest_hash=excluded.context_manifest_hash,
            status=excluded.status, outcome=excluded.outcome,
            finished_at=excluded.finished_at, error=excluded.error,
@@ -291,7 +335,9 @@ export class SqliteRunManifestStore implements RunManifestStore {
         manifest.runId, manifest.agentId, manifest.taskId, manifest.projectId,
         manifest.createdAt, JSON.stringify(manifest.driver),
         JSON.stringify(manifest.grantedTools),
-        JSON.stringify(manifest.budgetLimits), manifest.contextManifestHash,
+        JSON.stringify(manifest.budgetLimits),
+        JSON.stringify(manifest.versionPins),
+        manifest.contextManifestHash,
         manifest.status, manifest.outcome, manifest.finishedAt, manifest.error,
         manifest.steps, manifest.model, manifest.modelSource,
         jsonOrNull(manifest.budgetUsage), jsonOrNull(manifest.intents),

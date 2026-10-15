@@ -628,3 +628,99 @@ describe('runtime run manifests (Batch 15)', () => {
     }
   });
 });
+
+describe('runtime run manifest version pins (INV-10, Batch 63)', () => {
+  it('pins employee/org/policy/requirement versions at creation and keeps them through completion', { timeout: 20_000 }, async () => {
+    const restoreEnv = withAllowlist('echo');
+    const dir = mkdtempSync(join(tmpdir(), 'factory-server-manifest-pins-'));
+    try {
+      const world = makeWorld(join(dir, 'a.db'), false);
+      installWorld(world);
+      try {
+        world.fdb.createProject({
+          id: 'p1', name: 'P', description: '', path: '', policy_version: 'pv-7',
+        });
+        const agent = world.agents.register({ name: 'coder', jobTitle: 'Engineer' });
+        const task = world.tasks.create({
+          projectId: 'p1',
+          title: 'T',
+          goal: 'g',
+          description: '',
+          priority: 'P2',
+          acceptanceCriteria: [],
+          constraints: [],
+          creator: 'human',
+          requirementRef: 'REQ-042@3',
+        });
+        world.fdb.orgSnapshots.append({ change: 'GENESIS', actor: 'test', graphJson: '{}' });
+        world.fdb.orgSnapshots.append({
+          change: 'NODE_ADDED', nodeId: 'n1', actor: 'test', graphJson: '{}',
+        });
+
+        const post = await call(world, 'POST', '/api/runtime/runs', {
+          agentId: agent.id,
+          taskId: task.id,
+          script: ECHO_SCRIPT,
+        });
+        assert.equal(post.status, 202);
+        const runId = (post.body as { id: string }).id;
+        await waitForRun(world, runId);
+
+        const res = await call(world, 'GET', `/api/runtime/runs/${runId}/manifest`);
+        assert.equal(res.status, 200);
+        const m = res.body as RunManifest;
+        // The HTTP surface serves exactly what the durable store holds.
+        assert.deepEqual(m.versionPins, world.fdb.runManifests.get(runId)!.versionPins);
+        assert.deepEqual(m.versionPins, {
+          employeeVersion: 1, // the agent record's own version
+          organizationVersion: 2, // two org snapshots were appended
+          policyVersion: 'pv-7', // the project row's policy_version
+          requirementVersion: 'REQ-042@3', // the task's pin, verbatim
+        });
+      } finally {
+        world.fdb.close();
+      }
+    } finally {
+      resetInstalls();
+      restoreEnv();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('records null pins when nothing is versioned — never an invented version', { timeout: 20_000 }, async () => {
+    // Plain makeWorld: the project has no policy_version, the task has
+    // no requirementRef, and no org snapshot was ever appended.
+    const restoreEnv = withAllowlist('echo');
+    const dir = mkdtempSync(join(tmpdir(), 'factory-server-manifest-pins-'));
+    try {
+      const world = makeWorld(join(dir, 'b.db'));
+      installWorld(world);
+      try {
+        const post = await call(world, 'POST', '/api/runtime/runs', {
+          agentId: world.agent.id,
+          taskId: world.task.id,
+          script: ECHO_SCRIPT,
+        });
+        assert.equal(post.status, 202);
+        const runId = (post.body as { id: string }).id;
+        await waitForRun(world, runId);
+
+        const res = await call(world, 'GET', `/api/runtime/runs/${runId}/manifest`);
+        assert.equal(res.status, 200);
+        const m = res.body as RunManifest;
+        assert.deepEqual(m.versionPins, {
+          employeeVersion: 1, // the agent record itself is versioned
+          organizationVersion: null,
+          policyVersion: null,
+          requirementVersion: null,
+        });
+      } finally {
+        world.fdb.close();
+      }
+    } finally {
+      resetInstalls();
+      restoreEnv();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

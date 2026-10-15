@@ -9,6 +9,7 @@
  * results, EVALUATE completes.
  */
 import type { Agent, Task } from '@ai-factory/core';
+import { scanForSecrets } from '@ai-factory/memory';
 import { route, type RouteDecision, type RouteRequest } from '@ai-factory/model-router';
 import { AgentLoop } from './loop';
 import { Harness, type ToolImpl } from './harness';
@@ -123,6 +124,27 @@ function defaultStepFn(ctx: DefaultStepContext): StepFn {
         };
 
       case 'ACT': {
+        const prompt = buildPrompt(agent, task);
+        // INV-26 / §46.2: credentials must never enter a prompt. "A prompt
+        // that contains a secret has already leaked even if the log is
+        // redacted afterwards, so the input is checked BEFORE sending."
+        // The assembled prompt is scanned BEFORE the model-call budget is
+        // consumed and BEFORE adapter.invoke is called — a detected secret
+        // never leaves the process. Fail-closed: the adapter is not invoked
+        // at all. The prompt is deterministic, so the distinct errorSignature
+        // below cannot be cleared by retrying and the run escalates through
+        // the normal stagnation path instead of silently retrying.
+        try {
+          scanForSecrets(prompt);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            ok: false,
+            error: `pre-send secret scan blocked the adapter invoke [adapter:secret-in-prompt] (§46.2/INV-26): ${message}`,
+            errorSignature: 'adapter:secret-in-prompt',
+            note: 'prompt blocked: suspected raw secret detected',
+          };
+        }
         // §25 (G-51): every adapter invocation is a model call; exceeding
         // maxModelCalls throws BudgetExceeded OUT of the StepFn (the loop
         // treats BUDGET_EXCEEDED as terminal — never retried into success).
@@ -130,7 +152,7 @@ function defaultStepFn(ctx: DefaultStepContext): StepFn {
         let output;
         try {
           output = await harness.withTimeout('adapter.invoke', () =>
-            adapter.invoke({ prompt: buildPrompt(agent, task), tools: Object.keys(tools) }),
+            adapter.invoke({ prompt, tools: Object.keys(tools) }),
           );
         } catch (err) {
           if (err instanceof BudgetExceeded) throw err;

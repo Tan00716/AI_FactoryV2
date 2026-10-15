@@ -147,6 +147,7 @@ import {
   type RunManifestBudgetUsage,
   type RunManifestStatus,
   type RunManifestStore,
+  type RunManifestVersionPins,
   type RuntimeRunRecord,
   type RuntimeRunStore,
 } from '@ai-factory/db';
@@ -1444,6 +1445,37 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
 }
 
 /**
+ * INV-10 (Batch 63) — the versions a run is pinned to, snapshotted at
+ * creation. Sources, read off the entities in hand:
+ *  - employee_version: the agent record's own version;
+ *  - organization_version: the org graph's max graph_version;
+ *  - policy_version: the run's project row policy_version;
+ *  - requirement_version: the task's requirement pin verbatim
+ *    ('REQ-001@2').
+ * A null pin means "no version recorded" (the entity did not exist,
+ * carried no version, or recorded none) — never an invented one.
+ */
+export function resolveRunVersionPins(
+  ctx: RouteContext,
+  agent: { version?: number | null },
+  task: { projectId: string; requirementRef?: string | null },
+): RunManifestVersionPins {
+  const employeeVersion = typeof agent.version === 'number' ? agent.version : null;
+  const orgVersion = ctx.fdb.orgSnapshots.maxVersion();
+  const organizationVersion = orgVersion > 0 ? orgVersion : null;
+  const project = ctx.fdb.getProject(task.projectId);
+  const policyVersion =
+    typeof project?.policy_version === 'string' && project.policy_version !== ''
+      ? project.policy_version
+      : null;
+  const requirementVersion =
+    typeof task.requirementRef === 'string' && task.requirementRef !== ''
+      ? task.requirementRef
+      : null;
+  return { employeeVersion, organizationVersion, policyVersion, requirementVersion };
+}
+
+/**
  * §28.4 — the creation-time manifest for a RESUMED run, assembled
  * exactly as POST /runs assembles a fresh run's (same snapshot
  * fields, same context hash out of the checkpoint capture's own
@@ -1485,6 +1517,8 @@ export function createResumedRunManifest(
       loop: { ...args.budgets },
       extended: { ...DEFAULT_EXTENDED_BUDGETS },
     },
+    // INV-10 (Batch 63) — the run's version pins, fixed at creation.
+    versionPins: resolveRunVersionPins(ctx, agent, task),
     contextManifestHash: assembleRunCheckpoint({
       runId,
       stepPosition: 0,
@@ -2058,6 +2092,8 @@ export async function handleRuntimeRoutes(
         loop: { ...loopBudgets },
         extended: { ...DEFAULT_EXTENDED_BUDGETS },
       },
+      // INV-10 (Batch 63) — the run's version pins, fixed at creation.
+      versionPins: resolveRunVersionPins(ctx, agent, task),
       contextManifestHash: assembleRunCheckpoint({
         runId: id,
         stepPosition: 0,
