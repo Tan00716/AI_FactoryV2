@@ -10,7 +10,7 @@
 - `npm install`
 - `npm run dev`：构建全部包，启动 API（`:3100`）+ Vite UI（`:5173`），打开 http://localhost:5173。
 - 首次启动自动 seed 演示项目与 SQLite 库（`./data/factory.db`）。
-- 桌面版：`npm i -D electron` 后 `npm run electron`。
+- 桌面版：`npm run electron`（electron 已是 devDependencies，无需单独安装）。
 - TODO(roadmap)：提供 `.exe` 安装包后，改为"双击安装 → 首次启动向导"。
 
 ## 2. 备份

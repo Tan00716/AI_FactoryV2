@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 86 (2026-10-16)
+
+独立复核 + 用户文档批。
+
+- **Batch 84+85 联合独立复核（gap-audit/REAUDIT_BATCH84_85.md，偏差 0 处）**：32b1ddf 恰好 2 文件、0e7428b 恰好 1 文件，与 CHANGELOG Batch 84/85 条目描述一致，无 .github、无意外文件。REAUDIT_BATCH83.md 在位；B85 打包验证数字（HTTP 4/4、F12 SIGKILL 持久化、桌面 3/4 tab）记录为子任务声称（复核人不重跑）；边界（无 FUSE、CDP 合成、pgrep 事故）如实披露；"主线数字沿用 B80–83"口径如实。REAUDIT 链：1–10 + 21–85 连续
+- **用户文档（"好用/可上架"维度）**：首次拿到 AppImage 的用户视角审计，发现 5 处真实缺口——无快速上手指南、无用户视角核心概念说明、无核心面板导览、数据位置不透明、ops-manual 一处过时（`npm i -D electron` 多余，electron 已是 devDependencies）。新建 `docs/USER_GUIDE.md`（5399 bytes，8 节：是什么/三条核心规则、AppImage 安装启动+FUSE 说明+数据位置+DB_PATH 覆盖、首次启动看到什么、核心概念用户版、6 核心面板导览、最简使用流程、数据与备份、诚实边界）；`docs/ops-manual.md` 去掉多余行。所有断言均核对过代码/实际行为（Board 头注释、seed.ts、index.ts:203/713、README、packaging.md、b85-pkg 实测）；不确定的没写（Windows/macOS 包、其余 21 个面板）。只改 docs/，未碰产品代码/测试
+- **测试基线**：本批是复核+文档批，无产品代码改动；主线数字沿用 B80–83 收口口径（构建 0、包套件 2593/0×2、服务端 500/500×2、验收 121/121、desktop/electron tsc 0、smoke:boot OK）。
+
 ## Batch 85 (2026-10-16)
 
 AppImage 重打 + 打包产物验证批。
