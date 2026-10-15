@@ -16,6 +16,10 @@
  *               LESSON → PROPOSAL → INDEPENDENT_EVAL → VERSION →
  *               POLICY_APPROVAL → LIMITED_ACTIVATION → OBSERVE →
  *               PROMOTE | REVERT, with admission checks per stage          [§45.2]
+ *  - auto-governance §45.4 policy function + version registry:
+ *               disable-version / switch-to-fallback / downgrade-autonomy
+ *               decisions, DISABLED-version enforcement, explicit
+ *               migration (running cases stay pinned)                      [§45.4]
  */
 export * from './types';
 export * from './engine';
@@ -25,3 +29,4 @@ export * from './proposals';
 export * from './disagreement';
 export * from './harness';
 export * from './loop';
+export * from './auto-governance';

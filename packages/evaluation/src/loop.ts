@@ -20,6 +20,12 @@
  *  - LIMITED_ACTIVATION pins an explicit limited scope (canary employees);
  *    running tasks stay on pinned versions or are explicitly migrated.
  *  - PROMOTE requires passing observations; REVERT keeps the effect record.
+ *  - §45.4 AUTO-GOVERNANCE (autoGovern): failing canary observations or a
+ *    failed independent eval produce disable-version / switch-to-fallback /
+ *    downgrade-autonomy decisions; DISABLED versions can never be
+ *    (re-)activated or promoted; fallback switches are explicit,
+ *    admission-checked migrations to POLICY_APPROVAL-approved versions.
+ *    Nothing auto-grants privileges and nothing removes Human decisions.
  */
 import { randomUUID } from 'node:crypto';
 import type {
@@ -29,6 +35,11 @@ import type {
   NewProposal,
 } from './types';
 import { ProposalBoard } from './proposals';
+import {
+  VersionRegistry,
+  evaluateAutoGovernance,
+  type AutoGovernanceDecision,
+} from './auto-governance';
 
 export type LoopStage =
   | 'VERIFIED_TASK'
@@ -78,9 +89,19 @@ export interface LoopCase {
   independentRunIds: string[];
   version?: string;
   limitedScope?: { employees: string[]; note: string };
-  observations: Array<{ at: number; by: string; note: string; success: boolean }>;
+  /**
+   * Observations are tagged with the version that was active when they
+   * were recorded: auto-governance only decides on observations about the
+   * CURRENT version — a fallback must not be disabled by the old version's
+   * failures after an explicit migration.
+   */
+  observations: Array<{ at: number; by: string; note: string; success: boolean; version?: string }>;
   outcome?: 'PROMOTED' | 'REVERTED';
   outcomeReason?: string;
+  /** Independent regression/security eval outcome (set at INDEPENDENT_EVAL). */
+  independentEvalPassed?: boolean;
+  /** True once auto-governance switched this case to an approved fallback. */
+  onFallbackVersion?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -96,6 +117,8 @@ export class LoopError extends Error {
 export interface ImprovementLoopOptions {
   /** Shared proposal board (a fresh one is created by default). */
   board?: ProposalBoard;
+  /** Shared version registry (a fresh one is created by default). */
+  versionRegistry?: VersionRegistry;
   /** Defaults to `Date.now`; inject a fake clock in tests/demos. */
   now?: () => number;
 }
@@ -103,11 +126,24 @@ export interface ImprovementLoopOptions {
 export class ImprovementLoop {
   private readonly cases = new Map<string, LoopCase>();
   private readonly board: ProposalBoard;
+  private readonly registry: VersionRegistry;
   private readonly nowFn: () => number;
+  /** Scope keys (sorted employees) that already had an auto downgrade. */
+  private readonly downgradedScopes = new Set<string>();
 
   constructor(options: ImprovementLoopOptions = {}) {
     this.board = options.board ?? new ProposalBoard({ now: options.now });
+    this.registry = options.versionRegistry ?? new VersionRegistry({ now: options.now });
     this.nowFn = options.now ?? Date.now;
+  }
+
+  /** Read-only view of the version registry (status/approval/disable records). */
+  versions(): Array<{ version: string; status: 'ACTIVE' | 'DISABLED'; approved: boolean }> {
+    return this.registry.all().map((r) => ({
+      version: r.version,
+      status: r.status,
+      approved: r.approved,
+    }));
   }
 
   /** Read-only view of a case, including its full admission-check trail. */
@@ -230,6 +266,7 @@ export class ImprovementLoop {
         `(${opts.security.attempts.length} attempts kept)`,
     });
     c.independentRunIds.push(opts.regression.runId, opts.security.runId);
+    c.independentEvalPassed = opts.regression.passed && opts.security.passed;
     c.stage = 'INDEPENDENT_EVAL';
     return this.save(c);
   }
@@ -237,6 +274,7 @@ export class ImprovementLoop {
   /** VERSION: pin a version for the improvement. */
   versionProposal(caseId: string, version: string, by: string): LoopCase {
     const c = this.requireAt(caseId, 'INDEPENDENT_EVAL');
+    this.registry.register(version);
     this.admit(c, {
       stage: 'VERSION',
       passed: true,
@@ -253,6 +291,7 @@ export class ImprovementLoop {
     const c = this.requireAt(caseId, 'VERSION');
     if (!c.proposalId) throw new LoopError(`case ${caseId}: no proposal filed`);
     const approved = this.board.approve(c.proposalId, approver);
+    if (c.version) this.registry.approve(c.version);
     this.admit(c, {
       stage: 'POLICY_APPROVAL',
       passed: true,
@@ -265,7 +304,8 @@ export class ImprovementLoop {
 
   /**
    * LIMITED_ACTIVATION: activate the improvement on a limited canary scope.
-   * Running tasks stay on pinned versions unless explicitly migrated [§45.4].
+   * Running tasks stay on pinned versions unless explicitly migrated [§45.4]:
+   * a DISABLED (defective) version can never be (re-)activated.
    */
   activateLimited(
     caseId: string,
@@ -274,6 +314,12 @@ export class ImprovementLoop {
     const c = this.requireAt(caseId, 'POLICY_APPROVAL');
     if (opts.employees.length === 0) {
       throw new LoopError(`case ${caseId}: limited activation requires a non-empty canary scope`);
+    }
+    if (c.version && this.registry.isDisabled(c.version)) {
+      throw new LoopError(
+        `case ${caseId}: DISABLED_VERSION — version ${c.version} was disabled as defective ` +
+          'and cannot be (re-)activated; migrate to another version instead',
+      );
     }
     this.admit(c, {
       stage: 'LIMITED_ACTIVATION',
@@ -292,7 +338,13 @@ export class ImprovementLoop {
     opts: { note: string; success: boolean; by: string },
   ): LoopCase {
     const c = this.requireAt(caseId, 'LIMITED_ACTIVATION', 'OBSERVE');
-    c.observations.push({ at: this.nowFn(), by: opts.by, note: opts.note, success: opts.success });
+    c.observations.push({
+      at: this.nowFn(),
+      by: opts.by,
+      note: opts.note,
+      success: opts.success,
+      version: c.version,
+    });
     if (c.stage === 'LIMITED_ACTIVATION') {
       this.admit(c, {
         stage: 'OBSERVE',
@@ -307,7 +359,8 @@ export class ImprovementLoop {
 
   /**
    * PROMOTE: promote after passing observations. Failing observations block
-   * promotion — the case must be reverted instead.
+   * promotion — the case must be reverted instead. A DISABLED (defective)
+   * version can never be promoted [§45.4].
    */
   promote(caseId: string, by: string): LoopCase {
     const c = this.requireAt(caseId, 'OBSERVE');
@@ -315,6 +368,12 @@ export class ImprovementLoop {
       throw new LoopError(
         `case ${caseId}: cannot promote with ${c.observations.length} observation(s) ` +
           'containing failures — revert instead',
+      );
+    }
+    if (c.version && this.registry.isDisabled(c.version)) {
+      throw new LoopError(
+        `case ${caseId}: DISABLED_VERSION — version ${c.version} was disabled as defective ` +
+          'and cannot be promoted',
       );
     }
     this.admit(c, {
@@ -344,6 +403,141 @@ export class ImprovementLoop {
     c.outcome = 'REVERTED';
     c.outcomeReason = opts.reason;
     return this.save(c);
+  }
+
+  /**
+   * Explicit migration of a running case to another version [§45.4:
+   * "正在运行的任务保持 pinned versions 或显式迁移"]. The case stays on
+   * its pinned version until THIS is called — nothing auto-migrates it.
+   * The target must not be DISABLED; the migration is admission-checked.
+   */
+  migrateVersion(
+    caseId: string,
+    newVersion: string,
+    opts: { by: string; reason: string },
+  ): LoopCase {
+    const c = this.require(caseId);
+    if (!c.version) {
+      throw new LoopError(`case ${caseId}: cannot migrate — case has no pinned version yet`);
+    }
+    if (this.registry.isDisabled(newVersion)) {
+      throw new LoopError(
+        `case ${caseId}: DISABLED_VERSION — cannot migrate to ${newVersion}: disabled as defective`,
+      );
+    }
+    if (newVersion === c.version) {
+      throw new LoopError(`case ${caseId}: already pinned to version ${newVersion}`);
+    }
+    const old = c.version;
+    this.registry.register(newVersion);
+    this.admit(c, {
+      stage: c.stage,
+      passed: true,
+      checkedBy: opts.by,
+      details: `explicit migration ${old} → ${newVersion}: ${opts.reason}`,
+    });
+    c.version = newVersion;
+    c.onFallbackVersion = false;
+    return this.save(c);
+  }
+
+  /**
+   * AUTO-GOVERNANCE [§45.4]: run the policy function over this case's
+   * observations and apply the decisions:
+   *   - disable-version → version DISABLED in the registry (effect record
+   *     retained); new activations/promotions of it are refused;
+   *   - switch-to-fallback → the case is explicitly migrated to the
+   *     approved fallback (admission-checked);
+   *   - downgrade-autonomy → the decision is recorded on the case's
+   *     admission trail; enforcement is the autonomy layer's job (the
+   *     evaluation package has zero dependencies by convention).
+   *
+   * Never grants privileges and never removes Human decisions — no such
+   * decision variant exists, and excellent results yield zero decisions.
+   * Running cases on OTHER versions are untouched (stay pinned).
+   */
+  autoGovern(
+    caseId: string,
+    opts: { by: string },
+  ): { loop: LoopCase; decisions: AutoGovernanceDecision[] } {
+    const c = this.require(caseId);
+    if (!['LIMITED_ACTIVATION', 'OBSERVE'].includes(c.stage)) {
+      throw new LoopError(
+        `case ${caseId}: auto-governance runs from LIMITED_ACTIVATION/OBSERVE, not ${c.stage}`,
+      );
+    }
+    if (!c.version) {
+      throw new LoopError(`case ${caseId}: auto-governance needs a versioned case`);
+    }
+    const version = c.version;
+    const scopeEmployees = c.limitedScope?.employees ?? [];
+    const scopeKey = [...scopeEmployees].sort().join(',') || 'global';
+    // Only observations about the CURRENT version drive governance: after
+    // an explicit migration the old version's failures must not disable
+    // the new one. (version is always set by observe(); the undefined
+    // branch is defensive for hand-built cases.)
+    const relevant = c.observations.filter(
+      (o) => o.version === undefined || o.version === version,
+    );
+    const approvedFallbacks = this.registry
+      .all()
+      .filter((r) => r.approved && r.status === 'ACTIVE' && r.version !== version)
+      .map((r) => r.version);
+    const disabledVersions = this.registry
+      .all()
+      .filter((r) => r.status === 'DISABLED')
+      .map((r) => r.version);
+    const decisions = evaluateAutoGovernance(
+      {
+        version,
+        scopeEmployees,
+        observations: relevant.map((o) => ({ at: o.at, success: o.success })),
+        independentEval:
+          c.independentEvalPassed === undefined
+            ? undefined
+            : { passed: c.independentEvalPassed },
+        approvedFallbacks,
+        disabledVersions,
+        autonomyAlreadyDowngraded: this.downgradedScopes.has(scopeKey),
+        alreadyOnFallback: c.onFallbackVersion === true,
+      },
+      { now: this.nowFn },
+    );
+    for (const d of decisions) {
+      if (d.action === 'disable-version') {
+        const failing = relevant
+          .map((o, i) => (o.success ? null : `#${i + 1}@${o.at}:${o.note}`))
+          .filter((x): x is string => x !== null);
+        this.registry.disable(version, {
+          by: opts.by,
+          reason: d.reason,
+          effectRecord: `failing observations: ${failing.join('; ') || '(independent eval failed)'}`,
+        });
+        this.admit(this.require(caseId), {
+          stage: this.require(caseId).stage,
+          passed: true,
+          checkedBy: opts.by,
+          details: `auto-governance[disable-version]: ${d.reason}`,
+        });
+      } else if (d.action === 'switch-to-fallback' && d.targetVersion) {
+        this.migrateVersion(caseId, d.targetVersion, {
+          by: opts.by,
+          reason: `auto-governance: ${version} disabled → approved fallback ${d.targetVersion}`,
+        });
+        this.require(caseId).onFallbackVersion = true;
+      } else if (d.action === 'downgrade-autonomy') {
+        this.admit(this.require(caseId), {
+          stage: this.require(caseId).stage,
+          passed: true,
+          checkedBy: opts.by,
+          details:
+            `auto-governance[downgrade-autonomy]: ${d.reason} — ` +
+            'decision recorded on the admission trail; enforcement is the autonomy layer\'s job',
+        });
+        this.downgradedScopes.add(scopeKey);
+      }
+    }
+    return { loop: this.save(this.require(caseId)), decisions };
   }
 
   /* --------------------------------------------------------------- */

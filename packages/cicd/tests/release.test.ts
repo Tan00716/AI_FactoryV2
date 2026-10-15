@@ -12,11 +12,13 @@ import {
   DEFAULT_ENVIRONMENTS,
   EnvironmentNotFoundError,
   InvalidSemverError,
+  ReleaseEvidenceMismatchError,
   ReleaseManager,
   ReleaseNotDeployableError,
   ReleaseNotFoundError,
   SnapshotStore,
   bumpVersion,
+  checkReleaseEvidenceCompatibility,
   draftChangelog,
   isValidSemver,
   type ApprovalRef,
@@ -459,5 +461,124 @@ describe('release store hygiene', () => {
     m.createRelease({ version: '8.0.0' });
     m.createRelease({ version: '8.0.1' });
     assert.equal(m.listReleases().length, 2);
+  });
+});
+
+describe('release ↔ requirement version linkage (INV-11)', () => {
+  it('createRelease records the target requirement version when supplied', () => {
+    const m = manager();
+    const r = m.createRelease({ version: '1.5.0', requirementRef: 'REQ-001@2' });
+    assert.equal(r.requirementRef, 'REQ-001@2');
+  });
+
+  it('absent requirementRef stays absent — never invented', () => {
+    const m = manager();
+    const r = m.createRelease({ version: '1.5.0' });
+    assert.equal(r.requirementRef, undefined);
+  });
+
+  it('deploy refuses when evidence pins differ and no compatibility judgment is recorded', async () => {
+    const events: string[] = [];
+    const m = manager({ audit: (action) => void events.push(action) });
+    const r = m.createRelease({
+      version: '1.5.0',
+      environmentId: 'env-dev',
+      requirementRef: 'REQ-001@2',
+    });
+    await assert.rejects(
+      () =>
+        m.deployRelease(r.id, undefined, {
+          evidenceRequirementRefs: ['REQ-001@2', 'REQ-001@3'],
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof ReleaseEvidenceMismatchError);
+        assert.equal(err.releaseRequirementRef, 'REQ-001@2');
+        assert.deepEqual(err.mismatchedRefs, ['REQ-001@3']);
+        assert.match((err as Error).message, /INV-11/);
+        return true;
+      },
+    );
+    // Fail-closed: the release never started deploying.
+    assert.equal(m.getRelease(r.id).status, 'draft');
+    assert.equal(m.getRelease(r.id).snapshotId, null);
+    assert.ok(events.includes('RELEASE_EVIDENCE_MISMATCH'), 'the refusal is audited');
+  });
+
+  it('deploy proceeds when every evidence pin matches the release pin', async () => {
+    const m = manager();
+    const r = m.createRelease({
+      version: '1.5.0',
+      environmentId: 'env-dev',
+      requirementRef: 'REQ-001@2',
+    });
+    const out = await m.deployRelease(r.id, undefined, {
+      evidenceRequirementRefs: ['REQ-001@2', 'REQ-001@2'],
+    });
+    assert.equal(out.release.status, 'deployed');
+  });
+
+  it('an explicit compatibility judgment is honored and recorded', async () => {
+    const events: Array<{ action: string; detail: unknown }> = [];
+    const m = manager({
+      audit: (action: string, detail: unknown) => void events.push({ action, detail }),
+    });
+    const r = m.createRelease({
+      version: '1.5.0',
+      environmentId: 'env-dev',
+      requirementRef: 'REQ-001@2',
+    });
+    const out = await m.deployRelease(r.id, undefined, {
+      evidenceRequirementRefs: ['REQ-001@3'],
+      compatibilityStatement: 'REQ-001@3 is a doc-only amendment; code surface unchanged (tan, 2026-10-15)',
+    });
+    assert.equal(out.release.status, 'deployed');
+    const declared = events.find((e) => e.action === 'RELEASE_COMPATIBILITY_DECLARED');
+    assert.ok(declared, 'the explicit judgment is audited');
+    assert.match(
+      String((declared.detail as Record<string, unknown>)['statement']),
+      /doc-only amendment/,
+    );
+  });
+
+  it('the gate is skipped when there is nothing to compare — it refuses to fabricate pins', async () => {
+    const m = manager();
+    // No requirementRef on the release: no comparison possible.
+    const r1 = m.createRelease({ version: '1.5.0', environmentId: 'env-dev' });
+    const out1 = await m.deployRelease(r1.id, undefined, {
+      evidenceRequirementRefs: ['REQ-001@9'],
+    });
+    assert.equal(out1.release.status, 'deployed');
+    // No evidence refs supplied: nothing to compare.
+    const r2 = m.createRelease({
+      version: '1.5.1',
+      environmentId: 'env-dev',
+      requirementRef: 'REQ-001@2',
+    });
+    const out2 = await m.deployRelease(r2.id);
+    assert.equal(out2.release.status, 'deployed');
+  });
+
+  it('checkReleaseEvidenceCompatibility is a pure, honest predicate', () => {
+    assert.deepEqual(
+      checkReleaseEvidenceCompatibility({ requirementRef: 'REQ-001@2' }, ['REQ-001@2']),
+      { ok: true },
+    );
+    assert.deepEqual(checkReleaseEvidenceCompatibility({}, ['REQ-001@2']), { ok: true });
+    assert.deepEqual(
+      checkReleaseEvidenceCompatibility({ requirementRef: 'REQ-001@2' }),
+      { ok: true },
+    );
+    assert.deepEqual(
+      checkReleaseEvidenceCompatibility(
+        { requirementRef: 'REQ-001@2' },
+        ['REQ-001@3'],
+        'explicit judgment',
+      ),
+      { ok: true },
+    );
+    assert.deepEqual(
+      checkReleaseEvidenceCompatibility({ requirementRef: 'REQ-001@2' }, ['REQ-001@3']),
+      { ok: false, mismatched: ['REQ-001@3'] },
+    );
   });
 });

@@ -149,3 +149,71 @@ describe('task authorization (§17.2 Human Dispatch)', () => {
     assert.equal(effectiveAuthorizationStatus(t), 'AUTHORIZED');
   });
 });
+
+describe('reportFinding — the AI discovery entry point (§17.2 / INV-07)', () => {
+  it('a discovery becomes a TODO ticket WAITING_HUMAN_DISPATCH — never already authorized', () => {
+    const m = new TaskManager();
+    const t = m.reportFinding({
+      projectId: 'p1',
+      title: 'Race in the session cache',
+      evidenceRefs: ['ev-1'],
+      classification: 'BUG',
+      priority: 'P1',
+      severity: 'CRITICAL',
+      reporter: 'agent-scout-7',
+    });
+    assert.equal(t.status, 'TODO');
+    assert.equal(t.authorizationStatus, 'WAITING_HUMAN_DISPATCH');
+    assert.equal(effectiveAuthorizationStatus(t), 'WAITING_HUMAN_DISPATCH');
+    assert.equal(t.creator, 'agent-scout-7');
+    assert.deepEqual(t.evidenceRefs, ['ev-1']);
+    assert.deepEqual(t.constraints, ['finding-classification:BUG']);
+    assert.equal(t.priority, 'P1');
+    assert.equal(t.severity, 'CRITICAL');
+  });
+
+  it('evidence is mandatory — a discovery without evidence is refused, not filed', () => {
+    const m = new TaskManager();
+    assert.throws(
+      () =>
+        m.reportFinding({
+          projectId: 'p1',
+          title: 'Vague worry',
+          evidenceRefs: [],
+        }),
+      /at least one evidence ref/,
+    );
+    // Nothing was filed: the refusal happens before create().
+    assert.throws(() => m.get('no-such-task'), /not found/i);
+  });
+
+  it('the filed ticket flows through the normal dispatch chain — and not before', () => {
+    const m = new TaskManager();
+    const t = m.reportFinding({
+      projectId: 'p1',
+      title: 'Slow query on the dashboard',
+      evidenceRefs: ['ev-2', 'ev-3'],
+    });
+    // Still waiting: dispatching is the human's action, not the filer's.
+    assert.equal(m.get(t.id).authorizationStatus, 'WAITING_HUMAN_DISPATCH');
+    m.dispatch(t.id, { assigneeAgentId: 'agent-coder-1' });
+    const after = m.get(t.id);
+    assert.equal(after.authorizationStatus, 'AUTHORIZED');
+    assert.deepEqual(after.assignedAgentIds, ['agent-coder-1']);
+    // Evidence survives the dispatch.
+    assert.deepEqual(after.evidenceRefs, ['ev-2', 'ev-3']);
+  });
+
+  it('defaults: reporter falls back to agent, priority/severity keep task defaults', () => {
+    const m = new TaskManager();
+    const t = m.reportFinding({
+      projectId: 'p1',
+      title: 'Odd log line',
+      evidenceRefs: ['ev-9'],
+    });
+    assert.equal(t.creator, 'agent');
+    assert.equal(t.priority, 'P2');
+    assert.equal(t.severity, 'MAJOR');
+    assert.deepEqual(t.constraints, []);
+  });
+});

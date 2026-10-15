@@ -79,3 +79,68 @@ describe('listQaOrg', () => {
     assert.deepEqual(specialists, []);
   });
 });
+
+describe('policy-gated specialist creation (INV-08)', () => {
+  const generousPolicy = () => ({
+    maxChildren: 10,
+    maxDepth: 5,
+    maxConcurrentAgents: 10,
+    maxTotalAgents: 10,
+    maxRuntimeMs: 3_600_000,
+    maxBudget: 1000,
+    allowedRoles: ['QA'],
+    allowedModels: ['default'],
+    allowedTools: ['shell', 'filesystem'],
+    allowedPermissions: [],
+  });
+
+  it('a permitting policy lets the automatic creation through', () => {
+    const agents = new AgentRegistry();
+    const s = createQaSpecialist(agents, 'API', {
+      policy: generousPolicy(),
+      estimatedBudget: 10,
+    });
+    assert.equal(s.name, 'qa-api');
+    assert.equal(agents.list().length, 2, 'lead + specialist');
+  });
+
+  it('a denying policy (population cap) refuses and registers nothing', () => {
+    const agents = new AgentRegistry();
+    const policy = { ...generousPolicy(), maxTotalAgents: 0 };
+    assert.throws(
+      () => createQaSpecialist(agents, 'API', { policy }),
+      (err: unknown) =>
+        (err as Error).name === 'GovernanceError' &&
+        /total-agents-exceeded/.test((err as Error).message),
+    );
+    assert.equal(agents.list().length, 0, 'denied creation registers nothing');
+  });
+
+  it('a denying policy (budget ceiling) refuses the specialist', () => {
+    const agents = new AgentRegistry();
+    const policy = { ...generousPolicy(), maxBudget: 5 };
+    assert.throws(
+      () =>
+        createQaSpecialist(agents, 'Security', { policy, estimatedBudget: 500 }),
+      (err: unknown) =>
+        (err as Error).name === 'GovernanceError' &&
+        /budget-exceeds-limit/.test((err as Error).message),
+    );
+    assert.equal(agents.list().length, 0, 'denied creation registers nothing');
+  });
+
+  it('an existing specialist is returned without re-checking the gate', () => {
+    const agents = new AgentRegistry();
+    const first = createQaSpecialist(agents, 'API', { policy: generousPolicy() });
+    const denyAll = { ...generousPolicy(), maxTotalAgents: 0 };
+    const second = createQaSpecialist(agents, 'API', { policy: denyAll });
+    assert.equal(second.id, first.id, 'idempotent find-or-return wins over the gate');
+  });
+
+  it('the gate also covers the auto-created lead', () => {
+    const agents = new AgentRegistry();
+    const policy = { ...generousPolicy(), maxTotalAgents: 0 };
+    assert.throws(() => ensureQaLead(agents, { policy }), /GovernanceError/);
+    assert.equal(agents.list().length, 0);
+  });
+});

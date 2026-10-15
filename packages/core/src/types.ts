@@ -170,6 +170,12 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  /**
+   * §17.2 — evidence backing a discovery-filed ticket ("附证据").
+   * Recorded when supplied (reportFinding requires at least one);
+   * absent stays absent (never invented).
+   */
+  evidenceRefs?: string[];
   /** SPEC_V2 §18–§20 — v2 state separation (optional; managed by WorkflowEngineV2). */
   v2?: TaskV2Extension;
 }

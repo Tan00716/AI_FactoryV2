@@ -18,6 +18,11 @@
  *   POST /api/loops                       {taskId, verifiedBy} → start an improvement loop
  *   GET  /api/loops/:id                   loop status + admission-check trail
  *   POST /api/loops/:id/advance           {step, ...} advance one loop stage
+ *                                         step 'auto-govern' runs §45.4
+ *                                         automatic governance (disable
+ *                                         defective version / switch to
+ *                                         approved fallback / downgrade
+ *                                         autonomy); never grants privileges
  *
  * Locked domains (lock rules, human authority, permission ceilings, access
  * control, gate standards) are rejected at proposal creation — before any
@@ -289,6 +294,7 @@ export async function handleEvaluationRoutes(
       const by = typeof body['by'] === 'string' ? body['by'] : 'human';
       try {
         let c;
+        let autoGovernDecisions: Array<{ action: string; version: string; targetVersion?: string }> | undefined;
         switch (step) {
           case 'outcome_eval':
             c = loops.recordOutcomeEval(id, body['evaluation'] as EvaluationResult, by);
@@ -341,11 +347,29 @@ export async function handleEvaluationRoutes(
               reason: typeof body['reason'] === 'string' ? body['reason'] : '',
             });
             break;
+          case 'auto-govern':
+            // §45.4 automatic governance: disable defective version /
+            // switch to approved fallback / downgrade autonomy. The
+            // policy function never grants privileges and never removes
+            // Human decisions; every decision is audit-recorded.
+            {
+              const { loop: governed, decisions } = loops.autoGovern(id, { by });
+              c = governed;
+              autoGovernDecisions = decisions.map((d) => ({
+                action: d.action,
+                version: d.version,
+                targetVersion: d.targetVersion,
+              }));
+              ctx.audit.record(by, 'AUTO_GOVERNANCE_APPLIED', 'loop', id, {
+                decisions: autoGovernDecisions,
+              });
+            }
+            break;
           default:
             return ctx.json(res, 400, { error: `unknown loop step: ${String(step)}` }), true;
         }
         ctx.audit.record(by, 'IMPROVEMENT_LOOP_ADVANCED', 'loop', id, { step, stage: c.stage });
-        return ctx.json(res, 200, { loop: c }), true;
+        return ctx.json(res, 200, { loop: c, ...(autoGovernDecisions ? { decisions: autoGovernDecisions } : {}) }), true;
       } catch (e) {
         const code = (e as { code?: string }).code;
         const status = code === 'LOCKED_DOMAIN' ? 403 : 422;

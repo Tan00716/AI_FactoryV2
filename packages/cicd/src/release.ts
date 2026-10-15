@@ -161,6 +161,13 @@ export interface Release {
   snapshotId: string | null;
   /** Set when status is 'failed' or 'rolled_back'. */
   error?: string;
+  /**
+   * INV-11 — the requirement version this release targets, in the
+   * codebase's established 'REQ-001@2' ref form (same representation
+   * Task.requirementRef and evidence rows use). Recorded on creation;
+   * absent stays absent (never invented).
+   */
+  requirementRef?: string;
 }
 
 /** Result of a deployRelease() call. */
@@ -294,6 +301,55 @@ export class ReleaseNotDeployableError extends Error {
   }
 }
 
+/**
+ * INV-11 — the deploy gate refused: the release targets requirement
+ * version X but the evidence pins supplied for this deploy name other
+ * versions, and no explicit compatibility judgment was recorded.
+ */
+export class ReleaseEvidenceMismatchError extends Error {
+  readonly releaseId: string;
+  readonly releaseRequirementRef: string;
+  readonly mismatchedRefs: string[];
+
+  constructor(releaseId: string, releaseRequirementRef: string, mismatchedRefs: string[]) {
+    super(
+      `Deploy of release ${releaseId} refused (INV-11): release targets ` +
+        `requirement '${releaseRequirementRef}' but evidence pins ` +
+        `[${mismatchedRefs.join(', ')}] differ, with no recorded compatibility judgment`,
+    );
+    this.name = 'ReleaseEvidenceMismatchError';
+    this.releaseId = releaseId;
+    this.releaseRequirementRef = releaseRequirementRef;
+    this.mismatchedRefs = [...mismatchedRefs];
+  }
+}
+
+/**
+ * INV-11 — pure requirement/evidence version compatibility check:
+ * "Requirement、Code、Test、Evidence、Release 必须关联相同目标版本或明
+ * 确兼容性判断。" Returns ok when every supplied evidence pin equals the
+ * release's requirementRef, when there is nothing to compare (no pin on
+ * the release, or no evidence refs supplied — the gate refuses to
+ * fabricate pins), or when an explicit compatibility statement is
+ * recorded. Otherwise lists the mismatched pins.
+ */
+export function checkReleaseEvidenceCompatibility(
+  release: Pick<Release, 'requirementRef'>,
+  evidenceRequirementRefs?: string[],
+  compatibilityStatement?: string,
+): { ok: true } | { ok: false; mismatched: string[] } {
+  const target = release.requirementRef;
+  if (!target || !evidenceRequirementRefs || evidenceRequirementRefs.length === 0) {
+    return { ok: true };
+  }
+  const mismatched = evidenceRequirementRefs.filter((r) => r !== target);
+  if (mismatched.length === 0) return { ok: true };
+  if (compatibilityStatement && compatibilityStatement.trim().length > 0) {
+    return { ok: true };
+  }
+  return { ok: false, mismatched };
+}
+
 function noop(): void {
   // intentional
 }
@@ -316,6 +372,11 @@ export interface CreateReleaseInput {
   /** Target environment id (or name); defaults to 'env-dev'. */
   environmentId?: string;
   createdBy?: string;
+  /**
+   * INV-11 — the requirement version this release targets ('REQ-001@2'
+   * form). Recorded on the release; absent stays absent.
+   */
+  requirementRef?: string;
 }
 
 export interface DeployReleaseOptions {
@@ -331,6 +392,21 @@ export interface DeployReleaseOptions {
    * the §77 auto-rollback path.
    */
   healthCheckFn?: (env: ManagedEnvironment, release: Release) => Promise<boolean>;
+  /**
+   * INV-11 — requirement version pins carried by the evidence this
+   * release deploys (same 'REQ-001@2' ref form). When the release has a
+   * requirementRef and any supplied pin differs, the deploy refuses
+   * unless compatibilityStatement is provided. Omitted = the gate
+   * cannot compare and refuses to fabricate pins (skipped).
+   */
+  evidenceRequirementRefs?: string[];
+  /**
+   * INV-11 — an explicit compatibility judgment ("明确兼容性判断"):
+   * a human/recorded statement that the mismatched evidence is
+   * nevertheless compatible with the release's target requirement
+   * version. Honored verbatim and recorded in the audit event.
+   */
+  compatibilityStatement?: string;
 }
 
 export interface ReleaseManagerOptions {
@@ -465,6 +541,9 @@ export class ReleaseManager {
       createdAt: this.now(),
       updatedAt: this.now(),
       snapshotId: null,
+      // INV-11 — record the target requirement version when supplied;
+      // absent stays absent (never invented).
+      ...(input.requirementRef !== undefined ? { requirementRef: input.requirementRef } : {}),
     };
     this.releases.set(release.id, release);
     this.emit('RELEASE_CREATED', release, {
@@ -580,6 +659,36 @@ export class ReleaseManager {
       release.status = 'approved';
       this.touch(release);
       this.emit('RELEASE_APPROVED', release, {});
+    }
+
+    // Gate 2b — INV-11: requirement/evidence version compatibility. The
+    // release records its target requirement version; when the caller
+    // supplies the evidence pins for this deploy and any pin differs
+    // with no recorded compatibility judgment, the deploy refuses
+    // fail-closed. When there is nothing to compare (no pin on the
+    // release or no evidence refs supplied) the gate is skipped — it
+    // refuses to fabricate pins.
+    const compat = checkReleaseEvidenceCompatibility(
+      release,
+      opts.evidenceRequirementRefs,
+      opts.compatibilityStatement,
+    );
+    if (!compat.ok) {
+      this.emit('RELEASE_EVIDENCE_MISMATCH', release, {
+        requirementRef: release.requirementRef,
+        mismatchedRefs: compat.mismatched,
+      });
+      throw new ReleaseEvidenceMismatchError(
+        release.id,
+        release.requirementRef as string,
+        compat.mismatched,
+      );
+    }
+    if (opts.compatibilityStatement && release.requirementRef && opts.evidenceRequirementRefs?.length) {
+      this.emit('RELEASE_COMPATIBILITY_DECLARED', release, {
+        requirementRef: release.requirementRef,
+        statement: opts.compatibilityStatement,
+      });
     }
 
     // Gate 3 — §77: snapshot before the operation.

@@ -5,9 +5,26 @@
  */
 
 import type { Agent, AgentRegistry } from '@ai-factory/core';
+import { enforcePolicy, type FactoryPolicy } from '@ai-factory/employee-factory';
 import type { QaOrgSnapshot, QaSpecialistKind } from './types';
 
 export const QA_LEAD_NAME = 'qa-lead';
+
+/**
+ * INV-08 — optional policy gate for automatic QA specialist creation.
+ * "派工后，范围内子任务、转派、返工、专家创建及 QA 可自动进行；受政策
+ * 和预算约束。" When supplied, the creation runs through the same
+ * governance gate as any employee creation (children/depth/population
+ * limits, role + tool allow-lists, runtime + budget ceilings —
+ * @ai-factory/employee-factory enforcePolicy); when omitted the
+ * behavior is exactly as before. The policy itself comes from the
+ * caller (project/factory policy) — never invented here.
+ */
+export interface QaCreationGate {
+  policy: FactoryPolicy;
+  /** Estimated budget (credits) for the specialist; checked against policy.maxBudget. */
+  estimatedBudget?: number;
+}
 
 const SPECIALIST_SKILLS: Record<QaSpecialistKind, string[]> = {
   Functional: ['test-planning', 'exploratory-testing', 'boundary-analysis'],
@@ -24,14 +41,27 @@ const SPECIALIST_SKILLS: Record<QaSpecialistKind, string[]> = {
  * Find-or-register the QA Lead. Parented under the tech lead when one is
  * already registered, otherwise a top-level agent. Autonomy level 3 (§17):
  * can run tests and file defects, not change product scope.
+ * With a gate (INV-08), the creation is policy-checked first.
  */
-export function ensureQaLead(agents: AgentRegistry): Agent {
+export function ensureQaLead(agents: AgentRegistry, gate?: QaCreationGate): Agent {
   const existing = agents.list().find((a) => a.name === QA_LEAD_NAME);
   if (existing) return existing;
 
   const techLead = agents
     .list()
     .find((a) => /tech\s*lead/i.test(a.jobTitle));
+  if (gate) {
+    enforcePolicy(
+      agents,
+      {
+        parentAgentId: techLead ? techLead.id : null,
+        jobTitle: 'QA Lead',
+        tools: ['shell', 'filesystem'],
+        estimatedBudget: gate.estimatedBudget,
+      },
+      gate.policy,
+    );
+  }
   return agents.register({
     name: QA_LEAD_NAME,
     displayName: 'QA Lead',
@@ -49,16 +79,31 @@ export function ensureQaLead(agents: AgentRegistry): Agent {
  * Register (or return the existing) QA specialist for a §36 kind.
  * Specialists are parented under the QA Lead; the task may create only
  * the needed ones (§36: "dynamically create only the needed specialists").
+ * With a gate (INV-08), the creation is policy-checked first: a denied
+ * policy throws and nothing is registered.
  */
 export function createQaSpecialist(
   agents: AgentRegistry,
   kind: QaSpecialistKind,
+  gate?: QaCreationGate,
 ): Agent {
   const name = `qa-${kind.toLowerCase()}`;
   const existing = agents.list().find((a) => a.name === name);
   if (existing) return existing;
 
-  const lead = ensureQaLead(agents);
+  const lead = ensureQaLead(agents, gate);
+  if (gate) {
+    enforcePolicy(
+      agents,
+      {
+        parentAgentId: lead.id,
+        jobTitle: `${kind} QA`,
+        tools: ['shell', 'filesystem'],
+        estimatedBudget: gate.estimatedBudget,
+      },
+      gate.policy,
+    );
+  }
   return agents.register({
     name,
     displayName: `${kind} QA`,

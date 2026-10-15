@@ -94,6 +94,26 @@ export class InMemoryTaskStore implements TaskStore {
 /** §17.2 — the states a task may be created into (never REVOKED/EXPIRED). */
 export type InitialTaskAuthorizationStatus = 'DRAFT' | 'WAITING_HUMAN_DISPATCH' | 'AUTHORIZED';
 
+/**
+ * §17.2 / INV-07 — input for filing an AI discovery as a ticket.
+ * "普通发现可创建待派工票据": evidence is mandatory ("附证据"),
+ * classification + priority travel with the ticket for triage.
+ */
+export interface ReportFindingInput {
+  projectId: string;
+  title: string;
+  /** At least one evidence ref — §17.2 requires evidence on a discovery ticket. */
+  evidenceRefs: string[];
+  /** Triage classification, e.g. 'BUG' | 'RISK' | 'IMPROVEMENT'. */
+  classification?: string;
+  priority?: Task['priority'];
+  severity?: Task['severity'];
+  description?: string;
+  /** The discovering agent; defaults to 'agent'. */
+  reporter?: string;
+  requirementRef?: string;
+}
+
 export interface CreateTaskInput {
   projectId: string;
   title: string;
@@ -128,6 +148,11 @@ export interface CreateTaskInput {
   budgetEnvelope?: Record<string, number>;
   /** §17.4 (Batch 18) — how a subtask serves its parent's goal. */
   parentRelation?: string;
+  /**
+   * §17.2 — evidence refs backing the ticket ("附证据"). Recorded on
+   * the task when supplied; absent stays absent.
+   */
+  evidenceRefs?: string[];
 }
 
 const DEFAULT_WORKSPACE = 'C:\\AIProjects\\MyApp';
@@ -168,6 +193,7 @@ export class TaskManager {
       ...(input.parentRelation !== undefined
         ? { parentRelation: input.parentRelation }
         : {}),
+      ...(input.evidenceRefs !== undefined ? { evidenceRefs: [...input.evidenceRefs] } : {}),
       status: 'TODO',
       currentAgentId: null,
       assignedAgentIds: [],
@@ -366,6 +392,40 @@ export class TaskManager {
   requestDispatch(taskId: string): Task {
     this.transitionAuthorization(taskId, 'request dispatch for', ['DRAFT'], 'WAITING_HUMAN_DISPATCH');
     return this.get(taskId);
+  }
+
+  /**
+   * §17.2 / INV-07 — the fixed entry point for an AI-filed discovery:
+   * "AI 自己发现普通问题必须建立 TODO、附证据、分类与优先级，等待
+   * Human Dispatch". A finding becomes a TODO ticket that is
+   * WAITING_HUMAN_DISPATCH — it can never be created already
+   * authorized, so a discovery can never silently start a run. At
+   * least one evidence ref is required ("附证据"); the classification
+   * is recorded as a constraint token for triage. The returned ticket
+   * flows through the normal requestDispatch → dispatch chain.
+   */
+  reportFinding(input: ReportFindingInput): Task {
+    if (!input.title?.trim()) throw new TaskDependencyError('Task title is required');
+    if (!input.evidenceRefs || input.evidenceRefs.length === 0) {
+      throw new TaskDependencyError(
+        'reportFinding requires at least one evidence ref (§17.2 "附证据")',
+      );
+    }
+    return this.create({
+      projectId: input.projectId,
+      title: input.title,
+      description: input.description,
+      priority: input.priority,
+      severity: input.severity,
+      creator: input.reporter ?? 'agent',
+      authorizationStatus: 'WAITING_HUMAN_DISPATCH',
+      requirementRef: input.requirementRef,
+      evidenceRefs: input.evidenceRefs,
+      constraints:
+        input.classification !== undefined
+          ? [`finding-classification:${input.classification}`]
+          : undefined,
+    });
   }
 
   /**

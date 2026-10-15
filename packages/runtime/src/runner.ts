@@ -10,7 +10,7 @@
  */
 import type { Agent, Task } from '@ai-factory/core';
 import { scanForSecrets } from '@ai-factory/memory';
-import { route, type RouteDecision, type RouteRequest } from '@ai-factory/model-router';
+import { route, type DataClass, type RouteDecision, type RouteRequest } from '@ai-factory/model-router';
 import { AgentLoop } from './loop';
 import { Harness, type ToolImpl } from './harness';
 import type { RuntimeAdapter } from './adapters';
@@ -88,13 +88,49 @@ interface DefaultStepContext {
   adapter: RuntimeAdapter;
   tools: Record<string, ToolImpl>;
   routing?: RouteDecision;
+  /** INV-30 — the privacy class the route request was filed under (§26.3). */
+  privacy?: DataClass;
   /** §25 — the run's extended-budget tracker (all 8 limits). */
   tracker: BudgetTracker;
 }
 
+/**
+ * INV-30 / §26 — "Local-first 不等于代码从不离开电脑；发送给云模型属于受控
+ * 数据外发。" Build the explicit DATA_EXPORT evidence event for a prompt
+ * about to be sent to a non-local provider, or null when the call is
+ * exempt. Local providers are exempt (data never leaves the machine); an
+ * unknown provider fails safe to "export" (recorded), never silently
+ * assumed local. The event carries the provider + privacy class — the
+ * two facts the router's privacy dimension (§26.3) already decided —
+ * so a cloud call is never just an implicit routing outcome: it is a
+ * recorded, auditable data-export event with the prompt's data class.
+ */
+export function dataExportEventFor(input: {
+  provider: string | undefined;
+  model: string;
+  privacy: DataClass | 'unknown';
+  agentId: string;
+  taskId: string;
+}): { type: string; title: string; payload: Record<string, unknown> } | null {
+  if (input.provider === 'local') return null;
+  const provider = input.provider ?? 'unknown';
+  return {
+    type: 'data_export',
+    title: `data export: prompt sent to ${provider} provider`,
+    payload: {
+      event: 'DATA_EXPORT',
+      agentId: input.agentId,
+      taskId: input.taskId,
+      provider,
+      model: input.model,
+      privacy: input.privacy,
+    },
+  };
+}
+
 /** Adapter-driven StepFn used when the caller does not script behavior. */
 function defaultStepFn(ctx: DefaultStepContext): StepFn {
-  const { agent, task, harness, adapter, tools, routing, tracker } = ctx;
+  const { agent, task, harness, adapter, tools, routing, privacy, tracker } = ctx;
   let adapterNote = '';
 
   return async (phase: LoopPhase): Promise<PhaseResult> => {
@@ -149,6 +185,20 @@ function defaultStepFn(ctx: DefaultStepContext): StepFn {
         // maxModelCalls throws BudgetExceeded OUT of the StepFn (the loop
         // treats BUDGET_EXCEEDED as terminal — never retried into success).
         tracker.consumeModelCall();
+        // INV-30 / §26: a prompt sent to a cloud model is a controlled
+        // data export — record it as an explicit, auditable event BEFORE
+        // the adapter is invoked. Local providers are exempt; unknown
+        // providers fail safe to "export" (recorded, never silently
+        // assumed local). The privacy class comes from the route request
+        // the router already decided on (§26.3).
+        const exportEvent = dataExportEventFor({
+          provider: routing?.primary?.provider,
+          model: routing?.primary?.model ?? adapter.name,
+          privacy: privacy ?? 'unknown',
+          agentId: agent.id,
+          taskId: task.id,
+        });
+        if (exportEvent) harness.collectEvidence(exportEvent);
         let output;
         try {
           output = await harness.withTimeout('adapter.invoke', () =>
@@ -328,6 +378,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
       adapter,
       tools: options.tools ?? {},
       routing,
+      privacy: options.routeRequest?.privacy,
       tracker,
     });
 
