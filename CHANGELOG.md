@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 84 (2026-10-16)
+
+独立复核 + 可售清单更新批。
+
+- **Batch 83 独立复核（gap-audit/REAUDIT_BATCH83.md，偏差 0 处）**：5e07c3a 恰好 2 文件（CHANGELOG.md + gap-audit/REAUDIT_BATCH82.md），与 CHANGELOG Batch 83 条目描述一致，无 .github、无意外文件。REAUDIT_BATCH82.md 在位（1987 bytes，"偏差 0 处"）；b5a38b7 亲验恰好 2 文件；"npm test 2593/0×2"记录为子任务声称（复核人不重跑）；"主线数字"口径如实，每项标了来源批次，无冒充新跑。REAUDIT 链：1–10 + 21–83 连续
+- **可售清单"当前状态"小节更新（B81–83）**：`~/workspace/goals/ai-factory-app-prototype/files/SELLABLE_CHECKLIST.md`（repo 外）新增"当前状态（2026-10-16，Batch 83 收口，基线 5e07c3a，本地）"小节：三批摘要（复核链连续、flake 根因修复、两轮猎捕结论）、当前主线数字（构建 0/B81、包套件 2593/0/B83×2、服务端 500/500/B82×2、验收 121/121/B80、tsc 0/B80/81、smoke OK/B81）、新增真实缺口 0、总结论仍是"可运行的原型 + 持续收敛"（13 硬门槛未变）。数字逐项对照 CHANGELOG B81/B82/B83 条目一致；旧小节原样保留
+- **测试基线**：本批是复核+文档批，无产品代码改动；主线数字沿用 B80–83 收口口径（构建 0、包套件 2593/0×2、服务端 500/500×2、验收 121/121、desktop/electron tsc 0、smoke:boot OK）。
+
 ## Batch 83 (2026-10-16)
 
 独立复核 + 包套件 flake 猎捕批。
