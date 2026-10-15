@@ -3,7 +3,7 @@
 One line per walkthrough edition below; each edition is cumulative
 across files, not a replacement — `demo:e2e-v4` remains the authority
 for the B31–B36 governance chains, v5 for B37–B40, v6 for B41–B42 §81,
-v7 for B43–B45, v8 for B47, and the audit-chain legs for B52–B54. Every edition runs the real compiled
+v7 for B43–B45, v8 for B47, and the audit-chain legs for B52–B56. Every edition runs the real compiled
 server (fresh temp SQLite, hermetic `FACTORY_SECRETS_DIR`) over pure
 HTTP, zero mocks, unless the row says otherwise.
 
@@ -23,8 +23,9 @@ HTTP, zero mocks, unless the row says otherwise.
 | audit-chain leg | 52 | A1–A2 (chain integrity: reverse API array to append order → verify → `ok:true`, `legacyCount:0`; 2nd `node:sqlite` connection tampers a middle record → `brokenAt` pinpoints it; key finding: no HTTP verify endpoint — server is writer, operator is verifier) | 1/1 ×3 | F32–F34 |
 | verify endpoint (operator) | 53 | `GET /api/audit/verify`: server-side genesis-anchored full-chain verify → `{ok, verifiedCount, legacyCount, brokenAt?}`; `?limit`/`?offset` → 400 `AUDIT_VERIFY_NO_PAGINATION` (fail-closed); `viewer → 403`, `operator → 200` | contract test 4/4 ×2 (intact, tamper, pagination refusal, role gating) | F33 (closed B53) |
 | audit-chain verify leg | 54 | V1–V3 (endpoint → `ok:true`; mid-chain DB tamper → `ok:false` + `brokenAt` at the midpoint index; `?limit=1` → 400) | 1/1 ×3 (~2s each); detection-not-prevention, unchanged | F35–F37 |
+| audit-chain watch leg | 56 | A–C (healthy boot → 0 OPEN; tamper + reboot → exactly 1 OPEN `security-issue` via the boot-time check; reboot while still broken → still 1; `WATCH=0` + tamper → 0 OPEN with broken-chain control) | 1/1 ×3 (~9s each); real server boot path, not module-level tick | F39–F40 |
 
-## Findings index (F1–F38)
+## Findings index (F1–F40)
 
 Status: `closed` = fixed and pinned by tests; `open` = still true today
 (includes by-design and environment notes); `hygiene` = process note, no
@@ -70,6 +71,8 @@ fix expected.
 | F36 | Info | open | `GET /api/audit/verify` is point-in-time, not a watch — a tamper seconds after a successful verify goes unseen until the next call; continuous attestation (periodic verify + alert) is an operator policy choice, not the endpoint's claim |
 | F37 | Info | hygiene | `brokenAt` is an append-order (genesis-anchored) index, not API newest-first order (F21); joining `brokenAt` against the raw array without reversing points at the wrong record |
 | F38 | Info | closed (B55) | F36's 'operator policy choice' is now the server default: periodic in-process `audit.verify()` (60s, `FACTORY_AUDIT_CHAIN_WATCH_INTERVAL_MS`) raises one §81 `security-issue` on a break (`AUDIT_CHAIN_VERIFY_FAILED` + `NEEDS_HUMAN_RAISED`, dedup by open list); silent on success; `FACTORY_AUDIT_CHAIN_WATCH=0` opts out — default-on because detection-not-prevention means nothing unless detection runs |
+| F39 | Info | hygiene | watch walkthrough boots the real compiled server process (not just the exported tick function): slower (~9s) but exercises the boot-time check that ships, plus SIGTERM handling and port rebinding |
+| F40 | Info | hygiene | the WATCH=0 leg keeps a broken-chain control (`GET /api/audit/verify → ok:false`) so '0 OPEN' means the opt-out, not a failed tamper |
 
 ---
 
@@ -814,3 +817,54 @@ severity critical, operator) raised by the boot-time check; healthy DB → 0;
 `FACTORY_AUDIT_CHAIN_WATCH=0` → disabled log line, nothing raised.
 Boundaries unchanged: still detection-not-prevention; still the local chain
 only (no third-party notarization).
+
+## Walkthrough: audit-chain watch leg (Batch 56)
+
+Batch 55 added the periodic self-check (F36): the server verifies its
+own chain in-process — once at boot plus a 60s `setInterval` — and
+raises one §81 `security-issue` needsHuman when the chain breaks. The
+module-level contract is pinned by
+`apps/server/tests/audit-chain-watch.test.ts` (6/6), but that test
+calls `tickAuditChainWatch` directly. This leg pins the **real startup
+path**: the actual compiled server process is booted (the boot-time
+check is the same `tickAuditChainWatch` `index.ts` calls at top level),
+the DB is tampered out-of-band, and the server is rebooted — pure HTTP,
+zero mocks, fresh temp SQLite files
+(`first-run-walkthrough-audit-chain-watch.test.ts`, hermetic +
+dual-mode, temp `DB_PATH` + `FACTORY_SECRETS_DIR` +
+`FACTORY_PROJECTS_ROOT`, no tokens).
+
+| Leg | What the walkthrough does |
+|---|---|
+| A | healthy DB boot + three real `POST /api/projects` → `GET /api/needs-human?status=open` → **0 items** (the watch is silent on success — no audit spam) |
+| B | tamper a middle record via a second `node:sqlite` connection (the "attacker with DB access"; done while the server is up, then stop) → reboot the same DB → boot check raises **exactly 1** OPEN `security-issue` (`source=audit-chain-watch`, `severity=critical`, `requiredDeciderLevel=operator`, honest narrative persisted in `detailJson` — says BROKEN, asks for human judgment, states the append-order index, carries no injected payload) |
+| B2 | reboot a third time while still broken → **still exactly 1** OPEN (dedup: `list('open')` is the authority — no storm; `AUDIT_CHAIN_VERIFY_FAILED` written exactly once) |
+| C | fresh DB, same tamper, reboot with `FACTORY_AUDIT_CHAIN_WATCH=0` → **0 OPEN** (the watch does not run); control: `GET /api/audit/verify` → `ok:false` on the same DB, proving 0 OPEN is the opt-out, not a failed tamper |
+
+Verified 1/1 three consecutive runs (each ~9s; boots + HTTP only).
+
+Path choice (recorded honestly): this test boots the real server
+process rather than calling `tickAuditChainWatch` at module level
+because the claimed behavior is "the server self-checks on boot" — the
+closest path to the claim is an actual boot. The 60s interval timer is
+live with defaults during the test; every assertion is robust to an
+extra tick because dedup keeps OPEN ≤ 1 and the failure evidence is
+written once (the repeated-boot check in B2 is the no-storm proof on
+the real path).
+
+## Findings (audit-chain watch leg)
+
+**F39 — Info (boot-path fidelity note).**
+The walkthrough boots `apps/server/dist/index.js` as a child process,
+so it proves the boot-time check that ships — not just the exported
+function in isolation. Cost: the leg is slower than module-level tests
+(~9s vs ~1s) and exercises process startup, SIGTERM handling, and
+port rebinding — all real operational surface, which is the point of a
+first-run walkthrough.
+
+**F40 — Info (WATCH=0 control).**
+C's control leg (`GET /api/audit/verify → ok:false` on the tampered
+DB with the watch off) is what makes "0 OPEN" meaningful: without it,
+a no-op tamper would be indistinguishable from a disabled watch. Any
+future opt-out or flag test for the watch should keep a broken-chain
+control assertion.
