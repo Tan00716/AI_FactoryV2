@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 97 (2026-10-16)
+
+独立复核 + 可售清单更新批。
+
+- **Batch 95+96 联合独立复核（gap-audit/REAUDIT_BATCH95_96.md，偏差 0 处）**：541764f 恰好 4 文件、44ef111 恰好 1 文件，与 CHANGELOG Batch 95/96 条目描述一致，无 .github、无意外文件。CORS 修复 diff 亲验（index.ts 两处 Allow-Methods 确为新列表、terminal.ts SSE 确有 Allow-Origin）；"27/27 渲染、25 PASS"与"500/500"记录为子任务声称。REAUDIT 链：1–10 + 21–96 连续
+- **可售清单"当前状态"小节更新（B94–96）**：`~/workspace/goals/ai-factory-app-prototype/files/SELLABLE_CHECKLIST.md`（repo 外）新增"当前状态（2026-10-16，Batch 96 收口，基线 44ef111，本地）"小节：三批摘要（B94 复核+清单、B95 走查+CORS 真 bug 修复、B96 回归+AppImage 重打）、复核链 1–10 + 21–96 连续、主线数字（构建 0、服务端 500/500 为 B96 亲跑；包套件 2593/0、验收 121/121 为 B93；desktop tsc 0/B89、electron tsc 0/B80-81、smoke OK/B81）、新增真实缺口 0、结论仍是"可运行的原型 + 持续收敛"（13 硬门槛未变）。数字逐项对照 CHANGELOG B94–B96 一致
+- **测试基线**：本批是复核+文档批，无产品代码改动；主线数字：构建 0、服务端 500/500（B96 亲跑）、包套件 2593/0（B93）、验收 121/121（B93）。
+
 ## Batch 96 (2026-10-16)
 
 CORS 修复后回归 + AppImage 重打批。
