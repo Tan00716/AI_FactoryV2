@@ -1,9 +1,9 @@
-# Walkthrough index (Batch 51)
+# Walkthrough index (Batch 54)
 
 One line per walkthrough edition below; each edition is cumulative
 across files, not a replacement — `demo:e2e-v4` remains the authority
 for the B31–B36 governance chains, v5 for B37–B40, v6 for B41–B42 §81,
-v7 for B43–B45, v8 for B47. Every edition runs the real compiled
+v7 for B43–B45, v8 for B47, and the audit-chain legs for B52–B54. Every edition runs the real compiled
 server (fresh temp SQLite, hermetic `FACTORY_SECRETS_DIR`) over pure
 HTTP, zero mocks, unless the row says otherwise.
 
@@ -20,8 +20,11 @@ HTTP, zero mocks, unless the row says otherwise.
 | redaction leg | 49 | R1–R4 (cross-chunk redaction over terminal SSE: split value, prefix-overlap pair, exactly-once marker, audit events) | 1/1 ×3; 2 detection events — below escalation threshold, no needs-human noise by design | F26, F27 |
 | §81 full-trigger sweep | 50 | S1–S8 (all eight §81 triggers; S8 = honest negative control) | 1/1 ×3 (~3.4s each); 7 OPEN rows, no env-error row | F28, F29 |
 | escalation leg | 51 | E1–E4 (4 detection events ≥ threshold → exactly 1 OPEN security-issue with honest narrative) | 1/1 ×3 (~7s each) | F30, F31 |
+| audit-chain leg | 52 | A1–A2 (chain integrity: reverse API array to append order → verify → `ok:true`, `legacyCount:0`; 2nd `node:sqlite` connection tampers a middle record → `brokenAt` pinpoints it; key finding: no HTTP verify endpoint — server is writer, operator is verifier) | 1/1 ×3 | F32–F34 |
+| verify endpoint (operator) | 53 | `GET /api/audit/verify`: server-side genesis-anchored full-chain verify → `{ok, verifiedCount, legacyCount, brokenAt?}`; `?limit`/`?offset` → 400 `AUDIT_VERIFY_NO_PAGINATION` (fail-closed); `viewer → 403`, `operator → 200` | contract test 4/4 ×2 (intact, tamper, pagination refusal, role gating) | F33 (closed B53) |
+| audit-chain verify leg | 54 | V1–V3 (endpoint → `ok:true`; mid-chain DB tamper → `ok:false` + `brokenAt` at the midpoint index; `?limit=1` → 400) | 1/1 ×3 (~2s each); detection-not-prevention, unchanged | F35–F37 |
 
-## Findings index (F1–F31)
+## Findings index (F1–F38)
 
 Status: `closed` = fixed and pinned by tests; `open` = still true today
 (includes by-design and environment notes); `hygiene` = process note, no
@@ -60,6 +63,13 @@ fix expected.
 | F29 | Info | hygiene | auth-mode walk ordering: brute-force leg's 10 bad requests must be back-to-back |
 | F30 | Info | hygiene | escalation threshold counts detection *events*, not summed hit totals |
 | F31 | Info | hygiene | escalate-once-per-pattern; window-expiry reset covered by package unit tests |
+| F32 | Info | open | must verify in append order (`ORDER BY ts, rowid`), not API newest-first order — feeding the raw `GET /api/audit` array to `verifyAuditChain` yields `brokenAt:0` on an intact chain; the walk reverses first |
+| F33 | Info | closed (B53) | pagination truncates genesis: `limit` smaller than the chain length misreports `brokenAt:0` (probe-confirmed) — closed by `GET /api/audit/verify`, which anchors at genesis and refuses pagination outright (`?limit`/`?offset` → 400 `AUDIT_VERIFY_NO_PAGINATION`) |
+| F34 | Info | hygiene | audit-chain leg's second-connection tamper write is timing-adjacent (server idle between HTTP calls); the 10-attempt lock retry is hygiene, never triggered in practice |
+| F35 | Info | open | verify leg runs in default (no-token) auth mode; the role axis is pinned by the contract test (`viewer → 403`, `operator → 200`) — a viewer session sees the server's 403 surfaced verbatim, not a fabricated result |
+| F36 | Info | open | `GET /api/audit/verify` is point-in-time, not a watch — a tamper seconds after a successful verify goes unseen until the next call; continuous attestation (periodic verify + alert) is an operator policy choice, not the endpoint's claim |
+| F37 | Info | hygiene | `brokenAt` is an append-order (genesis-anchored) index, not API newest-first order (F21); joining `brokenAt` against the raw array without reversing points at the wrong record |
+| F38 | Info | closed (B55) | F36's 'operator policy choice' is now the server default: periodic in-process `audit.verify()` (60s, `FACTORY_AUDIT_CHAIN_WATCH_INTERVAL_MS`) raises one §81 `security-issue` on a break (`AUDIT_CHAIN_VERIFY_FAILED` + `NEEDS_HUMAN_RAISED`, dedup by open list); silent on success; `FACTORY_AUDIT_CHAIN_WATCH=0` opts out — default-on because detection-not-prevention means nothing unless detection runs |
 
 ---
 
@@ -779,3 +789,28 @@ not the newest-first order `GET /api/audit` returns (F21). The endpoint
 documents this, and the desktop button's red state quotes the boundary
 verbatim — a consumer joining `brokenAt` against the raw array without
 reversing will point at the wrong record.
+
+**F38 — Info (periodic watch, default-on).**
+F36 left continuous attestation as "an operator policy choice". Batch 55
+makes the choice: `apps/server/src/audit-chain-watch.ts` — the server
+verifies its own chain in-process every 60s
+(`FACTORY_AUDIT_CHAIN_WATCH_INTERVAL_MS`; invalid values fall back to the
+default; `FACTORY_AUDIT_CHAIN_WATCH=0` opts out). The tick calls
+`audit.verify()` directly, never an HTTP loopback. Silent on success (no
+audit spam). On a break it audits `AUDIT_CHAIN_VERIFY_FAILED`
+(brokenAt/verifiedCount/legacyCount) and raises one §81 `security-issue`
+needsHuman through the existing write-through path (`NEEDS_HUMAN_RAISED`,
+or `NEEDS_HUMAN_PERSIST_FAILED` on failure — never throws). Dedup: at most
+one OPEN per source, `list('open')` is the authority — a resolved record
+re-raises on the next tick while the chain is still broken; no alert storm.
+Default-on rationale (documented in the module header): detection-not-
+prevention is an honest boundary only if detection actually runs; the check
+is cheap (O(n) hashing) and silent when healthy, so fail-closed means on.
+Verified: `apps/server/tests/audit-chain-watch.test.ts` 6/6 ×3 consecutive
+(healthy silent / tamper raises exactly one with persisted narrative / no
+storm / resolve-then-re-raise / builder / interval parsing); plus live boot
+checks — tampered DB → 1 OPEN `security-issue` (source `audit-chain-watch`,
+severity critical, operator) raised by the boot-time check; healthy DB → 0;
+`FACTORY_AUDIT_CHAIN_WATCH=0` → disabled log line, nothing raised.
+Boundaries unchanged: still detection-not-prevention; still the local chain
+only (no third-party notarization).

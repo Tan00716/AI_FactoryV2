@@ -116,3 +116,14 @@ manifest 的 `scope` 字段只有两种取值：
   brokenAt?}`；分页参数（`?limit`/`?offset`）直接 400
   `AUDIT_VERIFY_NO_PAGINATION`（截断窗口会误报 brokenAt:0，见走查 F33）。
   恢复前后可用它确认审计链不断。
+- 周期自检（Batch 55，F38）：服务端默认开启进程内审计链自检
+  （`apps/server/src/audit-chain-watch.ts`）——每 60 秒直接调
+  `audit.verify()`（不走 HTTP 回环），健康时静默不写审计（避免审计膨胀）；
+  断链时记 `AUDIT_CHAIN_VERIFY_FAILED`（brokenAt/verifiedCount/legacyCount）
+  并经现有 §81 写透路径产生一条 `security-issue` needsHuman
+ （`NEEDS_HUMAN_RAISED`；写透失败记 `NEEDS_HUMAN_PERSIST_FAILED`，不抛异常）；
+  去重：同一 source 最多一条 OPEN（`list('open')` 为准，resolve 后链仍断则
+  下一 tick 重报，无告警风暴）。默认开启的理由（fail-closed）：
+  detection-not-prevention 只有检测真的在跑才是诚实的；检查代价是 O(n)
+  哈希、健康时零写入。`FACTORY_AUDIT_CHAIN_WATCH=0` 关闭；
+  `FACTORY_AUDIT_CHAIN_WATCH_INTERVAL_MS` 改间隔（非法值回退默认 60s）。

@@ -172,6 +172,10 @@ import {
 import { handleAuthorizationTicketRoutes } from './routes/authorization-tickets';
 import { handleDbRoutes } from './routes/db';
 import { handleBuildsRoutes } from './routes/builds';
+import {
+  parseAuditChainWatchIntervalMs,
+  tickAuditChainWatch,
+} from './audit-chain-watch';
 import { createDbBrokerService } from './db-broker';
 import { EventBus } from '@ai-factory/events';
 import { BruteForceDetector } from '@ai-factory/security';
@@ -580,6 +584,50 @@ const backupSchedulerTimer = setInterval(() => {
   }
 }, TICK_MS);
 if (typeof backupSchedulerTimer.unref === 'function') backupSchedulerTimer.unref();
+
+/**
+ * Periodic §32 audit-chain self-check (Batch 55, F36).
+ *
+ * F36 said "continuous proof (periodic verify + alerting) is an
+ * operator policy choice, not something the endpoint claims" — this is
+ * that choice made concrete: the server continuously verifies its own
+ * chain in-process and raises one §81 'security-issue' needsHuman when
+ * the chain breaks, instead of only answering the on-demand
+ * GET /api/audit/verify (Batch 53).
+ *
+ * Default ON (fail-closed): detection-not-prevention means nothing
+ * unless detection actually runs. FACTORY_AUDIT_CHAIN_WATCH=0 opts
+ * out; FACTORY_AUDIT_CHAIN_WATCH_INTERVAL_MS sets the tick (default
+ * 60s; invalid values fall back to the default). The tick calls
+ * audit.verify() internally — never an HTTP loopback. Silent on
+ * success (no audit spam); a break audits AUDIT_CHAIN_VERIFY_FAILED
+ * then raises the upgrade. Dedup: at most one OPEN upgrade per
+ * source (list('open') is the authority) — a human-resolved record
+ * re-raises on the next tick while the chain is still broken.
+ */
+if (process.env.FACTORY_AUDIT_CHAIN_WATCH !== '0') {
+  const auditChainWatchDeps = { needsHuman: fdb.needsHuman, audit };
+  const auditChainWatchIntervalMs = parseAuditChainWatchIntervalMs(
+    process.env.FACTORY_AUDIT_CHAIN_WATCH_INTERVAL_MS,
+  );
+  try {
+    tickAuditChainWatch(auditChainWatchDeps);
+  } catch (e) {
+    // The tick itself never throws by contract; this is the same
+    // belt-and-braces the backup scheduler uses.
+    console.error('audit chain watch boot check failed:', (e as Error).message);
+  }
+  const auditChainWatchTimer = setInterval(() => {
+    try {
+      tickAuditChainWatch(auditChainWatchDeps);
+    } catch (e) {
+      console.error('audit chain watch tick failed:', (e as Error).message);
+    }
+  }, auditChainWatchIntervalMs);
+  if (typeof auditChainWatchTimer.unref === 'function') auditChainWatchTimer.unref();
+} else {
+  console.log('[ai-factory] audit chain watch disabled (FACTORY_AUDIT_CHAIN_WATCH=0)');
+}
 
 /**
  * Startup reconcile (§28.2): every non-terminal operation in the DB
