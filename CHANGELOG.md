@@ -1,5 +1,14 @@
 # Changelog
 
+## Batch 90 (2026-10-16)
+
+独立复核 + B89 桌面改动冒烟批。
+
+- **Batch 88+89 联合独立复核（gap-audit/REAUDIT_BATCH88_89.md，偏差 0 处）**：c81713d 恰好 2 文件、a81cbb1 恰好 7 文件，与 CHANGELOG Batch 88/89 条目描述一致，无 .github、无意外文件。死代码删除抽查（gitTaskBranchName 确已删）、Sidebar 抽查（useEffect+api.skills 在位）成立；"desktop tsc 0、progress 35/35"为收口人声称、性能冒烟数字为子任务声称。REAUDIT 链：1–10 + 21–89 连续
+- **B89 桌面改动冒烟——全部通过（真 Electron + Xvfb + vite dev，B89 最新源码）**：(a) 应用正常启动渲染，零 error boundary、无 "Failed to fetch"；(b) 侧栏 SKILLS 区显示 8 个真实技能（clean-code、code-review、debugging、e2e-testing、git、refactoring、security-review、unit-testing），正是 `GET /api/skills` 的 live 数据，不是旧的 3 个硬编码——B89 改动生效且正确，真 PNG 为证；(c) console 挂载后 8 秒 0 条 error。全部按 PID 精确清理，端口全关，临时目录已删
+- **过程注记（如实）**：90-1 第一轮被 runtime 重启中断（无残留，重派后完成）；验证中途发现用 `~/b85-pkg/linux-unpacked/ai-factory` 二进制会无视 app 路径参数、加载 B85 旧 asar（CDP page URL 为证）——已 kill 后改用 npm electron 二进制 + vite dev 重跑，本次验证的是真正的 B89 代码
+- **测试基线**：本批是复核+冒烟批，无产品代码改动；主线数字沿用 B80–83 收口口径（构建 0、包套件 2593/0×2、服务端 500/500×2、验收 121/121、desktop/electron tsc 0、smoke:boot OK）。
+
 ## Batch 89 (2026-10-16)
 
 TODO 扫荡 + 死代码删除批。
