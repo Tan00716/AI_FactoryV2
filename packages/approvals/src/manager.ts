@@ -138,6 +138,15 @@ export interface RequestApprovalInput {
   deadline?: string | null;
   /** Overrides the manager default for this request. */
   ttlMs?: number;
+  /**
+   * F58 follow-up (Batch 80): optional linkage to the evidence record this
+   * ticket is tied to (e.g. the DATA_EXPORT evidence event id for a
+   * pre-send export ticket). NOT a §23.3 field — the Approval object
+   * stays verbatim; this id is carried in the APPROVAL_REQUESTED audit
+   * details only, so the ticket → evidence half of the bidirectional
+   * link lives in the audit trail.
+   */
+  evidence_id?: string;
 }
 
 export interface DecideApprovalInput {
@@ -334,6 +343,8 @@ export class ApprovalManager {
       required_approvers: approval.required_approvers,
       requester: approval.requester,
       policy_evaluation: evaluation.level,
+      // F58 (Batch 80): ticket → evidence half of the bidirectional link.
+      ...(input.evidence_id !== undefined ? { evidence_id: input.evidence_id } : {}),
     });
     return approval;
   }

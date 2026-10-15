@@ -1,23 +1,33 @@
 /**
  * First-run walkthrough, ninth edition — §81 needsHuman full-trigger sweep
- * (Batch 50-2).
+ * (Batch 50-2; S8 positive leg added Batch 80-1).
  *
  * Fires all eight §81 triggers against the real compiled server over a fresh
  * temp SQLite file, pure HTTP, zero mocks, and asserts each one leaves an
  * OPEN needs-human record whose detailJson.narrative carries the honest
  * qualifier (the F19/Batch-45 persistence contract).
  *
- * Honest scope note: seven triggers fire deterministically over HTTP. The
- * eighth — 'irrecoverable-env-error' — does NOT: this server's HTTP surface
- * has no input that can put a stagnation signature into ENV_ERROR_CODES
- * (Batch 44/45 honest boundary: the default stepFn masks tool FactoryError
- * codes to tool:<name>:fail, only echo/add are registered, StubAdapter never
- * throws, assertSandboxAvailable has zero callers; the narrow Batch-45
- * passthrough only makes the emission reachable at the tool layer in
- * principle). That leg asserts the negative boundary instead: a non-env
- * stagnation emits exactly one 'repeated-failure' and zero
- * 'irrecoverable-env-error' records. Faking a positive path would be
- * dishonest — see finding F28 in docs/FIRST_RUN_WALKTHROUGH.md.
+ * Honest scope note (Batch 75 / F28, Tan's "A A A" 2026-10-15): this
+ * server's HTTP surface now HAS an operator-gated input that puts a
+ * stagnation signature into ENV_ERROR_CODES — `POST /api/runtime/runs`
+ * accepts an optional `envErrorSignal` (a member of ENV_ERROR_CODES;
+ * viewer → 403, unauthenticated → 401, unknown codes → 400
+ * INVALID_ENV_ERROR_SIGNAL fail-closed; every use audited as
+ * RUNTIME_ENV_ERROR_SIGNAL_USED). So the eighth trigger fires over HTTP
+ * as a positive leg: operator-declared signal → the run's step function
+ * throws the declared env FactoryError on every step →
+ * LoopStagnation → ESCALATED → one 'repeated-failure' record AND one
+ * 'irrecoverable-env-error' record, the latter qualified
+ * declared-not-observed (the failure was declared, never probed on a
+ * real host). The negative control is retained: without the signal, the
+ * non-env stagnation above emits exactly one repeated-failure and zero
+ * irrecoverable-env-error records — the emission block does not
+ * false-positive on a non-env stagnation signature.
+ *
+ * History: before Batch 75 this leg asserted a negative boundary ("HTTP
+ * positive path does not exist") — that Batch-44/45 honest-boundary prose
+ * lives in git history; finding F28 in docs/FIRST_RUN_WALKTHROUGH.md
+ * documents the flip point.
  *
  * The walk runs in AUTH mode (FACTORY_API_TOKENS) so the brute-force leg
  * (10 × wrong Bearer → 401) is reachable; every other call carries the
@@ -145,8 +155,8 @@ async function waitForRun(port: number, runId: string): Promise<Json> {
 
 // ------------------------------------------------------------------ the walk --
 
-describe('first-run walkthrough, ninth edition — §81 full-trigger sweep (Batch 50-2)', () => {
-  it('all eight §81 triggers: seven fire over HTTP, env-error holds its honest negative boundary', { timeout: 600_000 }, async (t) => {
+describe('first-run walkthrough, ninth edition — §81 full-trigger sweep (Batch 50-2; S8 positive leg Batch 80-1)', () => {
+  it('all eight §81 triggers fire over HTTP, with declared-not-observed on the env-error leg', { timeout: 600_000 }, async (t) => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-walk-nh-'));
     const dbFile = join(dir, 'factory.db');
     let server: BootedServer | undefined;
@@ -369,18 +379,22 @@ describe('first-run walkthrough, ninth edition — §81 full-trigger sweep (Batc
       );
       t.diagnostic('S7 repeated-failure: unknown-tool 3× → 1 OPEN, honest narrative in place');
 
-      // -------------------------------------- irrecoverable-env-error (—) --
-      // The honest negative control (Batch 44/45 boundary): this server's
-      // HTTP surface has no input that can put a stagnation signature into
-      // ENV_ERROR_CODES — so there must be ZERO such records, even though
-      // the emission block exists. The non-env stagnation above must have
-      // produced exactly one repeated-failure and nothing else.
+      // ---------------------------------- irrecoverable-env-error (S8) --
+      // Batch 75 (F28): the HTTP surface now has an operator-gated
+      // `envErrorSignal` input, so this leg does both:
+      //   (a) the negative control WITHOUT the signal — the emission
+      //       block must not false-positive: the non-env stagnation
+      //       above produced exactly one repeated-failure record and
+      //       zero irrecoverable-env-error records;
+      //   (b) the positive leg WITH the signal — operator declares
+      //       ENV_SANDBOX_UNAVAILABLE → the run escalates and the
+      //       irrecoverable-env-error record fires declared-not-observed.
       upgrades = await openNeedsHuman(port);
-      const envRows = upgrades.filter((u) => u['reason'] === 'irrecoverable-env-error');
+      const envRowsNoSignal = upgrades.filter((u) => u['reason'] === 'irrecoverable-env-error');
       assert.equal(
-        envRows.length,
+        envRowsNoSignal.length,
         0,
-        'HTTP positive path does not exist: zero irrecoverable-env-error records',
+        'without the signal: zero irrecoverable-env-error records',
       );
       const stagAll = upgrades.filter(
         (u) => String(u['source'] ?? '') === `runtime-run:${stagRunId}`,
@@ -390,9 +404,49 @@ describe('first-run walkthrough, ninth edition — §81 full-trigger sweep (Batc
         1,
         'the non-env stagnation produced exactly one upgrade record (repeated-failure)',
       );
-      t.diagnostic('S8 irrecoverable-env-error: negative control holds — 0 records, boundary documented');
+      t.diagnostic('S8a irrecoverable-env-error: negative control holds — 0 records without the signal');
+
+      // (b) positive leg: the walk boots in AUTH mode with an admin
+      // token (roleRank admin 3 ≥ operator 2), so the operator-gated
+      // signal is reachable here. Fresh task; the declared failure is
+      // stamped on the run, never probed on a host.
+      const envTask = await api(port, 'POST', '/api/tasks', {
+        projectId: bp.body['id'],
+        title: 'walk-nh-env-positive',
+        goal: 'pin the irrecoverable-env-error positive leg',
+      });
+      assert.equal(envTask.status, 201);
+      const envRun = await api(port, 'POST', '/api/runtime/runs', {
+        agentId: agent.body['id'],
+        taskId: envTask.body['id'],
+        envErrorSignal: 'ENV_SANDBOX_UNAVAILABLE',
+      });
+      assert.equal(envRun.status, 202, 'operator-declared signal → run accepted');
+      const envRunId = String(envRun.body['id']);
+      const envRec = await waitForRun(port, envRunId);
+      assert.equal(envRec['status'], 'ESCALATED', 'declared env failure → run escalates');
+      upgrades = await openNeedsHuman(port);
+      const envUpgrades = upgrades.filter(
+        (u) => String(u['source'] ?? '') === `runtime-run:${envRunId}`,
+      );
+      assert.equal(envUpgrades.length, 2, 'exactly two upgrade records for the signal run');
+      const envReasons = envUpgrades.map((u) => String(u['reason'])).sort();
+      assert.deepEqual(envReasons, ['irrecoverable-env-error', 'repeated-failure']);
+      const envRow = envUpgrades.find((u) => u['reason'] === 'irrecoverable-env-error')!;
+      assert.match(
+        narrativeOf(envRow),
+        /DECLARED environment error/,
+        'narrative names the declaration',
+      );
+      assert.match(
+        narrativeOf(envRow),
+        /NOT observed by probing a real host/,
+        'narrative denies host observation',
+      );
+      t.diagnostic('S8b irrecoverable-env-error: signal → ESCALATED, 1× repeated-failure + 1× irrecoverable-env-error, declared-not-observed in place');
 
       // ------------------------------------------------------------- tally --
+      upgrades = await openNeedsHuman(port);
       const reasons = new Set(upgrades.map((u) => String(u['reason'])));
       for (const expected of [
         'security-issue',
@@ -402,11 +456,11 @@ describe('first-run walkthrough, ninth edition — §81 full-trigger sweep (Batc
         'high-risk-deployment',
         'budget-exceeded',
         'repeated-failure',
+        'irrecoverable-env-error',
       ]) {
         assert.ok(reasons.has(expected), `OPEN set includes ${expected}`);
       }
-      assert.ok(!reasons.has('irrecoverable-env-error'), 'no env-error record in the honest walk');
-      t.diagnostic(`tally: 7 fired + 1 honest negative boundary (${upgrades.length} OPEN rows total)`);
+      t.diagnostic(`tally: 8/8 fired over HTTP (${upgrades.length} OPEN rows total)`);
 
       await stopServer(server);
       server = undefined;

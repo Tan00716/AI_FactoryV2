@@ -11,6 +11,7 @@
 import type { Agent, Task } from '@ai-factory/core';
 import { scanForSecrets } from '@ai-factory/memory';
 import { route, type DataClass, type RouteDecision, type RouteRequest } from '@ai-factory/model-router';
+import { ApprovalManager, InMemoryApprovalStore } from '@ai-factory/approvals';
 import { AgentLoop } from './loop';
 import { Harness, type ToolImpl } from './harness';
 import type { RuntimeAdapter } from './adapters';
@@ -35,6 +36,7 @@ import {
   type RetryPolicy,
 } from './limits';
 import { StepIntentStore } from './durable';
+import { attachExportAuthorization } from './export-approval';
 
 export interface RunAgentOptions {
   agent: Agent;
@@ -69,6 +71,15 @@ export interface RunAgentOptions {
    * rule as budgetTracker.
    */
   intentStore?: StepIntentStore;
+  /**
+   * F58 follow-up (Batch 80): approvals manager used to record the
+   * pre-send data-export authorization ticket before a non-local model
+   * call. A caller-supplied manager wins (same priority rule as
+   * budgetTracker/intentStore); the default is a fresh in-memory manager
+   * whose audit stream is wired into the harness onAudit. Record-mode
+   * only — nothing blocks the call.
+   */
+  exportApprovalManager?: ApprovalManager;
 }
 
 function buildPrompt(agent: Agent, task: Task): string {
@@ -92,6 +103,13 @@ interface DefaultStepContext {
   privacy?: DataClass;
   /** §25 — the run's extended-budget tracker (all 8 limits). */
   tracker: BudgetTracker;
+  /**
+   * F58 follow-up (Batch 80) — approvals manager used to record the
+   * pre-send data-export authorization ticket before a non-local model
+   * call. Record-mode only: the ticket is recorded (PENDING), the call
+   * is never blocked.
+   */
+  exportApprovals: ApprovalManager;
 }
 
 /**
@@ -130,7 +148,7 @@ export function dataExportEventFor(input: {
 
 /** Adapter-driven StepFn used when the caller does not script behavior. */
 function defaultStepFn(ctx: DefaultStepContext): StepFn {
-  const { agent, task, harness, adapter, tools, routing, privacy, tracker } = ctx;
+  const { agent, task, harness, adapter, tools, routing, privacy, tracker, exportApprovals } = ctx;
   let adapterNote = '';
 
   return async (phase: LoopPhase): Promise<PhaseResult> => {
@@ -198,7 +216,25 @@ function defaultStepFn(ctx: DefaultStepContext): StepFn {
           agentId: agent.id,
           taskId: task.id,
         });
-        if (exportEvent) harness.collectEvidence(exportEvent);
+        if (exportEvent) {
+          // F58 follow-up (Batch 80, record-mode): a prompt sent to a
+          // non-local model is a controlled data export — record an
+          // approvals-package authorization ticket BEFORE adapter.invoke
+          // and link it bidirectionally with the DATA_EXPORT evidence
+          // event. The call is NOT blocked (blocking mode is Tan's
+          // product decision); zero UX change.
+          attachExportAuthorization({
+            exportEvent,
+            provider: routing?.primary?.provider ?? 'unknown',
+            model: routing?.primary?.model ?? adapter.name,
+            privacy: privacy ?? 'unknown',
+            agentId: agent.id,
+            taskId: task.id,
+            approvals: exportApprovals,
+            audit: (action, detail) => harness.auditEvent(action, detail),
+          });
+          harness.collectEvidence(exportEvent);
+        }
         let output;
         try {
           output = await harness.withTimeout('adapter.invoke', () =>
@@ -369,6 +405,18 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
       budgetTracker: tracker,
     });
   if (options.loop) options.loop.attachBudgetTracker(tracker);
+  // F58 follow-up (Batch 80, record-mode): the approvals manager used to
+  // record the pre-send data-export authorization ticket. A
+  // caller-supplied manager wins (same priority rule as
+  // budgetTracker/intentStore); the default is a fresh in-memory manager
+  // whose audit stream is wired into the harness onAudit. Record-mode
+  // only — the ticket never blocks the call.
+  const exportApprovals: ApprovalManager =
+    options.exportApprovalManager ??
+    new ApprovalManager(new InMemoryApprovalStore(), {
+      audit: (action, entityId, details) =>
+        harness.auditEvent(action, `${entityId}: ${JSON.stringify(details)}`),
+    });
   const stepFn =
     options.stepFn ??
     defaultStepFn({
@@ -380,6 +428,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
       routing,
       privacy: options.routeRequest?.privacy,
       tracker,
+      exportApprovals,
     });
 
   pushTrace('RUNNER', 'run start', `agent=${agent.id} task=${task.id} adapter=${adapter.name}`);

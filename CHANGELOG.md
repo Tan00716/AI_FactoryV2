@@ -1,5 +1,15 @@
 # Changelog
 
+## Batch 80 (2026-10-16)
+
+短名单 Top 3 落地批（Batch 79-2 的调研结论）。
+
+- **80-1：§81 sweep 走查 S8 腿更新（测试 only，零产品代码）**：`apps/server/tests/first-run-walkthrough-needshuman.test.ts`（106 行）。Batch 75（F28，Tan "A A A"）把 S8 从钉死的负向对照翻成正向触发后，该走查的头部注释仍写 "HTTP surface has no input"、断言文案 "HTTP positive path does not exist" 已不成立。更新注释（如实说明 operator-gated `envErrorSignal`：viewer→403、匿名→401、非法码→400 fail-closed、每次使用审计）+ S8 腿改为负向+阳性两段：S8a（保留）无 signal 时 S7 非 env 停滞恰好 1 条 repeated-failure、0 条 irrecoverable-env-error；S8b（新增）operator + `ENV_SANDBOX_UNAVAILABLE` → 202 → ESCALATED → 恰好 2 条升级记录，narrative 断言 declared-not-observed 在位（照搬 `needs-human-irrecoverable-env-error-http.test.ts` 写法）。tally：7/8 + 1 负向对照 → 真正 8/8。验证：该文件 + 全部 needs-human 10 文件 59/59 pass
+- **80-2：AT 正式验收资产——纯逻辑 21/64 可执行验收**：`docs/testing/v2/at-{008,016,018,023,025,026,033,034,035,036,037,040,042,043,045,046,052,053,054,056,057}.test.mjs`（21 个文件，纯 `.mjs` + `node:test`，只 import `packages/<pkg>/dist` + node 内建，注入固定时钟，无 tmp/SQLite/联网；每文件头第一句均为"AT-XXX 正式验收（逻辑层验收，非端到端）"）。新增 `npm run test:acceptance` 脚本（走 TMPDIR 隔离 wrapper）。`docs/testing/v2/ACCEPTANCE_INDEX.md`：诚实声明 + 21 项验收表 + **43 项 NOT_RUN 逐项环境缺口表**（真实执行环境 16、真实生产 10、真实隔离 Host 2、真实网络/MCP/Webhook 6、真实模型 Provider 4、真实 Worker 联动 1、真人验收 2、真实 Electron 1、50+ 远程压力 1；64 = 21+43）+ 3 条已知语义注记。`docs/AT_MAPPING.md`：21 个 covered 行追加验收文件引用。这是硬门槛 #13（AT-001–AT-064 NOT_RUN）唯一有代码侧突破口的一项。验证：`npm run test:acceptance` 121/121 pass（跑两遍，含一次全量 build 重建 dist 后）
+- **80-3：F58 follow-up —— DATA_EXPORT → approvals 授权票据（记录式）**：非本地模型调用前（`packages/runtime/src/runner.ts` ACT phase、`adapter.invoke` 之前）经新模块 `packages/runtime/src/export-approval.ts` 的 `attachExportAuthorization()` 建票据：`ApprovalManager.request()` 建 `data_export` 票据（PENDING），`evidence.payload.approval_id` ↔ 票据审计 details 的 `evidence_id` 双向关联，写 `DATA_EXPORT_AUTHORIZATION_RECORDED` 审计事件（含双 ID + `NOT blocked` 声明）。`packages/approvals/src/manager.ts`：`RequestApprovalInput` 新增可选 `evidence_id`（Approval 对象本身 §23.3 逐字不变）。`packages/runtime/src/harness.ts`：新增公开 `auditEvent()`（走原有 onAudit 通道）。**纯记录式：票据只建不判、调用永不阻塞、零 UX 变更；阻塞式未实现（Tan 的决策）**。边界如实说明：`required_approvers` 默认 `['human']`、`risk_level` 硬编码 `MEDIUM`；默认 manager 每 run 一个 in-memory store，票据的持久痕迹只有证据 payload + 审计链（"有授权票据可查" = 经由证据+审计可查，非独立票据查询面）；F58 保持 open。F58 小节追加 Batch 80 落地附注。新测试 4/4（票据创建+双向 ID+审计在位；云路由不阻塞；unknown provider fail-safe 照建票据；本地路由无票据/无证据/无审计）
+- **主线亲验（收口人实测，非子任务数字）**：`npm run build` 真实 exit 0，零错误；`npm test` 2593 pass / 0 fail（基线 2589 + 4 新测试；2107+486）；`npm run test:server` 499/500——唯一步 `build-orphan-reconcile.test.ts` 的 e2e（SIGKILL mid-build → reboot）在 20.3s 处断言 `BUILD_ORPHAN_CLEANED` 失败。已做根因排查：Batch 80 未动 `apps/server/src`（`git diff` 确认）；隔离 worktree 在 Batch 79 基线（1844cd3，无 Batch 80 改动）上循环 8 次，第 6 次同样复现——**pre-existing flake，非 Batch 80 回归**。产品逻辑无误（reconcile 的 rmSync + 审计是同一同步 tick，不可能删而不审；30+ 次通过 + 单测全绿）；属 Batch 27 时代测试的时序竞态，观察即改变（插桩/外部轮询均使其消失）。按 Batch 76 先例如实披露，不冒充 500/500；`npm run test:acceptance` 121/121；desktop tsc 0；electron tsc 0；smoke:boot OK
+- 卫生注记：80-2 子任务曾误删兄弟活动 TMPDIR（`~/.aif-test-tmp-YNUpJb`，00:35–00:36 UTC），已按原路径重建空目录；收口全套重跑为准，不受影响。全程未 git stash、未碰 .github
+
 ## Batch 79 (2026-10-16)
 
 联合复核 + 剩余可实施项扫荡批。

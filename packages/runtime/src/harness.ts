@@ -352,6 +352,16 @@ export class Harness {
     this.options.onAudit?.({ t: this.clock.now(), action, detail });
   }
 
+  /**
+   * F58 follow-up (Batch 80): public audit-event entry point so the
+   * runner's ACT phase can record audit events (e.g. the pre-send
+   * export-authorization linkage) into the caller's onAudit stream —
+   * the same channel the private audit() uses for tool failures.
+   */
+  auditEvent(action: string, detail: string): void {
+    this.audit(action, detail);
+  }
+
   private trace(phase: string, action: string, result: string): void {
     // §68 (Batch 66): same desensitization as AgentLoop.recordTrace —
     // harness tool-step notes are also persisted via onTrace.

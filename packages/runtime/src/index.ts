@@ -8,6 +8,9 @@
  *  - adapters   RuntimeAdapter, StubAdapter, CodexAdapter (app-server)         [§27]
  *  - codex-transport  JSON-RPC transport for `codex app-server` (stdio/ws)    [§27/§28]
  *  - runner     runAgent(): routing → loop → harness → adapter                [§24–§27]
+ *  - export-approval  F58: pre-send data-export authorization ticket          [§26]
+ *               (record-mode): approvals ticket + DATA_EXPORT evidence
+ *               bidirectional linkage + audit, never blocks the call
  *  - run-states RunState machine: 12 states, SUCCEEDED ≠ task DONE              [§25]
  *  - failures   failure classification; permission-denial no-bypass guard     [§25]
  *  - limits     extended budgets, BudgetTracker, jittered retry w/ total cap  [§25]
@@ -26,6 +29,7 @@ export * from './pty-session';
 export * from './adapters';
 export * from './adapter-contract';
 export * from './runner';
+export * from './export-approval';
 export * from './run-states';
 export * from './failures';
 export * from './limits';

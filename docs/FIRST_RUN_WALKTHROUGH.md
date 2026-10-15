@@ -1350,7 +1350,16 @@ a follow-up.
 **F58 — Info: G11 honest boundary (hygiene).** `DATA_EXPORT` is an
 evidence-level audit record, not an approvals-package authorization
 ticket; a real pre-send export authorization ticket needs approvals
-integration (follow-up).
+integration (follow-up). (Batch 80, 2026-10-16: the follow-up landed in
+RECORD mode — `packages/runtime/src/export-approval.ts`
+(`attachExportAuthorization`) creates a PENDING `data_export` approval
+ticket in @ai-factory/approvals BEFORE `adapter.invoke` on the non-local
+path, linked bidirectionally with the DATA_EXPORT evidence event
+(`evidence.payload.approval_id` → ticket; the ticket's
+`APPROVAL_REQUESTED` audit details carry `evidence_id`), plus an explicit
+`DATA_EXPORT_AUTHORIZATION_RECORDED` audit event; the call is NOT blocked
+and UX is unchanged. Blocking-mode gating remains Tan's product decision
+— F58 stays open pending it.)
 
 **F59 — Info: this machine has no `/dev/null` (hygiene).** `mknod` is
 blocked by the container, so a regular file stands in (625 bytes and
