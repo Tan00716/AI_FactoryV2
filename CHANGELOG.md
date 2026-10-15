@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 100 (2026-10-16)
+
+百批里程碑——三套测试全量亲跑。
+
+- **全量回归（本批亲跑，基线 e263e90）**：`npm run build` exit 0（约 3m46s）；`npm test` → **2593/0**（2 个 intentional skip）；`npm run test:server` → **500/500**（约 13.8 分钟）；`npm run test:acceptance` → **121/121**；desktop tsc `--noEmit` exit 0（确认 `module: esnext` + `moduleResolution: bundler` 真实 typecheck）；server tsc exit 0。**0 失败**，B95 CORS 产品代码改动经三套全量确认无回归
+- **主线数字刷新**：全部更新为本批亲跑——构建 0、包套件 2593/0、服务端 500/500、验收 121/121、desktop/electron tsc 0、smoke:boot OK（B81）。/tmp 2%，无残留
+- 百批总结：B55–B100 本地累积 46 批（按 Tan 2026-10-15 指令不推送 GitHub，远端仍停在 B54 的 7e96bfe）；复核链 1–10 + 21–98 连续、全 0 偏差；发现并修复 1 个真实产品 bug（B95 Terminal CORS）；指南 dogfood 修 3 处（B98）；依赖 0 漏洞（B87）；性能基线健康（B88）。结论仍是"可运行的原型 + 持续收敛"——13 硬门槛全在 Tan/环境侧（Codex 登录、Windows/macOS 打包签名、许可证/定价/渠道、CI workflow scope 等），代码侧已无可做。
+
 ## Batch 99 (2026-10-16)
 
 独立复核 + 可售清单更新批。
