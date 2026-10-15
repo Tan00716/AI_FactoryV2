@@ -1,5 +1,13 @@
 # Changelog
 
+## Batch 87 (2026-10-16)
+
+依赖安全审计批。
+
+- **依赖安全审计——零漏洞，无需升级，工作树零改动**：`npm audit` 被网络策略拦截（registry 403 policy_denied，OSV 超时），改走 GitHub Advisory Database（npm audit 背后同一数据源），用已认证 `gh api` 逐个查询。覆盖 lockfile 全部 428 个 package@version（395 顶层 + 33 嵌套重复版本），按 `vulnerable_version_range` 做 semver 匹配，查询 0 失败。方法学坑已排除：GitHub `package=` 查询是全文匹配（曾把 music-metadata 的漏洞算到 @babel/code-frame 头上），已改为按 `vulnerabilities[].package.name` 精确过滤；阳性/阴性对照验证了匹配逻辑。**high/critical/medium/low 全部零命中**，包括 33 个嵌套旧版本（minimatch@3.1.5、semver@5.7.2/6.3.1、undici@6.29.0 等）。electron@44.7.0 在 npm Advisory 库中零 advisories（electron 漏洞按 Chromium 跟踪，不挂 npm 包名下，预期内）；electron-builder/@electron/get 同样零命中。依赖树干净的原因：项目坚持零外部依赖哲学（node 内建为主），依赖为 2026-10 近期安装的较新版本
+- **边界**：Advisory 库有数小时~数天同步延迟；`vulnerable_version_range` 为空的条目会被漏判（本次未遇到）。建议上架前由 Tan 在能跑 `npm audit` 的网络环境再复核一次
+- **测试基线**：本批是审计批，无产品代码改动；主线数字沿用 B80–83 收口口径（构建 0、包套件 2593/0×2、服务端 500/500×2、验收 121/121、desktop/electron tsc 0、smoke:boot OK）。
+
 ## Batch 86 (2026-10-16)
 
 独立复核 + 用户文档批。
