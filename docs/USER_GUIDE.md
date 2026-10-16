@@ -17,7 +17,7 @@ AI Factory 是一个**本地优先的 AI 软件工程工作台**：AI 员工负�
 
 ## 2. 安装与启动（Linux AppImage）
 
-1. 拿到 `AI Factory-0.1.0.AppImage`（约 124MB）。
+1. 拿到 `AI Factory-0.1.0.AppImage`（约 130MB，`~/b96-pkg/`，B96 重打）。
 2. 赋予执行权限（只需一次）：
    ```bash
    chmod +x "AI Factory-0.1.0.AppImage"

@@ -101,13 +101,13 @@
 
 - **单机 SQLite**，无团队 PostgreSQL、无远程 Host、无 50+ 并发 Run 验证。
 - 无测试生产环境：canary 发布、灰度、故障注入、24h 稳态均未跑过。
-- **无真人 UAT / Outcome 验收**：AT-001–AT-064 没有一条达到端到端验收。（Batch 80 补充：21/64 已有可执行**逻辑层**验收（`docs/testing/v2/`，`npm run test:acceptance` 121/121），文件头显式声明"逻辑层验收，非端到端"；其余 43 项仍为 NOT_RUN，环境缺口逐项见 `docs/testing/v2/ACCEPTANCE_INDEX.md`。端到端验收仍为 0。）
+- **无真人 UAT / Outcome 验收**：AT-001–AT-064 没有一条达到端到端验收。（Batch 107 补充：24/64 已有可执行**逻辑层**验收（`docs/testing/v2/`，`npm run test:acceptance` 138/138），文件头显式声明"逻辑层验收，非端到端"；其余 40 项仍为 NOT_RUN，环境缺口逐项见 `docs/testing/v2/ACCEPTANCE_INDEX.md`。端到端验收仍为 0。）
 
 ## 测试资产
 
-- 计划宣称的 275 条正式用例集（`docs/testing/v2/`）：（Batch 80 更新）该目录**现已存在**——21/64 AT 有可执行逻辑层验收（`docs/testing/v2/at-*.test.mjs` 21 个文件，`npm run test:acceptance` 121/121；文件头显式声明"逻辑层验收，非端到端"），43 项仍记为 NOT_RUN（环境缺口逐项见 `docs/testing/v2/ACCEPTANCE_INDEX.md`），不是"通过"。
+- 计划宣称的 275 条正式用例集（`docs/testing/v2/`）：（Batch 107 更新）该目录**现已存在**——24/64 AT 有可执行逻辑层验收（`docs/testing/v2/at-*.test.mjs` 24 个文件，`npm run test:acceptance` 138/138；文件头显式声明"逻辑层验收，非端到端"），40 项仍记为 NOT_RUN（环境缺口逐项见 `docs/testing/v2/ACCEPTANCE_INDEX.md`），不是"通过"。
 - 发现的 DEF-002 / DEF-003（API 空 body 校验）已在 `47856d7` 修复并推送；DEF-001 已关闭。
 
 ## 结论
 
-当前是**可运行的原型**（基线 `7e96bfe` 亲验：构建 0 错误、npm test 2517/2517、服务端全套 459/459、desktop tsc 0、smoke:boot OK），不是可交付产品。上面每一条都是正式验收前必须补的。
+当前是**可运行的原型**（B100/B107/B81 亲跑：构建 0 错误、npm test 2593/0、服务端全套 500/500、`npm run test:acceptance` 138/138、desktop/server tsc 0、smoke:boot OK；B232 确认 B96 后产品代码零改动，上述数字至今有效），不是可交付产品。上面每一条都是正式验收前必须补的。

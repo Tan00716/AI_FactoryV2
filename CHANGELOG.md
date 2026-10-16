@@ -1,5 +1,16 @@
 # Changelog
 
+## Batch 233 (2026-10-16)
+
+补强 P1（Tan 2026-10-16 13:55 +08 新指令"从头开始补强，要完美可上架"的第一阶段）：当前 HEAD 全量测试亲跑 + TODO/死代码/文档扫荡——**6 项亲跑一次通过，0 失败；真 TODO 0；4 处文档滞后修复**。
+
+- **全量亲跑（233-1，基线 28e2368 = Batch 232 树）**：`npm run build` exit 0（约 4m20s，真实 exit code）；`npm test` **2593/0**（2 intentional skip，约 8m53s）；`npm run test:server` **500/500/0**（约 13m45s，走中央 TMPDIR wrapper，未裸跑）；`npm run test:acceptance` **138/138**；desktop tsc `--noEmit` exit 0、server tsc exit 0（真实 typecheck 在跑）；`scripts/boot-smoke.mjs` exit 0（`GET /api/health` 200）。与 B100/B107 基线逐项一致——B232"产品代码零改动、基线有效"的判定得实测确认。
+- **TODO/死代码/文档扫荡（233-2，只读）**：121 条 TODO/FIXME/XXX/HACK 命中逐条分类，**真 TODO = 0**（余下为任务状态字面量、映射表键、review 包检测规则自身、测试篡改哨兵值等）。死代码抽查 12+ 候选：**2 个零引用公共 API**（`bucketsForRun` @ai-factory/quota、`canPerform` @ai-factory/policy，经 `export *` 导出，全树 0 引用）——**未删**，删公共 API 是破坏性变更，留 P2 决策。其余候选均有真实引用。
+- **文档修复（本批 4 处）**：`docs/KNOWN_LIMITATIONS.md` L104/L108（AT 数字 21/64→24/64、121/121→138/138、43→40 NOT_RUN，Batch 107 口径）+ L113 结论段（基线 `7e96bfe`/2517/459 严重过时 → B100/B107/B81 亲跑数字 + B232 代码零改动注记）；`docs/USER_GUIDE.md` §2 步骤 1（AppImage 约 124MB → 约 130MB，`~/b96-pkg/` B96 重打）。
+- **`npm outdated`（网络已通，B87 时 403）**：patch 级 @types/node 26.6.4→26.6.5、electron 44.7.0→44.8.0（低风险，P2 处理）；大版本 react 18→19、vite 5→8、typescript 5.9→7.0（破坏性，单独决策，不顺手升）。outdated ≠ 漏洞（B87 Advisory DB 0 命中结论不受影响）。
+- **复核链状态**：1–10 + 21–229 连续（196 个报告：182 单批 + 14 分组；219 个批号；B231 程序化亲验；累计已记录偏差 6 处，均为文档错误）。本批非复核批，未新增复核报告。
+- **测试基线**：本批亲跑（基线 28e2368）：构建 0、npm test 2593/0、test:server 500/500、验收 138/138、desktop/server tsc 0、smoke:boot OK。
+
 ## Batch 232 (2026-10-16)
 
 实质性重新扫描批（非复核批）——**代码侧可执行事项：无**；3 处文档滞后已修复。
