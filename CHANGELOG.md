@@ -1,5 +1,14 @@
 # Changelog
 
+## Batch 235 (2026-10-16)
+
+补强 P3：从头 bug 猎捕（B95 模式，实测找真 bug）——**两轮猎捕，0 真 bug**。
+
+- **Hunt B：认证边界探测（18 个探针，全过）**：无认证调 `/api/audit/verify`、`POST /api/backup`、`GET /api/backups`、`POST /api/runtime/runs`、`GET /api/auth/whoami` → 全部 401，body 恒为 `{error}` 单键，无信息泄漏；错 token 与无 token 的 401 body 字节级一致；viewer：verify/runs/backup→403（读也禁）、projects→200；operator：verify→200、backup→403；admin：backups→200。**无 500、无越权成功、无错误体敏感信息**。
+- **Hunt A：备份→清空→恢复→完整性（真实数据，全链走通）**：造数据（2 项目含真实 workdir 文件 + 3 任务 + 1 合法流转 TODO→PLANNING）→ 备份前审计链 `ok:true, verifiedCount=35` → `POST /api/backup` 201（scope `factory-database+project-files`，manifest 逐表计数，2 项目文件 0 跳过）→ 删 data 目录 + 项目文件模拟灾难 → `POST /api/restore` 200（`restartRequired:true` + 自动 pre-restore 备份；运行中 server 仍服务新库，无假热恢复）→ 重启应用恢复：projects=2、tasks=3、标题逐字一致、PLANNING 状态保留；审计链 `ok:true, verifiedCount=42`（35→42，只增不减，无断链）；项目文件 sha256 与原件完全一致；旧库保留为 `.superseded-<ts>`（含 WAL sidecar）。
+- 猎捕中 3 次"告警"均为猎捕脚本自身期望值错误（201 vs 200、裸数组响应体、非法流转），亲验确认产品行为正确，脚本修正后全绿重跑。
+- **测试基线**：本批零产品代码改动；数字沿用 Batch 234（构建 0、npm test 2593/0、test:server 500/500、验收 138/138、双 tsc 0、smoke:boot OK）。
+
 ## Batch 234 (2026-10-16)
 
 补强 P2：依赖 patch 升级 + 删 2 个零引用公共 API——**升级干净、全回归 7/7 一次通过**。
