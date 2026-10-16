@@ -121,14 +121,3 @@ export function decideQuotaPolicy(
       };
   }
 }
-
-/** Which buckets a run's agents draw from (shared, not per-agent). */
-export function bucketsForRun(
-  buckets: QuotaBucket[],
-  providerAccountId: string,
-  workspaceId: string,
-): QuotaBucket[] {
-  return buckets.filter(
-    (b) => b.providerAccountId === providerAccountId && b.workspaceId === workspaceId,
-  );
-}

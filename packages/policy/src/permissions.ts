@@ -163,8 +163,3 @@ export function checkCapability(
     decision('allow', capability, `agent holds capability "${capability}"`, agentId),
   );
 }
-
-/** Convenience: true when checkCapability would allow (no audit hook). */
-export function canPerform(input: CapabilityCheckInput): boolean {
-  return checkCapability(input).decision === 'allow';
-}

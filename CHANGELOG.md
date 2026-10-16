@@ -1,5 +1,14 @@
 # Changelog
 
+## Batch 234 (2026-10-16)
+
+补强 P2：依赖 patch 升级 + 删 2 个零引用公共 API——**升级干净、全回归 7/7 一次通过**。
+
+- **依赖升级（写死版本号）**：`@types/node` 26.6.4→26.6.5、`electron` 44.7.0→44.8.0（npm 网络通，electron 二进制正常下载）。`package-lock.json` diff 仅 2 处 version + 对应 resolved，共 27 行，无其他包被带入。大版本 react 18→19、vite 5→8、typescript 5.9→7.0 按计划未碰（破坏性，单独决策）。
+- **删 2 个零引用公共 API**：`bucketsForRun`（`packages/quota/src/policy.ts`）、`canPerform`（`packages/policy/src/permissions.ts`）——删除前全树 grep 确认除定义外零引用（含测试/demo/desktop），packages 均为 private 未发布，无外部消费者；删除后复 grep 零残留，两包 `export *` 不再透出这 2 个符号，其余导出不受影响。
+- **全回归（顺序，真实 exit code）**：`npm run build` exit 0；`npm test` **2593/0**（2 intentional skip）；`npm run test:server` **500/500**（TMPDIR wrapper）；`npm run test:acceptance` **138/138**；desktop/server tsc `--noEmit` 均为 exit 0（`--listFiles` 确认真实 typecheck：299 / 585 文件）；`scripts/boot-smoke.mjs` OK（`GET /api/health` 200）。
+- **测试基线**：本批亲跑：构建 0、npm test 2593/0、test:server 500/500、验收 138/138、desktop/server tsc 0、smoke:boot OK。
+
 ## Batch 233 (2026-10-16)
 
 补强 P1（Tan 2026-10-16 13:55 +08 新指令"从头开始补强，要完美可上架"的第一阶段）：当前 HEAD 全量测试亲跑 + TODO/死代码/文档扫荡——**6 项亲跑一次通过，0 失败；真 TODO 0；4 处文档滞后修复**。
