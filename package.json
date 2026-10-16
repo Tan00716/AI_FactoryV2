@@ -1,6 +1,7 @@
 {
   "description": "AI Engineering Factory IDE — runnable prototype skeleton",
   "author": "Tan",
+  "license": "Apache-2.0",
   "desktopName": "AI Factory",
   "devDependencies": {
     "@types/node": "^26.6.5",

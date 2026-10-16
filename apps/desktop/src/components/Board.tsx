@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, TaskSummary, NextState } from '../api';
+import { useLang, type TFunc } from '../i18n';
 
 /**
  * Task Board 完整版 — spec §85.
@@ -52,16 +53,16 @@ function progressOf(status: string): number | null {
   return i < 0 ? null : Math.round((i / (HAPPY_PATH.length - 1)) * 100);
 }
 
-function runtimeOf(createdAt: string): string {
+function runtimeOf(createdAt: string, t: TFunc): string {
   const ms = Date.now() - new Date(createdAt).getTime();
   if (!(ms >= 0)) return '—';
   const m = Math.floor(ms / 60000);
-  if (m < 1) return '刚刚';
-  if (m < 60) return `${m}分钟`;
+  if (m < 1) return t('board.justNow');
+  if (m < 60) return t('board.minute', { m });
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}小时${m % 60 ? `${m % 60}分钟` : ''}`;
+  if (h < 24) return t('board.hour', { h }) + (m % 60 ? t('board.minute', { m: m % 60 }) : '');
   const d = Math.floor(h / 24);
-  return `${d}天${h % 24 ? `${h % 24}小时` : ''}`;
+  return t('board.day', { d }) + (h % 24 ? t('board.hour', { h: h % 24 }) : '');
 }
 
 interface Toast {
@@ -77,6 +78,7 @@ export function Board({ tasks, onChanged, onCreate, onSelectTask }: {
 }) {
   const [toast, setToast] = useState<Toast | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
+  const { t } = useLang();
   /** taskId → 下一步门禁所需的证据标签（当前门禁）。 */
   const [gates, setGates] = useState<Record<string, string[]>>({});
   /** 门禁拉取失败的卡片 id —— 与"确实无门禁"区分，避免误导用户直接流转。 */
@@ -154,34 +156,34 @@ export function Board({ tasks, onChanged, onCreate, onSelectTask }: {
       if (!card) return;
       const to = dropTarget(taskId, lane);
       if (!to) {
-        showToast('err', `引擎不允许将「${card.title}」直接移入 ${lane.title} 列`);
+        showToast('err', t('board.dropNotAllowed', { title: card.title, lane: lane.title }));
         return;
       }
       if (to === card.status) return;
       try {
         const r = await api.transition(taskId, to);
-        showToast('ok', `✓ ${card.title}: ${r.from} → ${r.to}`);
+        showToast('ok', t('board.transitionOk', { title: card.title, from: r.from, to: r.to }));
         onChanged();
       } catch (e) {
         const err = e as Error & { missing?: string[]; status?: number };
         if (err.status === 422 && err.missing) {
-          showToast('err', `⛔ 门禁拒绝（缺证据）: ${err.missing.join('；')}`);
+          showToast('err', t('board.gateDenied', { missing: err.missing.join(t('board.sep')) }));
         } else if (err.status === 403) {
           // Batch 75 (F61)：v1 transition 现在查 §17.2 授权轴。任务未授权时
           // 拖拽被拒，这里明示去处而不是只报"流转失败"。
-          showToast('err', `⛔ 未授权（§17.2）: ${err.message} —— 请先在 Dispatch 页签完成派发`);
+          showToast('err', t('board.unauthorized', { message: err.message }));
         } else {
-          showToast('err', `流转失败: ${err.message}`);
+          showToast('err', t('board.transitionFailed', { message: err.message }));
         }
       }
     },
-    [tasks, dropTarget, onChanged, showToast],
+    [tasks, dropTarget, onChanged, showToast, t],
   );
 
   return (
     <div className="board-wrap">
       <div className="board-head">
-        <h2>Task Board <span className="muted">§85 · {tasks.length} tasks</span></h2>
+        <h2>Task Board <span className="muted">{t('board.taskCount', { count: tasks.length })}</span></h2>
         <button className="primary" onClick={onCreate}>+ New Task</button>
       </div>
       <div className="board">
@@ -231,6 +233,7 @@ function TaskCard({ task, gates, gateErr, onOpen }: {
   gateErr?: boolean;
   onOpen: () => void;
 }) {
+  const { t } = useLang();
   const progress = progressOf(task.status);
   return (
     <div
@@ -241,7 +244,7 @@ function TaskCard({ task, gates, gateErr, onOpen }: {
         e.dataTransfer.effectAllowed = 'move';
       }}
       onClick={onOpen}
-      title="点击打开任务详情 §86 · 拖拽跨列发起流转"
+      title={t('board.cardTitle')}
     >
       <div className="card-top">
         <span className="card-id">#{task.id.slice(0, 8)}</span>
@@ -250,11 +253,11 @@ function TaskCard({ task, gates, gateErr, onOpen }: {
       </div>
       <div className="card-title">{task.title}</div>
       <div className="card-meta">
-        <span>👤 {task.currentAgentId ? task.currentAgentId.slice(0, 8) : '未分配'}</span>
+        <span>👤 {task.currentAgentId ? task.currentAgentId.slice(0, 8) : t('board.unassigned')}</span>
         <span className="muted">{task.assignedAgentIds.length} agents</span>
       </div>
       <div className="card-meta">
-        <span className="muted">⏱ {runtimeOf(task.createdAt)}</span>
+        <span className="muted">⏱ {runtimeOf(task.createdAt, t)}</span>
         <span className="muted">{task.status}</span>
       </div>
       {progress !== null ? (
@@ -266,13 +269,13 @@ function TaskCard({ task, gates, gateErr, onOpen }: {
         <div className="card-meta"><span className="pill warn">{task.status}</span></div>
       )}
       <div className="card-gate">
-        <span className="muted">门禁: </span>
+        <span className="muted">{t('board.gate')}</span>
         {gateErr ? (
-          <span className="gate-req">门禁拉取失败（请重试）</span>
+          <span className="gate-req">{t('board.gateFetchFailed')}</span>
         ) : gates === undefined ? (
           <span className="muted">…</span>
         ) : gates.length === 0 ? (
-          <span className="gate-ok">无（可直接流转）</span>
+          <span className="gate-ok">{t('board.gateNone')}</span>
         ) : (
           <span className="gate-req">{gates.join(' · ')}</span>
         )}

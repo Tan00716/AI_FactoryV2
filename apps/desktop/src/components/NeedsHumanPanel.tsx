@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type NeedsHumanRecord } from '../api';
+import { useLang, type TFunc } from '../i18n';
 
 /**
  * §81 needs-human 升级记录的只读面板（Batch 50 起）。
@@ -30,16 +31,17 @@ function extractNarrative(rec: NeedsHumanRecord): string | null {
   }
 }
 
-function severityLabel(s: NeedsHumanRecord['severity']): string {
+function severityLabel(s: NeedsHumanRecord['severity'], t: TFunc): string {
   switch (s) {
-    case 'critical': return '严重';
-    case 'high': return '高';
-    case 'medium': return '中';
+    case 'critical': return t('needshuman.sevCritical');
+    case 'high': return t('needshuman.sevHigh');
+    case 'medium': return t('needshuman.sevMedium');
     default: return s;
   }
 }
 
 export function NeedsHumanPanel() {
+  const { t } = useLang();
   const [items, setItems] = useState<NeedsHumanRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [loaded, setLoaded] = useState(false);
@@ -54,12 +56,12 @@ export function NeedsHumanPanel() {
       setItems(res.items ?? []);
       setTotal(res.total ?? 0);
     } catch (e) {
-      setErr(`needs-human 列表不可用：${(e as Error).message}`);
+      setErr(t('needshuman.loadFailed', { message: (e as Error).message }));
     } finally {
       setLoaded(true);
       setBusy(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -67,34 +69,24 @@ export function NeedsHumanPanel() {
     <section className="panel">
       <div className="panel-head">
         <h2>Needs Human</h2>
-        <span className="muted">§81 人工升级记录（只读）</span>
+        <span className="muted">{t('needshuman.subtitle')}</span>
         <button disabled={busy} onClick={() => void load()}>
-          {busy ? '刷新中…' : '刷新'}
+          {busy ? t('needshuman.refreshing') : t('needshuman.refresh')}
         </button>
       </div>
-      <p className="muted">
-        列出状态为 OPEN 的升级请求 —— 等待人工处理的行。
-        本面板只读：acknowledge / resolve 请走服务端 API
-        （<code>POST /api/needs-human/:id/resolve</code>），桌面不提供写操作。
-      </p>
+      <p className="muted">{t('needshuman.desc')}</p>
       {!loaded ? (
-        <p className="muted">加载中…</p>
+        <p className="muted">{t('needshuman.loading')}</p>
       ) : err ? (
         <div className="banner err">{err}</div>
       ) : items.length === 0 ? (
         <div className="card">
-          <div className="card-title">当前没有 OPEN 的升级记录</div>
-          <p className="muted">
-            这只表示没有等待人工处理的行 —— 记录只会在服务端真实路径触发时
-            产生（§81 的 8 个触发器：ai-disagreement、budget-exceeded、
-            repeated-failure、high-risk-deployment、policy-violation、
-            security-issue、requirement-ambiguity、irrecoverable-env-error）。
-            空列表不是"机制关闭"的证据，也不是"功能缺失"。
-          </p>
+          <div className="card-title">{t('needshuman.emptyTitle')}</div>
+          <p className="muted">{t('needshuman.emptyBody')}</p>
         </div>
       ) : (
         <>
-          <p className="muted">共 {total} 条 OPEN 记录（按触发时间倒序）：</p>
+          <p className="muted">{t('needshuman.listHead', { total })}</p>
           {items.map((rec) => {
             const narrative = extractNarrative(rec);
             return (
@@ -102,20 +94,20 @@ export function NeedsHumanPanel() {
                 <div className="card-top">
                   <span className="card-title">{rec.reason}</span>
                   <span className="card-meta">
-                    {rec.reasonZh} · 严重度 {severityLabel(rec.severity)}
+                    {rec.reasonZh} · {t('needshuman.severity', { sev: severityLabel(rec.severity, t) })}
                   </span>
                 </div>
                 <div className="card-meta">
-                  触发于 {fmtTime(rec.raisedAt)} · 来源 {rec.source} ·
-                  解决需 {rec.requiredDeciderLevel} 级别
-                  {rec.recipient ? ` · 接收者 ${rec.recipient}` : ''}
+                  {t('needshuman.meta', {
+                    time: fmtTime(rec.raisedAt),
+                    source: rec.source,
+                    level: rec.requiredDeciderLevel,
+                  })}
+                  {rec.recipient ? t('needshuman.recipient', { name: rec.recipient }) : ''}
                 </div>
                 <p>
                   {narrative ?? (
-                    <span className="muted">
-                      （服务端未提供 narrative —— 该记录的 detailJson 中无
-                      narrative 字段，不做推断）
-                    </span>
+                    <span className="muted">{t('needshuman.noNarrative')}</span>
                   )}
                 </p>
               </div>

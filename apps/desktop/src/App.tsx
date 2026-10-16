@@ -34,6 +34,7 @@ import { ActivityPanel } from './components/ActivityPanel';
 import { EventsPanel } from './components/EventsPanel';
 import { ModelsPanel } from './components/ModelsPanel';
 import { NeedsHumanPanel } from './components/NeedsHumanPanel';
+import { LanguageProvider } from './i18n';
 import './styles.css';
 
 const API_BASE = defaultApiBase();
@@ -128,6 +129,7 @@ export default function App() {
   }, [bootError, refresh]);
 
   return (
+    <LanguageProvider>
     <div className="ide">
       <TopBar
         projects={projects}
@@ -257,5 +259,6 @@ export default function App() {
         />
       )}
     </div>
+    </LanguageProvider>
   );
 }

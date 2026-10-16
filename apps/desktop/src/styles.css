@@ -30,6 +30,12 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 sys
 .run-status .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); }
 .run-status.off .dot { background: var(--red); }
 
+/* i18n 试点：顶栏中 / EN 切换开关 */
+.lang-switch { display: flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.lang-switch button { background: transparent; border: 0; color: var(--muted); padding: 3px 10px; cursor: pointer; font-size: 12px; }
+.lang-switch button.active { background: var(--bg2); color: var(--text); font-weight: 700; }
+.lang-switch button + button { border-left: 1px solid var(--border); }
+
 /* sidebar */
 .sidebar { width: 240px; background: var(--bg2); border-right: 1px solid var(--border); padding: 12px; overflow-y: auto; }
 .sidebar h3 { font-size: 11px; color: var(--muted); letter-spacing: 1px; margin: 14px 0 6px; }

@@ -1,5 +1,6 @@
 import { Component, useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang, type TFunc } from '../i18n';
 
 /**
  * Approvals panel — spec §45 (Tool Approval) + §69 (Approval System).
@@ -159,6 +160,7 @@ export interface ApprovalsPanelProps {
 }
 
 export function ApprovalsPanelInner({ api, pollMs = 5000 }: ApprovalsPanelProps) {
+  const { t } = useLang();
   const client = api ?? createApprovalsApi();
   const [items, setItems] = useState<ApprovalItem[]>([]);
   const [decidedBy, setDecidedBy] = useState('human');
@@ -233,13 +235,13 @@ export function ApprovalsPanelInner({ api, pollMs = 5000 }: ApprovalsPanelProps)
           <div className="card-meta"><span>expires: {fmtTs(a.expiresAt)}</span></div>
           <div className="btn-row" style={{ marginTop: 6 }}>
             <button disabled={!!acting[a.id]} onClick={() => act(a.id, () => client.decide(a.id, true, decidedBy || 'human'))}>
-              {acting[a.id] ? '处理中…' : 'Approve'}
+              {acting[a.id] ? t('approvals.processing') : 'Approve'}
             </button>
             <button disabled={!!acting[a.id]} onClick={() => act(a.id, () => client.decide(a.id, false, decidedBy || 'human'))}>
-              {acting[a.id] ? '处理中…' : 'Reject'}
+              {acting[a.id] ? t('approvals.processing') : 'Reject'}
             </button>
             <button disabled={!!acting[a.id]} onClick={() => act(a.id, () => client.cancel(a.id, decidedBy || 'human'))}>
-              {acting[a.id] ? '处理中…' : 'Cancel'}
+              {acting[a.id] ? t('approvals.processing') : 'Cancel'}
             </button>
           </div>
         </div>
@@ -268,7 +270,7 @@ export function ApprovalsPanelInner({ api, pollMs = 5000 }: ApprovalsPanelProps)
  * full black screen here). The panel degrades to a visible error card.
  */
 class ApprovalsErrorBoundary extends Component<
-  { children: React.ReactNode },
+  { children: React.ReactNode; t: TFunc },
   { error: Error | null }
 > {
   state = { error: null as Error | null };
@@ -284,7 +286,7 @@ class ApprovalsErrorBoundary extends Component<
       return (
         <div className="approvals">
           <div className="banner err">
-            审批面板渲染失败（{this.state.error.message}），其余面板未受影响。
+            {this.props.t('approvals.renderFailed', { message: this.state.error.message })}
           </div>
         </div>
       );
@@ -294,8 +296,9 @@ class ApprovalsErrorBoundary extends Component<
 }
 
 export function ApprovalsPanel(props: ApprovalsPanelProps) {
+  const { t } = useLang();
   return (
-    <ApprovalsErrorBoundary>
+    <ApprovalsErrorBoundary t={t}>
       <ApprovalsPanelInner {...props} />
     </ApprovalsErrorBoundary>
   );

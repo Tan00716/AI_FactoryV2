@@ -1,5 +1,16 @@
 # Changelog
 
+## Batch 237 (2026-10-16)
+
+D1 落地 + UI 双语试点——**Apache-2.0 许可证写入；4 个核心页面中/EN 一键切换**。
+
+- **许可证（D1，Tan 2026-10-16 决策"按推荐的来"）**：仓库根 `LICENSE`（Apache-2.0 标准全文，Copyright 2026 Tan）；根 + 44 个工作区包 package.json `"license": "Apache-2.0"`（逐文件 diff 亲验：纯增量字段，零格式变动）；`electron-builder.yml` copyright → `Copyright © 2026 Tan`。可售清单 D 项许可证勾选，决策包 D1 关闭。
+- **i18n 双语试点（4 页面）**：零外部依赖手写 `apps/desktop/src/i18n/`（`zh.ts`/`en.ts` 语言包 + `LanguageProvider`/`useLang()` + `t(key, vars)` 插值 + `has(key)` 缺 key 检测；语言存 `localStorage['ai-factory:lang']`，默认 zh，现有用户不受影响）；en 包用 `Record<I18nKey, string>` 类型强制与 zh key 完全一致（漏 key tsc 直接报错）。Dashboard/Board/Approvals/NeedsHuman 文案全抽取；顶栏加**中 / EN 切换**。
+- **Dashboard 服务端中文专项**：试点自检发现 `/stats` 下发的 label/source/note/unit 是服务端中文常量（`packages/dashboard/src/aggregate.ts`），桌面按 stat key（15 个指标 × label/source/unit）查语言包翻译、缺 key 回退服务端原文——服务端零改动；`NO_DATA_NOTE`（"暂无数据"）在 EN 模式映射为 "No data"。
+- **真机验证**（Xvfb + 真 Electron + 真 server + vite dev）：EN 模式 Dashboard 整页中文残留扫描 = 0（仅剩顶栏"本地模式（无令牌）"、切换按钮"中"、CSS 注释——试点范围外，预期内）；desktop tsc `--noEmit` exit 0；`npm run build` exit 0。
+- **范围**：其余 23 个面板 + 侧栏 + 服务端用户可见中文（12 文件）留待全量铺开批；试点批如实只做 4 页。
+- **测试基线**：本批桌面端文案层改动 + 许可证文件；`npm test` / `test:server` 未重跑（沿用 Batch 234：2593/0、500/500；下一批全量铺开时重跑）。
+
 ## Batch 236 (2026-10-16)
 
 补强 P4：分发就绪——**electron 44.8.0 AppImage 重打 + 真机验证通过**。

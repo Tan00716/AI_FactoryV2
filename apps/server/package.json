@@ -45,5 +45,6 @@
     "@ai-factory/takeover": "0.1.0",
     "@ai-factory/tools": "0.1.0",
     "@ai-factory/watchdog": "0.1.0"
-  }
+  },
+  "license": "Apache-2.0"
 }

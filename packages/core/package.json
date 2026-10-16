@@ -9,5 +9,6 @@
   "version": "0.1.0",
   "dependencies": {
     "@ai-factory/api-contracts": "0.1.0"
-  }
+  },
+  "license": "Apache-2.0"
 }

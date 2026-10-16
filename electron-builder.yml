@@ -15,7 +15,7 @@
 #     only; the DB is node:sqlite), so no further node_modules are needed.
 appId: com.aifactory.ide
 productName: AI Factory
-copyright: Copyright © 2026 AI Factory
+copyright: Copyright © 2026 Tan
 directories:
   output: release
 files:
