@@ -1,5 +1,12 @@
 # Changelog
 
+## Batch 134 (2026-10-16)
+
+独立复核批。
+
+- **Batch 133 独立复核（gap-audit/REAUDIT_BATCH133.md，偏差 0 处）**：a343daa 恰好 2 个文件，与 CHANGELOG Batch 133 条目描述一致，无 .github、无意外文件。复核人独立抽点：be44ba8/e8013e1 均恰好 2 文件（与条目声称一致）；REAUDIT_BATCH132.md 在位且首行"偏差 0 处"，与 commit 内嵌版本逐字节一致（SHA-256 一致）；REAUDIT_BATCH131.md 在位且首行"偏差 0 处"；独立程序化复核链检查：gap-audit 下 99 个 REAUDIT_BATCH* 报告文件，解析覆盖集合恰好 = 1–10 + 21–132，无缺号、无多号（11–20 本就不存在）；14 个分组报告全部在位；REAUDIT 链：1–10 + 21–133 连续
+- **测试基线**：本批是纯复核批，无产品代码改动；主线数字：构建 0、包套件 2593/0、服务端 500/500（B100 亲跑）、验收 138/138（B107 亲跑）、desktop/server tsc 0（B100）、smoke:boot OK（B81）。
+
 ## Batch 133 (2026-10-16)
 
 独立复核批。
