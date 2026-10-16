@@ -32,10 +32,17 @@
 - 后端数据库默认 `./data/factory.db`（相对**启动时的工作目录**），
   可用 `DB_PATH` 环境变量覆盖。
 
-## 本机实测状态（2026-10-12，Linux x64 / Electron 44.7.0 / builder 26.15.3）
+## 本机实测状态（2026-10-16 更新，Linux x64 / Electron 44.8.0）
 
 - **Linux：构建成功且运行验证通过（含图标/桌面元数据）。**
-  `release/AI Factory-0.1.0.AppImage`（129,516,201 字节，约 124MB）。
+  当前包 `~/b97-pkg/AI Factory-0.1.0.AppImage`（**130,570,004 字节**，
+  约 124.5 MiB；Batch 234 electron 44.7.0→44.8.0 后重打，`~/b96-pkg/`
+  的 130,192,527 字节包已 stale 保留）。打包日志 `electron=44.8.0`，
+  产物 renderer 内 `navigator.userAgent` 实测 `Electron/44.8.0` 双重确认。
+  linux-unpacked 在 Xvfb 下真机验证：主窗口出现、后端自动拉起
+  （`GET /api/health` 200）、Dashboard/Board/Approvals/NeedsHuman
+  4 tab 零崩溃零 error boundary、无 B60 时代的永久 Offline 误报
+  （4 张真 PNG 在 `~/b97-verify/`）。
   `--appimage-extract` 后结构完整（asar 内主进程入口 + renderer，
   resources/server + 40 个工作区包）；图标已进入产物：
   `usr/share/icons/hicolor/512x512/apps/ai-factory.png` 与根目录

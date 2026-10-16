@@ -1,5 +1,14 @@
 # Changelog
 
+## Batch 236 (2026-10-16)
+
+补强 P4：分发就绪——**electron 44.8.0 AppImage 重打 + 真机验证通过**。
+
+- **重打**：Batch 234 electron 44.7.0→44.8.0 后 `~/b96-pkg/` 已 stale；`npm run dist:linux` 重打到 `~/b97-pkg/`：`AI Factory-0.1.0.AppImage` **130,570,004 字节**（+377,477，+0.29%；electron patch 增量 + renderer 全量重建，量级合理）；打包日志 `electron=44.8.0`，产物 renderer `navigator.userAgent` 实测 `Electron/44.8.0`，双重确认；旧包 `~/b96-pkg/` 原样保留。
+- **真机验证**（linux-unpacked，Xvfb，无 FUSE，同款边界）：主窗口出现、后端自动拉起（`GET /api/health` 200、新鲜 DB 落盘、种子 6 agents/6 tasks）、Dashboard/Board/Approvals/NeedsHuman 4 tab 零崩溃零 error boundary、无 B60 时代永久 Offline 误报红横幅；4 张真 PNG 在 `~/b97-verify/`（已逐张目检）。
+- **Win/Mac 配置复验**：`electron-builder.yml` win（nsis+portable）、mac（dmg）段在位，`dist:win`/`dist:mac` 脚本在位；Windows 最终 exe 仍需 wine 或 Windows 真机（B71 口径不变），macOS 需真机；三平台全部未签名（等 Tan 证书决策，如实声明）。`docs/packaging.md` 本机实测状态更新到 B97（历史记录保留）。
+- **测试基线**：本批零产品代码改动；数字沿用 Batch 234（构建 0、npm test 2593/0、test:server 500/500、验收 138/138、双 tsc 0、smoke:boot OK）。
+
 ## Batch 235 (2026-10-16)
 
 补强 P3：从头 bug 猎捕（B95 模式，实测找真 bug）——**两轮猎捕，0 真 bug**。
