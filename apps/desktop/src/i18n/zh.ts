@@ -14,6 +14,8 @@ export const zh = {
   'dashboard.source': '来源: {source}',
   'dashboard.updatedAt': '更新于 {time} · 每 5 秒刷新',
   'dashboard.showingStale': '（显示上次成功数据）',
+  'dashboard.loading': '仪表盘加载中…',
+  'dashboard.unavailable': '仪表盘不可用：{error}',
 
   // ---- Dashboard: 服务端 /stats 下发的指标展示字段 ----
   // label/source 的中文必须与 packages/dashboard/src/aggregate.ts 的服务端常量逐字一致
@@ -86,6 +88,22 @@ export const zh = {
   // ---- Approvals ----
   'approvals.processing': '处理中…',
   'approvals.renderFailed': '审批面板渲染失败（{message}），其余面板未受影响。',
+  'approvals.title': '审批',
+  'approvals.decidedBy': '审批人',
+  'approvals.decidedByPlaceholder': 'human',
+  'approvals.pendingTitle': '待审批（{count}）',
+  'approvals.historyTitle': '历史记录（{count}）',
+  'approvals.emptyPending': '暂无待审批。',
+  'approvals.emptyHistory': '暂无已审批记录。',
+  'approvals.approve': '批准',
+  'approvals.reject': '拒绝',
+  'approvals.cancel': '取消',
+  'approvals.req': '申请人：',
+  'approvals.agent': '智能体：',
+  'approvals.approver': '审批人：',
+  'approvals.task': '任务：',
+  'approvals.evidence': '证据：',
+  'approvals.expires': '过期：',
 
   // ---- NeedsHuman ----
   'needshuman.subtitle': '§81 人工升级记录（只读）',

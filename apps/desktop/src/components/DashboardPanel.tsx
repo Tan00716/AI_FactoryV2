@@ -151,9 +151,9 @@ export function DashboardPanel(props: { api?: DashboardApi }) {
   }, [refresh]);
 
   if (error && !stats) {
-    return <div className="banner err">Dashboard unavailable: {error}</div>;
+    return <div className="banner err">{t('dashboard.unavailable', { error })}</div>;
   }
-  if (!stats) return <p className="muted">Loading dashboard…</p>;
+  if (!stats) return <p className="muted">{t('dashboard.loading')}</p>;
 
   const statusStats = Object.values(stats.status);
   const metricStats = Object.values(stats.metrics);

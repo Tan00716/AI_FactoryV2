@@ -16,6 +16,8 @@ export const en: Record<I18nKey, string> = {
   'dashboard.source': 'Source: {source}',
   'dashboard.updatedAt': 'Updated {time} · refreshes every 5s',
   'dashboard.showingStale': '(showing last successful data)',
+  'dashboard.loading': 'Loading dashboard…',
+  'dashboard.unavailable': 'Dashboard unavailable: {error}',
 
   // ---- Dashboard: server-provided /stats display fields ----
   // Translated per stat key; the desktop falls back to the server-sent
@@ -87,6 +89,22 @@ export const en: Record<I18nKey, string> = {
   // ---- Approvals ----
   'approvals.processing': 'Working…',
   'approvals.renderFailed': 'Approvals panel failed to render ({message}); other panels are unaffected.',
+  'approvals.title': 'Approvals',
+  'approvals.decidedBy': 'Decided by',
+  'approvals.decidedByPlaceholder': 'human',
+  'approvals.pendingTitle': 'Pending ({count})',
+  'approvals.historyTitle': 'History ({count})',
+  'approvals.emptyPending': 'No pending approvals.',
+  'approvals.emptyHistory': 'No decided approvals yet.',
+  'approvals.approve': 'Approve',
+  'approvals.reject': 'Reject',
+  'approvals.cancel': 'Cancel',
+  'approvals.req': 'req: ',
+  'approvals.agent': 'agent: ',
+  'approvals.approver': 'approver: ',
+  'approvals.task': 'task: ',
+  'approvals.evidence': 'evidence: ',
+  'approvals.expires': 'expires: ',
 
   // ---- NeedsHuman ----
   'needshuman.subtitle': '§81 escalation records (read-only)',

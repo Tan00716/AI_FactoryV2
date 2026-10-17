@@ -201,21 +201,21 @@ export function ApprovalsPanelInner({ api, pollMs = 5000 }: ApprovalsPanelProps)
   return (
     <div className="approvals">
       <div className="board-head">
-        <h2>Approvals <span className="count">§45 · §69</span></h2>
+        <h2>{t('approvals.title')} <span className="count">§45 · §69</span></h2>
         <label className="muted">
-          Decided by{' '}
+          {t('approvals.decidedBy')}{' '}
           <input
             value={decidedBy}
             onChange={(e) => setDecidedBy(e.target.value)}
-            placeholder="human"
+            placeholder={t('approvals.decidedByPlaceholder')}
             style={{ width: 120 }}
           />
         </label>
       </div>
       {error && <div className="banner err">{error}</div>}
 
-      <h4>Pending ({pending.length})</h4>
-      {pending.length === 0 && <div className="muted">No pending approvals.</div>}
+      <h4>{t('approvals.pendingTitle', { count: pending.length })}</h4>
+      {pending.length === 0 && <div className="muted">{t('approvals.emptyPending')}</div>}
       {pending.map((a) => (
         <div key={a.id} className="card">
           <div className="card-title">
@@ -223,32 +223,32 @@ export function ApprovalsPanelInner({ api, pollMs = 5000 }: ApprovalsPanelProps)
             {a.action}
           </div>
           <div className="card-meta">
-            <span>req: {a.requestedBy}{a.agentId ? ` · agent: ${a.agentId}` : ''}</span>
-            <span>approver: {a.requiredApprover}</span>
+            <span>{t('approvals.req')}{a.requestedBy}{a.agentId ? ` · ${t('approvals.agent')}${a.agentId}` : ''}</span>
+            <span>{t('approvals.approver')}{a.requiredApprover}</span>
           </div>
-          {a.taskId && <div className="card-meta"><span>task: {a.taskId.slice(0, 8)}</span></div>}
+          {a.taskId && <div className="card-meta"><span>{t('approvals.task')}{a.taskId.slice(0, 8)}</span></div>}
           {(a.evidenceIds ?? []).length > 0 && (
             <div className="card-meta">
-              <span>evidence: {(a.evidenceIds ?? []).map((e) => e.slice(0, 8)).join(', ')}</span>
+              <span>{t('approvals.evidence')}{(a.evidenceIds ?? []).map((e) => e.slice(0, 8)).join(', ')}</span>
             </div>
           )}
-          <div className="card-meta"><span>expires: {fmtTs(a.expiresAt)}</span></div>
+          <div className="card-meta"><span>{t('approvals.expires')}{fmtTs(a.expiresAt)}</span></div>
           <div className="btn-row" style={{ marginTop: 6 }}>
             <button disabled={!!acting[a.id]} onClick={() => act(a.id, () => client.decide(a.id, true, decidedBy || 'human'))}>
-              {acting[a.id] ? t('approvals.processing') : 'Approve'}
+              {acting[a.id] ? t('approvals.processing') : t('approvals.approve')}
             </button>
             <button disabled={!!acting[a.id]} onClick={() => act(a.id, () => client.decide(a.id, false, decidedBy || 'human'))}>
-              {acting[a.id] ? t('approvals.processing') : 'Reject'}
+              {acting[a.id] ? t('approvals.processing') : t('approvals.reject')}
             </button>
             <button disabled={!!acting[a.id]} onClick={() => act(a.id, () => client.cancel(a.id, decidedBy || 'human'))}>
-              {acting[a.id] ? t('approvals.processing') : 'Cancel'}
+              {acting[a.id] ? t('approvals.processing') : t('approvals.cancel')}
             </button>
           </div>
         </div>
       ))}
 
-      <h4>History ({history.length})</h4>
-      {history.length === 0 && <div className="muted">No decided approvals yet.</div>}
+      <h4>{t('approvals.historyTitle', { count: history.length })}</h4>
+      {history.length === 0 && <div className="muted">{t('approvals.emptyHistory')}</div>}
       {history.map((a) => (
         <div key={a.id} className="act-row">
           <span className="pill">{a.status}</span>
