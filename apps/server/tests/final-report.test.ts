@@ -21,6 +21,7 @@ import {
   generateFinalReport,
   handleFinalReportRoutes,
   renderFinalReportMarkdown,
+  type FinalReport,
 } from '../src/routes/final-report.ts';
 
 const FIXED_NOW = () => new Date('2026-10-12T00:00:00.000Z');
@@ -315,5 +316,134 @@ describe('GET /api/projects/:id/final-report (Batch 9-4)', () => {
       ctx,
     );
     assert.equal(handled, false);
+  });
+});
+
+// ------------------------------------------------- ?lang= (Batch 240-A) --
+
+describe('final-report ?lang= (Batch 240-A)', () => {
+  it('lang=en generates the English narrative with meta.lang=en', () => {
+    const report = generateFinalReport(seededDb(), 'proj-final', {
+      now: FIXED_NOW,
+      lang: 'en',
+    });
+    assert.ok(report);
+    assert.equal(report.meta.lang, 'en');
+    assert.match(
+      report.summary,
+      /^Project "Final Demo": 4 tasks \(1 completed, 2 open\)/,
+    );
+    assert.match(report.summary, /never counted as approvals/);
+    assert.match(report.summary, /AOCR 50%\./);
+    assert.deepEqual(report.outcomes, ['Build login (t1)']);
+    assert.match(report.followUps[0], /^Open task: Build billing \(t2, status IN_PROGRESS\)$/);
+    assert.match(
+      report.extensions.progress.planBased.note ?? '',
+      /^No data: §20 weighted progress plans/,
+    );
+    assert.match(report.extensions.note, /marked "No data" instead of invented/);
+    // Seeded project HAS a waiver, so waived.note is absent; the no-data
+    // note path is covered by the empty-project test below.
+  });
+
+  it('lang=en markdown renders English chrome with the same content hash', () => {
+    const fdb = seededDb();
+    const r1 = generateFinalReport(fdb, 'proj-final', { now: FIXED_NOW, lang: 'en' });
+    const r2 = generateFinalReport(fdb, 'proj-final', { now: FIXED_NOW, lang: 'en' });
+    assert.ok(r1 && r2);
+    assert.equal(r1.meta.contentHash, r2.meta.contentHash);
+
+    const md = renderFinalReportMarkdown(r1);
+    assert.ok(md.includes(`Content hash (sha256): ${r1.meta.contentHash}`));
+    assert.match(md, /^# Final Report — Final Demo$/m);
+    assert.match(md, /^## Summary$/m);
+    assert.match(md, /^## Outcomes \(completed tasks\)$/m);
+    assert.match(md, /^\| Metric \| Value \|$/m);
+    assert.match(md, /^## Waivers \(WAIVED/m);
+    assert.match(md, /\| WAIVED \(listed separately\) \| 1 \|/);
+    assert.match(md, /AOCR \(authorized-outcome completion rate\): 50%/);
+    assert.match(md, /^## Open items$/m);
+    // The English rendering carries no CJK anywhere (all fixtures are ASCII).
+    assert.ok(!/[\u4e00-\u9fff]/.test(md));
+  });
+
+  it('zh and en are different hashed instances', () => {
+    const fdb = seededDb();
+    const zh = generateFinalReport(fdb, 'proj-final', { now: FIXED_NOW });
+    const en = generateFinalReport(fdb, 'proj-final', { now: FIXED_NOW, lang: 'en' });
+    assert.ok(zh && en);
+    assert.equal(zh.meta.lang, 'zh');
+    assert.equal(en.meta.lang, 'en');
+    assert.notEqual(zh.meta.contentHash, en.meta.contentHash);
+  });
+
+  it('empty project in English says No data — nothing fabricated', () => {
+    const fdb = new FactoryDatabase(':memory:');
+    fdb.db
+      .prepare(
+        `INSERT INTO projects (id, name, description, path, created_at, updated_at)
+         VALUES ('proj-empty', 'Empty', '', '', '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`,
+      )
+      .run();
+    const report = generateFinalReport(fdb, 'proj-empty', { now: FIXED_NOW, lang: 'en' });
+    assert.ok(report);
+    assert.equal(report.meta.lang, 'en');
+    assert.match(report.extensions.tasks.note ?? '', /^No data: no task records/);
+    assert.match(report.extensions.progress.aocr.note ?? '', /^No data: no authorized-outcome records/);
+    assert.match(report.summary, /has no task records/);
+    const md = renderFinalReportMarkdown(report);
+    assert.match(md, /^- No data: no completed tasks$/m);
+    assert.match(md, /^- No data: no open items$/m);
+    assert.ok(!/[\u4e00-\u9fff]/.test(md));
+  });
+
+  it('route ?lang=en returns English JSON and audits the lang', async () => {
+    const { ctx, jsonCalls, auditCalls } = makeCtx(seededDb());
+    const handled = await handleFinalReportRoutes(
+      { method: 'GET', headers: {} } as never,
+      {} as never,
+      new URL('http://localhost/api/projects/proj-final/final-report?lang=en'),
+      ctx,
+    );
+    assert.equal(handled, true);
+    assert.equal(jsonCalls[0].status, 200);
+    const report = (jsonCalls[0].body as { report: FinalReport }).report;
+    assert.equal(report.meta.lang, 'en');
+    assert.match(report.summary, /never counted as approvals/);
+    const gen = auditCalls.find((a) => a.action === 'FINAL_REPORT_GENERATED');
+    assert.ok(gen);
+    assert.equal(gen.details['lang'], 'en');
+    assert.equal(gen.details['contentHash'], report.meta.contentHash);
+  });
+
+  it('route ?lang=en&format=md renders English markdown with the audited hash', async () => {
+    const { ctx, auditCalls } = makeCtx(seededDb());
+    const res = mockRes();
+    const handled = await handleFinalReportRoutes(
+      { method: 'GET', headers: {} } as never,
+      res as never,
+      new URL('http://localhost/api/projects/proj-final/final-report?format=md&lang=en'),
+      ctx,
+    );
+    assert.equal(handled, true);
+    assert.equal(res.status, 200);
+    const gen = auditCalls.find((a) => a.action === 'FINAL_REPORT_GENERATED');
+    assert.ok(gen);
+    assert.ok(res.body.includes(`Content hash (sha256): ${gen.details['contentHash']}`));
+    assert.match(res.body, /^## Summary$/m);
+  });
+
+  it('unknown ?lang= value falls back to zh (back-compat)', async () => {
+    const { ctx, jsonCalls } = makeCtx(seededDb());
+    const handled = await handleFinalReportRoutes(
+      { method: 'GET', headers: {} } as never,
+      {} as never,
+      new URL('http://localhost/api/projects/proj-final/final-report?lang=fr'),
+      ctx,
+    );
+    assert.equal(handled, true);
+    const report = (jsonCalls[0].body as { report: FinalReport }).report;
+    assert.equal(report.meta.lang, 'zh');
+    assert.match(report.summary, /豁免 WAIVED/);
   });
 });

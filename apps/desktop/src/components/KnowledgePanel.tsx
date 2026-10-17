@@ -262,7 +262,7 @@ export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
               <FeedCardView key={c.id} card={c} onDecide={(d) => decide(c.id, d)} />
             )
           ))}
-          {cards.length === 0 && <div className="muted">No feed cards.</div>}
+          {cards.length === 0 && <div className="muted">{t('knowledge.feedEmpty')} {t('knowledge.feedEmptyHint')}</div>}
         </div>
       ) : (
         <>

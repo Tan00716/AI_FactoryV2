@@ -34,6 +34,7 @@ export function Sidebar({ org, onSelectAgent }: {
   org: OrgNode[];
   onSelectAgent?: (agentId: string) => void;
 }) {
+  const { t } = useLang();
   // Batch 89：SKILLS 摘要走真实数据；拉取失败时回退到硬编码文本（旧服务端/未连通），不猜测。
   const [skillNames, setSkillNames] = useState<string[] | null>(null);
   useEffect(() => {
@@ -56,7 +57,7 @@ export function Sidebar({ org, onSelectAgent }: {
       </section>
       <section>
         <h3>AI ORG</h3>
-        {org.length === 0 && <div className="muted">No agents yet</div>}
+        {org.length === 0 && <div className="muted">{t('sidebar.noAgents')} {t('sidebar.noAgentsHint')}</div>}
         {org.map((n) => <OrgTreeNode key={n.agent.id} node={n} depth={0} onSelectAgent={onSelectAgent} />)}
       </section>
       <section>

@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 import { DiffViewer } from './DiffViewer';
 
 const API_BASE = defaultApiBase();
@@ -88,6 +89,7 @@ const STATUS_COLORS: Record<ChangeItem['status'], string> = {
 type DetailTab = 'reason' | 'tests' | 'evidence' | null;
 
 export function ChangesPanel({ api }: { api: ChangesApi }) {
+  const { t } = useLang();
   const [repo, setRepo] = useState('');
   const [resolvedRepo, setResolvedRepo] = useState('');
   const [changes, setChanges] = useState<ChangeItem[]>([]);
@@ -157,7 +159,7 @@ export function ChangesPanel({ api }: { api: ChangesApi }) {
         </div>
       )}
       {changes.length === 0 && !busy && (
-        <div className="muted">No AI changes found — no <span style={{ fontFamily: 'monospace' }}>task/*</span> branches with unmerged commits in this repo.</div>
+        <div className="muted">{t('changes.emptyPrefix')}<span style={{ fontFamily: 'monospace' }}>task/*</span>{t('changes.emptySuffix')}</div>
       )}
 
       {changes.map((c) => {

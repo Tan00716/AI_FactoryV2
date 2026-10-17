@@ -49,7 +49,7 @@ export function BottomPanel() {
           <div className="activity">
             {err && <span className="pill warn">{t('bottom.auditLoadFailed', { message: err })}</span>}
             {!err && loading && records.length === 0 && <span className="muted">{t('bottom.loading')}</span>}
-            {!err && !loading && records.length === 0 && <span className="muted">No activity yet.</span>}
+            {!err && !loading && records.length === 0 && <span className="muted">{t('activity.empty')} {t('activity.emptyHint')}</span>}
             {records.map((r) => (
               <div key={r.id} className="act-row">
                 <span className="muted">{new Date(r.ts).toLocaleTimeString()}</span>

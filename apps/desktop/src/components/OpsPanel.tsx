@@ -57,6 +57,12 @@ export function OpsPanel() {
   const [chainState, setChainState] = useState<'idle' | 'loading' | 'ok' | 'broken' | 'error'>('idle');
   const [chainError, setChainError] = useState<string | null>(null);
 
+  /** 自身健康状态码 → 本地化标签；未知码值如实回退原文（服务端零改动）。 */
+  const selfHealthLabel = (v: string | undefined) =>
+    v === 'ok' ? t('ops.selfHealthOk')
+    : v === 'degraded' ? t('ops.selfHealthDegraded')
+    : (v ?? t('ops.unknownTime'));
+
   const verifyChain = useCallback(async () => {
     setChainState('loading');
     setChainError(null);
@@ -133,7 +139,7 @@ export function OpsPanel() {
 
       <Block title={t('ops.watchdogHealth')}>
         <p style={{ margin: '4px 0' }}>
-          {t('ops.selfHealth')}: <b>{watchdog?.selfHealth ?? t('ops.unknownTime')}</b>
+          {t('ops.selfHealth')}: <b>{selfHealthLabel(watchdog?.selfHealth)}</b>
           <span className="muted">{t('ops.healthLegend')}</span>
         </p>
       </Block>
@@ -206,7 +212,7 @@ export function OpsPanel() {
 
       <Block title={t('ops.incidentsTitle', { count: incidents.length })}>
         {incidents.length === 0 ? (
-          <p className="muted">{t('ops.noIncidents')}</p>
+          <p className="muted">{t('ops.noIncidents')} {t('ops.noIncidentsHint')}</p>
         ) : (
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
             {incidents.map((i) => (

@@ -139,7 +139,7 @@ export function EventsPanel({ api, pollMs = 3000 }: EventsPanelProps) {
       </div>
 
       {!loaded && visible.length === 0 && <div className="muted">{t('events.loading')}</div>}
-      {loaded && !error && visible.length === 0 && <div className="muted">No events yet.</div>}
+      {loaded && !error && visible.length === 0 && <div className="muted">{t('events.empty')} {t('events.emptyHint')}</div>}
       {visible.map((e) => (
         <div key={e.seq} className="act-row">
           <span className="muted act-ts">{fmtTime(e.ts)}</span>

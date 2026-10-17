@@ -294,7 +294,7 @@ export function ActivityPanel({ api, pollMs = 3000 }: ActivityPanelProps) {
 
       <h4>Realtime stream</h4>
       {!loaded && items.length === 0 && <div className="muted">{t('activity.loading')}</div>}
-      {loaded && !error && items.length === 0 && <div className="muted">No activity yet.</div>}
+      {loaded && !error && items.length === 0 && <div className="muted">{t('activity.empty')} {t('activity.emptyHint')}</div>}
       {items.map((it) => (
         <div key={it.id} className="act-row">
           <span className="muted act-ts">{fmtTime(it.ts)}</span>

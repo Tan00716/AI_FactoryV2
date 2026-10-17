@@ -176,7 +176,7 @@ export function ModelsPanel({ api, pollMs = 15000 }: ModelsPanelProps) {
         </tbody>
       </table>
       {!loaded && visible.length === 0 && <div className="muted">{t('models.loading')}</div>}
-      {loaded && !error && visible.length === 0 && <div className="muted">No models match the filter.</div>}
+      {loaded && !error && visible.length === 0 && <div className="muted">{t('models.emptyFilter')} {t('models.emptyHint')}</div>}
       <div className="muted" style={{ marginTop: 8 }}>
         The router (§30) uses this capability metadata rather than hard-coded model names.
       </div>

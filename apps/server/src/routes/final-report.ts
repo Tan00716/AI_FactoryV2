@@ -4,6 +4,10 @@
  *  GET /api/projects/:id/final-report            → JSON report
  *  GET /api/projects/:id/final-report?format=md  → Markdown rendering
  *
+ *  Both accept `?lang=en` for the English narrative (default 'zh').
+ *  The narrative language is part of the hashed instance (meta.lang),
+ *  so a zh instance and its en twin carry different content hashes.
+ *
  * Assembles a project's FINAL_REPORT artifact from REAL DB records only:
  * tasks (tasks table, scoped by project_id), evidence (evidence table,
  * incl. the Batch 8 requirement pin), approvals (approvals table) and the
@@ -226,7 +230,23 @@ export interface FinalReport {
     dataThrough: string | null;
     contentHash: string;
     hashAlgorithm: 'sha256';
+    /** Narrative language this instance was generated in. */
+    lang: FinalReportLang;
   };
+}
+
+// ------------------------------------------------------------------- i18n --
+
+/**
+ * Narrative language of a generated report. `?lang=en` requests the
+ * English rendering; anything else (including a missing/unknown value)
+ * is 'zh', so pre-i18n callers keep byte-identical Chinese output.
+ */
+export type FinalReportLang = 'zh' | 'en';
+
+/** Normalize the `?lang=` query value; unknown or missing → 'zh'. */
+export function parseFinalReportLang(v: string | null | undefined): FinalReportLang {
+  return v === 'en' ? 'en' : 'zh';
 }
 
 // --------------------------------------------------------------- helpers --
@@ -257,7 +277,9 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
-const NO_DATA = '无数据';
+/** The shared "no data" marker, localized per report language. */
+const noData = (lang: FinalReportLang): string =>
+  lang === 'en' ? 'No data' : '无数据';
 
 // -------------------------------------------------------------- generator --
 
@@ -269,11 +291,14 @@ const NO_DATA = '无数据';
 export function generateFinalReport(
   fdb: FactoryDatabase,
   projectId: string,
-  opts?: { now?: () => Date },
+  opts?: { now?: () => Date; lang?: FinalReportLang },
 ): FinalReport | null {
   const project = fdb.getProject(projectId);
   if (!project) return null;
   const generatedAt = (opts?.now?.() ?? new Date()).toISOString();
+  const lang: FinalReportLang = opts?.lang ?? 'zh';
+  const en = lang === 'en';
+  const nd = noData(lang);
 
   // ---- tasks -------------------------------------------------------------
   const taskRows = fdb.tasks.listByProject(projectId);
@@ -442,26 +467,52 @@ export function generateFinalReport(
   const dataThrough = stamps.sort().at(-1) ?? null;
 
   // ---- schema fields ---------------------------------------------------------
-  const outcomes = doneTasks.map((t) => `${t.title}（${t.id}）`);
-  const followUps: string[] = [
-    ...openTasks.map((t) => `未完成任务：${t.title}（${t.id}，状态 ${t.status}）`),
-    ...pendingItems.map(
-      (a) => `待决审批：${a.action}（${a.approvalId}，任务 ${a.taskId}）`,
-    ),
-    ...rejectedItems.map(
-      (a) =>
-        `被拒审批：${a.action}（${a.approvalId}，任务 ${a.taskId}，决定人 ${a.decidedBy || '—'}${a.decisionReason ? `，理由 ${a.decisionReason}` : ''}）`,
-    ),
-    ...draftEvidence.map((e) => `未封存证据：${e.title}（${e.id}，任务 ${e.taskId}）`),
-  ];
+  const outcomes = doneTasks.map((t) =>
+    en ? `${t.title} (${t.id})` : `${t.title}（${t.id}）`,
+  );
+  const followUps: string[] = en
+    ? [
+        ...openTasks.map(
+          (t) => `Open task: ${t.title} (${t.id}, status ${t.status})`,
+        ),
+        ...pendingItems.map(
+          (a) => `Pending approval: ${a.action} (${a.approvalId}, task ${a.taskId})`,
+        ),
+        ...rejectedItems.map(
+          (a) =>
+            `Rejected approval: ${a.action} (${a.approvalId}, task ${a.taskId}, decided by ${a.decidedBy || '—'}${a.decisionReason ? `, reason: ${a.decisionReason}` : ''})`,
+        ),
+        ...draftEvidence.map(
+          (e) => `Unsealed evidence: ${e.title} (${e.id}, task ${e.taskId})`,
+        ),
+      ]
+    : [
+        ...openTasks.map((t) => `未完成任务：${t.title}（${t.id}，状态 ${t.status}）`),
+        ...pendingItems.map(
+          (a) => `待决审批：${a.action}（${a.approvalId}，任务 ${a.taskId}）`,
+        ),
+        ...rejectedItems.map(
+          (a) =>
+            `被拒审批：${a.action}（${a.approvalId}，任务 ${a.taskId}，决定人 ${a.decidedBy || '—'}${a.decisionReason ? `，理由 ${a.decisionReason}` : ''}）`,
+        ),
+        ...draftEvidence.map((e) => `未封存证据：${e.title}（${e.id}，任务 ${e.taskId}）`),
+      ];
   const summary =
     taskItems.length === 0
-      ? `项目「${project.name}」暂无任务记录，无可汇编的交付数据；其余段落均为${NO_DATA}。`
-      : `项目「${project.name}」共 ${taskItems.length} 个任务：${doneTasks.length} 已完成、` +
-        `${openTasks.length} 未终结；证据 ${evidenceItems.length} 条（已封存 ${sealedEvidence.length}）；` +
-        `审批通过 ${approvedCount}、拒绝 ${rejectedItems.length}、待决 ${pendingItems.length}；` +
-        `豁免 WAIVED ${waiverItems.length} 条（§23.4 例外授权，单列，不计入通过）；` +
-        `AOCR ${aocr.ratePercent === null ? `${NO_DATA}（无获准结果记录）` : `${aocr.ratePercent}%`}。`;
+      ? en
+        ? `Project "${project.name}" has no task records — nothing to assemble into deliverable data; all other sections report ${nd}.`
+        : `项目「${project.name}」暂无任务记录，无可汇编的交付数据；其余段落均为${nd}。`
+      : en
+        ? `Project "${project.name}": ${taskItems.length} tasks (${doneTasks.length} completed, ` +
+          `${openTasks.length} open); ${evidenceItems.length} evidence items (${sealedEvidence.length} sealed); ` +
+          `approvals: ${approvedCount} approved, ${rejectedItems.length} rejected, ${pendingItems.length} pending; ` +
+          `${waiverItems.length} WAIVED waivers (§23.4 exception grants, listed separately, never counted as approvals); ` +
+          `AOCR ${aocr.ratePercent === null ? `${nd} (no authorized-outcome records)` : `${aocr.ratePercent}%`}.`
+        : `项目「${project.name}」共 ${taskItems.length} 个任务：${doneTasks.length} 已完成、` +
+          `${openTasks.length} 未终结；证据 ${evidenceItems.length} 条（已封存 ${sealedEvidence.length}）；` +
+          `审批通过 ${approvedCount}、拒绝 ${rejectedItems.length}、待决 ${pendingItems.length}；` +
+          `豁免 WAIVED ${waiverItems.length} 条（§23.4 例外授权，单列，不计入通过）；` +
+          `AOCR ${aocr.ratePercent === null ? `${nd}（无获准结果记录）` : `${aocr.ratePercent}%`}。`;
 
   const report: FinalReport = {
     artifactType: 'FINAL_REPORT',
@@ -493,7 +544,7 @@ export function generateFinalReport(
         'Extension sections beyond the artifacts FINAL_REPORT schema ' +
         '(title/summary/outcomes/metrics/followUps). Every number is ' +
         'assembled from live DB records at generation time; sections ' +
-        'without backing records are marked 无数据 instead of invented.',
+        `without backing records are marked ${en ? '"No data"' : '无数据'} instead of invented.`,
       project: {
         id: project.id,
         name: project.name,
@@ -505,7 +556,7 @@ export function generateFinalReport(
       tasks: {
         available: taskItems.length > 0,
         ...(taskItems.length === 0
-          ? { note: `${NO_DATA}：该项目在 tasks 表中暂无任务记录` }
+          ? { note: en ? `${nd}: no task records for this project in the tasks table` : `${nd}：该项目在 tasks 表中暂无任务记录` }
           : {}),
         total: taskItems.length,
         byStatus: countBy(taskItems, (t) => t.status),
@@ -516,7 +567,7 @@ export function generateFinalReport(
       evidence: {
         available: evidenceItems.length > 0,
         ...(evidenceItems.length === 0
-          ? { note: `${NO_DATA}：该项目暂无证据记录` }
+          ? { note: en ? `${nd}: no evidence records for this project` : `${nd}：该项目暂无证据记录` }
           : {}),
         total: evidenceItems.length,
         byType: countBy(evidenceItems, (e) => e.type),
@@ -529,7 +580,7 @@ export function generateFinalReport(
       approvals: {
         available: approvalItems.length > 0,
         ...(approvalItems.length === 0
-          ? { note: `${NO_DATA}：该项目暂无审批记录` }
+          ? { note: en ? `${nd}: no approval records for this project` : `${nd}：该项目暂无审批记录` }
           : {}),
         total: approvalItems.length,
         decisions: {
@@ -542,7 +593,7 @@ export function generateFinalReport(
         waived: {
           count: waiverItems.length,
           ...(waiverItems.length === 0
-            ? { note: `${NO_DATA}：无 APPROVAL_GATE_WAIVED 审计记录` }
+            ? { note: en ? `${nd}: no APPROVAL_GATE_WAIVED audit records` : `${nd}：无 APPROVAL_GATE_WAIVED 审计记录` }
             : {}),
           items: waiverItems,
         },
@@ -554,18 +605,18 @@ export function generateFinalReport(
           authorizedTotal: aocr.authorizedTotal,
           authorizedCompleted: aocr.authorizedCompleted,
           ...(aocr.ratePercent === null
-            ? { note: `${NO_DATA}：无获准结果记录（没有任何任务带 APPROVED 审批决定）` }
+            ? { note: en ? `${nd}: no authorized-outcome records (no task carries an APPROVED decision)` : `${nd}：无获准结果记录（没有任何任务带 APPROVED 审批决定）` }
             : {}),
         },
         planBased: {
           available: false,
-          note: `${NO_DATA}：§20 权重进度计划为路由运行时内存状态，未按项目落库，无法从 DB 汇编`,
+          note: en ? `${nd}: §20 weighted progress plans live in route-local runtime memory and are not persisted per project, so they cannot be assembled from the DB` : `${nd}：§20 权重进度计划为路由运行时内存状态，未按项目落库，无法从 DB 汇编`,
         },
       },
       runs: {
         available: runItems.length > 0,
         ...(runItems.length === 0
-          ? { note: `${NO_DATA}：该项目的任务暂无运行记录` }
+          ? { note: en ? `${nd}: no run records for this project's tasks` : `${nd}：该项目的任务暂无运行记录` }
           : {}),
         total: runItems.length,
         byStatus: countBy(runItems, (r) => r.status),
@@ -576,7 +627,7 @@ export function generateFinalReport(
       auditSummary: {
         available: scopedAudit.length > 0,
         ...(scopedAudit.length === 0
-          ? { note: `${NO_DATA}：无与该项目相关的审计记录` }
+          ? { note: en ? `${nd}: no audit records related to this project` : `${nd}：无与该项目相关的审计记录` }
           : {}),
         totalEvents: scopedAudit.length,
         byAction: countBy(scopedAudit, (r) => r.action),
@@ -605,13 +656,16 @@ export function generateFinalReport(
       dataThrough,
       contentHash: '',
       hashAlgorithm: 'sha256',
+      lang,
     },
   };
 
   // Content hash over the canonical report (hash field itself excluded —
-  // it is '' at this point and stripped before hashing). generatedAt is
-  // part of the hashed content: the hash identifies THIS generated
-  // instance, and the JSON + Markdown forms render the same instance.
+  // it is '' at this point and stripped before hashing). generatedAt and
+  // lang are part of the hashed content: the hash identifies THIS
+  // generated instance (the same data in zh vs en are different instances
+  // with different hashes), and the JSON + Markdown forms of one request
+  // render the same instance, so they always share the hash.
   const { meta, ...rest } = report;
   const { contentHash: _excluded, ...metaRest } = meta;
   report.meta.contentHash = createHash('sha256')
@@ -626,50 +680,62 @@ function cell(s: string | number | null | undefined): string {
   return String(s ?? '—').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 }
 
-function noDataLine(note?: string): string {
-  return note ?? `${NO_DATA}：无记录`;
+function noDataLine(lang: FinalReportLang, note?: string): string {
+  const nd = noData(lang);
+  return note ?? (lang === 'en' ? `${nd}: no records` : `${nd}：无记录`);
 }
 
 export function renderFinalReportMarkdown(report: FinalReport): string {
   const x = report.extensions;
+  // The narrative language travels with the generated instance; callers
+  // never pass it separately, so the two renderings of one instance can
+  // never disagree.
+  const lang: FinalReportLang = report.meta.lang ?? 'zh';
+  const en = lang === 'en';
+  const nd = noData(lang);
   const lines: string[] = [];
   lines.push(`# ${report.title}`);
   lines.push('');
-  lines.push(`- 项目：${x.project.name}（${x.project.id}）`);
-  lines.push(`- 生成时间：${report.meta.generatedAt}`);
-  lines.push(`- 数据截止：${report.meta.dataThrough ?? NO_DATA}`);
-  lines.push(`- 内容哈希（sha256）：${report.meta.contentHash}`);
+  lines.push(en ? `- Project: ${x.project.name} (${x.project.id})` : `- 项目：${x.project.name}（${x.project.id}）`);
+  lines.push(en ? `- Generated at: ${report.meta.generatedAt}` : `- 生成时间：${report.meta.generatedAt}`);
+  lines.push(en ? `- Data through: ${report.meta.dataThrough ?? nd}` : `- 数据截止：${report.meta.dataThrough ?? nd}`);
+  lines.push(en ? `- Content hash (sha256): ${report.meta.contentHash}` : `- 内容哈希（sha256）：${report.meta.contentHash}`);
   lines.push('');
-  lines.push('## 摘要');
+  lines.push(en ? '## Summary' : '## 摘要');
   lines.push('');
   lines.push(report.summary);
   lines.push('');
-  lines.push('## 成果（已完成任务）');
+  lines.push(en ? '## Outcomes (completed tasks)' : '## 成果（已完成任务）');
   lines.push('');
-  if (report.outcomes.length === 0) lines.push(`- ${NO_DATA}：暂无已完成任务`);
+  if (report.outcomes.length === 0) lines.push(en ? `- ${nd}: no completed tasks` : `- ${nd}：暂无已完成任务`);
   for (const o of report.outcomes) lines.push(`- ${o}`);
   lines.push('');
-  lines.push('## 指标');
+  lines.push(en ? '## Metrics' : '## 指标');
   lines.push('');
-  lines.push('| 指标 | 值 |');
+  lines.push(en ? '| Metric | Value |' : '| 指标 | 值 |');
   lines.push('| --- | --- |');
   for (const [k, v] of Object.entries(report.metrics)) {
-    lines.push(`| ${cell(k)} | ${cell(v === null ? NO_DATA : v)} |`);
+    lines.push(`| ${cell(k)} | ${cell(v === null ? nd : v)} |`);
   }
   lines.push('');
-  lines.push('## 任务');
+  lines.push(en ? '## Tasks' : '## 任务');
   lines.push('');
   if (!x.tasks.available) {
-    lines.push(noDataLine(x.tasks.note));
+    lines.push(noDataLine(lang, x.tasks.note));
   } else {
     lines.push(
-      `共 ${x.tasks.total} 个：终态 ${x.tasks.terminal}、未终结 ${x.tasks.open}。按状态：` +
-        Object.entries(x.tasks.byStatus)
-          .map(([k, v]) => `${k} ${v}`)
-          .join('，'),
+      en
+        ? `${x.tasks.total} tasks: ${x.tasks.terminal} terminal, ${x.tasks.open} open. By status: ` +
+          Object.entries(x.tasks.byStatus)
+            .map(([k, v]) => `${k} ${v}`)
+            .join(', ')
+        : `共 ${x.tasks.total} 个：终态 ${x.tasks.terminal}、未终结 ${x.tasks.open}。按状态：` +
+          Object.entries(x.tasks.byStatus)
+            .map(([k, v]) => `${k} ${v}`)
+            .join('，'),
     );
     lines.push('');
-    lines.push('| 任务 | 标题 | 状态 | 优先级 | 风险 | 完成时间 |');
+    lines.push(en ? '| Task | Title | Status | Priority | Risk | Completed at |' : '| 任务 | 标题 | 状态 | 优先级 | 风险 | 完成时间 |');
     lines.push('| --- | --- | --- | --- | --- | --- |');
     for (const t of x.tasks.items) {
       lines.push(
@@ -678,16 +744,18 @@ export function renderFinalReportMarkdown(report: FinalReport): string {
     }
   }
   lines.push('');
-  lines.push('## 证据');
+  lines.push(en ? '## Evidence' : '## 证据');
   lines.push('');
   if (!x.evidence.available) {
-    lines.push(noDataLine(x.evidence.note));
+    lines.push(noDataLine(lang, x.evidence.note));
   } else {
     lines.push(
-      `共 ${x.evidence.total} 条：已封存 ${x.evidence.sealed}，带 requirement pin ${x.evidence.withRequirementPin}，未记录 pin ${x.evidence.withoutRequirementPin}。`,
+      en
+        ? `${x.evidence.total} items: ${x.evidence.sealed} sealed, ${x.evidence.withRequirementPin} with a requirement pin, ${x.evidence.withoutRequirementPin} without one.`
+        : `共 ${x.evidence.total} 条：已封存 ${x.evidence.sealed}，带 requirement pin ${x.evidence.withRequirementPin}，未记录 pin ${x.evidence.withoutRequirementPin}。`,
     );
     lines.push('');
-    lines.push('| 证据 | 任务 | 类型 | 标题 | 状态 | Requirement Pin | 封存时间 |');
+    lines.push(en ? '| Evidence | Task | Type | Title | Status | Requirement Pin | Sealed at |' : '| 证据 | 任务 | 类型 | 标题 | 状态 | Requirement Pin | 封存时间 |');
     lines.push('| --- | --- | --- | --- | --- | --- | --- |');
     for (const e of x.evidence.items) {
       lines.push(
@@ -696,20 +764,20 @@ export function renderFinalReportMarkdown(report: FinalReport): string {
     }
   }
   lines.push('');
-  lines.push('## 审批');
+  lines.push(en ? '## Approvals' : '## 审批');
   lines.push('');
   if (!x.approvals.available) {
-    lines.push(noDataLine(x.approvals.note));
+    lines.push(noDataLine(lang, x.approvals.note));
   } else {
     const d = x.approvals.decisions;
-    lines.push('| 决定 | 数量 |');
+    lines.push(en ? '| Decision | Count |' : '| 决定 | 数量 |');
     lines.push('| --- | --- |');
     lines.push(`| APPROVED | ${d.approved} |`);
     lines.push(`| REJECTED | ${d.rejected} |`);
-    lines.push(`| PENDING（未决） | ${d.pending} |`);
-    lines.push(`| WAIVED（豁免，单列） | ${x.approvals.waived.count} |`);
+    lines.push(en ? `| PENDING | ${d.pending} |` : `| PENDING（未决） | ${d.pending} |`);
+    lines.push(en ? `| WAIVED (listed separately) | ${x.approvals.waived.count} |` : `| WAIVED（豁免，单列） | ${x.approvals.waived.count} |`);
     lines.push('');
-    lines.push('| 审批 | 任务 | 动作 | 状态 | 决定 | 决定人 | 决定时间 |');
+    lines.push(en ? '| Approval | Task | Action | Status | Decision | Decided by | Decided at |' : '| 审批 | 任务 | 动作 | 状态 | 决定 | 决定人 | 决定时间 |');
     lines.push('| --- | --- | --- | --- | --- | --- | --- |');
     for (const a of x.approvals.items) {
       lines.push(
@@ -718,14 +786,14 @@ export function renderFinalReportMarkdown(report: FinalReport): string {
     }
   }
   lines.push('');
-  lines.push('## 豁免（WAIVED，§23.4 例外授权）');
+  lines.push(en ? '## Waivers (WAIVED, §23.4 exception grants)' : '## 豁免（WAIVED，§23.4 例外授权）');
   lines.push('');
-  lines.push('WAIVED 是被例外授权覆盖的 FAILED 门禁，不是审批通过，单列如下：');
+  lines.push(en ? 'A WAIVED gate is a FAILED gate covered by an exception grant — not an approval — listed separately below:' : 'WAIVED 是被例外授权覆盖的 FAILED 门禁，不是审批通过，单列如下：');
   lines.push('');
   if (x.approvals.waived.count === 0) {
-    lines.push(noDataLine(x.approvals.waived.note));
+    lines.push(noDataLine(lang, x.approvals.waived.note));
   } else {
-    lines.push('| 授权 | 任务 | 动作 | 授权人 | 原失败原因 | 时间 |');
+    lines.push(en ? '| Grant | Task | Action | Granted by | Original failure reason | Time |' : '| 授权 | 任务 | 动作 | 授权人 | 原失败原因 | 时间 |');
     lines.push('| --- | --- | --- | --- | --- | --- |');
     for (const w of x.approvals.waived.items) {
       lines.push(
@@ -734,34 +802,39 @@ export function renderFinalReportMarkdown(report: FinalReport): string {
     }
   }
   lines.push('');
-  lines.push('## 进度与 AOCR');
+  lines.push(en ? '## Progress & AOCR' : '## 进度与 AOCR');
   lines.push('');
   lines.push(
-    `- 任务完成率：${x.progress.taskCompletionPercent === null ? NO_DATA : `${x.progress.taskCompletionPercent}%`}`,
+    en
+      ? `- Task completion rate: ${x.progress.taskCompletionPercent === null ? nd : `${x.progress.taskCompletionPercent}%`}`
+      : `- 任务完成率：${x.progress.taskCompletionPercent === null ? nd : `${x.progress.taskCompletionPercent}%`}`,
   );
   lines.push(
-    `- AOCR（授权结果完成率）：${x.progress.aocr.ratePercent === null ? NO_DATA : `${x.progress.aocr.ratePercent}%`}` +
-      `（获准 ${x.progress.aocr.authorizedTotal}，其中完成 ${x.progress.aocr.authorizedCompleted}）`,
+    en
+      ? `- AOCR (authorized-outcome completion rate): ${x.progress.aocr.ratePercent === null ? nd : `${x.progress.aocr.ratePercent}%`}` +
+        ` (${x.progress.aocr.authorizedTotal} authorized, ${x.progress.aocr.authorizedCompleted} completed)`
+      : `- AOCR（授权结果完成率）：${x.progress.aocr.ratePercent === null ? nd : `${x.progress.aocr.ratePercent}%`}` +
+        `（获准 ${x.progress.aocr.authorizedTotal}，其中完成 ${x.progress.aocr.authorizedCompleted}）`,
   );
-  if (x.progress.aocr.note) lines.push(`- AOCR 说明：${x.progress.aocr.note}`);
-  lines.push(`- 权重计划进度：${x.progress.planBased.note}`);
+  if (x.progress.aocr.note) lines.push(en ? `- AOCR note: ${x.progress.aocr.note}` : `- AOCR 说明：${x.progress.aocr.note}`);
+  lines.push(en ? `- Plan-based progress: ${x.progress.planBased.note}` : `- 权重计划进度：${x.progress.planBased.note}`);
   lines.push('');
-  lines.push('## 审计摘要');
+  lines.push(en ? '## Audit summary' : '## 审计摘要');
   lines.push('');
   if (!x.auditSummary.available) {
-    lines.push(noDataLine(x.auditSummary.note));
+    lines.push(noDataLine(lang, x.auditSummary.note));
   } else {
-    lines.push(`共 ${x.auditSummary.totalEvents} 条与本项目相关的审计记录。按动作：`);
+    lines.push(en ? `${x.auditSummary.totalEvents} audit records related to this project. By action:` : `共 ${x.auditSummary.totalEvents} 条与本项目相关的审计记录。按动作：`);
     lines.push('');
-    lines.push('| 动作 | 数量 |');
+    lines.push(en ? '| Action | Count |' : '| 动作 | 数量 |');
     lines.push('| --- | --- |');
     for (const [k, v] of Object.entries(x.auditSummary.byAction)) {
       lines.push(`| ${cell(k)} | ${v} |`);
     }
     lines.push('');
-    lines.push('最近事件：');
+    lines.push(en ? 'Recent events:' : '最近事件：');
     lines.push('');
-    lines.push('| 时间 | 参与者 | 动作 | 实体 |');
+    lines.push(en ? '| Time | Actor | Action | Entity |' : '| 时间 | 参与者 | 动作 | 实体 |');
     lines.push('| --- | --- | --- | --- |');
     for (const r of x.auditSummary.recent) {
       lines.push(
@@ -770,17 +843,20 @@ export function renderFinalReportMarkdown(report: FinalReport): string {
     }
   }
   lines.push('');
-  lines.push('## 运行记录（Runs）');
+  lines.push(en ? '## Run records (Runs)' : '## 运行记录（Runs）');
   lines.push('');
   if (!x.runs.available) {
-    lines.push(noDataLine(x.runs.note));
+    lines.push(noDataLine(lang, x.runs.note));
   } else {
     lines.push(
-      `共 ${x.runs.total} 次运行：带运行清单（manifest）${x.runs.withManifest} 次，` +
-        `清单接线前的遗留运行 ${x.runs.withoutManifest} 次（仅有运行记录，清单不回填）。`,
+      en
+        ? `${x.runs.total} runs: ${x.runs.withManifest} with a run manifest, ` +
+          `${x.runs.withoutManifest} legacy runs from before manifest wiring (run records only — manifests are never backfilled).`
+        : `共 ${x.runs.total} 次运行：带运行清单（manifest）${x.runs.withManifest} 次，` +
+          `清单接线前的遗留运行 ${x.runs.withoutManifest} 次（仅有运行记录，清单不回填）。`,
     );
     lines.push('');
-    lines.push('| Run | 任务 | 状态 | 模型 | 授权工具 | Intents（总数/被拒） | 证据 | Checkpoints |');
+    lines.push(en ? '| Run | Task | Status | Model | Granted tools | Intents (total/denied) | Evidence | Checkpoints |' : '| Run | 任务 | 状态 | 模型 | 授权工具 | Intents（总数/被拒） | 证据 | Checkpoints |');
     lines.push('| --- | --- | --- | --- | --- | --- | --- | --- |');
     for (const r of x.runs.items) {
       const m = r.manifest;
@@ -793,9 +869,9 @@ export function renderFinalReportMarkdown(report: FinalReport): string {
     }
   }
   lines.push('');
-  lines.push('## 未决事项');
+  lines.push(en ? '## Open items' : '## 未决事项');
   lines.push('');
-  if (report.followUps.length === 0) lines.push(`- ${NO_DATA}：无未决事项`);
+  if (report.followUps.length === 0) lines.push(en ? `- ${nd}: no open items` : `- ${nd}：无未决事项`);
   for (const f of report.followUps) lines.push(`- ${f}`);
   lines.push('');
   return lines.join('\n');
@@ -806,6 +882,7 @@ export function renderFinalReportMarkdown(report: FinalReport): string {
 /**
  *  GET /api/projects/:id/final-report            → { report } (JSON)
  *  GET /api/projects/:id/final-report?format=md  → text/markdown
+ *  `?lang=en` switches the narrative to English (default 'zh').
  *
  * Generation is audited (FINAL_REPORT_GENERATED) with the content hash
  * and per-section completeness — the audit write happens AFTER assembly,
@@ -824,7 +901,8 @@ export async function handleFinalReportRoutes(
   if (seg.length !== 2 || seg[1] !== 'final-report') return false;
   const projectId = decodeURIComponent(seg[0]);
 
-  const report = generateFinalReport(ctx.fdb, projectId);
+  const lang = parseFinalReportLang(url.searchParams.get('lang'));
+  const report = generateFinalReport(ctx.fdb, projectId, { lang });
   if (!report) {
     ctx.json(res, 404, { error: `project ${projectId} not found` });
     return true;
@@ -837,6 +915,7 @@ export async function handleFinalReportRoutes(
   ctx.audit.record(actor, 'FINAL_REPORT_GENERATED', 'project', projectId, {
     contentHash: report.meta.contentHash,
     format,
+    lang,
     dataThrough: report.meta.dataThrough,
     sections: report.extensions.sectionStatus,
     totalTasks: report.extensions.tasks.total,

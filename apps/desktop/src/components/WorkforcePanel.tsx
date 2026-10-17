@@ -111,7 +111,7 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
     setErr('');
     try {
       await client.createEmployee({ jobTitle, specialty, requestedBy: 'human' });
-      setMsg(`Hired "${jobTitle}"`);
+      setMsg(t('workforce.hired', { title: jobTitle }));
       await refresh();
     } catch (e) {
       setErr((e as Error).message);
@@ -127,7 +127,7 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
     setErr('');
     try {
       await client.assembleSquad(taskId);
-      setMsg(`Squad assembled for ${taskId}`);
+      setMsg(t('workforce.squadAssembled', { taskId }));
       await refresh();
     } catch (e) {
       setErr((e as Error).message);
@@ -182,7 +182,7 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
               {n.parentId && <span className="muted"> ← {n.parentId.slice(0, 8)}</span>}
             </li>
           ))}
-          {nodes.length === 0 && <li className="muted">No org nodes yet — add the root below.</li>}
+          {nodes.length === 0 && <li className="muted">{t('workforce.noNodes')}</li>}
         </ul>
         <AddNodeForm
           nodes={nodes}
@@ -213,7 +213,7 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
           {(squads.active as Array<{ id: string; taskId: string; memberIds: string[] }>).map((s) => (
             <li key={s.id}>
               <span className="pill">active</span> {s.taskId} — {s.memberIds.length} members
-              <button className="link" onClick={() => archive(s.taskId)} disabled={busy}>archive</button>
+              <button className="link" onClick={() => { if (window.confirm(t('workforce.confirmArchive', { taskId: s.taskId }))) archive(s.taskId); }} disabled={busy}>archive</button>
             </li>
           ))}
         </ul>
@@ -235,8 +235,9 @@ function AddNodeForm({
   const [title, setTitle] = useState('');
   const [parentId, setParentId] = useState('');
   const [adding, setAdding] = useState(false);
+  const [addErr, setAddErr] = useState('');
   return (
-    <div className="row">
+    <div className="row" style={{ flexWrap: 'wrap' }}>
       <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Node title (e.g. Tech Lead)" />
       <select value={parentId} onChange={(e) => setParentId(e.target.value)}>
         <option value="">(root)</option>
@@ -249,11 +250,16 @@ function AddNodeForm({
         onClick={() => {
           if (!title.trim() || adding) return;
           setAdding(true);
-          void onAdd(title.trim(), parentId || undefined).then(() => setTitle('')).finally(() => setAdding(false));
+          setAddErr('');
+          void onAdd(title.trim(), parentId || undefined)
+            .then(() => setTitle(''))
+            .catch((e) => setAddErr(t('workforce.addNodeFailed', { message: e instanceof Error ? e.message : String(e) })))
+            .finally(() => setAdding(false));
         }}
       >
         {adding ? t('workforce.adding') : 'Add node'}
       </button>
+      {addErr && <span className="pill warn" style={{ width: '100%' }}>{addErr}</span>}
     </div>
   );
 }

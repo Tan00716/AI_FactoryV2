@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 /** Typed client for the CI/CD endpoints (mirrors the req pattern in api.ts). */
 export interface PipelineStage {
@@ -104,6 +105,7 @@ function stageClass(s: string): string {
  * run / deploy / approve / rollback controls, deployment history.
  */
 export function CicdPanel(props: { taskId?: string | null; cicd?: CicdApi }) {
+  const { t } = useLang();
   const [cicd] = useState<CicdApi>(() => props.cicd ?? createCicdApi());
   const [envs, setEnvs] = useState<Environment[]>([]);
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
@@ -159,7 +161,7 @@ export function CicdPanel(props: { taskId?: string | null; cicd?: CicdApi }) {
         </button>
       </div>
       {error && <div className="banner err">{error}</div>}
-      {pipelines.length === 0 && <p className="muted">No pipelines yet — create one above.</p>}
+      {pipelines.length === 0 && <p className="muted">{t('cicd.empty')}</p>}
       {pipelines.map((p) => (
         <div key={p.id} className="card" style={{ marginBottom: 8 }}>
           <div className="row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -192,7 +194,7 @@ export function CicdPanel(props: { taskId?: string | null; cicd?: CicdApi }) {
             >
               Deploy
             </button>
-            <button disabled={busy} onClick={() => run(() => cicd.rollback(p.id))}>Rollback</button>
+            <button disabled={busy} onClick={() => { if (window.confirm(t('cicd.confirmRollback', { name: p.id.slice(0, 8) }))) run(() => cicd.rollback(p.id)); }}>Rollback</button>
           </div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
             {p.stages.map((s) => (

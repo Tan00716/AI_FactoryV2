@@ -43,7 +43,7 @@ export function FinalReportPanel({
   projectId: string;
   projectName: string;
 }) {
-  const { t, has } = useLang();
+  const { t, has, lang } = useLang();
   /** metrics 表格：服务端下发 camelCase key，按 key 查语言包翻译，缺 key 回退原文 key。 */
   const metricLabel = (k: string): string => {
     const key = `finalreport.metric.${k}`;
@@ -59,7 +59,7 @@ export function FinalReportPanel({
     setLoading(true);
     setErr('');
     try {
-      const { report: r } = await api.finalReport(projectId);
+      const { report: r } = await api.finalReport(projectId, lang);
       setReport(r);
     } catch (e) {
       setReport(null);
@@ -67,7 +67,7 @@ export function FinalReportPanel({
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, lang]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -75,7 +75,7 @@ export function FinalReportPanel({
     setMdBusy(true);
     setErr('');
     try {
-      const md = await api.finalReportMarkdown(projectId);
+      const md = await api.finalReportMarkdown(projectId, lang);
       downloadText(`final-report-${projectName || projectId}.md`, md);
     } catch (e) {
       setErr(t('finalreport.mdExportFailed', { message: (e as Error).message }));

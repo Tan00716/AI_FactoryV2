@@ -1,5 +1,7 @@
 /** Typed client for the local @ai-factory/server API. */
 
+import type { Lang } from './i18n';
+
 /**
  * The renderer talks to the backend over plain HTTP. The default port is
  * 3100, but a packaged app may spawn its backend on a different PORT (see
@@ -367,6 +369,7 @@ export interface FinalReport {
     dataThrough: string | null;
     contentHash: string;
     hashAlgorithm: 'sha256';
+    lang: 'zh' | 'en';
   };
 }
 /** 备份列表项（GET /api/backups 的 manifest 摘要）。
@@ -576,11 +579,6 @@ export interface ApiIdentity {
   authRequired: boolean;
 }
 
-export function identityLabel(w: ApiIdentity): string {
-  if (w.mode === 'open') return '本地模式（无令牌）';
-  return `角色：${w.role}`;
-}
-
 export const api = {
   /** /api/health 的真实形状（服务端原样）：outbox.pending 是聚合
    *  阶段走查可直接用的计数；多余字段本面不读。 */
@@ -698,12 +696,12 @@ export const api = {
   quotaBuckets: () => req<{ buckets: QuotaBucketView[] }>('/quota/buckets'),
   /** §33 incidents 列表。 */
   incidents: () => req<{ incidents: IncidentSummary[] }>('/incidents'),
-  /** §39 项目 Final Report（JSON 汇编结果）。 */
-  finalReport: (id: string) =>
-    req<{ report: FinalReport }>(`/projects/${encodeURIComponent(id)}/final-report`),
+  /** §39 项目 Final Report（JSON 汇编结果）；lang 透传服务端叙述语言。 */
+  finalReport: (id: string, lang: Lang) =>
+    req<{ report: FinalReport }>(`/projects/${encodeURIComponent(id)}/final-report?lang=${lang}`),
   /** §39 Final Report 的 Markdown 渲染（与 JSON 同一汇编对象、同一 contentHash）。 */
-  finalReportMarkdown: (id: string) =>
-    reqText(`/projects/${encodeURIComponent(id)}/final-report?format=md`),
+  finalReportMarkdown: (id: string, lang: Lang) =>
+    reqText(`/projects/${encodeURIComponent(id)}/final-report?format=md&lang=${lang}`),
   /** 备份列表 + 待生效恢复状态。 */
   backups: () =>
     req<{ backups: BackupSummary[]; pendingRestore: PendingRestore | null }>('/backups'),

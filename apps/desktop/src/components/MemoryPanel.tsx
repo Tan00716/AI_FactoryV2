@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 /** Typed client for the memory endpoints (mirrors the req pattern in api.ts). */
 export interface MemoryEntry {
@@ -73,6 +74,7 @@ function confClass(c: number): string {
  * write form (dedup/merge on the server), verify action.
  */
 export function MemoryPanel(props: { memory?: MemoryApi }) {
+  const { t } = useLang();
   const [api] = useState<MemoryApi>(() => props.memory ?? createMemoryApi());
   const [scope, setScope] = useState<string>('project');
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
@@ -134,7 +136,7 @@ export function MemoryPanel(props: { memory?: MemoryApi }) {
           Write
         </button>
       </div>
-      {entries.length === 0 && <p className="muted">No entries in this scope yet.</p>}
+      {entries.length === 0 && <p className="muted">{t('memory.empty')} {t('memory.emptyHint')}</p>}
       <ul className="ev-list">
         {entries.map((e) => (
           <li key={e.id} style={{ marginBottom: 6 }}>

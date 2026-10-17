@@ -135,7 +135,7 @@ export function McpPanel(props: { mcp?: McpApi }) {
                   <button disabled={busy} onClick={() => run(() => api.review(s.name, s.version, false))}>Reject</button>{' '}
                 </>
               )}
-              <button disabled={busy} onClick={() => run(() => api.remove(s.name, s.version))}>Remove</button>
+              <button disabled={busy} onClick={() => { if (window.confirm(t('mcp.confirmRemove', { name: s.name, version: s.version }))) run(() => api.remove(s.name, s.version)); }}>Remove</button>
             </span>
           </li>
         ))}

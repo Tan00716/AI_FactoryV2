@@ -116,7 +116,7 @@ export function NotificationsBell({ base }: { base: string }) {
             <button onClick={markAll} disabled={unread === 0}>Mark all read</button>
           </div>
           {error && <div className="pill warn" style={{ margin: 8 }}>{t('notifications.loadFailed', { message: error })}</div>}
-          {!error && items.length === 0 && <div className="muted" style={{ padding: 8 }}>No notifications.</div>}
+          {!error && items.length === 0 && <div className="muted" style={{ padding: 8 }}>{t('notifications.empty')}</div>}
           <ul className="ev-list notif-list">
             {items.slice(0, 20).map((n) => (
               <li

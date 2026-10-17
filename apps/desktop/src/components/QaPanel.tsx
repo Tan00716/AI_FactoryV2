@@ -173,7 +173,7 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
             </div>
           ))}
           {org.specialists.length === 0 && (
-            <div className="muted">No specialists yet — created on demand per task.</div>
+            <div className="muted">{t('qa.empty')}</div>
           )}
         </div>
       )}

@@ -1,5 +1,15 @@
 # Changelog
 
+## Batch 240 (2026-10-17)
+
+英文版最后一个缺口 + 人性化打磨 + bug 猎捕。
+
+- **Final Report 服务端 i18n**（240-A）：`GET /api/projects/:id/final-report` 加 `?lang=en|zh`（缺省 zh，老调用输出逐字节不变）；约 52 处 narrative 模板 + markdown 渲染器 chrome 文案双语化（英文自然翻译）；桌面按当前语言透传、切换自动重拉；content hash 语义明确为"这次生成的实例"（同数据同语言→同 hash；zh/en 是不同实例→hash 不同；同请求的 JSON 与 md 渲染同一对象→hash 恒一致）；zh 向后兼容用 HEAD 版做了逐字节对比铁证；+7 个 server 测试；删 `api.ts` dead export `identityLabel`（已确认零引用）。
+- **人性化**（240-B）：空态补"下一步怎么做"指引（33 个新双语 key，645/645 集合对称）；B238 漏掉的 12 处英文原文空态抽 key；Ops "Self health: ok(ok = 心跳正常…)" 改写消除 ok 重复；3 处破坏性操作补二次确认（MCP Remove、CI/CD Rollback、Workforce archive squad，沿用既有 `window.confirm` 模式）；Workforce 2 条英文 toast 抽 key。
+- **bug 猎捕**：发现 **1 个真 bug**——WorkforcePanel `AddNodeForm` 的 `onAdd().then().finally()` 无 `.catch`，失败时 unhandled rejection + 界面静默无提示；已修（加 `.catch` + 行内 `addErr` 展示，沿用面板既有 `pill warn` 样式）。Promise 全树审计其余全部在位；用户可见中文硬编码 0。
+- **验证**：server/desktop tsc 0；`npm run build` exit 0（合并树重跑，因 240-A 的 build 跑在 240-B 编辑中途）；真机 EN Report 正文全英文、中文模式与改前逐字一致；**三套回归全绿**：`npm test` 2593/0、`test:server` 507/507（500+7 新）、`test:acceptance` 138/138。
+- **诚实说明**：240-A 中途自行提交了 `4a4c1fa`（Approvals/Dashboard 文案收尾，4 文件 53+/17-，内容已核验无问题；此后子任务 brief 会重申"不 commit，由收口人统一提交"）；约 120+ 处英文硬编码在中文模式下仍显示英文（B238 只抽了中文），列为下批候选（~150 key 量级，需单独立项）。
+
 ## Batch 239 (2026-10-17)
 
 27 面板 UX 走查（真机 Xvfb + 真 Electron 逐个点击，27/27 全覆盖），修 3 项无争议的易用/美化问题。

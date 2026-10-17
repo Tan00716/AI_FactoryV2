@@ -215,7 +215,7 @@ export function ApprovalsPanelInner({ api, pollMs = 5000 }: ApprovalsPanelProps)
       {error && <div className="banner err">{error}</div>}
 
       <h4>{t('approvals.pendingTitle', { count: pending.length })}</h4>
-      {pending.length === 0 && <div className="muted">{t('approvals.emptyPending')}</div>}
+      {pending.length === 0 && <div className="muted">{t('approvals.emptyPending')} {t('approvals.emptyPendingHint')}</div>}
       {pending.map((a) => (
         <div key={a.id} className="card">
           <div className="card-title">
@@ -248,7 +248,7 @@ export function ApprovalsPanelInner({ api, pollMs = 5000 }: ApprovalsPanelProps)
       ))}
 
       <h4>{t('approvals.historyTitle', { count: history.length })}</h4>
-      {history.length === 0 && <div className="muted">{t('approvals.emptyHistory')}</div>}
+      {history.length === 0 && <div className="muted">{t('approvals.emptyHistory')} {t('approvals.emptyHistoryHint')}</div>}
       {history.map((a) => (
         <div key={a.id} className="act-row">
           <span className="pill">{a.status}</span>
