@@ -1,5 +1,15 @@
 # Changelog
 
+## Batch 239 (2026-10-17)
+
+27 面板 UX 走查（真机 Xvfb + 真 Electron 逐个点击，27/27 全覆盖），修 3 项无争议的易用/美化问题。
+
+- **易用**：Events 过滤文案误导——"Filter by event type (0 selected)"，但 0 选中实际=显示全部；改为未选中时显示 "(showing all)"（双语）。
+- **美化**：Report 指标表格裸 camelCase key（totalTasks 等 17 个服务端 key 直接当标签）——新增 `finalreport.metric.*` 双语 key（中英各 17），`has()` 缺 key 回退原文，服务端零改动。
+- **美化**：Orchestrate 模型路由账号行 JSON 裸 dump（截断 120 字符甩屏上）——改为结构化渲染（`chatgpt-oauth: not logged in` / 已登录则 `{kind}: logged in ({pct}% used)`），形状对不上不渲染不猜测，双语。
+- **判断项（只列不修）**：Final Report 正文是服务端下发中文（需服务端 i18n 决策）；Stability Budget raw JSON（dev-tool 受众可接受）；Activity/EmployeeDetail 详情 JSON dump（调试视图）；Skills "v1.0.0 · 1.0.0" 查证是设计非 bug；Events "No events yet." 查证 §91 事件总线确实为空，文案诚实。
+- **验证**：desktop tsc 0；三处修复 EN+中文双语真机截图验证；走查过程曾撞上 vite HMR 双实例故障（t() 返回 raw key），reload 后重抓确认干净。改动 diff：5 文件 +69/-4。
+
 ## Batch 238 (2026-10-17)
 
 i18n 英文全铺开——**33 文件、482 个新 key，27 面板 + 侧栏 + 弹窗全双语**。

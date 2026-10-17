@@ -43,7 +43,12 @@ export function FinalReportPanel({
   projectId: string;
   projectName: string;
 }) {
-  const { t } = useLang();
+  const { t, has } = useLang();
+  /** metrics 表格：服务端下发 camelCase key，按 key 查语言包翻译，缺 key 回退原文 key。 */
+  const metricLabel = (k: string): string => {
+    const key = `finalreport.metric.${k}`;
+    return has(key) ? t(key) : k;
+  };
   const [report, setReport] = useState<FinalReport | null>(null);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
@@ -116,7 +121,7 @@ export function FinalReportPanel({
               <tbody>
                 {Object.entries(report.metrics).map(([k, v]) => (
                   <tr key={k}>
-                    <td>{k}</td>
+                    <td>{metricLabel(k)}</td>
                     <td>{v === null ? t('finalreport.noData') : String(v)}</td>
                   </tr>
                 ))}

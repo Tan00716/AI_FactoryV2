@@ -97,6 +97,24 @@ export function OrchestratePanel({
   taskId: string | null;
 }) {
   const { t } = useLang();
+  /**
+   * 模型路由账号状态：服务端返回结构化对象（profile.kind / usage.authenticated），
+   * 这里渲染成一行人类可读状态，不再 JSON.stringify 裸 dump。
+   * 形状对不上时返回 null（不渲染），不猜测。
+   */
+  const accountLabel = (a: unknown): string | null => {
+    if (typeof a !== 'object' || a === null) return null;
+    const o = a as { profile?: { kind?: unknown }; usage?: { authenticated?: unknown; usedPct?: unknown } };
+    const kind = typeof o.profile?.kind === 'string' && o.profile.kind ? o.profile.kind : null;
+    if (!kind) return null;
+    if (o.usage?.authenticated === true) {
+      const pct = typeof o.usage.usedPct === 'number' ? o.usage.usedPct : null;
+      return pct !== null
+        ? t('orchestrate.accountLoggedInUsage', { kind, pct })
+        : t('orchestrate.accountLoggedIn', { kind });
+    }
+    return t('orchestrate.accountNotLoggedIn', { kind });
+  };
   const [client] = useState<OrchestrateApi>(() => api ?? createOrchestrateApi());
   const [plan, setPlan] = useState<DecompositionPlan | null>(null);
   const [decision, setDecision] = useState<RouteDecision | null>(null);
@@ -243,7 +261,7 @@ export function OrchestratePanel({
         <h3>Model router (§30)</h3>
         <div className="row">
           <button onClick={doRoute} disabled={busy !== ''}>{busy === 'route' ? t('orchestrate.routing') : 'Route a coding task'}</button>
-          {account != null && <span className="muted">account: {JSON.stringify(account).slice(0, 120)}…</span>}
+          {accountLabel(account) != null && <span className="muted">{accountLabel(account)}</span>}
         </div>
         {decision && (
           <ul className="plain">

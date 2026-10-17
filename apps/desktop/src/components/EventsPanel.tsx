@@ -122,7 +122,7 @@ export function EventsPanel({ api, pollMs = 3000 }: EventsPanelProps) {
 
       <div className="filter-box">
         <div className="muted" style={{ marginBottom: 4 }}>
-          Filter by event type ({selected.size} selected):
+          Filter by event type ({selected.size === 0 ? 'showing all' : `${selected.size} selected`}):
         </div>
         <div className="filter-grid">
           {types.map((t) => (
