@@ -32,7 +32,7 @@ export function RunCheckpointsSection({
         {onRefresh && <button onClick={onRefresh}>{t('runcheckpoints.refresh')}</button>}
       </h4>
       {error && <div className="banner err">{t('runcheckpoints.unavailable', { error })}</div>}
-      {!error && checkpoints === null && <p className="muted">Loading checkpoints…</p>}
+      {!error && checkpoints === null && <p className="muted">{t('runcheckpoints.loading')}</p>}
       {!error && checkpoints !== null && checkpoints.length === 0 && (
         <p className="muted">{t('runcheckpoints.empty')}</p>
       )}

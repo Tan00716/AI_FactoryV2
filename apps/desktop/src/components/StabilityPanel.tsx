@@ -57,7 +57,7 @@ export function StabilityPanel() {
 
   useEffect(() => {
     run('mode', () => req('/autonomy/mode?projectId=proj-myapp'));
-    run('budgets', () => req(`/resources/budgets/${encodeURIComponent('task-demo-1')}`).catch(() => ({ note: 'no budget yet — consume first' })));
+    run('budgets', () => req(`/resources/budgets/${encodeURIComponent('task-demo-1')}`).catch(() => ({ note: t('stability.noBudget') })));
   }, [run]);
 
   const J = (v: unknown) => <pre className="muted" style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{JSON.stringify(v, null, 1)?.slice(0, 1200)}</pre>;
@@ -69,28 +69,28 @@ export function StabilityPanel() {
       <Section title={t('stability.security')}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <input value={manifest} onChange={(e) => setManifest(e.target.value)} style={{ flex: 2, minWidth: 280 }} placeholder='manifest JSON' />
-          <button disabled={busy} onClick={() => run('scan', () => post('/security/scan', { manifest: JSON.parse(manifest) }))}>Scan</button>
+          <button disabled={busy} onClick={() => run('scan', () => post('/security/scan', { manifest: JSON.parse(manifest) }))}>{t('stability.scanBtn')}</button>
         </div>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <input value={redactText} onChange={(e) => setRedactText(e.target.value)} style={{ flex: 2, minWidth: 280 }} />
-          <button disabled={busy} onClick={() => run('redact', () => post('/security/redact', { text: redactText }))}>Redact</button>
+          <button disabled={busy} onClick={() => run('redact', () => post('/security/redact', { text: redactText }))}>{t('stability.redactBtn')}</button>
         </div>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <input value={classifyText} onChange={(e) => setClassifyText(e.target.value)} style={{ flex: 2, minWidth: 280 }} />
-          <button disabled={busy} onClick={() => run('classify', () => post('/security/classify', { text: classifyText, source: 'external' }))}>Classify</button>
+          <button disabled={busy} onClick={() => run('classify', () => post('/security/classify', { text: classifyText, source: 'external' }))}>{t('stability.classifyBtn')}</button>
         </div>
         {!!out.scan && J(out.scan)}{!!out.redact && J(out.redact)}{!!out.classify && J(out.classify)}
       </Section>
 
       <Section title={t('stability.recovery')}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-          <input value={snapDir} onChange={(e) => setSnapDir(e.target.value)} placeholder="workspace dir" />
-          <button disabled={busy} onClick={() => run('snapshots', () => post('/recovery/snapshots', { dir: snapDir, tag: 'panel' }).then(() => req('/recovery/snapshots')))}>Take snapshot</button>
-          <button disabled={busy} onClick={() => run('snapshots', () => req('/recovery/snapshots'))}>List</button>
+          <input value={snapDir} onChange={(e) => setSnapDir(e.target.value)} placeholder={t('stability.dirPlaceholder')} />
+          <button disabled={busy} onClick={() => run('snapshots', () => post('/recovery/snapshots', { dir: snapDir, tag: 'panel' }).then(() => req('/recovery/snapshots')))}>{t('stability.snapshotBtn')}</button>
+          <button disabled={busy} onClick={() => run('snapshots', () => req('/recovery/snapshots'))}>{t('stability.listBtn')}</button>
         </div>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <input value={failMsg} onChange={(e) => setFailMsg(e.target.value)} style={{ flex: 2, minWidth: 280 }} />
-          <button disabled={busy} onClick={() => run('failure', () => post('/recovery/classify', { message: failMsg }))}>Classify failure</button>
+          <button disabled={busy} onClick={() => run('failure', () => post('/recovery/classify', { message: failMsg }))}>{t('stability.classifyFailureBtn')}</button>
         </div>
         {!!out.snapshots && J(out.snapshots)}{!!out.failure && J(out.failure)}
       </Section>
@@ -98,9 +98,9 @@ export function StabilityPanel() {
       <Section title={t('stability.resources')}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <input value={taskId} onChange={(e) => setTaskId(e.target.value)} placeholder="taskId" />
-          <button disabled={busy} onClick={() => run('budgets', () => req(`/resources/budgets/${encodeURIComponent(taskId)}`))}>Budget</button>
-          <button disabled={busy} onClick={() => run('usage', () => req(`/resources/usage?taskId=${encodeURIComponent(taskId)}`))}>Usage</button>
-          <button disabled={busy} onClick={() => run('budgets', () => post('/resources/consume', { taskId, usage: { tokens: 5000 } }).catch((e) => ({ rejected: (e as Error).message }))) }>Consume 5k tokens</button>
+          <button disabled={busy} onClick={() => run('budgets', () => req(`/resources/budgets/${encodeURIComponent(taskId)}`))}>{t('stability.budgetBtn')}</button>
+          <button disabled={busy} onClick={() => run('usage', () => req(`/resources/usage?taskId=${encodeURIComponent(taskId)}`))}>{t('stability.usageBtn')}</button>
+          <button disabled={busy} onClick={() => run('budgets', () => post('/resources/consume', { taskId, usage: { tokens: 5000 } }).catch((e) => ({ rejected: (e as Error).message }))) }>{t('stability.consumeBtn')}</button>
         </div>
         {!!out.budgets && J(out.budgets)}{!!out.usage && J(out.usage)}
       </Section>
@@ -110,19 +110,19 @@ export function StabilityPanel() {
           <select value={mode} onChange={(e) => setMode(e.target.value)}>
             {['assisted', 'semi', 'autonomous', 'full'].map((m) => <option key={m} value={m}>{m}</option>)}
           </select>
-          <button disabled={busy} onClick={() => run('mode', () => req('/autonomy/mode', { method: 'PUT', body: JSON.stringify({ projectId: 'proj-myapp', mode, updatedBy: 'human' }) }))}>Set mode</button>
-          <button disabled={busy} onClick={() => run('decide', () => post('/autonomy/decide', { action: { kind: 'deploy-prod' }, mode }))}>Decide deploy-prod</button>
-          <button disabled={busy} onClick={() => run('prodcheck', () => post('/autonomy/verify-prod', { evidence: {} }))}>Verify prod (empty evidence)</button>
+          <button disabled={busy} onClick={() => run('mode', () => req('/autonomy/mode', { method: 'PUT', body: JSON.stringify({ projectId: 'proj-myapp', mode, updatedBy: 'human' }) }))}>{t('stability.setModeBtn')}</button>
+          <button disabled={busy} onClick={() => run('decide', () => post('/autonomy/decide', { action: { kind: 'deploy-prod' }, mode }))}>{t('stability.decideBtn')}</button>
+          <button disabled={busy} onClick={() => run('prodcheck', () => post('/autonomy/verify-prod', { evidence: {} }))}>{t('stability.verifyProdBtn')}</button>
         </div>
         {!!out.mode && J(out.mode)}{!!out.decide && J(out.decide)}{!!out.prodcheck && J(out.prodcheck)}
       </Section>
 
       <Section title={t('stability.coordination')}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-          <input value={dagTasks} onChange={(e) => setDagTasks(e.target.value)} placeholder="tasks a,b,c" />
-          <button disabled={busy} onClick={() => run('schedule', () => post('/coordination/schedule', { tasks: dagTasks.split(',').map((s) => s.trim()).filter(Boolean), edges: [{ from: 'a', to: 'b', kind: 'depends_on' }] }))}>Schedule</button>
-          <button disabled={busy} onClick={() => run('overlap', () => post('/coordination/overlap', { a: ['src/pay.ts'], b: ['src/pay.ts'] }))}>Overlap demo</button>
-          <button disabled={busy} onClick={() => run('lock', () => post('/coordination/locks', { kind: 'deployment', key: 'prod', holder: 'panel', ttlMs: 60000 }))}>Acquire prod lock</button>
+          <input value={dagTasks} onChange={(e) => setDagTasks(e.target.value)} placeholder={t('stability.tasksPlaceholder')} />
+          <button disabled={busy} onClick={() => run('schedule', () => post('/coordination/schedule', { tasks: dagTasks.split(',').map((s) => s.trim()).filter(Boolean), edges: [{ from: 'a', to: 'b', kind: 'depends_on' }] }))}>{t('stability.scheduleBtn')}</button>
+          <button disabled={busy} onClick={() => run('overlap', () => post('/coordination/overlap', { a: ['src/pay.ts'], b: ['src/pay.ts'] }))}>{t('stability.overlapBtn')}</button>
+          <button disabled={busy} onClick={() => run('lock', () => post('/coordination/locks', { kind: 'deployment', key: 'prod', holder: 'panel', ttlMs: 60000 }))}>{t('stability.lockBtn')}</button>
         </div>
         {!!out.schedule && J(out.schedule)}{!!out.overlap && J(out.overlap)}{!!out.lock && J(out.lock)}
       </Section>
@@ -131,8 +131,8 @@ export function StabilityPanel() {
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <input value={verdictA} onChange={(e) => setVerdictA(e.target.value)} style={{ flex: 1, minWidth: 220 }} />
           <input value={verdictB} onChange={(e) => setVerdictB(e.target.value)} style={{ flex: 1, minWidth: 220 }} />
-          <button disabled={busy} onClick={() => run('dispute', () => post('/disputes', { verdictA: JSON.parse(verdictA), verdictB: JSON.parse(verdictB) }))}>Adjudicate</button>
-          <button disabled={busy} onClick={() => run('disputes', () => req('/disputes'))}>List</button>
+          <button disabled={busy} onClick={() => run('dispute', () => post('/disputes', { verdictA: JSON.parse(verdictA), verdictB: JSON.parse(verdictB) }))}>{t('stability.adjudicateBtn')}</button>
+          <button disabled={busy} onClick={() => run('disputes', () => req('/disputes'))}>{t('stability.listBtn')}</button>
         </div>
         {!!out.dispute && J(out.dispute)}{!!out.disputes && J(out.disputes)}
       </Section>

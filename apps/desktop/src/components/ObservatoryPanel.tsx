@@ -282,7 +282,7 @@ export function ObservatoryPanel() {
         )}
       </div>
 
-      {rows === null && !err && <p className="muted">Loading runs…</p>}
+      {rows === null && !err && <p className="muted">{t('observatory.loadingRuns')}</p>}
       {rows !== null && rows.length === 0 && (
         <p className="muted">
           {t('observatory.empty')}
@@ -399,7 +399,7 @@ export function ObservatoryPanel() {
                           })}
                         </div>
                       ) : (
-                        <p className="muted">Loading manifest…</p>
+                        <p className="muted">{t('observatory.loadingManifest')}</p>
                       )}
 
                       <RunCheckpointsSection

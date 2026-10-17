@@ -150,10 +150,10 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
 
   return (
     <div className="qa-panel" style={{ padding: 12, overflowY: 'auto' }}>
-      <h3 style={{ margin: '0 0 8px' }}>QA <span className="muted">§36–§38</span></h3>
+      <h3 style={{ margin: '0 0 8px' }}>{t('qa.title')} <span className="muted">§36–§38</span></h3>
 
-      <h4 className="muted" style={{ margin: '8px 0 4px' }}>Organization</h4>
-      {!org && !orgErr && <div className="muted">Loading QA org…</div>}
+      <h4 className="muted" style={{ margin: '8px 0 4px' }}>{t('qa.organization')}</h4>
+      {!org && !orgErr && <div className="muted">{t('qa.loadingOrg')}</div>}
       {orgErr && <div className="pill warn">{t('qa.orgLoadFailed', { message: orgErr })}</div>}
       {org && (
         <div>
@@ -178,7 +178,7 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
         </div>
       )}
 
-      <h4 className="muted" style={{ margin: '12px 0 4px' }}>Categories</h4>
+      <h4 className="muted" style={{ margin: '12px 0 4px' }}>{t('qa.categories')}</h4>
       <div className="btn-row">
         {ALL_CATEGORIES.map((c) => (
           <label key={c} className="pill" style={{ cursor: 'pointer' }}>
@@ -195,9 +195,9 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
 
       <div className="btn-row" style={{ marginTop: 10 }}>
         <button onClick={startRun} disabled={!taskId || running || cats.length === 0}>
-          {running ? 'Running QA…' : 'Run QA'}
+          {running ? t('qa.running') : t('qa.runQa')}
         </button>
-        {!taskId && <span className="muted">Select a task to run QA.</span>}
+        {!taskId && <span className="muted">{t('qa.selectTask')}</span>}
       </div>
 
       {error && <div className="banner err">{error}</div>}
@@ -205,11 +205,11 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
       {run && (
         <div style={{ marginTop: 12 }}>
           <h4 style={{ margin: '8px 0 4px' }}>
-            Run <span className="muted">{run.id.slice(0, 8)}</span>{' '}
+            {t('qa.runLabel')} <span className="muted">{run.id.slice(0, 8)}</span>{' '}
             <span className={`status-dot ${verdictClass(run.verdict ?? '')}`} style={{ display: 'inline-block' }} />{' '}
             <b>{run.verdict}</b>{' '}
             <span className="muted">
-              attempts={run.attempts}{run.escalated ? ' · ESCALATED' : ''}
+              {t('qa.attempts', { n: run.attempts })}{run.escalated ? t('qa.escalated') : ''}
             </span>
           </h4>
           {run.summary && (
@@ -225,14 +225,14 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
                     <span className={`status-dot ${verdictClass(c.verdict)}`} style={{ display: 'inline-block', marginRight: 6 }} />
                     <b>{c.category}</b>{' '}
                     <span className="muted">
-                      {c.passed}/{c.total} passed · {c.failed} failed · {c.skipped} skipped · {c.durationMs}ms
+                      {t('qa.catStats', { passed: c.passed, total: c.total, failed: c.failed, skipped: c.skipped, ms: c.durationMs })}
                     </span>
                   </li>
                 ))}
               </ul>
               {(run.summary.failures ?? []).length > 0 && (
                 <>
-                  <h4 className="muted" style={{ margin: '8px 0 4px' }}>Failures</h4>
+                  <h4 className="muted" style={{ margin: '8px 0 4px' }}>{t('qa.failures')}</h4>
                   <ul className="ev-list">
                     {(run.summary.failures ?? []).map((f, i) => (
                       <li key={i}>

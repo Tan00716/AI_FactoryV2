@@ -200,14 +200,13 @@ export function ManagerPanel() {
     const mk = (
       key: (typeof STAGES)[number]['key'],
       name: string,
-      en: string,
       count: number | null,
       items: StageItem[],
       noDataReason?: string,
     ): StageView => ({
       key,
       name,
-      en,
+      en: STAGES.find((s) => s.key === key)?.en ?? key,
       count,
       items: sample(items),
       hot: count !== null && count >= (BOTTLENECK[key] ?? Infinity),
@@ -217,24 +216,22 @@ export function ManagerPanel() {
     const stageName = (key: string): string => tr(`manager.stage.${key}`);
 
     return [
-      mk('receive', stageName('receive'), 'Receive', receive.length, receive.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
-      mk('assess', stageName('assess'), 'Assess', assess.length, assess.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
-      mk('plan', stageName('plan'), 'Plan', plan.length, plan.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
-      mk('select', stageName('select'), 'Select', select.length, select.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
-      mk('delegate', stageName('delegate'), 'Delegate', delegate.length, delegate.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
+      mk('receive', stageName('receive'), receive.length, receive.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
+      mk('assess', stageName('assess'), assess.length, assess.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
+      mk('plan', stageName('plan'), plan.length, plan.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
+      mk('select', stageName('select'), select.length, select.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
+      mk('delegate', stageName('delegate'), delegate.length, delegate.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
       mk(
         'monitor',
         stageName('monitor'),
-        'Monitor',
         monitorRuns.length,
         monitorRuns.map((r) => ({
-          label: `run ${r.id.slice(0, 8)} → ${taskById.get(r.taskId)?.title ?? r.taskId}`,
+          label: tr('manager.label.monitorRun', { id: r.id.slice(0, 8), title: taskById.get(r.taskId)?.title ?? r.taskId }),
         })),
       ),
       mk(
         'receiveReport',
         stageName('receiveReport'),
-        'Receive Report',
         receiveReportRuns.length,
         receiveReportRuns.map((r) => ({
           label: tr('manager.label.runDone', {
@@ -247,7 +244,6 @@ export function ManagerPanel() {
       mk(
         'review',
         stageName('review'),
-        'Review',
         pendingApprovals.length + reviewTasks.length,
         [
           ...pendingApprovals.map((a) => ({
@@ -262,7 +258,6 @@ export function ManagerPanel() {
       mk(
         'rework',
         stageName('rework'),
-        'Rework/Reassign/Escalate/Approve',
         reworkTasks.length + escalatedRuns.length,
         [
           ...reworkTasks.map((t) => ({ label: taskLabel(t), taskId: t.id })),
@@ -270,11 +265,11 @@ export function ManagerPanel() {
         ],
       ),
       outboxKnown
-        ? mk('aggregate', stageName('aggregate'), 'Aggregate', outboxPending ?? 0, [
+        ? mk('aggregate', stageName('aggregate'), outboxPending ?? 0, [
             { label: tr('manager.label.outboxPending', { n: outboxPending ?? 0 }) },
           ])
-        : mk('aggregate', stageName('aggregate'), 'Aggregate', null, [], tr('manager.noDataHealth')),
-      mk('reportUpward', stageName('reportUpward'), 'Report Upward', null, [], tr('manager.noDataReport')),
+        : mk('aggregate', stageName('aggregate'), null, [], tr('manager.noDataHealth')),
+      mk('reportUpward', stageName('reportUpward'), null, [], tr('manager.noDataReport')),
     ];
   }, [tasks, runs, approvals, outboxPending, outboxKnown, taskById, tr]);
 

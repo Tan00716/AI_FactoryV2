@@ -134,7 +134,7 @@ export function SkillsPanel(props: { taskId?: string | null; skills?: SkillsApi 
   return (
     <div className="skills-panel">
       {error && <div className="banner err">{error}</div>}
-      <h4 style={{ margin: '4px 0' }}>Installed skills <span className="muted">({skills.length})</span></h4>
+      <h4 style={{ margin: '4px 0' }}>{t('skills.installed')} <span className="muted">({skills.length})</span></h4>
       {skills.length === 0 && <div className="muted">{t('skills.noSkills')}</div>}
       <ul className="ev-list">
         {skills.map((s) => (
@@ -145,44 +145,44 @@ export function SkillsPanel(props: { taskId?: string | null; skills?: SkillsApi 
             <span className="pill">{s.trustLevel}</span>{' '}
             <span className="pill">{s.status}</span>
             <button disabled={busy} style={{ marginLeft: 8 }} onClick={() => viewInstructions(s.id)}>
-              View SKILL.md
+              {t('skills.viewSkillMd')}
             </button>
             {props.taskId && (
               <button
                 disabled={busy}
                 style={{ marginLeft: 4 }}
                 onClick={() => run(() => api.use(s.id, props.taskId!))}
-                title="Record this skill version against the selected task (§49)"
+                title={t('skills.useTitle')}
               >
-                Use for task
+                {t('skills.useForTask')}
               </button>
             )}
             <div className="muted" style={{ marginTop: 2 }}>{s.description}</div>
           </li>
         ))}
       </ul>
-      <h4 style={{ margin: '12px 0 4px' }}>Discovery <span className="muted">(§48)</span></h4>
+      <h4 style={{ margin: '12px 0 4px' }}>{t('skills.discovery')} <span className="muted">(§48)</span></h4>
       <div className="row" style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
         <input
           value={dTitle}
           onChange={(e) => setDTitle(e.target.value)}
-          placeholder="Task title"
+          placeholder={t('skills.taskPlaceholder')}
           style={{ flex: 2 }}
         />
         <input
           value={dKeywords}
           onChange={(e) => setDKeywords(e.target.value)}
-          placeholder="keywords, comma separated"
+          placeholder={t('skills.keywordsPlaceholder')}
           style={{ flex: 1 }}
         />
-        <button disabled={busy} onClick={doDiscover}>Discover</button>
+        <button disabled={busy} onClick={doDiscover}>{t('skills.discover')}</button>
       </div>
       {candidates.length > 0 && (
         <ul className="ev-list">
           {candidates.map((c) => (
             <li key={`${c.skillId}@${c.version}`}>
               <b>{c.skillId}@{c.version}</b>{' '}
-              <span className="pill">score {c.score}</span>
+              <span className="pill">{t('skills.score', { score: c.score })}</span>
               <div className="muted">{c.reasons.join(' · ')}</div>
             </li>
           ))}
@@ -193,7 +193,7 @@ export function SkillsPanel(props: { taskId?: string | null; skills?: SkillsApi 
           <div className="row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <b>SKILL.md</b> <span className="muted">{instructions.id}@{instructions.version}</span>
             <span style={{ flex: 1 }} />
-            <button onClick={() => setInstructions(null)}>Close</button>
+            <button onClick={() => setInstructions(null)}>{t('skills.close')}</button>
           </div>
           <pre className="code-sample" style={{ maxHeight: 300, overflow: 'auto' }}>{instructions.text}</pre>
         </div>

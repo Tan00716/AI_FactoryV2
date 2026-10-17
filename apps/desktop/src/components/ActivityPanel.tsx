@@ -121,6 +121,7 @@ export function RunDrawer({
   api: ActivityApi;
   onClose: () => void;
 }) {
+  const { t } = useLang();
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [error, setError] = useState('');
 
@@ -133,14 +134,14 @@ export function RunDrawer({
   return (
     <div className="detail wide">
       <div className="detail-head">
-        <h2>Run Detail <span className="count">§68</span></h2>
-        <button onClick={onClose}>Close</button>
+        <h2>{t('activity.runDetail')} <span className="count">§68</span></h2>
+        <button onClick={onClose}>{t('activity.close')}</button>
       </div>
       {error && <div className="banner err">{error}</div>}
-      {!detail && !error && <div className="muted">Loading…</div>}
+      {!detail && !error && <div className="muted">{t('activity.loading')}</div>}
       {detail && (
         <div className="drawer-body">
-            <Section title="Identity">
+            <Section title={t('activity.secIdentity')}>
               <Kv k="runId" v={<code>{detail.runId}</code>} />
               <Kv k="status" v={<span className="pill">{detail.status}</span>} />
               <Kv k="agent" v={detail.agent ? `${detail.agent.displayName} (${detail.agent.name})` : '—'} />
@@ -149,19 +150,19 @@ export function RunDrawer({
               <Kv k="model" v={detail.model || '—'} />
               <Kv k="modelProvider" v={detail.modelProvider} />
             </Section>
-            <Section title="Timing">
+            <Section title={t('activity.secTiming')}>
               <Kv k="startedAt" v={fmtTs(detail.startedAt)} />
               <Kv k="finishedAt" v={fmtTs(detail.finishedAt)} />
               <Kv k="finalOutcome" v={detail.finalOutcome ?? '—'} />
               <Kv k="retries" v={detail.retries} />
             </Section>
-            <Section title={`Input refs (${detail.inputRefs.length})`}>
+            <Section title={t('activity.secInputRefs', { n: detail.inputRefs.length })}>
               {detail.inputRefs.map((r) => (
                 <div key={r}><code>{r}</code></div>
               ))}
             </Section>
-            <Section title={`Tools used (${detail.toolsUsed.length})`}>
-              {detail.toolsUsed.length === 0 && <span className="muted">none</span>}
+            <Section title={t('activity.secToolsUsed', { n: detail.toolsUsed.length })}>
+              {detail.toolsUsed.length === 0 && <span className="muted">{t('activity.none')}</span>}
               {detail.toolsUsed.map((t, i) => (
                 <div key={i}>
                   <code>{t.name}</code> <span className="muted">{t.result}</span>{' '}
@@ -169,40 +170,40 @@ export function RunDrawer({
                 </div>
               ))}
             </Section>
-            <Section title={`Commands (${detail.commands.length})`}>
-              {detail.commands.length === 0 && <span className="muted">none recorded</span>}
+            <Section title={t('activity.secCommands', { n: detail.commands.length })}>
+              {detail.commands.length === 0 && <span className="muted">{t('activity.noneRecorded')}</span>}
               {detail.commands.map((c, i) => (
                 <div key={i}><code>{c}</code></div>
               ))}
             </Section>
-            <Section title={`Files changed (${detail.filesChanged.length})`}>
-              {detail.filesChanged.length === 0 && <span className="muted">none recorded</span>}
+            <Section title={t('activity.secFilesChanged', { n: detail.filesChanged.length })}>
+              {detail.filesChanged.length === 0 && <span className="muted">{t('activity.noneRecorded')}</span>}
               {detail.filesChanged.map((f, i) => (
                 <div key={i}><code>{f.path}</code> <span className="muted">({f.kind})</span></div>
               ))}
             </Section>
-            <Section title={`Artifacts / evidence (${detail.artifacts.length})`}>
-              {detail.artifacts.length === 0 && <span className="muted">none</span>}
+            <Section title={t('activity.secArtifacts', { n: detail.artifacts.length })}>
+              {detail.artifacts.length === 0 && <span className="muted">{t('activity.none')}</span>}
               {detail.artifacts.map((a, i) => (
                 <div key={i}><code>{JSON.stringify(a).slice(0, 160)}</code></div>
               ))}
             </Section>
-            <Section title={`Errors (${detail.errors.length})`}>
-              {detail.errors.length === 0 && <span className="muted">none</span>}
+            <Section title={t('activity.secErrors', { n: detail.errors.length })}>
+              {detail.errors.length === 0 && <span className="muted">{t('activity.none')}</span>}
               {detail.errors.map((e, i) => (
                 <div key={i} className="banner err" style={{ marginTop: 4 }}>
                   {e.message} <span className="muted">{fmtTime(e.at)}</span>
                 </div>
               ))}
             </Section>
-            <Section title={`Handoffs (${detail.handoffs.length})`}>
-              {detail.handoffs.length === 0 && <span className="muted">none</span>}
+            <Section title={t('activity.secHandoffs', { n: detail.handoffs.length })}>
+              {detail.handoffs.length === 0 && <span className="muted">{t('activity.none')}</span>}
               {detail.handoffs.map((h, i) => (
                 <div key={i}><code>{h}</code></div>
               ))}
             </Section>
-            <Section title={`Approvals (${detail.approvals.length})`}>
-              {detail.approvals.length === 0 && <span className="muted">none</span>}
+            <Section title={t('activity.secApprovals', { n: detail.approvals.length })}>
+              {detail.approvals.length === 0 && <span className="muted">{t('activity.none')}</span>}
               {detail.approvals.map((a) => (
                 <div key={a.id}>
                   <span className="pill">{a.status}</span> {a.action}{' '}
@@ -210,7 +211,7 @@ export function RunDrawer({
                 </div>
               ))}
             </Section>
-            <Section title={`Trace (${detail.trace.length} steps)`}>
+            <Section title={t('activity.secTrace', { n: detail.trace.length })}>
               {detail.trace.map((s, i) => (
                 <div key={i} className="act-row">
                   <span className="muted">{fmtTime(s.at)}</span>
@@ -221,7 +222,7 @@ export function RunDrawer({
               ))}
             </Section>
             <div className="muted" style={{ marginTop: 8 }}>
-              Sensitive values are redacted as *** (§68).
+              {t('activity.redactedNote')}
             </div>
           </div>
         )}
@@ -267,20 +268,20 @@ export function ActivityPanel({ api, pollMs = 3000 }: ActivityPanelProps) {
   return (
     <div className="activity-panel">
       <div className="board-head">
-        <h2>Activity <span className="count">§67 · §68</span></h2>
-        <span className="muted">{runs.length} runs · live</span>
+        <h2>{t('activity.title')} <span className="count">§67 · §68</span></h2>
+        <span className="muted">{t('activity.runsLive', { count: runs.length })}</span>
       </div>
       {error && <div className="banner err">{error}</div>}
 
       {runs.length > 0 && (
         <>
-          <h4>Runs ({runs.length}) — click for trace</h4>
+          <h4>{t('activity.runsClickTrace', { count: runs.length })}</h4>
           {runs.map((r) => (
             <button
               key={r.runId}
               className="act-row run-row"
               onClick={() => setOpenRun(r.runId)}
-              title="Open run detail"
+              title={t('activity.openRunDetail')}
             >
               <span className="pill">{r.status}</span>
               <code>{r.runId.slice(0, 8)}</code>
@@ -292,7 +293,7 @@ export function ActivityPanel({ api, pollMs = 3000 }: ActivityPanelProps) {
         </>
       )}
 
-      <h4>Realtime stream</h4>
+      <h4>{t('activity.realtimeStream')}</h4>
       {!loaded && items.length === 0 && <div className="muted">{t('activity.loading')}</div>}
       {loaded && !error && items.length === 0 && <div className="muted">{t('activity.empty')} {t('activity.emptyHint')}</div>}
       {items.map((it) => (

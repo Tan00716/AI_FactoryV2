@@ -104,22 +104,22 @@ export function ModelsPanel({ api, pollMs = 15000 }: ModelsPanelProps) {
   return (
     <div className="models-panel">
       <div className="board-head">
-        <h2>Models <span className="count">§90</span></h2>
-        <span className="muted">{visible.length} of {models.length} models</span>
+        <h2>{t('models.title')} <span className="count">§90</span></h2>
+        <span className="muted">{t('models.count', { v: visible.length, n: models.length })}</span>
       </div>
       {error && <div className="banner err">{error}</div>}
 
       <div className="filter-box">
         <label className="muted">
-          Provider:{' '}
+          {t('models.providerLabel')}{' '}
           <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-            <option value="">all</option>
+            <option value="">{t('models.all')}</option>
             {providers.map((p) => (
               <option key={p} value={p}>{p}</option>
             ))}
           </select>
         </label>
-        <span className="muted" style={{ marginLeft: 12 }}>Capability:</span>
+        <span className="muted" style={{ marginLeft: 12 }}>{t('models.capLabel')}</span>
         {ALL_CAPS.map((c) => (
           <label key={c} className={`filter-chip${caps.has(c) ? ' on' : ''}`}>
             <input type="checkbox" checked={caps.has(c)} onChange={() => toggleCap(c)} />
@@ -132,7 +132,7 @@ export function ModelsPanel({ api, pollMs = 15000 }: ModelsPanelProps) {
             style={{ marginLeft: 8 }}
             onClick={() => { setCaps(new Set()); setProvider(''); }}
           >
-            clear
+            {t('models.clear')}
           </button>
         )}
       </div>
@@ -140,15 +140,15 @@ export function ModelsPanel({ api, pollMs = 15000 }: ModelsPanelProps) {
       <table className="data-table">
         <thead>
           <tr>
-            <th>Provider</th>
-            <th>Model</th>
-            <th>Capability</th>
-            <th>Context</th>
-            <th>Reasoning</th>
-            <th>Cost</th>
-            <th>Latency</th>
-            <th>Availability</th>
-            <th>Fallback</th>
+            <th>{t('models.th.provider')}</th>
+            <th>{t('models.th.model')}</th>
+            <th>{t('models.th.capability')}</th>
+            <th>{t('models.th.context')}</th>
+            <th>{t('models.th.reasoning')}</th>
+            <th>{t('models.th.cost')}</th>
+            <th>{t('models.th.latency')}</th>
+            <th>{t('models.th.availability')}</th>
+            <th>{t('models.th.fallback')}</th>
           </tr>
         </thead>
         <tbody>
@@ -162,7 +162,7 @@ export function ModelsPanel({ api, pollMs = 15000 }: ModelsPanelProps) {
                 ))}
               </td>
               <td>{m.context}</td>
-              <td>{m.reasoning ? 'yes' : 'no'}</td>
+              <td>{m.reasoning ? t('models.yes') : t('models.no')}</td>
               <td>{m.cost}</td>
               <td>{m.latency}</td>
               <td>
@@ -178,7 +178,7 @@ export function ModelsPanel({ api, pollMs = 15000 }: ModelsPanelProps) {
       {!loaded && visible.length === 0 && <div className="muted">{t('models.loading')}</div>}
       {loaded && !error && visible.length === 0 && <div className="muted">{t('models.emptyFilter')} {t('models.emptyHint')}</div>}
       <div className="muted" style={{ marginTop: 8 }}>
-        The router (§30) uses this capability metadata rather than hard-coded model names.
+        {t('models.routerNote')}
       </div>
     </div>
   );

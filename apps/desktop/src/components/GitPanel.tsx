@@ -185,7 +185,7 @@ export function GitPanel({ api }: { api: GitApi }) {
       setLog(l);
       setDiff(d.diff);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'failed to load git state');
+      setErr(e instanceof Error ? e.message : t('git.loadFailed'));
     } finally {
       setBusy(false);
     }
@@ -202,7 +202,7 @@ export function GitPanel({ api }: { api: GitApi }) {
       await fn();
       await refresh();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'git operation failed');
+      setErr(e instanceof Error ? e.message : t('git.opFailed'));
     } finally {
       setBusy(false);
     }
@@ -211,7 +211,7 @@ export function GitPanel({ api }: { api: GitApi }) {
   return (
     <div style={{ padding: 12, overflowY: 'auto', height: '100%' }}>
       <h3 style={{ margin: '0 0 8px' }}>
-        Git <span className="muted">§34</span>
+        {t('git.title')} <span className="muted">§34</span>
       </h3>
 
       {err && <div className="banner err">{err}</div>}
@@ -219,13 +219,13 @@ export function GitPanel({ api }: { api: GitApi }) {
       <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
         <input
           type="text"
-          placeholder="Repository path…"
+          placeholder={t('git.repoPlaceholder')}
           value={repo}
           onChange={(e) => setRepo(e.target.value)}
           style={{ flex: 1, padding: 6, borderRadius: 4 }}
         />
         <button onClick={() => void refresh()} disabled={busy || !repo}>
-          Refresh
+          {t('git.refresh')}
         </button>
       </div>
 
@@ -234,23 +234,23 @@ export function GitPanel({ api }: { api: GitApi }) {
       )}
       {status && (
         <div style={{ marginBottom: 8 }}>
-          Branch: <span className="pill">{status.branch}</span>
+          {t('git.branchLabel')} <span className="pill">{status.branch}</span>
         </div>
       )}
 
       {status && (
         <div style={{ display: 'flex', gap: 16 }}>
-          <FileList title="Staged" files={status.staged} />
-          <FileList title="Unstaged" files={status.unstaged} />
-          <FileList title="Untracked" files={status.untracked} />
+          <FileList title={t('git.staged')} files={status.staged} />
+          <FileList title={t('git.unstaged')} files={status.unstaged} />
+          <FileList title={t('git.untracked')} files={status.untracked} />
         </div>
       )}
 
-      <h4 style={{ margin: '12px 0 4px' }}>Branches</h4>
+      <h4 style={{ margin: '12px 0 4px' }}>{t('git.branches')}</h4>
       <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
         <input
           type="text"
-          placeholder="new branch name…"
+          placeholder={t('git.branchPlaceholder')}
           value={newBranch}
           onChange={(e) => setNewBranch(e.target.value)}
           style={{ flex: 1, padding: 6, borderRadius: 4 }}
@@ -259,27 +259,27 @@ export function GitPanel({ api }: { api: GitApi }) {
           disabled={busy || !repo || !newBranch}
           onClick={() => void run(() => api.createBranch(repo, newBranch).then(() => setNewBranch('')))}
         >
-          Create
+          {t('git.createBranch')}
         </button>
       </div>
       {branches?.all.map((b) => (
         <div key={b} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
           <span style={{ fontFamily: 'monospace', fontSize: 12, flex: 1 }}>{b}</span>
           {b === branches.current ? (
-            <span className="pill">current</span>
+            <span className="pill">{t('git.current')}</span>
           ) : (
             <button disabled={busy || !repo} onClick={() => void run(() => api.checkout(repo, b).then(() => undefined))}>
-              Checkout
+              {t('git.checkout')}
             </button>
           )}
         </div>
       ))}
 
-      <h4 style={{ margin: '12px 0 4px' }}>Commit</h4>
+      <h4 style={{ margin: '12px 0 4px' }}>{t('git.commitHeading')}</h4>
       <div style={{ display: 'flex', gap: 8 }}>
         <input
           type="text"
-          placeholder="commit message…"
+          placeholder={t('git.commitPlaceholder')}
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           style={{ flex: 1, padding: 6, borderRadius: 4 }}
@@ -289,11 +289,11 @@ export function GitPanel({ api }: { api: GitApi }) {
           disabled={busy || !repo || !message.trim()}
           onClick={() => void run(() => api.commit(repo, message).then(() => setMessage('')))}
         >
-          Commit
+          {t('git.commitBtn')}
         </button>
       </div>
 
-      <h4 style={{ margin: '12px 0 4px' }}>Log</h4>
+      <h4 style={{ margin: '12px 0 4px' }}>{t('git.log')}</h4>
       {log.map((e) => (
         <div key={e.sha} style={{ marginBottom: 6, fontSize: 12 }}>
           <span style={{ fontFamily: 'monospace' }}>{e.sha.slice(0, 8)}</span>{' '}
@@ -304,9 +304,9 @@ export function GitPanel({ api }: { api: GitApi }) {
         </div>
       ))}
 
-      <h4 style={{ margin: '12px 0 4px' }}>Diff</h4>
+      <h4 style={{ margin: '12px 0 4px' }}>{t('git.diff')}</h4>
       <pre className="code-sample" style={{ whiteSpace: 'pre-wrap', maxHeight: 320, overflowY: 'auto' }}>
-        {diff || <span className="muted">No changes.</span>}
+        {diff || <span className="muted">{t('git.noChanges')}</span>}
       </pre>
     </div>
   );

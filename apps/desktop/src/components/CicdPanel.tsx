@@ -144,9 +144,9 @@ export function CicdPanel(props: { taskId?: string | null; cicd?: CicdApi }) {
   return (
     <div className="cicd-panel">
       <div className="row" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-        <span className="muted">Environments:</span>
+        <span className="muted">{t('cicd.environments')}</span>
         {envs.map((e) => (
-          <span key={e.name} className="pill" title={`approval: ${e.approvalPolicy}`}>
+          <span key={e.name} className="pill" title={t('cicd.approvalTitle', { policy: e.approvalPolicy })}>
             {e.name} · {e.approvalPolicy}
           </span>
         ))}
@@ -157,7 +157,7 @@ export function CicdPanel(props: { taskId?: string | null; cicd?: CicdApi }) {
           ))}
         </select>
         <button disabled={busy} onClick={() => run(() => cicd.createPipeline(newEnv, props.taskId ?? undefined))}>
-          New pipeline
+          {t('cicd.newPipeline')}
         </button>
       </div>
       {error && <div className="banner err">{error}</div>}
@@ -171,7 +171,7 @@ export function CicdPanel(props: { taskId?: string | null; cicd?: CicdApi }) {
             <span className="muted">{p.status}</span>
             {p.failure && <span className="banner err" style={{ margin: 0 }}>{p.failure.stage}: {p.failure.message}</span>}
             <span style={{ flex: 1 }} />
-            <button disabled={busy} onClick={() => run(() => cicd.runPipeline(p.id))}>Run</button>
+            <button disabled={busy} onClick={() => run(() => cicd.runPipeline(p.id))}>{t('cicd.run')}</button>
             <select
               value={deployEnv[p.id] ?? 'UAT'}
               onChange={(e) => setDeployEnv((prev) => ({ ...prev, [p.id]: e.target.value }))}
@@ -182,7 +182,7 @@ export function CicdPanel(props: { taskId?: string | null; cicd?: CicdApi }) {
             </select>
             <button
               disabled={busy || !props.taskId}
-              title={props.taskId ? '' : 'Select a task on the Board tab first (deploys attach evidence to a task)'}
+              title={props.taskId ? '' : t('cicd.deployNeedTask')}
               onClick={() =>
                 run(async () => {
                   const r = await cicd.deploy(p.id, deployEnv[p.id] ?? 'UAT', props.taskId!);
@@ -192,9 +192,9 @@ export function CicdPanel(props: { taskId?: string | null; cicd?: CicdApi }) {
                 })
               }
             >
-              Deploy
+              {t('cicd.deploy')}
             </button>
-            <button disabled={busy} onClick={() => { if (window.confirm(t('cicd.confirmRollback', { name: p.id.slice(0, 8) }))) run(() => cicd.rollback(p.id)); }}>Rollback</button>
+            <button disabled={busy} onClick={() => { if (window.confirm(t('cicd.confirmRollback', { name: p.id.slice(0, 8) }))) run(() => cicd.rollback(p.id)); }}>{t('cicd.rollback')}</button>
           </div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
             {p.stages.map((s) => (
@@ -206,10 +206,9 @@ export function CicdPanel(props: { taskId?: string | null; cicd?: CicdApi }) {
           </div>
           {pendingApprovals[p.id] && (
             <div className="banner" style={{ marginTop: 6 }}>
-              Parked on HUMAN_APPROVAL (ticket <b>{pendingApprovals[p.id].slice(0, 8)}</b>).
-              Approve it in the Approvals tab, then{' '}
+              {t('cicd.parkedPrefix')}<b>{pendingApprovals[p.id].slice(0, 8)}</b>{t('cicd.parkedSuffix')}{' '}
               <button disabled={busy} onClick={() => run(() => cicd.approve(p.id, pendingApprovals[p.id]))}>
-                Resume deploy
+                {t('cicd.resumeDeploy')}
               </button>
             </div>
           )}

@@ -1,5 +1,17 @@
 # Changelog
 
+## Batch 241 (2026-10-17)
+
+中文版补完整——**338 个新 key（645→983/边），中文模式零英文残留**。
+
+- **规模**：32 文件（App.tsx + 29 组件 + 中英语言包）；847 处 `t('…')` 调用程序化核对 0 缺 key；占位符中英同名同数（仅 `changes.changeCount` 中文无复数，属语言差异非错误）。
+- **EN 零变化铁证**：`git worktree` 建隔离旧版（b778e4c），old/new 双实例挂同一 server、同一 Electron 先后截图逐项对比——Changes 144/144、Models 218/218 文案完全一致；Board 222 项仅 6 处 `⏱ 1m`→`⏱ 2m`（两次截图的时间流逝）；27 个主 tab EN 标签逐字节一致。
+- **zh 目检**：Board（任务看板/待办/规划中/进行中/代码评审/待 QA…）、Changes、Models 中文自然；主导航 27 个 tab 一并中文化（仪表盘/运维/报告/看板/审批/需人工/调度/观测/编排…）。
+- **刻意保留英文**（数据/标识，非 chrome）：任务标题等用户数据、模型能力值（reasoning/vision/tools）、路由/枚举/CSS/data-testid、演示数据默认值、`🤖 AI FACTORY` 品牌、审计日志原文。
+- **tab 竖排修复**（收口人补）：中文 tab 在窄按钮内竖排换行——`.center-tabs` 加横向滚动 + 按钮 `white-space: nowrap`（2 行 CSS）；真机验证 27 tab 零换行；EN 模式同样受益（之前超宽被直接裁掉）。
+- **拿不准的翻译**：`stub` 徽标→占位；QA/UAT 保留英文缩写；NeedsHuman→需人工、Observatory→观测、Orchestrate→编排、Memory→记忆。
+- **验证**：desktop tsc 0；`npm run build` exit 0（最终树）；**三套回归全绿**：`npm test` 2593/0、`test:server` 507/507、`test:acceptance` 138/138（server 首次 506/507 的 1 失败已查清：主线 build 并发重写 dist 时 terminal-sessions 启动撞上半写入文件——该用例隔离重跑 4/4 通过、build 结束后全量重跑 507/507，环境 flake 非产品回归）。
+
 ## Batch 240 (2026-10-17)
 
 英文版最后一个缺口 + 人性化打磨 + bug 猎捕。

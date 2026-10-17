@@ -103,7 +103,7 @@ export function NotificationsBell({ base }: { base: string }) {
     <div className="notif-bell" style={{ position: 'relative' }}>
       <button
         className="bell-btn"
-        title={error ? `Notifications unavailable: ${error}` : 'Notifications'}
+        title={error ? t('notifications.unavailable', { message: error }) : t('notifications.bellTitle')}
         onClick={() => { setOpen((o) => !o); if (!open) refresh(); }}
       >
         🔔
@@ -112,8 +112,8 @@ export function NotificationsBell({ base }: { base: string }) {
       {open && (
         <div className="notif-dropdown">
           <div className="notif-head">
-            <b>Notifications</b>
-            <button onClick={markAll} disabled={unread === 0}>Mark all read</button>
+            <b>{t('notifications.title')}</b>
+            <button onClick={markAll} disabled={unread === 0}>{t('notifications.markAllRead')}</button>
           </div>
           {error && <div className="pill warn" style={{ margin: 8 }}>{t('notifications.loadFailed', { message: error })}</div>}
           {!error && items.length === 0 && <div className="muted" style={{ padding: 8 }}>{t('notifications.empty')}</div>}
@@ -123,7 +123,7 @@ export function NotificationsBell({ base }: { base: string }) {
                 key={n.id}
                 className={n.read ? 'notif-read' : 'notif-unread'}
                 onClick={() => { if (!n.read) markRead(n.id); }}
-                title={n.read ? n.title : 'Click to mark read'}
+                title={n.read ? n.title : t('notifications.clickToMark')}
               >
                 <span className={`status-dot ${PRIORITY_CLASS[n.priority]}`} />
                 <div style={{ flex: 1 }}>

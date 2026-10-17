@@ -107,7 +107,7 @@ export function ChangesPanel({ api }: { api: ChangesApi }) {
       setResolvedRepo(r);
       setChanges(c);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'failed to load changes');
+      setErr(e instanceof Error ? e.message : t('changes.loadFailed'));
     } finally {
       setBusy(false);
     }
@@ -124,7 +124,7 @@ export function ChangesPanel({ api }: { api: ChangesApi }) {
       await fn();
       await refresh();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'action failed');
+      setErr(e instanceof Error ? e.message : t('changes.actionFailed'));
     } finally {
       setBusyId(null);
     }
@@ -136,26 +136,26 @@ export function ChangesPanel({ api }: { api: ChangesApi }) {
   return (
     <div style={{ padding: 12, overflowY: 'auto', height: '100%' }}>
       <h3 style={{ margin: '0 0 8px' }}>
-        AI Change Review <span className="muted">§66</span>
+        {t('changes.title')} <span className="muted">§66</span>
       </h3>
       {err && <div className="banner err">{err}</div>}
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
         <input
           type="text"
-          placeholder="Repo path… (empty = server workspace)"
+          placeholder={t('changes.repoPlaceholder')}
           value={repo}
           onChange={(e) => setRepo(e.target.value)}
           style={{ flex: 1, padding: 6, borderRadius: 4 }}
         />
         <button onClick={() => void refresh()} disabled={busy}>
-          {busy ? 'Loading…' : 'Refresh'}
+          {busy ? t('changes.loading') : t('changes.refresh')}
         </button>
       </div>
       {resolvedRepo && (
         <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
           Repo: <span style={{ fontFamily: 'monospace' }}>{resolvedRepo}</span> ·{' '}
-          {changes.length} change{changes.length === 1 ? '' : 's'} from task branches
+          {t('changes.changeCount', { count: changes.length, plural: changes.length === 1 ? '' : 's' })}
         </div>
       )}
       {changes.length === 0 && !busy && (
@@ -189,7 +189,7 @@ export function ChangesPanel({ api }: { api: ChangesApi }) {
               {new Date(c.date).toLocaleString()} · {c.diffSummary}
               {c.taskId && (
                 <>
-                  {' '}· task <span style={{ fontFamily: 'monospace' }}>{c.taskId.slice(0, 8)}</span>
+                  {t('changes.taskRef')}<span style={{ fontFamily: 'monospace' }}>{c.taskId.slice(0, 8)}</span>
                 </>
               )}
             </div>
@@ -206,13 +206,13 @@ export function ChangesPanel({ api }: { api: ChangesApi }) {
                       <span style={{ color: 'var(--red)' }}>−{f.deletions}</span>
                     </span>
                   )}
-                  {f.binary && <span className="muted">binary</span>}
+                  {f.binary && <span className="muted">{t('changes.binaryBadge')}</span>}
                   {!f.binary && (
                     <button
                       style={{ fontSize: 11 }}
                       onClick={() => setDiff({ changeId: c.id, file: f.path, title: c.title })}
                     >
-                      View Diff
+                      {t('changes.viewDiff')}
                     </button>
                   )}
                 </div>
@@ -221,13 +221,13 @@ export function ChangesPanel({ api }: { api: ChangesApi }) {
 
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
               <button style={{ fontSize: 12 }} onClick={() => toggleDetail(c.id, 'reason')}>
-                View Reason
+                {t('changes.viewReason')}
               </button>
               <button style={{ fontSize: 12 }} onClick={() => toggleDetail(c.id, 'tests')}>
-                View Tests {c.relatedTests.length > 0 && <span className="pill">{c.relatedTests.length}</span>}
+                {t('changes.viewTests')} {c.relatedTests.length > 0 && <span className="pill">{c.relatedTests.length}</span>}
               </button>
               <button style={{ fontSize: 12 }} onClick={() => toggleDetail(c.id, 'evidence')}>
-                View Evidence {c.evidenceLinks.length > 0 && <span className="pill">{c.evidenceLinks.length}</span>}
+                {t('changes.viewEvidence')} {c.evidenceLinks.length > 0 && <span className="pill">{c.evidenceLinks.length}</span>}
               </button>
               <span style={{ flex: 1 }} />
               <button
@@ -236,37 +236,37 @@ export function ChangesPanel({ api }: { api: ChangesApi }) {
                 disabled={working || c.status === 'ACCEPTED'}
                 onClick={() => void act(c.id, () => api.accept(c.id, repo || undefined))}
               >
-                Accept
+                {t('changes.accept')}
               </button>
               <button
                 style={{ fontSize: 12 }}
                 disabled={working || c.status === 'REJECTED'}
                 onClick={() => void act(c.id, () => api.reject(c.id, repo || undefined))}
               >
-                Reject
+                {t('changes.reject')}
               </button>
               <button
                 style={{ fontSize: 12 }}
                 disabled={working || c.status === 'REVERTED'}
                 onClick={() => {
-                  if (window.confirm(`Revert commit ${c.id.slice(0, 8)} ("${c.title}") on ${c.branch}? This creates a revert commit.`)) {
+                  if (window.confirm(t('changes.confirmRevert', { id: c.id.slice(0, 8), title: c.title, branch: c.branch }))) {
                     void act(c.id, () => api.revert(c.id, repo || undefined));
                   }
                 }}
               >
-                Revert
+                {t('changes.revert')}
               </button>
             </div>
 
             {active === 'reason' && (
               <pre style={{ fontSize: 12, whiteSpace: 'pre-wrap', background: 'var(--bg3)', padding: 8, borderRadius: 4 }}>
-                {c.reason || <span className="muted">No reason recorded.</span>}
+                {c.reason || <span className="muted">{t('changes.noReason')}</span>}
               </pre>
             )}
             {active === 'tests' && (
               <div style={{ fontSize: 12, background: 'var(--bg3)', padding: 8, borderRadius: 4 }}>
                 {c.relatedTests.length === 0 ? (
-                  <span className="muted">No test references in the commit message.</span>
+                  <span className="muted">{t('changes.noTestRefs')}</span>
                 ) : (
                   c.relatedTests.map((t, i) => <div key={i} style={{ fontFamily: 'monospace' }}>🧪 {t}</div>)
                 )}
@@ -275,7 +275,7 @@ export function ChangesPanel({ api }: { api: ChangesApi }) {
             {active === 'evidence' && (
               <div style={{ fontSize: 12, background: 'var(--bg3)', padding: 8, borderRadius: 4 }}>
                 {c.evidenceLinks.length === 0 ? (
-                  <span className="muted">No sealed evidence linked to this task.</span>
+                  <span className="muted">{t('changes.noSealedEvidence')}</span>
                 ) : (
                   c.evidenceLinks.map((e) => (
                     <div key={e.id}>

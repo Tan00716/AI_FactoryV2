@@ -255,7 +255,7 @@ export function ApprovalsPanelInner({ api, pollMs = 5000 }: ApprovalsPanelProps)
           <b>{a.action}</b>
           <span className="muted">{a.riskLevel}</span>
           <span className="muted">
-            {a.decision || '—'} by {a.decidedBy || '—'}
+            {t('approvals.decisionBy', { decision: a.decision || '—', who: a.decidedBy || '—' })}
           </span>
           <span className="muted">{fmtTs(a.decidedAt ?? a.createdAt)}</span>
         </div>

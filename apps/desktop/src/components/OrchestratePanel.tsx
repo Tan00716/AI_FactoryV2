@@ -208,7 +208,7 @@ export function OrchestratePanel({
     setBusy('run');
     setErr('');
     if (!agentId || !taskId) {
-      setErr('Need an agent and a task — create them first (Board / Workforce tabs).');
+      setErr(t('orchestrate.needAgentTask'));
       setBusy('');
       return;
     }
@@ -230,61 +230,60 @@ export function OrchestratePanel({
 
   return (
     <div className="panel">
-      <h2>Orchestrate <span className="muted">§92–95 · §30 router · §24–27 runtime</span></h2>
+      <h2>{t('orchestrate.title')} <span className="muted">§92–95 · §30 router · §24–27 runtime</span></h2>
       {err && <div className="banner err">{err}</div>}
 
       <section>
-        <h3>Auto-decomposition (§95)</h3>
+        <h3>{t('orchestrate.autoDecomp')}</h3>
         <div className="row">
           <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
             {(['bugfix', 'feature', 'refactor', 'research'] as const).map((k) => (
               <option key={k} value={k}>{k}</option>
             ))}
           </select>
-          <button onClick={doDecompose} disabled={busy !== ''}>{busy === 'decompose' ? t('orchestrate.decomposing') : 'Decompose sample task'}</button>
+          <button onClick={doDecompose} disabled={busy !== ''}>{busy === 'decompose' ? t('orchestrate.decomposing') : t('orchestrate.decompose')}</button>
         </div>
         {plan && (
           <div>
-            <p><strong>Goal:</strong> {plan.goal}</p>
+            <p><strong>{t('orchestrate.goal')}</strong> {plan.goal}</p>
             <ol>
               {plan.subtasks.map((s, i) => (
                 <li key={i}>{s.title} <span className="muted">({s.kind}, {s.estimate})</span></li>
               ))}
             </ol>
-            <p className="muted">Specialists: {plan.requiredSpecialists.join(', ') || '—'}</p>
-            <p className="muted">Test: {plan.testStrategy}</p>
+            <p className="muted">{t('orchestrate.specialists', { list: plan.requiredSpecialists.join(', ') || '—' })}</p>
+            <p className="muted">{t('orchestrate.test', { strategy: plan.testStrategy })}</p>
           </div>
         )}
       </section>
 
       <section>
-        <h3>Model router (§30)</h3>
+        <h3>{t('orchestrate.router')}</h3>
         <div className="row">
-          <button onClick={doRoute} disabled={busy !== ''}>{busy === 'route' ? t('orchestrate.routing') : 'Route a coding task'}</button>
+          <button onClick={doRoute} disabled={busy !== ''}>{busy === 'route' ? t('orchestrate.routing') : t('orchestrate.route')}</button>
           {accountLabel(account) != null && <span className="muted">{accountLabel(account)}</span>}
         </div>
         {decision && (
           <ul className="plain">
-            <li><span className="pill">primary</span> {decision.primary.provider}/{decision.primary.model}</li>
-            <li><span className="pill">fallback</span> {decision.fallback.provider}/{decision.fallback.model}</li>
-            <li><span className="pill">emergency</span> {decision.emergency.provider}/{decision.emergency.model}</li>
+            <li><span className="pill">{t('orchestrate.primary')}</span> {decision.primary.provider}/{decision.primary.model}</li>
+            <li><span className="pill">{t('orchestrate.fallback')}</span> {decision.fallback.provider}/{decision.fallback.model}</li>
+            <li><span className="pill">{t('orchestrate.emergency')}</span> {decision.emergency.provider}/{decision.emergency.model}</li>
             <li className="muted">{decision.reason.join(' · ')}</li>
           </ul>
         )}
       </section>
 
       <section>
-        <h3>Agent run (§24–27, scripted)</h3>
+        <h3>{t('orchestrate.agentRun')}</h3>
         <div className="row">
-          <button onClick={doRun} disabled={!agentId || !taskId || busy !== ''}>{busy === 'run' ? t('orchestrate.running') : 'Run agent loop'}</button>
+          <button onClick={doRun} disabled={!agentId || !taskId || busy !== ''}>{busy === 'run' ? t('orchestrate.running') : t('orchestrate.runLoop')}</button>
           <span className="muted">
-            agent: {agentId?.slice(0, 8) ?? '—'} · task: {taskId?.slice(0, 8) ?? '—'}
+            {t('orchestrate.agentTask', { agent: agentId?.slice(0, 8) ?? '—', task: taskId?.slice(0, 8) ?? '—' })}
           </span>
         </div>
         {run && (
           <p>
-            <span className="pill">{run.status}</span> outcome: {run.outcome ?? '—'} ·
-            steps: {run.steps} {run.error && <span className="banner err">{run.error}</span>}
+            <span className="pill">{run.status}</span> {t('orchestrate.runStatus', { outcome: run.outcome ?? '—', steps: run.steps })} {run.error && <span className="banner err">{run.error}</span>}
           </p>
         )}
         {run && (

@@ -77,7 +77,7 @@ export function EditorPanel() {
       setDirs((d) => ({ ...d, [dir]: { entries: body.entries, expanded: true } }));
       setErr(null);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'failed to list files');
+      setErr(e instanceof Error ? e.message : t('editor.listFailed'));
     }
   }, []);
 
@@ -112,7 +112,7 @@ export function EditorPanel() {
       setDirty(false);
       setStatus('');
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'failed to open file');
+      setErr(e instanceof Error ? e.message : t('editor.openFailed'));
       setStatus('');
     }
   }, []);
@@ -132,9 +132,9 @@ export function EditorPanel() {
       });
       if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`);
       setDirty(false);
-      setStatus(`Saved ${openPath}`);
+      setStatus(t('editor.saved', { path: openPath }));
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'save failed');
+      setErr(e instanceof Error ? e.message : t('editor.saveFailed'));
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -195,13 +195,13 @@ export function EditorPanel() {
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'center' }}>
-        <b>Editor</b> <span className="muted">§65 · Monaco</span>
+        <b>{t('editor.title')}</b> <span className="muted">§65 · Monaco</span>
         {openPath && (
           <>
             <span className="pill" style={{ fontFamily: 'monospace' }}>{openPath}</span>
-            {dirty && <span className="pill">unsaved</span>}
+            {dirty && <span className="pill">{t('editor.unsaved')}</span>}
             <button onClick={() => void saveFile()} disabled={!dirty || saving}>
-              {saving ? 'Saving…' : 'Save (Ctrl+S)'}
+              {saving ? t('editor.saving') : t('editor.save')}
             </button>
           </>
         )}
@@ -215,7 +215,7 @@ export function EditorPanel() {
             <input
               value={root}
               onChange={(e) => setRoot(e.target.value)}
-              placeholder="workspace root…"
+              placeholder={t('editor.rootPlaceholder')}
               style={{ flex: 1, padding: 4, fontSize: 12 }}
             />
             <button onClick={() => void loadDir(root)} style={{ fontSize: 12 }}>↻</button>

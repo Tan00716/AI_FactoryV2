@@ -152,7 +152,7 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
   return (
     <div className="panel">
       <div className="panel-head-row">
-        <h2 style={{ margin: 0 }}>Workforce <span className="muted">§14 org · §18–19 factory · §20 squads · §59 proposals</span></h2>
+        <h2 style={{ margin: 0 }}>{t('workforce.title')} <span className="muted">§14 org · §18–19 factory · §20 squads · §59 proposals</span></h2>
         <span className="view-toggle">
           <button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}>{t('workforce.viewList')}</button>
           <button className={view === 'graph' ? 'active' : ''} onClick={() => setView('graph')}>{t('workforce.viewGraph')}</button>
@@ -166,7 +166,7 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
       ) : (
       <>
       <section>
-        <h3>Organization graph {!validation.ok && <span className="pill warn">invalid</span>}</h3>
+        <h3>{t('workforce.orgGraph')} {!validation.ok && <span className="pill warn">{t('workforce.invalid')}</span>}</h3>
         {validation.errors.map((e) => (
           <div key={e} className="banner err">{e}</div>
         ))}
@@ -194,26 +194,26 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
       </section>
 
       <section>
-        <h3>Hire AI employee (§18)</h3>
+        <h3>{t('workforce.hire')}</h3>
         <div className="row">
-          <input value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="Job title" />
-          <input value={specialty} onChange={(e) => setSpecialty(e.target.value)} placeholder="Specialty" />
-          <button onClick={hire} disabled={busy}>{busy ? t('workforce.creating') : 'Create'}</button>
+          <input value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder={t('workforce.jobPlaceholder')} />
+          <input value={specialty} onChange={(e) => setSpecialty(e.target.value)} placeholder={t('workforce.specialtyPlaceholder')} />
+          <button onClick={hire} disabled={busy}>{busy ? t('workforce.creating') : t('workforce.create')}</button>
         </div>
-        <p className="muted">Governance (§19): max 6 children, depth 3, privileged roles denied.</p>
+        <p className="muted">{t('workforce.governance')}</p>
       </section>
 
       <section>
-        <h3>Task squads (§20)</h3>
+        <h3>{t('workforce.squads')}</h3>
         <div className="row">
-          <input value={taskId} onChange={(e) => setTaskId(e.target.value)} placeholder="Task ID" />
-          <button onClick={assemble} disabled={busy}>{busy ? t('workforce.assembling') : 'Assemble squad'}</button>
+          <input value={taskId} onChange={(e) => setTaskId(e.target.value)} placeholder={t('workforce.taskPlaceholder')} />
+          <button onClick={assemble} disabled={busy}>{busy ? t('workforce.assembling') : t('workforce.assemble')}</button>
         </div>
         <ul className="plain">
           {(squads.active as Array<{ id: string; taskId: string; memberIds: string[] }>).map((s) => (
             <li key={s.id}>
-              <span className="pill">active</span> {s.taskId} — {s.memberIds.length} members
-              <button className="link" onClick={() => { if (window.confirm(t('workforce.confirmArchive', { taskId: s.taskId }))) archive(s.taskId); }} disabled={busy}>archive</button>
+              <span className="pill">{t('workforce.active')}</span> {t('workforce.squadMeta', { taskId: s.taskId, n: s.memberIds.length })}
+              <button className="link" onClick={() => { if (window.confirm(t('workforce.confirmArchive', { taskId: s.taskId }))) archive(s.taskId); }} disabled={busy}>{t('workforce.archive')}</button>
             </li>
           ))}
         </ul>
@@ -238,9 +238,9 @@ function AddNodeForm({
   const [addErr, setAddErr] = useState('');
   return (
     <div className="row" style={{ flexWrap: 'wrap' }}>
-      <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Node title (e.g. Tech Lead)" />
+      <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('workforce.nodePlaceholder')} />
       <select value={parentId} onChange={(e) => setParentId(e.target.value)}>
-        <option value="">(root)</option>
+        <option value="">{t('workforce.root')}</option>
         {nodes.map((n) => (
           <option key={n.id} value={n.id}>{n.title}</option>
         ))}
@@ -257,7 +257,7 @@ function AddNodeForm({
             .finally(() => setAdding(false));
         }}
       >
-        {adding ? t('workforce.adding') : 'Add node'}
+        {adding ? t('workforce.adding') : t('workforce.addNode')}
       </button>
       {addErr && <span className="pill warn" style={{ width: '100%' }}>{addErr}</span>}
     </div>

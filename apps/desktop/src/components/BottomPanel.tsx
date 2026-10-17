@@ -4,9 +4,19 @@ import { useLang } from '../i18n';
 
 const TABS = ['AI Activity', 'Terminal', 'Tests', 'Logs', 'Evidence'] as const;
 
+/** Tab 标题 i18n：内部标识保持英文原值，展示层翻译。 */
+const TAB_TITLE_KEYS: Record<string, string> = {
+  'AI Activity': 'bottom.tab.activity',
+  Terminal: 'bottom.tab.terminal',
+  Tests: 'bottom.tab.tests',
+  Logs: 'bottom.tab.logs',
+  Evidence: 'bottom.tab.evidence',
+};
+
 /** §3 bottom panel. AI Activity streams the immutable audit log (§70). */
 export function BottomPanel() {
   const { t } = useLang();
+  const tabTitle = (name: string): string => t(TAB_TITLE_KEYS[name] ?? name);
   const [tab, setTab] = useState<(typeof TABS)[number]>('AI Activity');
   const [records, setRecords] = useState<AuditRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -40,8 +50,8 @@ export function BottomPanel() {
   return (
     <footer className="bottom">
       <div className="bottom-tabs">
-        {TABS.map((t) => (
-          <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t}</button>
+        {TABS.map((name) => (
+          <button key={name} className={tab === name ? 'active' : ''} onClick={() => setTab(name)}>{tabTitle(name)}</button>
         ))}
       </div>
       <div className="bottom-body">
@@ -66,9 +76,9 @@ export function BottomPanel() {
             <div>PS C:\AIProjects\MyApp&gt; npm test <span className="muted"># runs @ai-factory/core unit tests</span></div>
           </div>
         )}
-        {tab === 'Tests' && <div className="muted">Test runs will appear here. <span className="pill">stub</span></div>}
-        {tab === 'Logs' && <div className="muted">Run logs stream here. <span className="pill">stub</span></div>}
-        {tab === 'Evidence' && <div className="muted">Select a task card to inspect its evidence chain (§42).</div>}
+        {tab === 'Tests' && <div className="muted">{t('bottom.testsEmpty')} <span className="pill">{t('bottom.stubBadge')}</span></div>}
+        {tab === 'Logs' && <div className="muted">{t('bottom.logsEmpty')} <span className="pill">{t('bottom.stubBadge')}</span></div>}
+        {tab === 'Evidence' && <div className="muted">{t('bottom.evidenceEmpty')}</div>}
       </div>
     </footer>
   );

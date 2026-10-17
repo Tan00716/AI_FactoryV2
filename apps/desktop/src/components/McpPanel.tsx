@@ -115,46 +115,46 @@ export function McpPanel(props: { mcp?: McpApi }) {
   return (
     <div className="mcp-panel">
       {error && <div className="banner err">{error}</div>}
-      <h4 style={{ margin: '4px 0' }}>MCP servers <span className="muted">({servers.length})</span></h4>
+      <h4 style={{ margin: '4px 0' }}>{t('mcp.servers')} <span className="muted">({servers.length})</span></h4>
       {servers.length === 0 && <div className="muted">{t('mcp.noServers')}</div>}
       <ul className="ev-list">
         {servers.map((s) => (
           <li key={`${s.name}@${s.version}`} style={{ marginBottom: 6 }}>
             <span className={`status-dot ${statusClass(s.installStatus)}`} style={{ display: 'inline-block', marginRight: 6 }} />
             <b>{s.name}@{s.version}</b>{' '}
-            <span className="muted">{s.provider} · {s.transport} · tools: {s.tools.join(', ') || '—'}</span>{' '}
+            <span className="muted">{s.provider} · {s.transport} · {t('mcp.toolsLabel', { tools: s.tools.join(', ') || '—' })}</span>{' '}
             <span className="pill">{s.trustLevel}</span>{' '}
             <span className="pill">{s.approvalPolicy}</span>{' '}
             <span className="pill">{s.installStatus}</span>{' '}
-            {!s.enabled && <span className="pill">disabled</span>}
+            {!s.enabled && <span className="pill">{t('mcp.disabled')}</span>}
             <span style={{ marginLeft: 8 }}>
-              <button disabled={busy} onClick={() => run(() => api.install(s.name, s.version))}>Install</button>{' '}
+              <button disabled={busy} onClick={() => run(() => api.install(s.name, s.version))}>{t('mcp.install')}</button>{' '}
               {s.installStatus === 'PENDING_REVIEW' && (
                 <>
-                  <button disabled={busy} onClick={() => run(() => api.review(s.name, s.version, true))}>Approve</button>{' '}
-                  <button disabled={busy} onClick={() => run(() => api.review(s.name, s.version, false))}>Reject</button>{' '}
+                  <button disabled={busy} onClick={() => run(() => api.review(s.name, s.version, true))}>{t('mcp.approve')}</button>{' '}
+                  <button disabled={busy} onClick={() => run(() => api.review(s.name, s.version, false))}>{t('mcp.reject')}</button>{' '}
                 </>
               )}
-              <button disabled={busy} onClick={() => { if (window.confirm(t('mcp.confirmRemove', { name: s.name, version: s.version }))) run(() => api.remove(s.name, s.version)); }}>Remove</button>
+              <button disabled={busy} onClick={() => { if (window.confirm(t('mcp.confirmRemove', { name: s.name, version: s.version }))) run(() => api.remove(s.name, s.version)); }}>{t('mcp.remove')}</button>
             </span>
           </li>
         ))}
       </ul>
-      <h4 style={{ margin: '12px 0 4px' }}>Register new server</h4>
+      <h4 style={{ margin: '12px 0 4px' }}>{t('mcp.registerNew')}</h4>
       <div className="row" style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-        <input value={rName} onChange={(e) => setRName(e.target.value)} placeholder="name" />
-        <input value={rVersion} onChange={(e) => setRVersion(e.target.value)} placeholder="version" />
-        <button disabled={busy} onClick={doRegister}>Register</button>
+        <input value={rName} onChange={(e) => setRName(e.target.value)} placeholder={t('mcp.namePlaceholder')} />
+        <input value={rVersion} onChange={(e) => setRVersion(e.target.value)} placeholder={t('mcp.versionPlaceholder')} />
+        <button disabled={busy} onClick={doRegister}>{t('mcp.register')}</button>
       </div>
-      <h4 style={{ margin: '12px 0 4px' }}>Tool-call gate check <span className="muted">(§73)</span></h4>
+      <h4 style={{ margin: '12px 0 4px' }}>{t('mcp.gateCheck')} <span className="muted">(§73)</span></h4>
       <div className="row" style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
         <input value={gServer} onChange={(e) => setGServer(e.target.value)} placeholder="server" />
         <input value={gTool} onChange={(e) => setGTool(e.target.value)} placeholder="tool" />
-        <button disabled={busy} onClick={doGate}>Check gate</button>
+        <button disabled={busy} onClick={doGate}>{t('mcp.checkGate')}</button>
       </div>
       {gateResult && (
         <div className={`banner ${gateResult.allowed ? '' : 'err'}`}>
-          {gateResult.allowed ? 'ALLOWED' : 'DENIED'} — {gateResult.reason}
+          {gateResult.allowed ? t('mcp.allowed') : t('mcp.denied')} — {gateResult.reason}
         </div>
       )}
     </div>

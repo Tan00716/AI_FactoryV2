@@ -12,6 +12,7 @@
  * nothing is emulated client-side anymore.
  */
 import { useEffect, useRef } from 'react';
+import { useLang } from '../i18n';
 import { defaultApiBase, authHeaders } from '../api';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
@@ -32,6 +33,7 @@ function b64ToText(b64: string): string {
 }
 
 export function TerminalPanel() {
+  const { t } = useLang();
   const hostRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -53,8 +55,8 @@ export function TerminalPanel() {
     fit.fit();
     term.focus();
 
-    term.writeln('AI Factory integrated terminal (§50.1) — interactive PTY session, human principal.');
-    term.writeln('Connecting…');
+    term.writeln(t('terminal.banner'));
+    term.writeln(t('terminal.connecting'));
 
     const post = async (path: string, body: unknown): Promise<Response> =>
       fetch(`${API_BASE}${path}`, {
@@ -91,9 +93,9 @@ export function TerminalPanel() {
         } else if (frame.event === 'close') {
           try {
             const c = JSON.parse(frame.data) as { exitCode: number | null; signal: string | null };
-            term.writeln(`\r\n\x1b[33m[session closed: exit=${c.exitCode ?? '?'} signal=${c.signal ?? '-'}]\x1b[0m`);
+            term.writeln(`\r\n\x1b[33m[${t('terminal.sessionClosedDetail', { exit: c.exitCode ?? '?', signal: c.signal ?? '-' })}]\x1b[0m`);
           } catch {
-            term.writeln('\r\n\x1b[33m[session closed]\x1b[0m');
+            term.writeln('\r\n\x1b[33m[' + t('terminal.sessionClosed') + ']\x1b[0m');
           }
         }
       };
@@ -119,7 +121,7 @@ export function TerminalPanel() {
           }
         }
       } catch {
-        if (!disposed) term.writeln('\r\n\x1b[31mstream interrupted\x1b[0m');
+        if (!disposed) term.writeln('\r\n\x1b[31m' + t('terminal.streamInterrupted') + '\x1b[0m');
       } finally {
         try {
           reader.releaseLock();
@@ -214,7 +216,7 @@ export function TerminalPanel() {
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)' }}>
-        <b>Terminal</b> <span className="muted">§50.1 · interactive PTY session (human)</span>
+        <b>{t('terminal.title')}</b> <span className="muted">{t('terminal.subtitle')}</span>
       </div>
       <div ref={hostRef} style={{ flex: 1, minHeight: 0, padding: 4 }} />
     </div>

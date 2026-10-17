@@ -133,13 +133,13 @@ export function EvaluationPanel(props: { evaluation?: EvaluationApi; taskId?: st
   return (
     <div className="evaluation-panel">
       {error && <div className="banner err">{error}</div>}
-      <h4 style={{ margin: '4px 0' }}>Evaluate a task <span className="muted">(§57)</span></h4>
+      <h4 style={{ margin: '4px 0' }}>{t('evaluation.evalTask')} <span className="muted">(§57)</span></h4>
       <div className="row" style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
         <input value={eTaskId} onChange={(e) => setETaskId(e.target.value)} placeholder="taskId" />
         <input value={eAgentId} onChange={(e) => setEAgentId(e.target.value)} placeholder="agentId" />
-        <button disabled={busy} onClick={doEvaluate}>Run evaluation</button>
+        <button disabled={busy} onClick={doEvaluate}>{t('evaluation.runEval')}</button>
       </div>
-      <h4 style={{ margin: '4px 0' }}>Evaluations <span className="muted">({evaluations.length})</span></h4>
+      <h4 style={{ margin: '4px 0' }}>{t('evaluation.evaluations')} <span className="muted">({evaluations.length})</span></h4>
       {!loaded && <div className="muted">{t('evaluation.loading')}</div>}
       {loaded && !error && evaluations.length === 0 && <div className="muted">{t('evaluation.noEvaluations')} {t('evaluation.noEvaluationsHint')}</div>}
       <ul className="ev-list">
@@ -148,27 +148,26 @@ export function EvaluationPanel(props: { evaluation?: EvaluationApi; taskId?: st
             <span className={`status-dot ${verdictClass(e.verdict)}`} style={{ display: 'inline-block', marginRight: 6 }} />
             <b>{e.taskId}</b> <span className="muted">{e.agentId}</span>{' '}
             <span className="pill">{e.verdict}</span>{' '}
-            <span className="muted">score {e.score}</span>
+            <span className="muted">{t('evaluation.score', { score: e.score })}</span>
           </li>
         ))}
       </ul>
-      <h4 style={{ margin: '12px 0 4px' }}>Agent leaderboard</h4>
+      <h4 style={{ margin: '12px 0 4px' }}>{t('evaluation.leaderboard')}</h4>
       {loaded && !error && profiles.length === 0 && <div className="muted">{t('evaluation.noProfiles')} {t('evaluation.noProfilesHint')}</div>}
       <ul className="ev-list">
         {profiles.map((p: any) => (
           <li key={p.agentId} style={{ marginBottom: 4 }}>
             <b>{p.agentId}</b>{' '}
             <span className="muted">
-              success {(p.successRate * 100).toFixed(0)}% · first-pass QA {(p.firstPassQaRate * 100).toFixed(0)}% ·
-              avg fix loops {p.avgFixLoops?.toFixed(1)} · n={p.evaluationCount}
+              {t('evaluation.profileStats', { s: (p.successRate * 100).toFixed(0), q: (p.firstPassQaRate * 100).toFixed(0), f: p.avgFixLoops?.toFixed(1) ?? '—', n: p.evaluationCount })}
             </span>
           </li>
         ))}
       </ul>
-      <h4 style={{ margin: '12px 0 4px' }}>Improvement proposals <span className="muted">(§58 — APPLY needs approval)</span></h4>
+      <h4 style={{ margin: '12px 0 4px' }}>{t('evaluation.proposals')} <span className="muted">{t('evaluation.proposalsNote')}</span></h4>
       <div className="row" style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-        <input value={pTitle} onChange={(e) => setPTitle(e.target.value)} placeholder="proposal title" style={{ flex: 1 }} />
-        <button disabled={busy} onClick={doPropose}>Propose</button>
+        <input value={pTitle} onChange={(e) => setPTitle(e.target.value)} placeholder={t('evaluation.proposalPlaceholder')} style={{ flex: 1 }} />
+        <button disabled={busy} onClick={doPropose}>{t('evaluation.propose')}</button>
       </div>
       {loaded && !error && proposals.length === 0 && <div className="muted">{t('evaluation.noProposals')} {t('evaluation.noProposalsHint')}</div>}
       <ul className="ev-list">
@@ -177,9 +176,9 @@ export function EvaluationPanel(props: { evaluation?: EvaluationApi; taskId?: st
             <b>{p.title}</b> <span className="muted">{p.kind}</span>{' '}
             <span className="pill">{p.status}</span>
             <span style={{ marginLeft: 8 }}>
-              <button disabled={busy} onClick={() => run(() => api.approve(p.proposalId, 'human'))}>Approve</button>{' '}
-              <button disabled={busy} onClick={() => run(() => api.reject(p.proposalId, 'human'))}>Reject</button>{' '}
-              <button disabled={busy} onClick={() => run(() => api.apply(p.proposalId))}>Apply</button>
+              <button disabled={busy} onClick={() => run(() => api.approve(p.proposalId, 'human'))}>{t('evaluation.approve')}</button>{' '}
+              <button disabled={busy} onClick={() => run(() => api.reject(p.proposalId, 'human'))}>{t('evaluation.reject')}</button>{' '}
+              <button disabled={busy} onClick={() => run(() => api.apply(p.proposalId))}>{t('evaluation.apply')}</button>
             </span>
           </li>
         ))}

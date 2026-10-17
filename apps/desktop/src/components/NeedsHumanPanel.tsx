@@ -68,7 +68,7 @@ export function NeedsHumanPanel() {
   return (
     <section className="panel">
       <div className="panel-head">
-        <h2>Needs Human</h2>
+        <h2>{t('needshuman.title')}</h2>
         <span className="muted">{t('needshuman.subtitle')}</span>
         <button disabled={busy} onClick={() => void load()}>
           {busy ? t('needshuman.refreshing') : t('needshuman.refresh')}

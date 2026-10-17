@@ -108,12 +108,12 @@ export function EventsPanel({ api, pollMs = 3000 }: EventsPanelProps) {
   return (
     <div className="events-panel">
       <div className="board-head">
-        <h2>Events <span className="count">§91</span></h2>
+        <h2>{t('events.title')} <span className="count">§91</span></h2>
         <span className="muted">
-          {visible.length} shown · live
+          {t('events.shownLive', { count: visible.length })}
           {selected.size > 0 && (
             <>
-              {' '}· <button className="link" onClick={() => setSelected(new Set())}>clear filter</button>
+              {' '}· <button className="link" onClick={() => setSelected(new Set())}>{t('events.clearFilter')}</button>
             </>
           )}
         </span>
@@ -122,7 +122,7 @@ export function EventsPanel({ api, pollMs = 3000 }: EventsPanelProps) {
 
       <div className="filter-box">
         <div className="muted" style={{ marginBottom: 4 }}>
-          Filter by event type ({selected.size === 0 ? 'showing all' : `${selected.size} selected`}):
+          {t('events.filterBy', { sel: selected.size === 0 ? t('events.showingAll') : t('events.selectedN', { n: selected.size }) })}
         </div>
         <div className="filter-grid">
           {types.map((t) => (

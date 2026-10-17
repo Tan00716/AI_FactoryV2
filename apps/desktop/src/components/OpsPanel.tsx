@@ -103,7 +103,7 @@ export function OpsPanel() {
   if (error && !status) {
     return <div className="banner err">{t('ops.unavailable', { error })}</div>;
   }
-  if (!status) return <p className="muted">Loading ops…</p>;
+  if (!status) return <p className="muted">{t('ops.loading')}</p>;
 
   return (
     <div className="ops-panel">
@@ -122,7 +122,7 @@ export function OpsPanel() {
             </div>
           ))}
           <span className="pill" style={{ padding: '6px 10px', textAlign: 'center' }}>
-            <div className="muted" style={{ fontSize: 10 }}>Control Epoch</div>
+            <div className="muted" style={{ fontSize: 10 }}>{t('ops.controlEpoch')}</div>
             <div style={{ fontSize: 16, fontWeight: 700 }}>{status.control_epoch}</div>
           </span>
         </div>
@@ -187,9 +187,9 @@ export function OpsPanel() {
             <thead>
               <tr className="muted" style={{ textAlign: 'left' }}>
                 <th>{t('ops.col.providerAccount')}</th>
-                <th>Bucket</th>
+                <th>{t('ops.col.bucket')}</th>
                 <th>{t('ops.col.usage')}</th>
-                <th>Auth</th>
+                <th>{t('ops.col.auth')}</th>
                 <th>{t('ops.col.freshness')}</th>
                 <th>{t('ops.col.resetAt')}</th>
               </tr>
@@ -202,7 +202,7 @@ export function OpsPanel() {
                   <td>{bucketUsage(b, t)}</td>
                   <td>{b.authState}</td>
                   <td>{b.freshness}</td>
-                  <td>{b.resetAt ? fmtTime(b.resetAt, t) : 'unknown'}</td>
+                  <td>{b.resetAt ? fmtTime(b.resetAt, t) : t('ops.unknown')}</td>
                 </tr>
               ))}
             </tbody>

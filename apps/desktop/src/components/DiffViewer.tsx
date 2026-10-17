@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import monaco, { languageOf } from '../monacoSetup';
+import { useLang } from '../i18n';
 
 const API_BASE = defaultApiBase();
 
@@ -25,6 +26,7 @@ export function DiffViewer({
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
+  const { t } = useLang();
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -55,7 +57,7 @@ export function DiffViewer({
         setLoading(false);
       } catch (e) {
         if (!disposed) {
-          setErr(e instanceof Error ? e.message : 'failed to load diff');
+          setErr(e instanceof Error ? e.message : t('diff.loadFailed'));
           setLoading(false);
         }
       }
@@ -97,11 +99,11 @@ export function DiffViewer({
         }}
       >
         <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'center' }}>
-          <b>Diff</b>
+          <b>{t('diff.title')}</b>
           <span className="pill" style={{ fontFamily: 'monospace' }}>{file}</span>
           <span className="muted" style={{ fontSize: 12 }}>{title}</span>
           <span style={{ flex: 1 }} />
-          <button onClick={onClose}>Close</button>
+          <button onClick={onClose}>{t('diff.close')}</button>
         </div>
         {err ? (
           <div className="banner err">{err}</div>

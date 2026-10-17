@@ -41,6 +41,29 @@ const LANES: Lane[] = [
   },
 ];
 
+/** 列标题 i18n 映射：内部标识（primary ?? title）→ 语言包 key；展示层翻译，内部 key/drag 状态保持英文原值。 */
+const LANE_TITLE_KEYS: Record<string, string> = {
+  TODO: 'board.lane.todo',
+  PLANNING: 'board.lane.planning',
+  IN_PROGRESS: 'board.lane.inProgress',
+  CODE_REVIEW: 'board.lane.codeReview',
+  PENDING_QA: 'board.lane.pendingQa',
+  QA: 'board.lane.qa',
+  PENDING_UAT_MERGE: 'board.lane.pendingUatMerge',
+  UAT: 'board.lane.uat',
+  PENDING_PROD: 'board.lane.pendingProd',
+  PROD_DEPLOYING: 'board.lane.prodDeploying',
+  PROD_VERIFICATION: 'board.lane.prodVerification',
+  DONE: 'board.lane.done',
+  BLOCKED: 'board.lane.blocked',
+  FAILED: 'board.lane.failed',
+};
+
+function laneTitle(lane: Lane, t: TFunc): string {
+  const key = LANE_TITLE_KEYS[lane.primary ?? lane.title];
+  return key ? t(key) : lane.title;
+}
+
 /** Happy-path 进度标尺：TODO=0% … DONE=100%。 */
 const HAPPY_PATH = [
   'TODO', 'PLANNING', 'IN_PROGRESS', 'CODE_REVIEW', 'PENDING_QA', 'QA',
@@ -156,7 +179,7 @@ export function Board({ tasks, onChanged, onCreate, onSelectTask }: {
       if (!card) return;
       const to = dropTarget(taskId, lane);
       if (!to) {
-        showToast('err', t('board.dropNotAllowed', { title: card.title, lane: lane.title }));
+        showToast('err', t('board.dropNotAllowed', { title: card.title, lane: laneTitle(lane, t) }));
         return;
       }
       if (to === card.status) return;
@@ -183,8 +206,8 @@ export function Board({ tasks, onChanged, onCreate, onSelectTask }: {
   return (
     <div className="board-wrap">
       <div className="board-head">
-        <h2>Task Board <span className="muted">{t('board.taskCount', { count: tasks.length })}</span></h2>
-        <button className="primary" onClick={onCreate}>+ New Task</button>
+        <h2>{t('board.title')} <span className="muted">{t('board.taskCount', { count: tasks.length })}</span></h2>
+        <button className="primary" onClick={onCreate}>{t('board.newTask')}</button>
       </div>
       <div className="board">
         {byLane.map(({ lane, cards }) => (
@@ -203,7 +226,7 @@ export function Board({ tasks, onChanged, onCreate, onSelectTask }: {
             }}
           >
             <div className="lane-title">
-              {lane.title} <span className="count">{cards.length}</span>
+              {laneTitle(lane, t)} <span className="count">{cards.length}</span>
             </div>
             {cards.map((c) => (
               <TaskCard

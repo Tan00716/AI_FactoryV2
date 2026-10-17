@@ -23,6 +23,22 @@ export const KNOWLEDGE_CATEGORIES = [
   'Coding', 'Testing', 'Security', 'DevOps', 'Research',
 ] as const;
 
+/** 知识分类筛选按钮 i18n：内部标识保持英文原值，展示层翻译。 */
+const CAT_TITLE_KEYS: Record<string, string> = {
+  All: 'knowledge.cat.all',
+  Models: 'knowledge.cat.models',
+  Agents: 'knowledge.cat.agents',
+  Skills: 'knowledge.cat.skills',
+  MCP: 'knowledge.cat.mcp',
+  'Harness Engineering': 'knowledge.cat.harness',
+  'Loop Engineering': 'knowledge.cat.loop',
+  Coding: 'knowledge.cat.coding',
+  Testing: 'knowledge.cat.testing',
+  Security: 'knowledge.cat.security',
+  DevOps: 'knowledge.cat.devops',
+  Research: 'knowledge.cat.research',
+};
+
 /** §89 Update Feed card. */
 export interface FeedCard {
   id: string;
@@ -123,6 +139,7 @@ function hitCategory(h: KnowledgeHit): string {
 }
 
 function FeedCardView({ card, onDecide }: { card: FeedCard; onDecide: (d: 'adopt' | 'ignore') => void }) {
+  const { t } = useLang();
   return (
     <div className="feed-card">
       <div className="row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -132,20 +149,20 @@ function FeedCardView({ card, onDecide }: { card: FeedCard; onDecide: (d: 'adopt
         <span style={{ flex: 1 }} />
         <span className="muted">{new Date(card.publishedAt).toLocaleDateString()}</span>
       </div>
-      <div className="feed-field"><span className="lbl">Why relevant:</span>{card.whyRelevant}</div>
+      <div className="feed-field"><span className="lbl">{t('knowledge.whyRelevant')}</span>{card.whyRelevant}</div>
       <div className="feed-field">
-        <span className="lbl">Evidence:</span>
+        <span className="lbl">{t('knowledge.evidence')}</span>
         <ul style={{ margin: '4px 0', paddingLeft: 18 }}>{card.evidence.map((e) => <li key={e}>{e}</li>)}</ul>
       </div>
-      <div className="feed-field"><span className="lbl">Affected agents:</span>{card.affectedAgents.join(', ')}</div>
-      <div className="feed-field"><span className="lbl">Risk:</span>{card.risk}</div>
+      <div className="feed-field"><span className="lbl">{t('knowledge.affectedAgents')}</span>{card.affectedAgents.join(', ')}</div>
+      <div className="feed-field"><span className="lbl">{t('knowledge.risk')}</span>{card.risk}</div>
       {card.evaluationResult && (
-        <div className="feed-field"><span className="lbl">Evaluation result:</span>{card.evaluationResult}</div>
+        <div className="feed-field"><span className="lbl">{t('knowledge.evalResult')}</span>{card.evaluationResult}</div>
       )}
-      <div className="feed-field"><span className="lbl">Recommended action:</span>{card.recommendedAction}</div>
+      <div className="feed-field"><span className="lbl">{t('knowledge.recAction')}</span>{card.recommendedAction}</div>
       <div className="feed-actions">
-        <button onClick={() => onDecide('adopt')}>Adopt</button>
-        <button onClick={() => onDecide('ignore')}>Ignore</button>
+        <button onClick={() => onDecide('adopt')}>{t('knowledge.adopt')}</button>
+        <button onClick={() => onDecide('ignore')}>{t('knowledge.ignore')}</button>
       </div>
     </div>
   );
@@ -162,6 +179,7 @@ export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
   const [subtab, setSubtab] = useState<'browse' | 'feed'>('browse');
   const [hits, setHits] = useState<KnowledgeHit[]>([]);
   const [category, setCategory] = useState<string>('All');
+  const catTitle = (cat: string): string => t(CAT_TITLE_KEYS[cat] ?? cat);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState('');
@@ -243,8 +261,8 @@ export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
     <div className="knowledge-panel">
       {error && <div className="banner err">{error}</div>}
       <div className="subtabs">
-        <button className={subtab === 'browse' ? 'sel' : ''} onClick={() => setSubtab('browse')}>Browse</button>
-        <button className={subtab === 'feed' ? 'sel' : ''} onClick={() => setSubtab('feed')}>Update Feed</button>
+        <button className={subtab === 'browse' ? 'sel' : ''} onClick={() => setSubtab('browse')}>{t('knowledge.browse')}</button>
+        <button className={subtab === 'feed' ? 'sel' : ''} onClick={() => setSubtab('feed')}>{t('knowledge.updateFeed')}</button>
       </div>
 
       {subtab === 'feed' ? (
@@ -267,21 +285,21 @@ export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
       ) : (
         <>
           <div className="row" style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="search knowledge…" style={{ flex: 2 }} />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('knowledge.searchPlaceholder')} style={{ flex: 2 }} />
             <input value={projectId} onChange={(e) => setProjectId(e.target.value)} placeholder="projectId" style={{ flex: 1 }} />
-            <button disabled={busy} onClick={() => run(() => refresh())}>Search</button>
+            <button disabled={busy} onClick={() => run(() => refresh())}>{t('knowledge.search')}</button>
           </div>
           <div className="knowledge-layout">
             <div className="knowledge-cats">
               {['All', ...KNOWLEDGE_CATEGORIES].map((cat) => (
                 <button key={cat} className={category === cat ? 'sel' : ''} onClick={() => setCategory(cat)}>
-                  {cat}
+                  {catTitle(cat)}
                   <span className="count">{counts[cat] ?? 0}</span>
                 </button>
               ))}
             </div>
             <div className="knowledge-list">
-              <h4 style={{ margin: '4px 0' }}>Knowledge <span className="muted">({filtered.length})</span></h4>
+              <h4 style={{ margin: '4px 0' }}>{t('knowledge.listTitle')} <span className="muted">({filtered.length})</span></h4>
               {filtered.length === 0 && <div className="muted">{t('knowledge.empty')}</div>}
               <ul className="ev-list">
                 {filtered.map((h) => (
@@ -292,7 +310,7 @@ export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
                     <span className="pill">{h.scopeLevel}</span>{' '}
                     <span className="pill">{hitCategory(h)}</span>{' '}
                     <span className="muted">v{h.item.version} · {h.item.source.kind}</span>
-                    <button disabled={busy} style={{ marginLeft: 8 }} onClick={() => viewDetail(h.item.id)}>Detail</button>
+                    <button disabled={busy} style={{ marginLeft: 8 }} onClick={() => viewDetail(h.item.id)}>{t('knowledge.detail')}</button>
                   </li>
                 ))}
               </ul>
@@ -304,10 +322,10 @@ export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
                 <b>{detail.item.title}</b>
                 <span className="pill">{detail.item.state}</span>
                 <span style={{ flex: 1 }} />
-                <button onClick={() => setDetail(null)}>Close</button>
+                <button onClick={() => setDetail(null)}>{t('knowledge.close')}</button>
               </div>
               <p className="muted">{detail.item.content}</p>
-              <div className="muted" style={{ marginBottom: 6 }}>Lifecycle history: {detail.history.length} transitions</div>
+              <div className="muted" style={{ marginBottom: 6 }}>{t('knowledge.lifecycle', { n: detail.history.length })}</div>
               <div className="row" style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                 {LIFECYCLE.filter((s) => s !== detail.item.state).map((s) => (
                   <button
@@ -323,24 +341,24 @@ export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
                 <button
                   disabled={busy}
                   onClick={() => run(() => api.publish(detail.item.id).then((r) => setScoutOut(r)))}
-                  title="Publishing returns a proposal + notice only — agents are never modified (§53)"
+                  title={t('knowledge.publishTitle')}
                 >
-                  Publish proposal
+                  {t('knowledge.publish')}
                 </button>
               </div>
             </div>
           )}
-          <h4 style={{ margin: '12px 0 4px' }}>Add candidate / Scout <span className="muted">(§52)</span></h4>
+          <h4 style={{ margin: '12px 0 4px' }}>{t('knowledge.addTitle')} <span className="muted">(§52)</span></h4>
           <div className="row" style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-            <input value={nTitle} onChange={(e) => setNTitle(e.target.value)} placeholder="title" style={{ flex: 1 }} />
-            <input value={nContent} onChange={(e) => setNContent(e.target.value)} placeholder="content" style={{ flex: 2 }} />
+            <input value={nTitle} onChange={(e) => setNTitle(e.target.value)} placeholder={t('knowledge.titlePlaceholder')} style={{ flex: 1 }} />
+            <input value={nContent} onChange={(e) => setNContent(e.target.value)} placeholder={t('knowledge.contentPlaceholder')} style={{ flex: 2 }} />
             <button disabled={busy} onClick={() => run(() => api.add({
               title: nTitle,
               content: nContent,
               tags: [],
               scope: { projectId },
               source: { kind: 'official_docs', ref: 'harness-guide' },
-            }))}>Add</button>
+            }))}>{t('knowledge.add')}</button>
             <button disabled={busy} onClick={() => run(async () => {
               const r = await api.scout({
                 title: nTitle,
@@ -350,7 +368,7 @@ export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
                 scope: { level: 'PROJECT', projectId },
               });
               setScoutOut(r);
-            })}>Run scout</button>
+            })}>{t('knowledge.runScout')}</button>
           </div>
           {!!scoutOut && (
             <pre className="code-sample" style={{ maxHeight: 260, overflow: 'auto' }}>

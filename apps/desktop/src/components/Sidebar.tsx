@@ -47,7 +47,7 @@ export function Sidebar({ org, onSelectAgent }: {
   return (
     <aside className="sidebar">
       <section>
-        <h3>PROJECT</h3>
+        <h3>{t('sidebar.project')}</h3>
         <div className="tree">
           <div>📁 MyApp</div>
           <div className="tree-indent">📁 src</div>
@@ -56,21 +56,21 @@ export function Sidebar({ org, onSelectAgent }: {
         </div>
       </section>
       <section>
-        <h3>AI ORG</h3>
+        <h3>{t('sidebar.aiOrg')}</h3>
         {org.length === 0 && <div className="muted">{t('sidebar.noAgents')} {t('sidebar.noAgentsHint')}</div>}
         {org.map((n) => <OrgTreeNode key={n.agent.id} node={n} depth={0} onSelectAgent={onSelectAgent} />)}
       </section>
       <section>
-        <h3>SKILLS</h3>
+        <h3>{t('sidebar.skills')}</h3>
         <div className="muted">
           {skillNames === null ? '…' : skillNames.length > 0 ? skillNames.join(' · ') : 'clean-code · debugging · git'}
         </div>
-        <h3>MCP</h3>
-        <div className="muted">github · filesystem <span className="pill">stub</span></div>
-        <h3>KNOWLEDGE</h3>
-        <div className="muted"><span className="pill">stub</span></div>
-        <h3>CI/CD</h3>
-        <div className="muted"><span className="pill">stub</span></div>
+        <h3>{t('sidebar.mcp')}</h3>
+        <div className="muted">github · filesystem <span className="pill">{t('sidebar.stubBadge')}</span></div>
+        <h3>{t('sidebar.knowledge')}</h3>
+        <div className="muted"><span className="pill">{t('sidebar.stubBadge')}</span></div>
+        <h3>{t('sidebar.cicd')}</h3>
+        <div className="muted"><span className="pill">{t('sidebar.stubBadge')}</span></div>
       </section>
     </aside>
   );

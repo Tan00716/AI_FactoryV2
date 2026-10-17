@@ -295,7 +295,7 @@ export function DispatchPanel() {
         )}
       </div>
 
-      {tasks === null && !err && <p className="muted">Loading tasks…</p>}
+      {tasks === null && !err && <p className="muted">{t('dispatch.loadingTasks')}</p>}
 
       {/* ------------------------------------------------ 待派发队列 */}
       <h3>{t('dispatch.waiting')}</h3>
@@ -547,7 +547,7 @@ export function DispatchPanel() {
 
       {/* -------------------------------------------------- 预授权票 */}
       <h3>{t('dispatch.tickets')}</h3>
-      {tickets.phase === 'loading' && <p className="muted">Loading tickets…</p>}
+      {tickets.phase === 'loading' && <p className="muted">{t('dispatch.loadingTickets')}</p>}
       {tickets.phase === 'not-ready' && (
         <p className="muted">
           {t('dispatch.ticketsNotReady', { status: tickets.status })}
