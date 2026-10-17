@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 // ------------------------------------------------------------- API ----
 
@@ -157,6 +158,7 @@ function FileList({ title, files }: { title: string; files: string[] }) {
 }
 
 export function GitPanel({ api }: { api: GitApi }) {
+  const { t } = useLang();
   const [repo, setRepo] = useState('');
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [branches, setBranches] = useState<GitBranches | null>(null);
@@ -228,7 +230,7 @@ export function GitPanel({ api }: { api: GitApi }) {
       </div>
 
       {!status && !err && (
-        <div className="muted" style={{ marginBottom: 8 }}>输入仓库路径后点 Refresh 查看状态（§64）。</div>
+        <div className="muted" style={{ marginBottom: 8 }}>{t('git.hint')}</div>
       )}
       {status && (
         <div style={{ marginBottom: 8 }}>

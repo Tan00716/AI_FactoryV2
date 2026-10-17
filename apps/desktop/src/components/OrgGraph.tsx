@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { OrgNode } from '../api';
+import { useLang, type TFunc } from '../i18n';
 
 /**
  * Organization 可视化图 — spec §84.
@@ -18,15 +19,14 @@ export const STATUS_COLORS: Record<string, string> = {
   ARCHIVED: '#484f58',
 };
 
-const STATUS_LABEL: Record<string, string> = {
-  ONLINE: '在线',
-  IDLE: '空闲',
-  WORKING: '工作中',
-  BLOCKED: '阻塞',
-  FAILED: '失败',
-  PAUSED: '暂停',
-  ARCHIVED: '归档',
-};
+/**
+ * §84 节点状态 → 本地化标签：按 `orggraph.status.<STATUS>` 查语言包，
+ * 有 key 用翻译、缺 key 回退状态值原文（DashboardPanel statText 模式）。
+ */
+function statusLabel(status: string, t: TFunc, has: (k: string) => boolean): string {
+  const key = `orggraph.status.${status}`;
+  return has(key) ? t(key) : status;
+}
 
 const NODE_W = 168;
 const NODE_H = 64;
@@ -82,6 +82,7 @@ export function OrgGraph({
   org: OrgNode[];
   onSelectAgent?: (agentId: string) => void;
 }) {
+  const { t, has } = useLang();
   const [zoom, setZoom] = useState(1);
   const [selected, setSelected] = useState<OrgNode | null>(null);
 
@@ -106,7 +107,7 @@ export function OrgGraph({
   const totalH = (maxDepth + 1) * (NODE_H + V_GAP);
 
   if (org.length === 0) {
-    return <p className="muted">暂无组织数据</p>;
+    return <p className="muted">{t('orggraph.noData')}</p>;
   }
 
   const edges: { x1: number; y1: number; x2: number; y2: number; key: string }[] = [];
@@ -125,19 +126,19 @@ export function OrgGraph({
   return (
     <div className="org-graph-wrap">
       <div className="org-graph-toolbar">
-        <span className="muted">组织图谱 §84 · 点击节点查看详情</span>
+        <span className="muted">{t('orggraph.toolbarHint')}</span>
         <span className="zoom-controls">
           <button onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.2).toFixed(1)))}>−</button>
           <span className="muted">{Math.round(zoom * 100)}%</span>
           <button onClick={() => setZoom((z) => Math.min(2, +(z + 0.2).toFixed(1)))}>＋</button>
-          <button onClick={() => setZoom(1)}>重置</button>
+          <button onClick={() => setZoom(1)}>{t('orggraph.resetZoom')}</button>
         </span>
       </div>
       <div className="org-graph-legend">
         {Object.entries(STATUS_COLORS).map(([s, c]) => (
           <span key={s} className="legend-item">
             <span className="status-dot" style={{ background: c }} />
-            {STATUS_LABEL[s] ?? s}
+            {statusLabel(s, t, has)}
           </span>
         ))}
       </div>
@@ -188,7 +189,7 @@ export function OrgGraph({
                     </text>
                     <circle cx={NODE_W - 16} cy={16} r={6} fill={color} />
                     <text x={16} y={58} fill="var(--muted)" fontSize={10}>
-                      L{a.autonomyLevel} · {STATUS_LABEL[a.status] ?? a.status}
+                      L{a.autonomyLevel} · {statusLabel(a.status, t, has)}
                     </text>
                   </g>
                 );
@@ -206,11 +207,11 @@ export function OrgGraph({
                   className="status-dot"
                   style={{ background: colorOf(selected.agent.status) }}
                 />
-                {STATUS_LABEL[selected.agent.status] ?? selected.agent.status}
+                {statusLabel(selected.agent.status, t, has)}
                 <span className="muted"> · {selected.agent.jobTitle}</span>
               </div>
               <div className="org-pop-row muted">
-                自治等级 L{selected.agent.autonomyLevel} · 下属 {selected.children.length} 人
+                {t('orggraph.popupMeta', { level: selected.agent.autonomyLevel, reports: selected.children.length })}
               </div>
               {onSelectAgent && (
                 <button
@@ -218,7 +219,7 @@ export function OrgGraph({
                   style={{ marginTop: 8 }}
                   onClick={() => onSelectAgent(selected.agent.id)}
                 >
-                  查看完整档案 §87
+                  {t('orggraph.viewProfile')}
                 </button>
               )}
             </div>

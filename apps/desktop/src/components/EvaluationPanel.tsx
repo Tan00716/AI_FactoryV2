@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 /** Typed client for the evaluation endpoints. */
 export interface EvaluationApi {
@@ -62,6 +63,7 @@ function verdictClass(v: string): string {
  * and improvement proposals (APPLY requires approval — never silent).
  */
 export function EvaluationPanel(props: { evaluation?: EvaluationApi; taskId?: string | null }) {
+  const { t } = useLang();
   const [api] = useState<EvaluationApi>(() => props.evaluation ?? createEvaluationApi());
   const [evaluations, setEvaluations] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<any[]>([]);
@@ -138,8 +140,8 @@ export function EvaluationPanel(props: { evaluation?: EvaluationApi; taskId?: st
         <button disabled={busy} onClick={doEvaluate}>Run evaluation</button>
       </div>
       <h4 style={{ margin: '4px 0' }}>Evaluations <span className="muted">({evaluations.length})</span></h4>
-      {!loaded && <div className="muted">加载中…</div>}
-      {loaded && !error && evaluations.length === 0 && <div className="muted">暂无评估记录。</div>}
+      {!loaded && <div className="muted">{t('evaluation.loading')}</div>}
+      {loaded && !error && evaluations.length === 0 && <div className="muted">{t('evaluation.noEvaluations')}</div>}
       <ul className="ev-list">
         {evaluations.slice(-8).reverse().map((e: any) => (
           <li key={e.evaluationId} style={{ marginBottom: 4 }}>
@@ -151,7 +153,7 @@ export function EvaluationPanel(props: { evaluation?: EvaluationApi; taskId?: st
         ))}
       </ul>
       <h4 style={{ margin: '12px 0 4px' }}>Agent leaderboard</h4>
-      {loaded && !error && profiles.length === 0 && <div className="muted">暂无画像数据。</div>}
+      {loaded && !error && profiles.length === 0 && <div className="muted">{t('evaluation.noProfiles')}</div>}
       <ul className="ev-list">
         {profiles.map((p: any) => (
           <li key={p.agentId} style={{ marginBottom: 4 }}>
@@ -168,7 +170,7 @@ export function EvaluationPanel(props: { evaluation?: EvaluationApi; taskId?: st
         <input value={pTitle} onChange={(e) => setPTitle(e.target.value)} placeholder="proposal title" style={{ flex: 1 }} />
         <button disabled={busy} onClick={doPropose}>Propose</button>
       </div>
-      {loaded && !error && proposals.length === 0 && <div className="muted">暂无改进提案。</div>}
+      {loaded && !error && proposals.length === 0 && <div className="muted">{t('evaluation.noProposals')}</div>}
       <ul className="ev-list">
         {proposals.map((p: any) => (
           <li key={p.proposalId} style={{ marginBottom: 6 }}>

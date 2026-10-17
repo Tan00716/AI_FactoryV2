@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   api, AgentFull, AuditRecord, MemoryEntry, TaskSummary,
 } from '../api';
+import { useLang } from '../i18n';
 
 /**
  * AI Employee Detail — spec §87.
@@ -11,14 +12,19 @@ import {
  * 缺数据的分区显示"暂无"。
  */
 
+// TABS 持有 i18n key（与语言无关的稳定页签 id），渲染时 t() 翻译。
 const TABS = [
-  '档案', '指令', '技能', '规则', '策略', '模型', '工具', 'MCP',
-  '权限', '记忆', '知识', '当前任务', '历史', '评估', '版本',
+  'employeedetail.tab.profile', 'employeedetail.tab.instructions', 'employeedetail.tab.skills',
+  'employeedetail.tab.rules', 'employeedetail.tab.policy', 'employeedetail.tab.model',
+  'employeedetail.tab.tools', 'employeedetail.tab.mcp', 'employeedetail.tab.permissions',
+  'employeedetail.tab.memory', 'employeedetail.tab.knowledge', 'employeedetail.tab.currentTasks',
+  'employeedetail.tab.history', 'employeedetail.tab.evaluation', 'employeedetail.tab.version',
 ] as const;
 type Tab = (typeof TABS)[number];
 
 function Empty() {
-  return <p className="muted">暂无</p>;
+  const { t } = useLang();
+  return <p className="muted">{t('employeedetail.empty')}</p>;
 }
 
 function StrList({ items }: { items: string[] }) {
@@ -44,6 +50,7 @@ function useAgent(agentId: string): AgentFull | null | undefined {
 
 // ---------------------------------------------------------------- 策略 --
 function PolicyTab() {
+  const { t } = useLang();
   const [policy, setPolicy] = useState<unknown>(undefined);
   useEffect(() => {
     let dead = false;
@@ -52,11 +59,11 @@ function PolicyTab() {
       .catch(() => { if (!dead) setPolicy(null); });
     return () => { dead = true; };
   }, []);
-  if (policy === undefined) return <p className="muted">加载中…</p>;
+  if (policy === undefined) return <p className="muted">{t('employeedetail.loading')}</p>;
   if (policy === null) return <Empty />;
   return (
     <div>
-      <p className="muted">生效策略（组织 / 项目层叠加结果）</p>
+      <p className="muted">{t('employeedetail.policyNote')}</p>
       <pre className="muted" style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>
         {JSON.stringify(policy, null, 1)?.slice(0, 3000)}
       </pre>
@@ -66,6 +73,7 @@ function PolicyTab() {
 
 // ---------------------------------------------------------------- MCP --
 function McpTab() {
+  const { t } = useLang();
   const [servers, setServers] = useState<Array<{ name: string; status?: string }> | null>(null);
   useEffect(() => {
     let dead = false;
@@ -78,7 +86,7 @@ function McpTab() {
       .catch(() => { if (!dead) setServers([]); });
     return () => { dead = true; };
   }, []);
-  if (servers === null) return <p className="muted">加载中…</p>;
+  if (servers === null) return <p className="muted">{t('employeedetail.loading')}</p>;
   if (servers.length === 0) return <Empty />;
   return (
     <ul className="plain">
@@ -94,6 +102,7 @@ function McpTab() {
 
 // ---------------------------------------------------------------- 记忆 --
 function MemoryTab({ agentId }: { agentId: string }) {
+  const { t } = useLang();
   const [entries, setEntries] = useState<MemoryEntry[] | null>(null);
   useEffect(() => {
     let dead = false;
@@ -102,14 +111,14 @@ function MemoryTab({ agentId }: { agentId: string }) {
       .catch(() => { if (!dead) setEntries([]); });
     return () => { dead = true; };
   }, [agentId]);
-  if (entries === null) return <p className="muted">加载中…</p>;
+  if (entries === null) return <p className="muted">{t('employeedetail.loading')}</p>;
   if (entries.length === 0) return <Empty />;
   return (
     <ul className="plain">
       {entries.map((e) => (
         <li key={e.id}>
           <b>{String(e.title ?? e.type ?? e.id.slice(0, 8))}</b>
-          <span className="muted"> · 置信度 {e.confidence ?? '—'}</span>
+          <span className="muted"> · {t('employeedetail.confidence', { value: e.confidence ?? '—' })}</span>
           {e.content && <div className="muted">{String(e.content).slice(0, 300)}</div>}
         </li>
       ))}
@@ -119,6 +128,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
 
 // -------------------------------------------------------------- 当前任务 --
 function CurrentTasksTab({ agentId, onSelectTask }: { agentId: string; onSelectTask: (id: string) => void }) {
+  const { t } = useLang();
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   useEffect(() => {
     let dead = false;
@@ -132,15 +142,15 @@ function CurrentTasksTab({ agentId, onSelectTask }: { agentId: string; onSelectT
       .catch(() => { if (!dead) setTasks([]); });
     return () => { dead = true; };
   }, [agentId]);
-  if (tasks === null) return <p className="muted">加载中…</p>;
+  if (tasks === null) return <p className="muted">{t('employeedetail.loading')}</p>;
   if (tasks.length === 0) return <Empty />;
   return (
     <ul className="plain">
-      {tasks.map((t) => (
-        <li key={t.id} className="clickable" onClick={() => onSelectTask(t.id)}>
-          <span className="pill">{t.status}</span> {t.title}
-          {t.currentAgentId === agentId && <span className="pill">当前执行</span>}
-          <span className="muted"> · #{t.id.slice(0, 8)}</span>
+      {tasks.map((task) => (
+        <li key={task.id} className="clickable" onClick={() => onSelectTask(task.id)}>
+          <span className="pill">{task.status}</span> {task.title}
+          {task.currentAgentId === agentId && <span className="pill">{t('employeedetail.currentRunning')}</span>}
+          <span className="muted"> · #{task.id.slice(0, 8)}</span>
         </li>
       ))}
     </ul>
@@ -149,6 +159,7 @@ function CurrentTasksTab({ agentId, onSelectTask }: { agentId: string; onSelectT
 
 // ---------------------------------------------------------------- 历史 --
 function HistoryTab({ agentId }: { agentId: string }) {
+  const { t } = useLang();
   const [records, setRecords] = useState<AuditRecord[] | null>(null);
   useEffect(() => {
     let dead = false;
@@ -160,7 +171,7 @@ function HistoryTab({ agentId }: { agentId: string }) {
       .catch(() => { if (!dead) setRecords([]); });
     return () => { dead = true; };
   }, [agentId]);
-  if (records === null) return <p className="muted">加载中…</p>;
+  if (records === null) return <p className="muted">{t('employeedetail.loading')}</p>;
   if (records.length === 0) return <Empty />;
   return (
     <ul className="timeline">
@@ -177,6 +188,7 @@ function HistoryTab({ agentId }: { agentId: string }) {
 
 // ---------------------------------------------------------------- 评估 --
 function EvaluationTab({ agentId }: { agentId: string }) {
+  const { t } = useLang();
   const [profile, setProfile] = useState<{ agentId: string; [k: string]: unknown } | null | undefined>(undefined);
   useEffect(() => {
     let dead = false;
@@ -185,7 +197,7 @@ function EvaluationTab({ agentId }: { agentId: string }) {
       .catch(() => { if (!dead) setProfile(null); });
     return () => { dead = true; };
   }, [agentId]);
-  if (profile === undefined) return <p className="muted">加载中…</p>;
+  if (profile === undefined) return <p className="muted">{t('employeedetail.loading')}</p>;
   if (profile === null) return <Empty />;
   return (
     <pre className="muted" style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>
@@ -200,64 +212,65 @@ export function EmployeeDetail({ agentId, onClose, onSelectTask }: {
   onClose: () => void;
   onSelectTask: (id: string) => void;
 }) {
+  const { t } = useLang();
   const agent = useAgent(agentId);
-  const [tab, setTab] = useState<Tab>('档案');
+  const [tab, setTab] = useState<Tab>(TABS[0]);
 
   return (
     <div className="detail wide">
       <div className="detail-head">
-        <h2>{agent ? agent.displayName : '员工档案'}</h2>
+        <h2>{agent ? agent.displayName : t('employeedetail.drawerTitle')}</h2>
         <button onClick={onClose}>✕</button>
       </div>
-      {agent === undefined && <p className="muted">加载中…</p>}
-      {agent === null && <div className="banner err">未找到该 Agent</div>}
+      {agent === undefined && <p className="muted">{t('employeedetail.loading')}</p>}
+      {agent === null && <div className="banner err">{t('employeedetail.notFound')}</div>}
       {agent && (
         <>
           <div className="drawer-tabs">
-            {TABS.map((t) => (
-              <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
-                {t}
+            {TABS.map((k) => (
+              <button key={k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>
+                {t(k)}
               </button>
             ))}
           </div>
           <div className="drawer-body">
-            {tab === '档案' && (
+            {tab === TABS[0] && (
               <div>
                 <p><b>{agent.displayName}</b> <span className="muted">{agent.jobTitle}</span></p>
-                <div className="kv"><span>状态</span><span>{agent.status}</span></div>
-                <div className="kv"><span>部门</span><span>{agent.department || '—'}</span></div>
-                <div className="kv"><span>使命</span><span>{agent.mission || '—'}</span></div>
-                <div className="kv"><span>自治等级</span><span>L{agent.autonomyLevel}</span></div>
-                <div className="kv"><span>推理强度</span><span>{agent.reasoningLevel}</span></div>
+                <div className="kv"><span>{t('employeedetail.label.status')}</span><span>{agent.status}</span></div>
+                <div className="kv"><span>{t('employeedetail.label.department')}</span><span>{agent.department || '—'}</span></div>
+                <div className="kv"><span>{t('employeedetail.label.mission')}</span><span>{agent.mission || '—'}</span></div>
+                <div className="kv"><span>{t('employeedetail.label.autonomy')}</span><span>L{agent.autonomyLevel}</span></div>
+                <div className="kv"><span>{t('employeedetail.label.reasoning')}</span><span>{agent.reasoningLevel}</span></div>
               </div>
             )}
-            {tab === '指令' && (
+            {tab === TABS[1] && (
               agent.instructions
                 ? <pre className="muted" style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{agent.instructions}</pre>
                 : <Empty />
             )}
-            {tab === '技能' && <StrList items={agent.skills} />}
-            {tab === '规则' && <StrList items={agent.rules} />}
-            {tab === '策略' && <PolicyTab />}
-            {tab === '模型' && (
+            {tab === TABS[2] && <StrList items={agent.skills} />}
+            {tab === TABS[3] && <StrList items={agent.rules} />}
+            {tab === TABS[4] && <PolicyTab />}
+            {tab === TABS[5] && (
               <div>
-                <div className="kv"><span>模型</span><span>{agent.model || '—'}</span></div>
-                <div className="kv"><span>推理强度</span><span>{agent.reasoningLevel}</span></div>
+                <div className="kv"><span>{t('employeedetail.label.model')}</span><span>{agent.model || '—'}</span></div>
+                <div className="kv"><span>{t('employeedetail.label.reasoning')}</span><span>{agent.reasoningLevel}</span></div>
               </div>
             )}
-            {tab === '工具' && <StrList items={agent.tools} />}
-            {tab === 'MCP' && <McpTab />}
-            {tab === '权限' && <StrList items={agent.permissions} />}
-            {tab === '记忆' && <MemoryTab agentId={agent.id} />}
-            {tab === '知识' && <Empty />}
-            {tab === '当前任务' && <CurrentTasksTab agentId={agent.id} onSelectTask={onSelectTask} />}
-            {tab === '历史' && <HistoryTab agentId={agent.id} />}
-            {tab === '评估' && <EvaluationTab agentId={agent.id} />}
-            {tab === '版本' && (
+            {tab === TABS[6] && <StrList items={agent.tools} />}
+            {tab === TABS[7] && <McpTab />}
+            {tab === TABS[8] && <StrList items={agent.permissions} />}
+            {tab === TABS[9] && <MemoryTab agentId={agent.id} />}
+            {tab === TABS[10] && <Empty />}
+            {tab === TABS[11] && <CurrentTasksTab agentId={agent.id} onSelectTask={onSelectTask} />}
+            {tab === TABS[12] && <HistoryTab agentId={agent.id} />}
+            {tab === TABS[13] && <EvaluationTab agentId={agent.id} />}
+            {tab === TABS[14] && (
               <div>
-                <div className="kv"><span>版本</span><span>v{agent.version}</span></div>
-                <div className="kv"><span>创建</span><span>{new Date(agent.createdAt).toLocaleString()}</span></div>
-                <div className="kv"><span>更新</span><span>{new Date(agent.updatedAt).toLocaleString()}</span></div>
+                <div className="kv"><span>{t('employeedetail.label.version')}</span><span>v{agent.version}</span></div>
+                <div className="kv"><span>{t('employeedetail.label.created')}</span><span>{new Date(agent.createdAt).toLocaleString()}</span></div>
+                <div className="kv"><span>{t('employeedetail.label.updated')}</span><span>{new Date(agent.updatedAt).toLocaleString()}</span></div>
               </div>
             )}
           </div>

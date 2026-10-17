@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, defaultApiBase, identityLabel, BoardCard, OrgNode, Project, TaskSummary } from './api';
+import { api, defaultApiBase, BoardCard, OrgNode, Project, TaskSummary } from './api';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { Board } from './components/Board';
@@ -34,7 +34,7 @@ import { ActivityPanel } from './components/ActivityPanel';
 import { EventsPanel } from './components/EventsPanel';
 import { ModelsPanel } from './components/ModelsPanel';
 import { NeedsHumanPanel } from './components/NeedsHumanPanel';
-import { LanguageProvider } from './i18n';
+import { LanguageProvider, useLang } from './i18n';
 import './styles.css';
 
 const API_BASE = defaultApiBase();
@@ -46,7 +46,8 @@ const API_BASE = defaultApiBase();
  *   center (board / editor placeholder)
  *   bottom (activity · terminal · tests · logs)
  */
-export default function App() {
+function IdeShell() {
+  const { t } = useLang();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState('proj-myapp');
   const [columns, setColumns] = useState<Record<string, BoardCard[]>>({});
@@ -93,8 +94,8 @@ export default function App() {
       // Identity is display-only: a failed whoami (older server, bad
       // token) must not break the refresh — it just shows as unknown.
       api.whoami()
-        .then((w) => setApiIdentityLabel(identityLabel(w)))
-        .catch(() => setApiIdentityLabel('角色未知'));
+        .then((w) => setApiIdentityLabel(w.mode === 'open' ? t('app.identityLocal') : t('app.identityRole', { role: w.role })))
+        .catch(() => setApiIdentityLabel(t('app.identityUnknown')));
       const [ps, board, tree, agents, taskList] = await Promise.all([
         api.projects(), api.board(projectId), api.org(), api.agents(), api.tasks(projectId),
       ]);
@@ -110,7 +111,7 @@ export default function App() {
       setConnected(false);
       setBootError(`Cannot reach the local API at ${API_BASE} — is the backend running? (${(e as Error).message})`);
     }
-  }, [projectId]);
+  }, [projectId, t]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -129,7 +130,6 @@ export default function App() {
   }, [bootError, refresh]);
 
   return (
-    <LanguageProvider>
     <div className="ide">
       <TopBar
         projects={projects}
@@ -259,6 +259,13 @@ export default function App() {
         />
       )}
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <LanguageProvider>
+      <IdeShell />
     </LanguageProvider>
   );
 }

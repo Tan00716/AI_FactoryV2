@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 /**
  * Activity center — spec §67 (Agent Activity) + §68 (Run / Trace System).
@@ -235,6 +236,7 @@ export interface ActivityPanelProps {
 }
 
 export function ActivityPanel({ api, pollMs = 3000 }: ActivityPanelProps) {
+  const { t } = useLang();
   const client = api ?? createActivityApi();
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -291,7 +293,7 @@ export function ActivityPanel({ api, pollMs = 3000 }: ActivityPanelProps) {
       )}
 
       <h4>Realtime stream</h4>
-      {!loaded && items.length === 0 && <div className="muted">加载中…</div>}
+      {!loaded && items.length === 0 && <div className="muted">{t('activity.loading')}</div>}
       {loaded && !error && items.length === 0 && <div className="muted">No activity yet.</div>}
       {items.map((it) => (
         <div key={it.id} className="act-row">

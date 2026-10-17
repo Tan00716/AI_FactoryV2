@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, OrgNode as AgentOrgNode, authHeaders } from '../api';
 import { OrgGraph } from './OrgGraph';
+import { useLang } from '../i18n';
 
 /** Typed client for the workforce endpoints (§14, §18–§20, §59). */
 export interface WorkforceApi {
@@ -73,6 +74,7 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
   /** 点击 Agent → 打开 §87 员工详情。 */
   onSelectAgent?: (agentId: string) => void;
 }) {
+  const { t } = useLang();
   const [client] = useState<WorkforceApi>(() => api ?? createWorkforceApi());
   const [view, setView] = useState<'list' | 'graph'>('list');
   const [nodes, setNodes] = useState<OrgNode[]>([]);
@@ -152,8 +154,8 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
       <div className="panel-head-row">
         <h2 style={{ margin: 0 }}>Workforce <span className="muted">§14 org · §18–19 factory · §20 squads · §59 proposals</span></h2>
         <span className="view-toggle">
-          <button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}>列表</button>
-          <button className={view === 'graph' ? 'active' : ''} onClick={() => setView('graph')}>图谱 §84</button>
+          <button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}>{t('workforce.viewList')}</button>
+          <button className={view === 'graph' ? 'active' : ''} onClick={() => setView('graph')}>{t('workforce.viewGraph')}</button>
         </span>
       </div>
       {err && <div className="banner err">{err}</div>}
@@ -174,7 +176,7 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
               key={n.id}
               className={n.agentId && onSelectAgent ? 'clickable' : ''}
               onClick={() => { if (n.agentId && onSelectAgent) onSelectAgent(n.agentId); }}
-              title={n.agentId ? '查看员工档案 §87' : undefined}
+              title={n.agentId ? t('workforce.viewProfileTitle') : undefined}
             >
               <span className="pill">{n.status}</span> {n.title}
               {n.parentId && <span className="muted"> ← {n.parentId.slice(0, 8)}</span>}
@@ -196,7 +198,7 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
         <div className="row">
           <input value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="Job title" />
           <input value={specialty} onChange={(e) => setSpecialty(e.target.value)} placeholder="Specialty" />
-          <button onClick={hire} disabled={busy}>{busy ? '创建中…' : 'Create'}</button>
+          <button onClick={hire} disabled={busy}>{busy ? t('workforce.creating') : 'Create'}</button>
         </div>
         <p className="muted">Governance (§19): max 6 children, depth 3, privileged roles denied.</p>
       </section>
@@ -205,7 +207,7 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
         <h3>Task squads (§20)</h3>
         <div className="row">
           <input value={taskId} onChange={(e) => setTaskId(e.target.value)} placeholder="Task ID" />
-          <button onClick={assemble} disabled={busy}>{busy ? '组建中…' : 'Assemble squad'}</button>
+          <button onClick={assemble} disabled={busy}>{busy ? t('workforce.assembling') : 'Assemble squad'}</button>
         </div>
         <ul className="plain">
           {(squads.active as Array<{ id: string; taskId: string; memberIds: string[] }>).map((s) => (
@@ -229,6 +231,7 @@ function AddNodeForm({
   nodes: OrgNode[];
   onAdd: (title: string, parentId?: string) => Promise<void>;
 }) {
+  const { t } = useLang();
   const [title, setTitle] = useState('');
   const [parentId, setParentId] = useState('');
   const [adding, setAdding] = useState(false);
@@ -249,7 +252,7 @@ function AddNodeForm({
           void onAdd(title.trim(), parentId || undefined).then(() => setTitle('')).finally(() => setAdding(false));
         }}
       >
-        {adding ? '添加中…' : 'Add node'}
+        {adding ? t('workforce.adding') : 'Add node'}
       </button>
     </div>
   );

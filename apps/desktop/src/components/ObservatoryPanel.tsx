@@ -6,6 +6,7 @@ import {
   type RuntimeRunListItem,
 } from '../api';
 import { RunCheckpointsSection, useRunCheckpoints } from './RunCheckpointsView';
+import { useLang } from '../i18n';
 
 /**
  * Observatory（Batch 16）— 全局运行观测面。
@@ -46,6 +47,7 @@ function recordEntries(rec: Record<string, number>): string {
 
 /** §28.4 逐项 checks 的原样呈现（成功响应里同样带 checks）。 */
 function ChecksList({ body }: { body: ResumeRunResponse }) {
+  const { t } = useLang();
   const checks = body.checks ?? {};
   const names = Object.keys(checks);
   if (names.length === 0) return null;
@@ -62,7 +64,7 @@ function ChecksList({ body }: { body: ResumeRunResponse }) {
             <code>{name}</code> — {c.detail}
             {pending && pending.length > 0 && (
               <span className="muted">
-                {' '}（{pending.map((p) => `${p.tool} ${p.id.slice(0, 8)}…`).join('、')}）
+                {' '}（{pending.map((p) => `${p.tool} ${p.id.slice(0, 8)}…`).join(t('observatory.pendingSep'))}）
               </span>
             )}
           </li>
@@ -73,26 +75,29 @@ function ChecksList({ body }: { body: ResumeRunResponse }) {
 }
 
 function ResumeResultBlock({ state }: { state: ResumeState }) {
-  if (state.phase === 'pending') return <p className="muted">恢复请求已发出，等待服务端重校验…</p>;
+  const { t } = useLang();
+  if (state.phase === 'pending') return <p className="muted">{t('observatory.resumePending')}</p>;
   if (state.phase === 'unreachable') {
-    return <div className="banner err">恢复请求未达服务端：{state.message}</div>;
+    return <div className="banner err">{t('observatory.resumeUnreachable', { message: state.message })}</div>;
   }
   const { status, body } = state;
   if (status === 202 && body.id) {
     return (
       <div>
         <p className="ok">
-          已创建新的恢复 run：<code title={body.id}>{body.id}</code>
+          {t('observatory.resumeCreated')}<code title={body.id}>{body.id}</code>
           {body.resumedFrom && (
             <span className="muted">
-              {' '}（自原 run 步位 {body.resumedFrom.stepPosition} 的检查点恢复，
-              捕获于 {new Date(body.resumedFrom.capturedAt).toLocaleString()}）
+              {' '}{t('observatory.resumeCreatedNote', {
+                step: body.resumedFrom.stepPosition,
+                time: new Date(body.resumedFrom.capturedAt).toLocaleString(),
+              })}
             </span>
           )}
         </p>
-        {body.note && <p className="muted">服务端说明：{body.note}</p>}
+        {body.note && <p className="muted">{t('observatory.serverNote', { note: body.note })}</p>}
         {body.budgetBaseline && (
-          <p className="muted">承接的预算基线：{recordEntries(body.budgetBaseline)}</p>
+          <p className="muted">{t('observatory.budgetBaseline', { entries: recordEntries(body.budgetBaseline) })}</p>
         )}
         <ChecksList body={body} />
       </div>
@@ -101,7 +106,7 @@ function ResumeResultBlock({ state }: { state: ResumeState }) {
   return (
     <div>
       <div className="banner err">
-        恢复被拒绝（HTTP {status}）：{body.error ?? '服务端未给出错误说明'}
+        {t('observatory.resumeRejected', { status, error: body.error ?? t('observatory.noErrorDetail') })}
         {body.reason && <span>（reason: {body.reason}）</span>}
       </div>
       <ChecksList body={body} />
@@ -110,71 +115,76 @@ function ResumeResultBlock({ state }: { state: ResumeState }) {
 }
 
 function ManifestDetail({ manifest }: { manifest: RunManifest }) {
+  const { t } = useLang();
   const m = manifest;
   return (
     <table className="data-table">
       <tbody>
         <tr>
-          <th>驱动</th>
+          <th>{t('observatory.row.driver')}</th>
           <td>
             {m.driver.kind} · adapter <code>{m.driver.adapter}</code> ·{' '}
-            routeRequest {m.driver.routeRequestProvided ? '有' : '无'}
+            routeRequest {m.driver.routeRequestProvided ? t('observatory.has') : t('observatory.hasNot')}
           </td>
-          <th>模型</th>
+          <th>{t('observatory.row.model')}</th>
           <td>
             {m.model ?? '—'}
-            {m.modelSource && <span className="muted">（来源：{m.modelSource}）</span>}
+            {m.modelSource && <span className="muted">{t('observatory.modelSource', { source: m.modelSource })}</span>}
           </td>
         </tr>
         <tr>
-          <th>终局</th>
+          <th>{t('observatory.row.final')}</th>
           <td>
             <span className="pill">{m.status}</span> outcome: {m.outcome ?? '—'} ·
-            steps: {m.steps ?? '—'} · 完成于 {fmtTime(m.finishedAt)}
+            steps: {m.steps ?? '—'} · {t('observatory.finishedAt', { time: fmtTime(m.finishedAt) })}
             {m.error && <span className="err"> · error: {m.error}</span>}
           </td>
-          <th>授权工具</th>
-          <td>{m.grantedTools.length ? m.grantedTools.join(', ') : '（无——未授予任何工具）'}</td>
+          <th>{t('observatory.row.tools')}</th>
+          <td>{m.grantedTools.length ? m.grantedTools.join(', ') : t('observatory.noTools')}</td>
         </tr>
         <tr>
-          <th>预算上限</th>
+          <th>{t('observatory.row.budgetLimits')}</th>
           <td>
             loop: maxSteps={m.budgetLimits.loop.maxSteps}, timeMs={m.budgetLimits.loop.timeMs},
             maxRetries={m.budgetLimits.loop.maxRetries}
             <br />
             extended: {recordEntries(m.budgetLimits.extended)}
           </td>
-          <th>预算用量</th>
+          <th>{t('observatory.row.budgetUsage')}</th>
           <td>
             {m.budgetUsage
               ? recordEntries(m.budgetUsage)
-              : '—（run 未终结，manifest 完成块尚未补全）'}
+              : t('observatory.usageIncomplete')}
           </td>
         </tr>
         <tr>
-          <th>Intents</th>
+          <th>{t('observatory.row.intents')}</th>
           <td>
             {m.intents
-              ? <>共 {m.intents.total} 条 — {recordEntries(m.intents.byStatus)}</>
-              : '—（未补全）'}
+              ? <>{t('observatory.intentsSummary', { total: m.intents.total, entries: recordEntries(m.intents.byStatus) })}</>
+              : t('observatory.incomplete')}
           </td>
-          <th>证据</th>
+          <th>{t('observatory.row.evidence')}</th>
           <td>
             {m.evidence
-              ? <>共 {m.evidence.count} 条 — {recordEntries(m.evidence.byType)}</>
-              : '—（未补全）'}
+              ? <>{t('observatory.evidenceSummary', { count: m.evidence.count, entries: recordEntries(m.evidence.byType) })}</>
+              : t('observatory.incomplete')}
           </td>
         </tr>
         <tr>
-          <th>Checkpoints</th>
+          <th>{t('observatory.row.checkpoints')}</th>
           <td>
             {m.checkpoints
               ? m.checkpoints.count === 0
-                ? '0 条'
-                : `${m.checkpoints.count} 条（步位 ${m.checkpoints.firstStep ?? '—'}..${m.checkpoints.lastStep ?? '—'}）`
-              : '—（未补全）'}
+                ? t('observatory.zeroCheckpoints')
+                : t('observatory.checkpointsRange', {
+                    count: m.checkpoints.count,
+                    first: m.checkpoints.firstStep ?? '—',
+                    last: m.checkpoints.lastStep ?? '—',
+                  })
+              : t('observatory.incomplete')}
           </td>
-          <th>上下文哈希</th>
+          <th>{t('observatory.row.contextHash')}</th>
           <td><code title={m.contextManifestHash}>{m.contextManifestHash.slice(0, 16)}…</code></td>
         </tr>
       </tbody>
@@ -183,6 +193,7 @@ function ManifestDetail({ manifest }: { manifest: RunManifest }) {
 }
 
 export function ObservatoryPanel() {
+  const { t } = useLang();
   const [rows, setRows] = useState<RuntimeRunListItem[] | null>(null);
   const [err, setErr] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -257,16 +268,16 @@ export function ObservatoryPanel() {
   return (
     <div className="panel">
       <h2>
-        Observatory <span className="muted">全局运行观测 · §24–28 · manifests / checkpoints / resume</span>
+        Observatory <span className="muted">{t('observatory.subtitle')}</span>
       </h2>
-      {err && <div className="banner err">run 列表不可用：{err}</div>}
+      {err && <div className="banner err">{t('observatory.loadFailed', { message: err })}</div>}
       <div className="row">
-        <button onClick={() => void load()}>刷新</button>
+        <button onClick={() => void load()}>{t('observatory.refresh')}</button>
         {rows !== null && (
           <span className="muted">
-            共 {rows.length} 个 run
+            {t('observatory.summary', { count: rows.length })}
             {[...byStatus.entries()].map(([s, n]) => ` · ${s} ${n}`).join('')}
-            {leftovers > 0 && ` · 其中 ${leftovers} 个 RUNNING 记录无本进程执行（可能已中断）`}
+            {leftovers > 0 && t('observatory.leftovers', { n: leftovers })}
           </span>
         )}
       </div>
@@ -274,7 +285,7 @@ export function ObservatoryPanel() {
       {rows === null && !err && <p className="muted">Loading runs…</p>}
       {rows !== null && rows.length === 0 && (
         <p className="muted">
-          尚无任何 run 记录。run 由 Orchestrate 页签或 POST /api/runtime/runs 发起后会出现在这里。
+          {t('observatory.empty')}
         </p>
       )}
 
@@ -282,8 +293,11 @@ export function ObservatoryPanel() {
         <table className="data-table">
           <thead>
             <tr>
-              <th>Run</th><th>状态</th><th>Agent</th><th>Task</th><th>项目</th>
-              <th>创建时间</th><th>模型</th><th>Intents</th><th>Checkpoints</th><th>操作</th>
+              <th>{t('observatory.col.run')}</th><th>{t('observatory.col.status')}</th>
+              <th>{t('observatory.col.agent')}</th><th>{t('observatory.col.task')}</th>
+              <th>{t('observatory.col.project')}</th><th>{t('observatory.col.createdAt')}</th>
+              <th>{t('observatory.col.model')}</th><th>{t('observatory.col.intents')}</th>
+              <th>{t('observatory.col.checkpoints')}</th><th>{t('observatory.col.actions')}</th>
             </tr>
           </thead>
           <tbody>
@@ -298,16 +312,16 @@ export function ObservatoryPanel() {
                     <span className="pill">{row.status}</span>{' '}
                     {row.status === 'RUNNING' &&
                       (row.live ? (
-                        <span className="pill ok">本进程执行中</span>
+                        <span className="pill ok">{t('observatory.live')}</span>
                       ) : (
-                        <span className="pill warn">可能已中断</span>
+                        <span className="pill warn">{t('observatory.maybeInterrupted')}</span>
                       ))}
                   </td>
                   <td><code title={row.agentId}>{row.agentId.slice(0, 8)}…</code></td>
                   <td><code title={row.taskId}>{row.taskId.slice(0, 8)}…</code></td>
                   <td>
                     {row.projectName ?? row.projectId ?? (
-                      <span className="muted">不可解析</span>
+                      <span className="muted">{t('observatory.unresolvable')}</span>
                     )}
                   </td>
                   <td>{fmtTime(row.createdAt)}</td>
@@ -316,11 +330,11 @@ export function ObservatoryPanel() {
                       <>
                         {row.manifest.model ?? '—'}
                         {row.manifest.modelSource && (
-                          <span className="muted">（{row.manifest.modelSource}）</span>
+                          <span className="muted">{t('observatory.modelSource', { source: row.manifest.modelSource })}</span>
                         )}
                       </>
                     ) : (
-                      <span className="pill warn">无 manifest</span>
+                      <span className="pill warn">{t('observatory.noManifest')}</span>
                     )}
                   </td>
                   <td>
@@ -337,7 +351,7 @@ export function ObservatoryPanel() {
                   </td>
                   <td>{row.checkpointCount}</td>
                   <td>
-                    <button onClick={() => expand(row)}>{expanded ? '收起' : '详情'}</button>
+                    <button onClick={() => expand(row)}>{expanded ? t('observatory.collapse') : t('observatory.expand')}</button>
                     {resumable && (
                       <>
                         {' '}
@@ -345,10 +359,10 @@ export function ObservatoryPanel() {
                           onClick={() => void doResume(row)}
                           disabled={resume?.phase === 'pending'}
                         >
-                          {resume?.phase === 'pending' ? '恢复中…' : '从检查点恢复'}
+                          {resume?.phase === 'pending' ? t('observatory.resuming') : t('observatory.resumeBtn')}
                         </button>
                         <div className="muted" style={{ fontSize: 11 }}>
-                          将创建一个新的恢复 run（原 run 不复活）
+                          {t('observatory.resumeHint')}
                         </div>
                       </>
                     )}
@@ -358,17 +372,21 @@ export function ObservatoryPanel() {
                   <tr key={`${row.id}-detail`}>
                     <td colSpan={10}>
                       <p className="muted" style={{ fontSize: 12 }}>
-                        run <code>{row.id}</code> · outcome: {row.outcome ?? '—'} ·
-                        steps: {row.steps} · 完成于 {fmtTime(row.finishedAt)} ·
-                        证据 {row.evidence.length} 条 · handoffs {row.handoffs.length} 次
+                        run <code>{row.id}</code>{' '}
+                        {t('observatory.runMeta', {
+                          outcome: row.outcome ?? '—',
+                          steps: row.steps,
+                          finishedAt: fmtTime(row.finishedAt),
+                          evidence: row.evidence.length,
+                          handoffs: row.handoffs.length,
+                        })}
                         {row.error && <span className="err"> · error: {row.error}</span>}
                       </p>
 
-                      <h4>Run Manifest（Batch 15）</h4>
+                      <h4>{t('observatory.manifestTitle')}</h4>
                       {row.manifest === null ? (
                         <p className="muted">
-                          该 run 无 manifest——它是清单接线前的遗留 run，服务端不回填、
-                          不编造（GET /manifest 返回 404）。上方列表字段即其全部已知记录。
+                          {t('observatory.noManifestNote')}
                         </p>
                       ) : manifests[row.id]?.phase === 'ready' ? (
                         <ManifestDetail
@@ -376,8 +394,9 @@ export function ObservatoryPanel() {
                         />
                       ) : manifests[row.id]?.phase === 'error' ? (
                         <div className="banner err">
-                          manifest 不可用：
-                          {(manifests[row.id] as { phase: 'error'; message: string }).message}
+                          {t('observatory.manifestFailed', {
+                            message: (manifests[row.id] as { phase: 'error'; message: string }).message,
+                          })}
                         </div>
                       ) : (
                         <p className="muted">Loading manifest…</p>
@@ -392,7 +411,7 @@ export function ObservatoryPanel() {
 
                       {resume && (
                         <div>
-                          <h4>从检查点恢复（§28.4）</h4>
+                          <h4>{t('observatory.resumeTitle')}</h4>
                           <ResumeResultBlock state={resume} />
                         </div>
                       )}

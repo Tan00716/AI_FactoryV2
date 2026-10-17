@@ -7,6 +7,7 @@ import {
   type Project,
   type TaskAuthorizationStatus,
 } from '../api';
+import { useLang, type TFunc } from '../i18n';
 
 /**
  * Dispatch（Batch 18）— §17.2 Human Dispatch 桌面队列。
@@ -60,15 +61,15 @@ function fmtTime(iso: string | null | undefined): string {
 }
 
 /** 等待时长（自 updatedAt 起算的近似，见文件头口径）。 */
-function fmtWait(sinceIso: string, now: number): string {
-  const t = Date.parse(sinceIso);
-  if (Number.isNaN(t)) return '—';
-  const min = Math.floor(Math.max(0, now - t) / 60000);
-  if (min < 1) return '不足 1 分钟';
-  if (min < 60) return `${min} 分钟`;
+function fmtWait(sinceIso: string, now: number, t: TFunc): string {
+  const parsed = Date.parse(sinceIso);
+  if (Number.isNaN(parsed)) return '—';
+  const min = Math.floor(Math.max(0, now - parsed) / 60000);
+  if (min < 1) return t('dispatch.waitUnder1Min');
+  if (min < 60) return t('dispatch.waitMinutes', { min });
   const h = Math.floor(min / 60);
-  if (h < 24) return `${h} 小时 ${min % 60} 分`;
-  return `${Math.floor(h / 24)} 天 ${h % 24} 小时`;
+  if (h < 24) return t('dispatch.waitHoursMins', { h, m: min % 60 });
+  return t('dispatch.waitDaysHours', { d: Math.floor(h / 24), h: h % 24 });
 }
 
 function scopeText(scope: unknown): string {
@@ -82,6 +83,7 @@ function scopeText(scope: unknown): string {
 }
 
 export function DispatchPanel() {
+  const { t } = useLang();
   const [tasks, setTasks] = useState<DispatchTask[] | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [agents, setAgents] = useState<AgentFull[]>([]);
@@ -180,34 +182,44 @@ export function DispatchPanel() {
       setBusyId(task.id);
       try {
         const res = await fn();
-        showToast('ok', `${label}「${task.title}」：${res.from} → ${res.to}（服务端已写审计）`);
+        showToast(
+          'ok',
+          t('dispatch.toastSuccess', {
+            label,
+            title: task.title,
+            from: res.from,
+            to: res.to,
+          }),
+        );
         setConfirm(null);
         await load();
       } catch (e) {
         const errObj = e as Error & { status?: number };
         showToast(
           'err',
-          `${label}「${task.title}」失败（HTTP ${errObj.status ?? '?'}）：${errObj.message}`,
+          t('dispatch.toastFailed', {
+            label,
+            title: task.title,
+            status: errObj.status ?? '?',
+            message: errObj.message,
+          }),
         );
         if (errObj.status === 409) await load();
       } finally {
         setBusyId(null);
       }
     },
-    [load, showToast],
+    [load, showToast, t],
   );
 
   const doDispatch = useCallback(
     (task: DispatchTask) => {
       const f = formFor(task.id);
       if (f.via === 'POLICY' && !f.policyRuleId.trim()) {
-        showToast(
-          'err',
-          'via=POLICY 派发必须填写 policyRuleId：预授权派发须记录触发政策与 Rule ID（服务端同样会以 400 拒绝）。',
-        );
+        showToast('err', t('dispatch.policyRuleIdRequired'));
         return;
       }
-      void act(task, '派发', () =>
+      void act(task, t('dispatch.action.dispatch'), () =>
         api.dispatchTask(task.id, {
           via: f.via,
           ...(f.assigneeAgentId ? { assigneeAgentId: f.assigneeAgentId } : {}),
@@ -215,17 +227,17 @@ export function DispatchPanel() {
         }),
       );
     },
-    [act, formFor, showToast],
+    [act, formFor, showToast, t],
   );
 
   const doReject = useCallback(
     (task: DispatchTask) => {
       const reason = formFor(task.id).reason.trim();
-      void act(task, '驳回派发', () =>
+      void act(task, t('dispatch.action.reject'), () =>
         api.rejectDispatch(task.id, reason || undefined),
       );
     },
-    [act, formFor],
+    [act, formFor, t],
   );
 
   const groups = useMemo(() => {
@@ -244,37 +256,41 @@ export function DispatchPanel() {
     };
   }, [tasks]);
 
-  const taskCell = (t: DispatchTask) => (
+  const taskCell = (task: DispatchTask) => (
     <>
       <td>
-        <strong>{t.title}</strong>
+        <strong>{task.title}</strong>
         <div className="muted" style={{ fontSize: 11 }}>
-          <code title={t.id}>{t.id.slice(0, 8)}…</code> · 工作流状态 {t.status}
+          <code title={task.id}>{task.id.slice(0, 8)}…</code> · {t('dispatch.workflowStatus', { status: task.status })}
         </div>
       </td>
-      <td>{projectName(t.projectId)}</td>
-      <td>{t.creator}</td>
-      <td><span className={`prio ${t.priority.toLowerCase()}`}>{t.priority}</span></td>
+      <td>{projectName(task.projectId)}</td>
+      <td>{task.creator}</td>
+      <td><span className={`prio ${task.priority.toLowerCase()}`}>{task.priority}</span></td>
     </>
   );
 
   return (
     <div className="panel">
       <h2>
-        Dispatch <span className="muted">人工派发队列 · §17.2 Human Dispatch</span>
+        Dispatch <span className="muted">{t('dispatch.subtitle')}</span>
       </h2>
       {toast && (
         <div className={`toast ${toast.kind}`}>
           <span>{toast.text}</span>
         </div>
       )}
-      {err && <div className="banner err">任务列表不可用：{err}</div>}
+      {err && <div className="banner err">{t('dispatch.loadFailed', { message: err })}</div>}
       <div className="row">
-        <button onClick={() => void load()}>刷新</button>
+        <button onClick={() => void load()}>{t('dispatch.refresh')}</button>
         {tasks !== null && (
           <span className="muted">
-            待派发 {groups.waiting.length} · 草稿 {groups.drafts.length} ·
-            已授权 {groups.authorized.length} · 已撤销/过期 {groups.closed.length}
+            {t('dispatch.counts', {
+              waiting: groups.waiting.length,
+              drafts: groups.drafts.length,
+              authorized: groups.authorized.length,
+              closed: groups.closed.length,
+            })}
           </span>
         )}
       </div>
@@ -282,43 +298,41 @@ export function DispatchPanel() {
       {tasks === null && !err && <p className="muted">Loading tasks…</p>}
 
       {/* ------------------------------------------------ 待派发队列 */}
-      <h3>待派发（WAITING_HUMAN_DISPATCH）</h3>
+      <h3>{t('dispatch.waiting')}</h3>
       {tasks !== null && groups.waiting.length === 0 && (
-        <p className="muted">
-          当前没有等待人工派发的任务。AI 发现的问题以 WAITING_HUMAN_DISPATCH
-          建单、或草稿提交派发后，会出现在这里。
-        </p>
+        <p className="muted">{t('dispatch.waitingEmpty')}</p>
       )}
       {groups.waiting.length > 0 && (
         <table className="data-table">
           <thead>
             <tr>
-              <th>任务</th><th>项目</th><th>创建者</th><th>优先级</th>
-              <th>等待时长（自最近状态变更）</th><th>派发</th>
+              <th>{t('dispatch.col.task')}</th><th>{t('dispatch.col.project')}</th>
+              <th>{t('dispatch.col.creator')}</th><th>{t('dispatch.col.priority')}</th>
+              <th>{t('dispatch.col.wait')}</th><th>{t('dispatch.col.dispatch')}</th>
             </tr>
           </thead>
           <tbody>
-            {groups.waiting.map((t) => {
-              const f = formFor(t.id);
-              const busy = busyId === t.id;
+            {groups.waiting.map((task) => {
+              const f = formFor(task.id);
+              const busy = busyId === task.id;
               return [
-                <tr key={t.id}>
-                  {taskCell(t)}
+                <tr key={task.id}>
+                  {taskCell(task)}
                   <td>
-                    {fmtWait(t.updatedAt, now)}
+                    {fmtWait(task.updatedAt, now, t)}
                     <div className="muted" style={{ fontSize: 11 }}>
-                      变更于 {fmtTime(t.updatedAt)}
+                      {t('dispatch.changedAt', { time: fmtTime(task.updatedAt) })}
                     </div>
                   </td>
                   <td>
                     <div className="row" style={{ margin: 0, flexWrap: 'wrap' }}>
                       <select
-                        aria-label="指派给"
+                        aria-label={t('dispatch.assignTo')}
                         value={f.assigneeAgentId}
                         disabled={busy}
-                        onChange={(e) => setForm(t.id, { assigneeAgentId: e.target.value })}
+                        onChange={(e) => setForm(task.id, { assigneeAgentId: e.target.value })}
                       >
-                        <option value="">不指派执行者</option>
+                        <option value="">{t('dispatch.noAssignee')}</option>
                         {agents.map((a) => (
                           <option key={a.id} value={a.id}>
                             {a.displayName}（{a.jobTitle}）
@@ -326,51 +340,51 @@ export function DispatchPanel() {
                         ))}
                       </select>
                       <select
-                        aria-label="派发方式 via"
+                        aria-label={t('dispatch.via')}
                         value={f.via}
                         disabled={busy}
                         onChange={(e) =>
-                          setForm(t.id, { via: e.target.value as 'HUMAN' | 'POLICY' })
+                          setForm(task.id, { via: e.target.value as 'HUMAN' | 'POLICY' })
                         }
                       >
-                        <option value="HUMAN">via: HUMAN（人工派发）</option>
-                        <option value="POLICY">via: POLICY（预授权）</option>
+                        <option value="HUMAN">{t('dispatch.viaHuman')}</option>
+                        <option value="POLICY">{t('dispatch.viaPolicy')}</option>
                       </select>
                       {f.via === 'POLICY' && (
                         <input
                           type="text"
                           aria-label="policyRuleId"
-                          placeholder="policyRuleId（必填）"
+                          placeholder={t('dispatch.policyRuleIdPlaceholder')}
                           value={f.policyRuleId}
                           disabled={busy}
-                          onChange={(e) => setForm(t.id, { policyRuleId: e.target.value })}
+                          onChange={(e) => setForm(task.id, { policyRuleId: e.target.value })}
                         />
                       )}
                     </div>
                   </td>
                 </tr>,
-                <tr key={`${t.id}-actions`}>
+                <tr key={`${task.id}-actions`}>
                   <td colSpan={6}>
                     <div className="row" style={{ margin: 0, flexWrap: 'wrap' }}>
-                      <button disabled={busy} onClick={() => doDispatch(t)}>
-                        {busy ? '处理中…' : '派发（授权执行）'}
+                      <button disabled={busy} onClick={() => doDispatch(task)}>
+                        {busy ? t('dispatch.processing') : t('dispatch.dispatchBtn')}
                       </button>
                       <input
                         type="text"
-                        aria-label="驳回原因（可选）"
-                        placeholder="驳回原因（可选，进审计）"
+                        aria-label={t('dispatch.rejectReasonLabel')}
+                        placeholder={t('dispatch.rejectReasonPlaceholder')}
                         value={f.reason}
                         disabled={busy}
-                        onChange={(e) => setForm(t.id, { reason: e.target.value })}
+                        onChange={(e) => setForm(task.id, { reason: e.target.value })}
                       />
-                      <button disabled={busy} onClick={() => doReject(t)}>
-                        驳回（回草稿）
+                      <button disabled={busy} onClick={() => doReject(task)}>
+                        {t('dispatch.rejectBtn')}
                       </button>
                       <span className="muted" style={{ fontSize: 11 }}>
-                        派发后任务进入 AUTHORIZED 才可被 run 执行；
+                        {t('dispatch.hintDispatched')}
                         {f.via === 'POLICY'
-                          ? ' POLICY 派发的审计 actor 记为 policy，不冒充人工点击。'
-                          : ' HUMAN 派发的审计事件为 TASK_DISPATCHED。'}
+                          ? t('dispatch.hintPolicyActor')
+                          : t('dispatch.hintHumanEvent')}
                       </span>
                     </div>
                   </td>
@@ -382,31 +396,32 @@ export function DispatchPanel() {
       )}
 
       {/* ------------------------------------------------------ 草稿 */}
-      <h3>草稿（DRAFT）</h3>
+      <h3>{t('dispatch.drafts')}</h3>
       {tasks !== null && groups.drafts.length === 0 && (
-        <p className="muted">当前没有草稿任务。草稿是尚未提交派发的任务，不会被执行。</p>
+        <p className="muted">{t('dispatch.draftsEmpty')}</p>
       )}
       {groups.drafts.length > 0 && (
         <table className="data-table">
           <thead>
             <tr>
-              <th>任务</th><th>项目</th><th>创建者</th><th>优先级</th>
-              <th>创建时间</th><th>操作</th>
+              <th>{t('dispatch.col.task')}</th><th>{t('dispatch.col.project')}</th>
+              <th>{t('dispatch.col.creator')}</th><th>{t('dispatch.col.priority')}</th>
+              <th>{t('dispatch.col.createdAt')}</th><th>{t('dispatch.col.actions')}</th>
             </tr>
           </thead>
           <tbody>
-            {groups.drafts.map((t) => (
-              <tr key={t.id}>
-                {taskCell(t)}
-                <td>{fmtTime(t.createdAt)}</td>
+            {groups.drafts.map((task) => (
+              <tr key={task.id}>
+                {taskCell(task)}
+                <td>{fmtTime(task.createdAt)}</td>
                 <td>
                   <button
-                    disabled={busyId === t.id}
+                    disabled={busyId === task.id}
                     onClick={() =>
-                      void act(t, '提交派发', () => api.requestDispatch(t.id))
+                      void act(task, t('dispatch.action.requestDispatch'), () => api.requestDispatch(task.id))
                     }
                   >
-                    {busyId === t.id ? '处理中…' : '提交派发'}
+                    {busyId === task.id ? t('dispatch.processing') : t('dispatch.requestDispatch')}
                   </button>
                 </td>
               </tr>
@@ -416,87 +431,78 @@ export function DispatchPanel() {
       )}
 
       {/* ---------------------------------------------------- 已授权 */}
-      <h3>已授权（AUTHORIZED）— 授权管理</h3>
+      <h3>{t('dispatch.authorized')}</h3>
       {tasks !== null && groups.authorized.length === 0 && (
-        <p className="muted">当前没有已授权任务。</p>
+        <p className="muted">{t('dispatch.authorizedEmpty')}</p>
       )}
       {groups.authorized.length > 0 && (
         <table className="data-table">
           <thead>
             <tr>
-              <th>任务</th><th>项目</th><th>创建者</th><th>优先级</th>
-              <th>当前执行者</th><th>操作</th>
+              <th>{t('dispatch.col.task')}</th><th>{t('dispatch.col.project')}</th>
+              <th>{t('dispatch.col.creator')}</th><th>{t('dispatch.col.priority')}</th>
+              <th>{t('dispatch.col.currentAgent')}</th><th>{t('dispatch.col.actions')}</th>
             </tr>
           </thead>
           <tbody>
-            {groups.authorized.map((t) => {
-              const busy = busyId === t.id;
-              const armed = confirm?.taskId === t.id ? confirm.action : null;
+            {groups.authorized.map((task) => {
+              const busy = busyId === task.id;
+              const armed = confirm?.taskId === task.id ? confirm.action : null;
               return [
-                <tr key={t.id}>
-                  {taskCell(t)}
+                <tr key={task.id}>
+                  {taskCell(task)}
                   <td>
-                    {t.currentAgentId ? (
-                      <code title={t.currentAgentId}>{t.currentAgentId.slice(0, 8)}…</code>
+                    {task.currentAgentId ? (
+                      <code title={task.currentAgentId}>{task.currentAgentId.slice(0, 8)}…</code>
                     ) : (
-                      <span className="muted">未指派</span>
+                      <span className="muted">{t('dispatch.unassigned')}</span>
                     )}
                   </td>
                   <td>
                     <button
                       disabled={busy}
-                      onClick={() => setConfirm({ taskId: t.id, action: 'revoke' })}
+                      onClick={() => setConfirm({ taskId: task.id, action: 'revoke' })}
                     >
-                      撤销授权…
+                      {t('dispatch.revokeBtn')}
                     </button>{' '}
                     <button
                       disabled={busy}
-                      onClick={() => setConfirm({ taskId: t.id, action: 'expire' })}
+                      onClick={() => setConfirm({ taskId: task.id, action: 'expire' })}
                     >
-                      标记过期…
+                      {t('dispatch.expireBtn')}
                     </button>
                   </td>
                 </tr>,
                 armed && (
-                  <tr key={`${t.id}-confirm`}>
+                  <tr key={`${task.id}-confirm`}>
                     <td colSpan={6}>
                       <div className="banner err">
-                        {armed === 'revoke' ? (
-                          <>
-                            确认撤销「{t.title}」的执行授权？撤销后状态变为 REVOKED：
-                            该任务立即失去执行资格（发起 run 会被 403 拒绝），且
-                            §17.2 未定义从 REVOKED 恢复的路径——无法在本界面重新授权。
-                          </>
-                        ) : (
-                          <>
-                            确认把「{t.title}」的授权标记为 EXPIRED？过期后该任务
-                            立即失去执行资格（发起 run 会被 403 拒绝），且 §17.2
-                            未定义从 EXPIRED 恢复的路径——无法在本界面重新授权。
-                          </>
-                        )}
+                        {armed === 'revoke'
+                          ? t('dispatch.confirmRevoke', { title: task.title })
+                          : t('dispatch.confirmExpire', { title: task.title })}
                       </div>
                       <div className="row">
                         <button
                           disabled={busy}
                           onClick={() =>
                             void act(
-                              t,
-                              armed === 'revoke' ? '撤销授权' : '标记过期',
+                              task,
+                              armed === 'revoke' ? t('dispatch.action.revoke') : t('dispatch.action.expire'),
                               () =>
                                 armed === 'revoke'
-                                  ? api.revokeAuthorization(t.id)
-                                  : api.expireAuthorization(t.id),
+                                  ? api.revokeAuthorization(task.id)
+                                  : api.expireAuthorization(task.id),
                             )
                           }
                         >
                           {busy
-                            ? '处理中…'
+                            ? t('dispatch.processing')
                             : armed === 'revoke'
-                              ? '确认撤销授权'
-                              : '确认标记过期'}
+                              ? t('dispatch.confirmRevokeBtn')
+                              : t('dispatch.confirmExpireBtn')}
                         </button>
                         <button disabled={busy} onClick={() => setConfirm(null)}>
-                          取消
+                          {t('dispatch.cancel')}
                         </button>
                       </div>
                     </td>
@@ -509,58 +515,58 @@ export function DispatchPanel() {
       )}
 
       {/* ---------------------------------------------- 已撤销/过期 */}
-      <h3>已撤销 / 已过期（REVOKED / EXPIRED）</h3>
+      <h3>{t('dispatch.closed')}</h3>
       {tasks !== null && groups.closed.length === 0 && (
-        <p className="muted">没有被撤销或过期的任务授权。</p>
+        <p className="muted">{t('dispatch.closedEmpty')}</p>
       )}
       {groups.closed.length > 0 && (
         <>
           <table className="data-table">
             <thead>
               <tr>
-                <th>任务</th><th>项目</th><th>创建者</th><th>优先级</th>
-                <th>授权状态</th><th>变更时间</th>
+                <th>{t('dispatch.col.task')}</th><th>{t('dispatch.col.project')}</th>
+                <th>{t('dispatch.col.creator')}</th><th>{t('dispatch.col.priority')}</th>
+                <th>{t('dispatch.col.authStatus')}</th><th>{t('dispatch.col.changedTime')}</th>
               </tr>
             </thead>
             <tbody>
-              {groups.closed.map((t) => (
-                <tr key={t.id}>
-                  {taskCell(t)}
-                  <td><span className="pill warn">{authOf(t)}</span></td>
-                  <td>{fmtTime(t.updatedAt)}</td>
+              {groups.closed.map((task) => (
+                <tr key={task.id}>
+                  {taskCell(task)}
+                  <td><span className="pill warn">{authOf(task)}</span></td>
+                  <td>{fmtTime(task.updatedAt)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
           <p className="muted">
-            §17.2 未定义 REVOKED / EXPIRED 的恢复路径，本面只读呈现，不自创重新授权动作。
+            {t('dispatch.closedNote')}
           </p>
         </>
       )}
 
       {/* -------------------------------------------------- 预授权票 */}
-      <h3>预授权票（Pre-authorization Tickets）</h3>
+      <h3>{t('dispatch.tickets')}</h3>
       {tickets.phase === 'loading' && <p className="muted">Loading tickets…</p>}
       {tickets.phase === 'not-ready' && (
         <p className="muted">
-          服务端票据端点尚未就绪（GET /api/dispatch-tickets 返回 {tickets.status}）：
-          预授权票登记册由服务端 Batch 18-1 提供，端点上线前本区不呈现任何票面，
-          也不编造数据。当前 POLICY 派发仍可凭 policyRuleId 进行（见待派发区），
-          服务端会把 Rule ID 记入审计。
+          {t('dispatch.ticketsNotReady', { status: tickets.status })}
         </p>
       )}
       {tickets.phase === 'error' && (
-        <div className="banner err">票据列表不可用：{tickets.message}</div>
+        <div className="banner err">{t('dispatch.ticketsFailed', { message: tickets.message })}</div>
       )}
       {tickets.phase === 'ready' && tickets.tickets.length === 0 && (
-        <p className="muted">服务端当前没有任何预授权票记录。</p>
+        <p className="muted">{t('dispatch.ticketsEmpty')}</p>
       )}
       {tickets.phase === 'ready' && tickets.tickets.length > 0 && (
         <table className="data-table">
           <thead>
             <tr>
-              <th>票据</th><th>Rule ID</th><th>范围</th><th>状态</th>
-              <th>签发</th><th>到期</th><th>消费</th>
+              <th>{t('dispatch.col.ticket')}</th><th>{t('dispatch.col.ruleId')}</th>
+              <th>{t('dispatch.col.scope')}</th><th>{t('dispatch.col.status')}</th>
+              <th>{t('dispatch.col.issued')}</th><th>{t('dispatch.col.expires')}</th>
+              <th>{t('dispatch.col.consumed')}</th>
             </tr>
           </thead>
           <tbody>
@@ -583,7 +589,7 @@ export function DispatchPanel() {
                       {tk.consumedAt ? fmtTime(tk.consumedAt) : null}
                       {tk.consumedByTaskId && (
                         <div className="muted" style={{ fontSize: 11 }}>
-                          任务 <code title={tk.consumedByTaskId}>
+                          {t('dispatch.consumedByTask')} <code title={tk.consumedByTaskId}>
                             {tk.consumedByTaskId.slice(0, 8)}…
                           </code>
                         </div>

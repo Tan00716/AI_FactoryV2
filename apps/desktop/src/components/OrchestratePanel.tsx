@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders, type CheckpointV2 } from '../api';
 import { RunCheckpointsSection } from './RunCheckpointsView';
+import { useLang } from '../i18n';
 
 /** Typed client for orchestrator + model-router + runtime endpoints. */
 export interface OrchestrateApi {
@@ -95,6 +96,7 @@ export function OrchestratePanel({
   agentId: string | null;
   taskId: string | null;
 }) {
+  const { t } = useLang();
   const [client] = useState<OrchestrateApi>(() => api ?? createOrchestrateApi());
   const [plan, setPlan] = useState<DecompositionPlan | null>(null);
   const [decision, setDecision] = useState<RouteDecision | null>(null);
@@ -221,7 +223,7 @@ export function OrchestratePanel({
               <option key={k} value={k}>{k}</option>
             ))}
           </select>
-          <button onClick={doDecompose} disabled={busy !== ''}>{busy === 'decompose' ? '分解中…' : 'Decompose sample task'}</button>
+          <button onClick={doDecompose} disabled={busy !== ''}>{busy === 'decompose' ? t('orchestrate.decomposing') : 'Decompose sample task'}</button>
         </div>
         {plan && (
           <div>
@@ -240,7 +242,7 @@ export function OrchestratePanel({
       <section>
         <h3>Model router (§30)</h3>
         <div className="row">
-          <button onClick={doRoute} disabled={busy !== ''}>{busy === 'route' ? '路由中…' : 'Route a coding task'}</button>
+          <button onClick={doRoute} disabled={busy !== ''}>{busy === 'route' ? t('orchestrate.routing') : 'Route a coding task'}</button>
           {account != null && <span className="muted">account: {JSON.stringify(account).slice(0, 120)}…</span>}
         </div>
         {decision && (
@@ -256,7 +258,7 @@ export function OrchestratePanel({
       <section>
         <h3>Agent run (§24–27, scripted)</h3>
         <div className="row">
-          <button onClick={doRun} disabled={!agentId || !taskId || busy !== ''}>{busy === 'run' ? '运行中…' : 'Run agent loop'}</button>
+          <button onClick={doRun} disabled={!agentId || !taskId || busy !== ''}>{busy === 'run' ? t('orchestrate.running') : 'Run agent loop'}</button>
           <span className="muted">
             agent: {agentId?.slice(0, 8) ?? '—'} · task: {taskId?.slice(0, 8) ?? '—'}
           </span>

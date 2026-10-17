@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 /** Typed client for the skills endpoints (mirrors the req pattern in api.ts). */
 export interface SkillSummary {
@@ -79,6 +80,7 @@ function trustClass(t: string): string {
  * discovery demo (task → candidates → select), instruction viewer.
  */
 export function SkillsPanel(props: { taskId?: string | null; skills?: SkillsApi }) {
+  const { t } = useLang();
   const [api] = useState<SkillsApi>(() => props.skills ?? createSkillsApi());
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [candidates, setCandidates] = useState<SkillCandidate[]>([]);
@@ -133,7 +135,7 @@ export function SkillsPanel(props: { taskId?: string | null; skills?: SkillsApi 
     <div className="skills-panel">
       {error && <div className="banner err">{error}</div>}
       <h4 style={{ margin: '4px 0' }}>Installed skills <span className="muted">({skills.length})</span></h4>
-      {skills.length === 0 && <div className="muted">暂无已安装的 skill（可用下方发现功能安装）。</div>}
+      {skills.length === 0 && <div className="muted">{t('skills.noSkills')}</div>}
       <ul className="ev-list">
         {skills.map((s) => (
           <li key={s.id} style={{ marginBottom: 4 }}>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type FinalReport } from '../api';
+import { useLang } from '../i18n';
 
 /**
  * Final Report 面板（§39）：按项目调用 GET /api/projects/:id/final-report，
@@ -30,9 +31,9 @@ function downloadText(filename: string, text: string) {
   URL.revokeObjectURL(url);
 }
 
-function countsLine(rec: Record<string, number>): string {
+function countsLine(rec: Record<string, number>, sep: string): string {
   const entries = Object.entries(rec);
-  return entries.length === 0 ? '—' : entries.map(([k, v]) => `${k} ${v}`).join('，');
+  return entries.length === 0 ? '—' : entries.map(([k, v]) => `${k} ${v}`).join(sep);
 }
 
 export function FinalReportPanel({
@@ -42,10 +43,12 @@ export function FinalReportPanel({
   projectId: string;
   projectName: string;
 }) {
+  const { t } = useLang();
   const [report, setReport] = useState<FinalReport | null>(null);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
   const [mdBusy, setMdBusy] = useState(false);
+  const sep = t('finalreport.sep');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -70,7 +73,7 @@ export function FinalReportPanel({
       const md = await api.finalReportMarkdown(projectId);
       downloadText(`final-report-${projectName || projectId}.md`, md);
     } catch (e) {
-      setErr(`Markdown 导出失败：${(e as Error).message}`);
+      setErr(t('finalreport.mdExportFailed', { message: (e as Error).message }));
     } finally {
       setMdBusy(false);
     }
@@ -82,19 +85,19 @@ export function FinalReportPanel({
     <div className="panel">
       <h2>
         Final Report{' '}
-        <span className="muted">§39 · 项目 {projectName}（{projectId}）</span>
+        <span className="muted">{t('finalreport.subtitle', { name: projectName, id: projectId })}</span>
       </h2>
       <div className="row">
         <button onClick={() => void load()} disabled={loading}>
-          {loading ? '生成中…' : '刷新报告'}
+          {loading ? t('finalreport.generating') : t('finalreport.refresh')}
         </button>
         <button onClick={() => void onDownloadMd()} disabled={mdBusy || !report}>
-          {mdBusy ? '导出中…' : '⬇ 下载 Markdown'}
+          {mdBusy ? t('finalreport.exporting') : t('finalreport.downloadMd')}
         </button>
-        <span className="muted">报告由服务端在请求时从数据库实时汇编，每次生成都会写入审计。</span>
+        <span className="muted">{t('finalreport.reportNote')}</span>
       </div>
       {err && <div className="banner err">{err}</div>}
-      {!report && !err && <p className="muted">Loading final report…</p>}
+      {!report && !err && <p className="muted">{t('finalreport.loading')}</p>}
 
       {report && x && (
         <div>
@@ -102,20 +105,19 @@ export function FinalReportPanel({
             <h3>{report.title}</h3>
             <p>{report.summary}</p>
             <p className="muted" style={{ fontSize: 12 }}>
-              生成时间：{fmtTime(report.meta.generatedAt)} · 数据截止：{fmtTime(report.meta.dataThrough)} ·
-              内容哈希（{report.meta.hashAlgorithm}）：
+              {t('finalreport.metaLine', { generatedAt: fmtTime(report.meta.generatedAt), dataThrough: fmtTime(report.meta.dataThrough), algo: report.meta.hashAlgorithm })}
               <code title={report.meta.contentHash}> {report.meta.contentHash}</code>
             </p>
           </section>
 
           <section>
-            <h3>指标</h3>
+            <h3>{t('finalreport.metrics')}</h3>
             <table className="data-table">
               <tbody>
                 {Object.entries(report.metrics).map(([k, v]) => (
                   <tr key={k}>
                     <td>{k}</td>
-                    <td>{v === null ? '无数据' : String(v)}</td>
+                    <td>{v === null ? t('finalreport.noData') : String(v)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -123,51 +125,50 @@ export function FinalReportPanel({
           </section>
 
           <section>
-            <h3>任务（{x.tasks.total}）</h3>
+            <h3>{t('finalreport.tasks', { total: x.tasks.total })}</h3>
             {!x.tasks.available ? (
-              <p className="muted">{x.tasks.note ?? '无数据：该项目暂无任务记录'}</p>
+              <p className="muted">{x.tasks.note ?? t('finalreport.tasksEmpty')}</p>
             ) : (
               <div>
                 <p className="muted">
-                  终态 {x.tasks.terminal} · 未终结 {x.tasks.open} · 按状态：{countsLine(x.tasks.byStatus)}
+                  {t('finalreport.tasksLine', { terminal: x.tasks.terminal, open: x.tasks.open, line: countsLine(x.tasks.byStatus, sep) })}
                 </p>
                 <table className="data-table">
                   <thead>
-                    <tr><th>任务</th><th>标题</th><th>状态</th><th>优先级</th><th>风险</th><th>完成时间</th></tr>
+                    <tr><th>{t('finalreport.th.task')}</th><th>{t('finalreport.th.title')}</th><th>{t('finalreport.th.status')}</th><th>{t('finalreport.th.priority')}</th><th>{t('finalreport.th.risk')}</th><th>{t('finalreport.th.completedAt')}</th></tr>
                   </thead>
                   <tbody>
-                    {x.tasks.items.slice(0, MAX_ROWS).map((t) => (
-                      <tr key={t.id}>
-                        <td><code>{t.id}</code></td>
-                        <td>{t.title}</td>
-                        <td>{t.status}</td>
-                        <td>{t.priority}</td>
-                        <td>{t.risk}</td>
-                        <td>{fmtTime(t.completedAt)}</td>
+                    {x.tasks.items.slice(0, MAX_ROWS).map((task) => (
+                      <tr key={task.id}>
+                        <td><code>{task.id}</code></td>
+                        <td>{task.title}</td>
+                        <td>{task.status}</td>
+                        <td>{task.priority}</td>
+                        <td>{task.risk}</td>
+                        <td>{fmtTime(task.completedAt)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
                 {x.tasks.items.length > MAX_ROWS && (
-                  <p className="muted">…仅显示前 {MAX_ROWS} 条，共 {x.tasks.items.length} 条</p>
+                  <p className="muted">{t('finalreport.truncated', { max: MAX_ROWS, total: x.tasks.items.length })}</p>
                 )}
               </div>
             )}
           </section>
 
           <section>
-            <h3>证据（{x.evidence.total}）</h3>
+            <h3>{t('finalreport.evidence', { total: x.evidence.total })}</h3>
             {!x.evidence.available ? (
-              <p className="muted">{x.evidence.note ?? '无数据：该项目暂无证据记录'}</p>
+              <p className="muted">{x.evidence.note ?? t('finalreport.evidenceEmpty')}</p>
             ) : (
               <div>
                 <p className="muted">
-                  已封存 {x.evidence.sealed} · 带 requirement pin {x.evidence.withRequirementPin} ·
-                  未记录 pin {x.evidence.withoutRequirementPin} · 按类型：{countsLine(x.evidence.byType)}
+                  {t('finalreport.evidenceLine', { sealed: x.evidence.sealed, withPin: x.evidence.withRequirementPin, withoutPin: x.evidence.withoutRequirementPin, line: countsLine(x.evidence.byType, sep) })}
                 </p>
                 <table className="data-table">
                   <thead>
-                    <tr><th>证据</th><th>任务</th><th>类型</th><th>标题</th><th>状态</th><th>Requirement Pin</th><th>封存时间</th></tr>
+                    <tr><th>{t('finalreport.th.evidence')}</th><th>{t('finalreport.th.task')}</th><th>{t('finalreport.th.type')}</th><th>{t('finalreport.th.title')}</th><th>{t('finalreport.th.status')}</th><th>{t('finalreport.th.reqPin')}</th><th>{t('finalreport.th.sealedAt')}</th></tr>
                   </thead>
                   <tbody>
                     {x.evidence.items.slice(0, MAX_ROWS).map((ev) => (
@@ -184,27 +185,27 @@ export function FinalReportPanel({
                   </tbody>
                 </table>
                 {x.evidence.items.length > MAX_ROWS && (
-                  <p className="muted">…仅显示前 {MAX_ROWS} 条，共 {x.evidence.items.length} 条</p>
+                  <p className="muted">{t('finalreport.truncated', { max: MAX_ROWS, total: x.evidence.items.length })}</p>
                 )}
               </div>
             )}
           </section>
 
           <section>
-            <h3>审批（{x.approvals.total}）</h3>
+            <h3>{t('finalreport.approvals', { total: x.approvals.total })}</h3>
             {!x.approvals.available ? (
-              <p className="muted">{x.approvals.note ?? '无数据：该项目暂无审批记录'}</p>
+              <p className="muted">{x.approvals.note ?? t('finalreport.approvalsEmpty')}</p>
             ) : (
               <div>
                 <p>
                   <span className="pill ok">APPROVED {x.approvals.decisions.approved}</span>{' '}
                   <span className="pill">REJECTED {x.approvals.decisions.rejected}</span>{' '}
                   <span className="pill warn">PENDING {x.approvals.decisions.pending}</span>{' '}
-                  <span className="pill">WAIVED {x.approvals.waived.count}（§23.4 豁免，单列，不计入通过）</span>
+                  <span className="pill">WAIVED {x.approvals.waived.count}{t('finalreport.waivedNote')}</span>
                 </p>
                 <table className="data-table">
                   <thead>
-                    <tr><th>审批</th><th>任务</th><th>动作</th><th>状态</th><th>决定</th><th>决定人</th><th>决定时间</th></tr>
+                    <tr><th>{t('finalreport.th.approval')}</th><th>{t('finalreport.th.task')}</th><th>{t('finalreport.th.action')}</th><th>{t('finalreport.th.status')}</th><th>{t('finalreport.th.decision')}</th><th>{t('finalreport.th.decidedBy')}</th><th>{t('finalreport.th.decidedAt')}</th></tr>
                   </thead>
                   <tbody>
                     {x.approvals.items.slice(0, MAX_ROWS).map((a) => (
@@ -222,10 +223,10 @@ export function FinalReportPanel({
                 </table>
                 {x.approvals.waived.count > 0 && (
                   <div>
-                    <h4>豁免（WAIVED，§23.4 例外授权）</h4>
+                    <h4>{t('finalreport.waivedTitle')}</h4>
                     <table className="data-table">
                       <thead>
-                        <tr><th>授权</th><th>任务</th><th>动作</th><th>授权人</th><th>原失败原因</th><th>时间</th></tr>
+                        <tr><th>{t('finalreport.th.grant')}</th><th>{t('finalreport.th.task')}</th><th>{t('finalreport.th.action')}</th><th>{t('finalreport.th.grantedBy')}</th><th>{t('finalreport.th.failureReason')}</th><th>{t('finalreport.th.time')}</th></tr>
                       </thead>
                       <tbody>
                         {x.approvals.waived.items.map((w) => (
@@ -247,30 +248,30 @@ export function FinalReportPanel({
           </section>
 
           <section>
-            <h3>进度与 AOCR</h3>
+            <h3>{t('finalreport.progress')}</h3>
             <ul className="plain">
               <li>
-                任务完成率：
+                {t('finalreport.completionRate')}
                 {x.progress.taskCompletionPercent === null
-                  ? '无数据'
+                  ? t('finalreport.noData')
                   : `${x.progress.taskCompletionPercent}%`}
               </li>
               <li>
-                AOCR（授权结果完成率）：
+                {t('finalreport.aocrLine')}
                 {x.progress.aocr.ratePercent === null
-                  ? '无数据'
+                  ? t('finalreport.noData')
                   : `${x.progress.aocr.ratePercent}%`}
-                （获准 {x.progress.aocr.authorizedTotal}，其中完成 {x.progress.aocr.authorizedCompleted}）
+                {t('finalreport.aocrDetail', { total: x.progress.aocr.authorizedTotal, completed: x.progress.aocr.authorizedCompleted })}
               </li>
-              {x.progress.aocr.note && <li className="muted">AOCR 说明：{x.progress.aocr.note}</li>}
-              <li className="muted">权重计划进度：{x.progress.planBased.note}</li>
+              {x.progress.aocr.note && <li className="muted">{t('finalreport.aocrNote', { note: x.progress.aocr.note })}</li>}
+              <li className="muted">{t('finalreport.planNote', { note: x.progress.planBased.note })}</li>
             </ul>
           </section>
 
           <section>
-            <h3>未决事项（{x.openItems.total}）</h3>
+            <h3>{t('finalreport.openItems', { total: x.openItems.total })}</h3>
             {report.followUps.length === 0 ? (
-              <p className="muted">无未决事项。</p>
+              <p className="muted">{t('finalreport.noOpenItems')}</p>
             ) : (
               <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
                 {report.followUps.map((f, i) => <li key={i}>{f}</li>)}
@@ -279,16 +280,16 @@ export function FinalReportPanel({
           </section>
 
           <section>
-            <h3>审计摘要（{x.auditSummary.totalEvents}）</h3>
+            <h3>{t('finalreport.auditSummary', { total: x.auditSummary.totalEvents })}</h3>
             {!x.auditSummary.available ? (
-              <p className="muted">{x.auditSummary.note ?? '无数据：无与该项目相关的审计记录'}</p>
+              <p className="muted">{x.auditSummary.note ?? t('finalreport.auditEmpty')}</p>
             ) : (
               <div>
-                <p className="muted">按动作：{countsLine(x.auditSummary.byAction)}</p>
+                <p className="muted">{t('finalreport.auditByAction', { line: countsLine(x.auditSummary.byAction, sep) })}</p>
                 {x.auditSummary.recent.length > 0 && (
                   <table className="data-table">
                     <thead>
-                      <tr><th>时间</th><th>参与者</th><th>动作</th><th>实体</th></tr>
+                      <tr><th>{t('finalreport.th.time')}</th><th>{t('finalreport.th.actor')}</th><th>{t('finalreport.th.action')}</th><th>{t('finalreport.th.entity')}</th></tr>
                     </thead>
                     <tbody>
                       {x.auditSummary.recent.map((r, i) => (

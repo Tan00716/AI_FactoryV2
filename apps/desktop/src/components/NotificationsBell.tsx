@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 /** Typed client for the notification endpoints (spec module 30). */
 export interface NotificationItem {
@@ -54,6 +55,7 @@ const PRIORITY_CLASS: Record<NotificationItem['priority'], string> = {
  * Polls the server; clicking an item marks it read.
  */
 export function NotificationsBell({ base }: { base: string }) {
+  const { t } = useLang();
   const [api] = useState<NotificationsApi>(() => createNotificationsApi(base));
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [unread, setUnread] = useState(0);
@@ -113,7 +115,7 @@ export function NotificationsBell({ base }: { base: string }) {
             <b>Notifications</b>
             <button onClick={markAll} disabled={unread === 0}>Mark all read</button>
           </div>
-          {error && <div className="pill warn" style={{ margin: 8 }}>通知加载/更新失败：{error}</div>}
+          {error && <div className="pill warn" style={{ margin: 8 }}>{t('notifications.loadFailed', { message: error })}</div>}
           {!error && items.length === 0 && <div className="muted" style={{ padding: 8 }}>No notifications.</div>}
           <ul className="ev-list notif-list">
             {items.slice(0, 20).map((n) => (

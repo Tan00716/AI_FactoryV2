@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 /** Typed client for the QA endpoints (mirrors the req pattern in api.ts). */
 export interface QaAgent {
@@ -115,6 +116,7 @@ function verdictClass(v: string): string {
  * Props-based; the coordinator mounts it where the workflow needs it.
  */
 export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
+  const { t } = useLang();
   const { taskId } = props;
   const [qa] = useState<QaApi>(() => props.qa ?? createQaApi());
   const [org, setOrg] = useState<{ lead: QaAgent | null; specialists: QaAgent[] } | null>(null);
@@ -152,7 +154,7 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
 
       <h4 className="muted" style={{ margin: '8px 0 4px' }}>Organization</h4>
       {!org && !orgErr && <div className="muted">Loading QA org…</div>}
-      {orgErr && <div className="pill warn">QA org 加载失败：{orgErr}</div>}
+      {orgErr && <div className="pill warn">{t('qa.orgLoadFailed', { message: orgErr })}</div>}
       {org && (
         <div>
           {org.lead && (
@@ -214,7 +216,7 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
             <>
               {run.summary.error && (
                 <div className="pill warn" style={{ marginBottom: 8 }}>
-                  ⚠ QA run 异常失败：{run.summary.error}
+                  ⚠ {t('qa.runAbnormalFailed', { message: run.summary.error })}
                 </div>
               )}
               <ul className="ev-list">

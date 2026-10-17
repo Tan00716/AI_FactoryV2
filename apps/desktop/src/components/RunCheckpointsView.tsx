@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type CheckpointV2 } from '../api';
+import { useLang } from '../i18n';
 
 /**
  * §28.3 checkpoint 查看区（Batch 14 在 OrchestratePanel 的 run 详情里
@@ -23,34 +24,35 @@ export function RunCheckpointsSection({
   error: string;
   onRefresh?: () => void;
 }) {
+  const { t } = useLang();
   return (
     <div>
       <h4>
         Checkpoints（§28.3）{' '}
-        {onRefresh && <button onClick={onRefresh}>刷新</button>}
+        {onRefresh && <button onClick={onRefresh}>{t('runcheckpoints.refresh')}</button>}
       </h4>
-      {error && <div className="banner err">checkpoints 不可用：{error}</div>}
+      {error && <div className="banner err">{t('runcheckpoints.unavailable', { error })}</div>}
       {!error && checkpoints === null && <p className="muted">Loading checkpoints…</p>}
       {!error && checkpoints !== null && checkpoints.length === 0 && (
-        <p className="muted">
-          该 run 尚无 checkpoint 捕获（服务端在每个已执行的 loop 步骤边界捕获一次；
-          未执行任何步骤的 run 没有捕获记录）。
-        </p>
+        <p className="muted">{t('runcheckpoints.empty')}</p>
       )}
       {latest && (
         <p className="muted" style={{ fontSize: 12 }}>
-          恢复点（latest）：步位 {latest.stepPosition} · 捕获于{' '}
-          {new Date(latest.capturedAt).toLocaleString()} · workflow{' '}
-          {latest.workflowVersion} · task {latest.taskVersion} ·
-          context <code>{latest.contextManifestHash.slice(0, 12)}…</code>
+          {t('runcheckpoints.latest', {
+            step: latest.stepPosition,
+            time: new Date(latest.capturedAt).toLocaleString(),
+            workflow: latest.workflowVersion,
+            task: latest.taskVersion,
+          })}{' '}
+          <code>{latest.contextManifestHash.slice(0, 12)}…</code>
         </p>
       )}
       {checkpoints !== null && checkpoints.length > 0 && (
         <table className="data-table">
           <thead>
             <tr>
-              <th>步位</th><th>捕获时间</th><th>Budget 用量</th>
-              <th>活跃工具</th><th>待审批</th><th>恢复前置条件</th>
+              <th>{t('runcheckpoints.col.step')}</th><th>{t('runcheckpoints.col.capturedAt')}</th><th>{t('runcheckpoints.col.budget')}</th>
+              <th>{t('runcheckpoints.col.activeTools')}</th><th>{t('runcheckpoints.col.pendingApprovals')}</th><th>{t('runcheckpoints.col.resumePreconditions')}</th>
             </tr>
           </thead>
           <tbody>
@@ -67,7 +69,7 @@ export function RunCheckpointsSection({
                 </td>
                 <td>{c.activeTools.length ? c.activeTools.join(', ') : '—'}</td>
                 <td>{c.pendingApprovals.length ? c.pendingApprovals.join(', ') : '—'}</td>
-                <td>{c.resumePreconditions.length ? c.resumePreconditions.join('；') : '—'}</td>
+                <td>{c.resumePreconditions.length ? c.resumePreconditions.join(t('runcheckpoints.sep')) : '—'}</td>
               </tr>
             ))}
           </tbody>

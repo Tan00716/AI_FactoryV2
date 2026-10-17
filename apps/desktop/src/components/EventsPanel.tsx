@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 /**
  * System Event Bus panel — spec §91.
@@ -63,6 +64,7 @@ export interface EventsPanelProps {
 }
 
 export function EventsPanel({ api, pollMs = 3000 }: EventsPanelProps) {
+  const { t } = useLang();
   const client = api ?? createEventsApi();
   const [events, setEvents] = useState<BusEvent[]>([]);
   const [types, setTypes] = useState<string[]>([]);
@@ -136,7 +138,7 @@ export function EventsPanel({ api, pollMs = 3000 }: EventsPanelProps) {
         </div>
       </div>
 
-      {!loaded && visible.length === 0 && <div className="muted">加载中…</div>}
+      {!loaded && visible.length === 0 && <div className="muted">{t('events.loading')}</div>}
       {loaded && !error && visible.length === 0 && <div className="muted">No events yet.</div>}
       {visible.map((e) => (
         <div key={e.seq} className="act-row">

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 /** Typed client for the MCP endpoints. */
 export interface McpServerSummary {
@@ -64,6 +65,7 @@ function statusClass(s: string): string {
  * and a pre-call gate check demo.
  */
 export function McpPanel(props: { mcp?: McpApi }) {
+  const { t } = useLang();
   const [api] = useState<McpApi>(() => props.mcp ?? createMcpApi());
   const [servers, setServers] = useState<McpServerSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -114,7 +116,7 @@ export function McpPanel(props: { mcp?: McpApi }) {
     <div className="mcp-panel">
       {error && <div className="banner err">{error}</div>}
       <h4 style={{ margin: '4px 0' }}>MCP servers <span className="muted">({servers.length})</span></h4>
-      {servers.length === 0 && <div className="muted">暂无已注册的 MCP 服务器（可用下方表单注册）。</div>}
+      {servers.length === 0 && <div className="muted">{t('mcp.noServers')}</div>}
       <ul className="ev-list">
         {servers.map((s) => (
           <li key={`${s.name}@${s.version}`} style={{ marginBottom: 6 }}>

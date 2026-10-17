@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 import monaco, { languageOf } from '../monacoSetup';
 
 const API_BASE = defaultApiBase();
@@ -30,6 +31,7 @@ function FileIcon({ type }: { type: 'dir' | 'file' }) {
 }
 
 export function EditorPanel() {
+  const { t } = useLang();
   const hostRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const [root, setRoot] = useState('.');
@@ -157,7 +159,7 @@ export function EditorPanel() {
     if (cache.entries.length === 0) {
       return [
         <div key={`${dir}:empty`} className="muted" style={{ padding: '3px 8px', paddingLeft: 8 + depth * 14, fontSize: 12 }}>
-          （目录为空）
+          {t('editor.dirEmpty')}
         </div>,
       ];
     }

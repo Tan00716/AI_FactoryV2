@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { api } from '../api';
+import { useLang } from '../i18n';
 
 interface Issue { file: string; message: string }
 
@@ -29,12 +30,13 @@ function downloadJson(filename: string, payload: unknown) {
  * and shows every issue before anything is written.
  */
 export function ProjectPanel({ projectId, projectName }: { projectId: string; projectName: string }) {
+  const { t } = useLang();
   const [state, setState] = useState<ImportState>({ kind: 'idle' });
   const [exported, setExported] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const onExport = async () => {
-    setState({ kind: 'working', label: '导出项目配置…' });
+    setState({ kind: 'working', label: t('project.exporting') });
     try {
       const res = await api.exportProject(projectId);
       const count = Object.keys(res.files).length;
@@ -42,18 +44,18 @@ export function ProjectPanel({ projectId, projectName }: { projectId: string; pr
       downloadJson(`${projectName || projectId}.ai-export.json`, res);
       setState({ kind: 'idle' });
     } catch (e) {
-      setState({ kind: 'error', message: `导出失败：${(e as Error).message}` });
+      setState({ kind: 'error', message: t('project.exportFailed', { message: (e as Error).message }) });
     }
   };
 
   const onPickFile = async (f: File) => {
-    setState({ kind: 'working', label: `校验 ${f.name} …` });
+    setState({ kind: 'working', label: t('project.validating', { name: f.name }) });
     try {
       const text = await f.text();
       const parsed = JSON.parse(text) as { files?: Record<string, string> };
       const files = parsed.files ?? (parsed as unknown as Record<string, string>);
       if (!files || typeof files !== 'object' || Array.isArray(files)) {
-        throw new Error('文件不是有效的导出文档（缺少 files 字段）');
+        throw new Error(t('project.invalidDoc'));
       }
       const res = await api.importProject(projectId, files);
       if (res.ok) {
@@ -66,20 +68,19 @@ export function ProjectPanel({ projectId, projectName }: { projectId: string; pr
         setState({ kind: 'import-rejected', issues: res.issues ?? [] });
       }
     } catch (e) {
-      setState({ kind: 'error', message: `导入失败：${(e as Error).message}` });
+      setState({ kind: 'error', message: t('project.importFailed', { message: (e as Error).message }) });
     }
   };
 
   return (
     <div className="panel">
-      <h3>项目设置 · {projectName}</h3>
+      <h3>{t('project.title', { name: projectName })}</h3>
       <p className="muted">
-        导入 / 导出项目配置（spec §103 <code>.ai/</code> 目录结构：project.yaml、policy.yaml、agents/、skills/、workflows/、knowledge/、memory/、mcp/）。
-        凭据只导出引用名（<code>env_refs</code>），不导出值。
+        {t('project.desc1')}<code>.ai/</code>{t('project.desc2')}<code>env_refs</code>{t('project.desc3')}
       </p>
       <div className="row">
-        <button onClick={onExport}>⬇ 导出项目配置</button>
-        <button onClick={() => fileRef.current?.click()}>⬆ 导入项目配置</button>
+        <button onClick={onExport}>{t('project.exportBtn')}</button>
+        <button onClick={() => fileRef.current?.click()}>{t('project.importBtn')}</button>
         <input
           ref={fileRef}
           type="file"
@@ -93,22 +94,22 @@ export function ProjectPanel({ projectId, projectName }: { projectId: string; pr
         />
       </div>
       {exported > 0 && state.kind === 'idle' && (
-        <p className="ok">上次导出包含 {exported} 个文件（已下载）。</p>
+        <p className="ok">{t('project.lastExport', { count: exported })}</p>
       )}
       {state.kind === 'working' && <p className="muted">{state.label}</p>}
       {state.kind === 'error' && <p className="err">{state.message}</p>}
       {state.kind === 'import-ok' && (
         <div>
-          <p className="ok">✅ 导入成功：写入 {state.written.length} 个文件到 <code>{state.targetDir}</code></p>
+          <p className="ok">{t('project.importOk', { count: state.written.length })} <code>{state.targetDir}</code></p>
           <ul className="file-list">
             {state.written.slice(0, 20).map((w) => <li key={w}><code>{w}</code></li>)}
           </ul>
-          {state.written.length > 20 && <p className="muted">…等共 {state.written.length} 个</p>}
+          {state.written.length > 20 && <p className="muted">{t('project.andMore', { count: state.written.length })}</p>}
         </div>
       )}
       {state.kind === 'import-rejected' && (
         <div>
-          <p className="err">❌ 校验未通过，未写入任何文件（共 {state.issues.length} 个问题）：</p>
+          <p className="err">{t('project.importRejected', { count: state.issues.length })}</p>
           <ul className="issue-list">
             {state.issues.map((i, idx) => (
               <li key={idx}><code>{i.file}</code> — {i.message}</li>

@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { api, OrgNode } from '../api';
+import { useLang } from '../i18n';
 
 function OrgTreeNode({ node, depth, onSelectAgent }: {
   node: OrgNode; depth: number; onSelectAgent?: (agentId: string) => void;
 }) {
+  const { t } = useLang();
   const [open, setOpen] = useState(depth < 2);
   const statusClass = `st-${node.agent.status.toLowerCase()}`;
   return (
@@ -14,7 +16,7 @@ function OrgTreeNode({ node, depth, onSelectAgent }: {
         <span
           className={`org-name${onSelectAgent ? ' clickable' : ''}`}
           onClick={(e) => { e.stopPropagation(); onSelectAgent?.(node.agent.id); }}
-          title={onSelectAgent ? '查看员工档案 §87' : undefined}
+          title={onSelectAgent ? t('sidebar.profileTitle') : undefined}
         >
           {node.agent.displayName}
         </span>

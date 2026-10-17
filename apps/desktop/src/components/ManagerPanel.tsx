@@ -21,6 +21,7 @@ import type {
   QueueApproval,
   RuntimeRunListItem,
 } from '../api';
+import { useLang } from '../i18n';
 
 /** v1 workflow 终态（卡住统计时排除）。 */
 const TERMINAL = new Set(['DONE', 'CANCELLED']);
@@ -92,6 +93,8 @@ function taskLabel(t: DispatchTask): string {
 }
 
 export function ManagerPanel() {
+  // i18n 函数别名为 tr：本文件大量回调以 (t) 表示任务行，避免与 t() 冲突。
+  const { t: tr, lang } = useLang();
   const [tasks, setTasks] = useState<DispatchTask[] | null>(null);
   const [runs, setRuns] = useState<RuntimeRunListItem[] | null>(null);
   const [approvals, setApprovals] = useState<QueueApproval[] | null>(null);
@@ -125,7 +128,7 @@ export function ManagerPanel() {
       const d = pick<DeploymentRecord[]>(3);
       const h = pick<{ ok: boolean; outbox?: { pending?: number } }>(4);
       if (t === null && r === null && a === null) {
-        setErr('管理数据拉取失败（任务/run/审批三个核心源都不可达），请检查服务端是否在运行。');
+        setErr(tr('manager.loadFailed'));
         return;
       }
       setTasks(t ?? []);
@@ -143,7 +146,7 @@ export function ManagerPanel() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [tr]);
 
   const projectName = useMemo(() => {
     const m = new Map<string, string>();
@@ -211,15 +214,17 @@ export function ManagerPanel() {
       noDataReason,
     });
 
+    const stageName = (key: string): string => tr(`manager.stage.${key}`);
+
     return [
-      mk('receive', '接收', 'Receive', receive.length, receive.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
-      mk('assess', '评估', 'Assess', assess.length, assess.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
-      mk('plan', '计划', 'Plan', plan.length, plan.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
-      mk('select', '选人', 'Select', select.length, select.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
-      mk('delegate', '委托', 'Delegate', delegate.length, delegate.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
+      mk('receive', stageName('receive'), 'Receive', receive.length, receive.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
+      mk('assess', stageName('assess'), 'Assess', assess.length, assess.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
+      mk('plan', stageName('plan'), 'Plan', plan.length, plan.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
+      mk('select', stageName('select'), 'Select', select.length, select.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
+      mk('delegate', stageName('delegate'), 'Delegate', delegate.length, delegate.map((t) => ({ label: taskLabel(t), taskId: t.id }))),
       mk(
         'monitor',
-        '监控',
+        stageName('monitor'),
         'Monitor',
         monitorRuns.length,
         monitorRuns.map((r) => ({
@@ -228,43 +233,50 @@ export function ManagerPanel() {
       ),
       mk(
         'receiveReport',
-        '收报告',
+        stageName('receiveReport'),
         'Receive Report',
         receiveReportRuns.length,
         receiveReportRuns.map((r) => ({
-          label: `run ${r.id.slice(0, 8)} 已完 → ${taskById.get(r.taskId)?.title ?? r.taskId} 仍在 ${taskById.get(r.taskId)?.status ?? '?'}`,
+          label: tr('manager.label.runDone', {
+            id: r.id.slice(0, 8),
+            title: taskById.get(r.taskId)?.title ?? r.taskId,
+            status: taskById.get(r.taskId)?.status ?? '?',
+          }),
         })),
       ),
       mk(
         'review',
-        '评审',
+        stageName('review'),
         'Review',
         pendingApprovals.length + reviewTasks.length,
         [
           ...pendingApprovals.map((a) => ({
-            label: `审批 ${a.action ?? a.approval_id}（${a.task_id ?? '—'}）`,
+            label: tr('manager.label.approval', {
+              action: a.action ?? a.approval_id,
+              taskId: a.task_id ?? '—',
+            }),
           })),
           ...reviewTasks.map((t) => ({ label: taskLabel(t), taskId: t.id })),
         ],
       ),
       mk(
         'rework',
-        '返工/改派/升级/批准',
+        stageName('rework'),
         'Rework/Reassign/Escalate/Approve',
         reworkTasks.length + escalatedRuns.length,
         [
           ...reworkTasks.map((t) => ({ label: taskLabel(t), taskId: t.id })),
-          ...escalatedRuns.map((r) => ({ label: `升级 run ${r.id.slice(0, 8)}（${r.taskId}）` })),
+          ...escalatedRuns.map((r) => ({ label: tr('manager.label.escalatedRun', { id: r.id.slice(0, 8), taskId: r.taskId }) })),
         ],
       ),
       outboxKnown
-        ? mk('aggregate', '汇总', 'Aggregate', outboxPending ?? 0, [
-            { label: `outbox 待派发事件 ${outboxPending ?? 0} 条（/api/health）` },
+        ? mk('aggregate', stageName('aggregate'), 'Aggregate', outboxPending ?? 0, [
+            { label: tr('manager.label.outboxPending', { n: outboxPending ?? 0 }) },
           ])
-        : mk('aggregate', '汇总', 'Aggregate', null, [], '健康接口未给出 outbox.pending'),
-      mk('reportUpward', '上报', 'Report Upward', null, [], '无全局上报聚合端点（final report 为 per-task，无全量列表）'),
+        : mk('aggregate', stageName('aggregate'), 'Aggregate', null, [], tr('manager.noDataHealth')),
+      mk('reportUpward', stageName('reportUpward'), 'Report Upward', null, [], tr('manager.noDataReport')),
     ];
-  }, [tasks, runs, approvals, outboxPending, outboxKnown, taskById]);
+  }, [tasks, runs, approvals, outboxPending, outboxKnown, taskById, tr]);
 
   /** Manager Team 分组（§29.3 drill-down 口径的桌面简化版）。 */
   const groups = useMemo(() => {
@@ -311,18 +323,22 @@ export function ManagerPanel() {
   return (
     <div className="panel">
       <div className="panel-head-row">
-        <h3>管理 · Manager Team View（§29.3 / §12）</h3>
+        <h3>{tr('manager.title')}</h3>
         <span className="muted">
           {dataReady
-            ? `任务 ${tasks.length} · 运行中 run ${runs?.filter((r) => r.status === 'RUNNING' && r.live).length ?? 0} · 待审批 ${approvals?.length ?? 0}`
-            : '加载中…'}
+            ? tr('manager.headStats', {
+                tasks: tasks.length,
+                runs: runs?.filter((r) => r.status === 'RUNNING' && r.live).length ?? 0,
+                approvals: approvals?.length ?? 0,
+              })
+            : tr('manager.loading')}
         </span>
       </div>
       {err && <div className="banner err">{err}</div>}
 
-      <h3>12 阶段走查（§12.1）</h3>
+      <h3>{tr('manager.stagesTitle')}</h3>
       <p className="muted" style={{ margin: '4px 0 12px' }}>
-        各阶段计数规则是本面板的本地口径（前端常量，非规格公式）；无数据源的阶段如实显示「无数据」。
+        {tr('manager.stagesDesc')}
       </p>
       <div
         style={{
@@ -342,13 +358,16 @@ export function ManagerPanel() {
             }}
           >
             <div style={{ fontSize: 13, fontWeight: 600 }}>
-              {s.name} <span className="muted" style={{ fontWeight: 400 }}>{s.en}</span>
+              {s.name}
+              {lang === 'zh' && (
+                <span className="muted" style={{ fontWeight: 400 }}> {s.en}</span>
+              )}
             </div>
             <div style={{ fontSize: 22, margin: '6px 0' }}>
-              {s.count === null ? <span className="muted">无数据</span> : s.count}
+              {s.count === null ? <span className="muted">{tr('manager.noData')}</span> : s.count}
               {s.hot && s.count !== null && (
                 <span className="err" style={{ fontSize: 12, marginLeft: 8 }}>
-                  瓶颈（≥{BOTTLENECK[s.key]}）
+                  {tr('manager.bottleneck', { n: BOTTLENECK[s.key] })}
                 </span>
               )}
             </div>
@@ -362,7 +381,7 @@ export function ManagerPanel() {
               ))
             )}
             {s.count !== null && s.count > s.items.length && (
-              <div className="muted" style={{ fontSize: 11 }}>…等共 {s.count} 项</div>
+              <div className="muted" style={{ fontSize: 11 }}>{tr('manager.moreItems', { count: s.count })}</div>
             )}
           </div>
         ))}
@@ -370,17 +389,23 @@ export function ManagerPanel() {
 
       {hotStages.length > 0 && (
         <div className="banner err" style={{ margin: '12px 0' }}>
-          瓶颈提示：{hotStages.map((s) => `${s.name}（${s.count}）`).join('、')}
-          ——阈值为前端本地口径（见代码 BOTTLENECK），非规格公式。
+          {tr('manager.bottleneckBanner', {
+            stages: hotStages
+              .map((s) => tr('manager.bottleneckItem', { name: s.name, count: s.count ?? 0 }))
+              .join(tr('manager.listSep')),
+          })}
         </div>
       )}
 
       {parkedDeployments.length > 0 && (
         <>
-          <h3>待审批部署</h3>
+          <h3>{tr('manager.pendingDeployments')}</h3>
           <table className="data-table">
             <thead>
-              <tr><th>部署</th><th>任务</th><th>环境</th><th>状态</th></tr>
+              <tr>
+                <th>{tr('manager.col.deployment')}</th><th>{tr('manager.col.task')}</th>
+                <th>{tr('manager.col.environment')}</th><th>{tr('manager.col.status')}</th>
+              </tr>
             </thead>
             <tbody>
               {parkedDeployments.map((d) => (
@@ -396,17 +421,20 @@ export function ManagerPanel() {
         </>
       )}
 
-      <h3>Manager Team（按 agent 分组）</h3>
+      <h3>{tr('manager.teamTitle')}</h3>
       <p className="muted" style={{ margin: '4px 0 12px' }}>
-        共 {agents.length} 位 agent，{groups.length} 位有在办事项；一级 manager（无上级）排前。
-        待审批匹配规则：审批的 required_approvers 命中该 agent 的 id/名，或条目为 agent 通配。
+        {tr('manager.teamDesc', { agents: agents.length, active: groups.length })}
       </p>
       {groups.length === 0 ? (
-        <p className="muted">无数据：没有 agent 持有任务、运行中 run 或待审批项。</p>
+        <p className="muted">{tr('manager.teamEmpty')}</p>
       ) : (
         <table className="data-table">
           <thead>
-            <tr><th>成员</th><th>角色</th><th>任务</th><th>进行中 run</th><th>待其审批</th></tr>
+            <tr>
+              <th>{tr('manager.col.member')}</th><th>{tr('manager.col.role')}</th>
+              <th>{tr('manager.col.task')}</th><th>{tr('manager.col.runningRuns')}</th>
+              <th>{tr('manager.col.pendingApprovals')}</th>
+            </tr>
           </thead>
           <tbody>
             {groups.map((g) => (
@@ -414,29 +442,29 @@ export function ManagerPanel() {
                 <td>
                   {g.agent.displayName || g.agent.name}
                   {g.agent.parentAgentId === null && (
-                    <span className="pill" style={{ marginLeft: 6 }}>一级</span>
+                    <span className="pill" style={{ marginLeft: 6 }}>{tr('manager.tier1')}</span>
                   )}
                   <div className="muted" style={{ fontSize: 11 }}><code>{g.agent.id.slice(0, 12)}</code></div>
                 </td>
                 <td className="muted">{g.agent.jobTitle || '—'}</td>
                 <td>
-                  {g.tasks.slice(0, 4).map((t) => (
-                    <div key={t.id} style={{ fontSize: 12 }}>
-                      {t.title}
-                      <span className="muted">（{projectName(t.projectId)} · {t.status}）</span>
+                  {g.tasks.slice(0, 4).map((task) => (
+                    <div key={task.id} style={{ fontSize: 12 }}>
+                      {task.title}
+                      <span className="muted">（{projectName(task.projectId)} · {task.status}）</span>
                     </div>
                   ))}
-                  {g.tasks.length > 4 && <div className="muted" style={{ fontSize: 11 }}>…等共 {g.tasks.length} 项</div>}
+                  {g.tasks.length > 4 && <div className="muted" style={{ fontSize: 11 }}>{tr('manager.moreItems', { count: g.tasks.length })}</div>}
                   {g.tasks.length === 0 && <span className="muted">—</span>}
                 </td>
                 <td>
                   {g.runs.slice(0, 4).map((r) => (
                     <div key={r.id} style={{ fontSize: 12 }}>
                       <code>{r.id.slice(0, 8)}</code>
-                      <span className="muted"> → {taskById.get(r.taskId)?.title ?? r.taskId}{r.live ? '' : '（疑似已中断）'}</span>
+                      <span className="muted"> → {taskById.get(r.taskId)?.title ?? r.taskId}{r.live ? '' : tr('manager.possiblyInterrupted')}</span>
                     </div>
                   ))}
-                  {g.runs.length > 4 && <div className="muted" style={{ fontSize: 11 }}>…等共 {g.runs.length} 项</div>}
+                  {g.runs.length > 4 && <div className="muted" style={{ fontSize: 11 }}>{tr('manager.moreItems', { count: g.runs.length })}</div>}
                   {g.runs.length === 0 && <span className="muted">—</span>}
                 </td>
                 <td>
@@ -446,7 +474,7 @@ export function ManagerPanel() {
                       <span className="muted">（{a.task_id ?? '—'} · {a.risk_level ?? '—'}）</span>
                     </div>
                   ))}
-                  {g.approvals.length > 4 && <div className="muted" style={{ fontSize: 11 }}>…等共 {g.approvals.length} 项</div>}
+                  {g.approvals.length > 4 && <div className="muted" style={{ fontSize: 11 }}>{tr('manager.moreItems', { count: g.approvals.length })}</div>}
                   {g.approvals.length === 0 && <span className="muted">—</span>}
                 </td>
               </tr>
@@ -455,12 +483,7 @@ export function ManagerPanel() {
         </table>
       )}
       <p className="muted" style={{ marginTop: 12, fontSize: 11 }}>
-        数据口径：任务/授权来自 /api/tasks，run 来自 /api/runtime/runs，审批来自
-        /api/approvals?status=PENDING，部署来自 /api/deployments，outbox 待派发来自
-        /api/health。阶段映射与瓶颈阈值为本面板本地口径（代码中 STAGES/BOTTLENECK
-        常量），非规格公式；§12.1 原文阶段链为 Receive → Assess → Plan → Select →
-        Delegate → Monitor → Receive Report → Review → Rework/Reassign/Escalate/
-        Approve → Aggregate → Report Upward。
+        {tr('manager.footnote')}
       </p>
     </div>
   );

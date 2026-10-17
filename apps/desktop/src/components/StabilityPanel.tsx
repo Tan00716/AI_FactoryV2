@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 /** P3 — spec §61–63, §71–80, §96–97: security, recovery, resources, autonomy, coordination, disputes. */
 const BASE = defaultApiBase();
@@ -26,6 +27,7 @@ function Section(props: { title: string; children: React.ReactNode }) {
 }
 
 export function StabilityPanel() {
+  const { t } = useLang();
   const [out, setOut] = useState<Record<string, unknown>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -64,7 +66,7 @@ export function StabilityPanel() {
     <div className="stability-panel">
       {error && <div className="banner err">{error}</div>}
 
-      <Section title="Security — 扫描 / 脱敏 / 注入分类 (§71–76)">
+      <Section title={t('stability.security')}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <input value={manifest} onChange={(e) => setManifest(e.target.value)} style={{ flex: 2, minWidth: 280 }} placeholder='manifest JSON' />
           <button disabled={busy} onClick={() => run('scan', () => post('/security/scan', { manifest: JSON.parse(manifest) }))}>Scan</button>
@@ -80,7 +82,7 @@ export function StabilityPanel() {
         {!!out.scan && J(out.scan)}{!!out.redact && J(out.redact)}{!!out.classify && J(out.classify)}
       </Section>
 
-      <Section title="Recovery — 快照 / 失败分类 (§77–78)">
+      <Section title={t('stability.recovery')}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <input value={snapDir} onChange={(e) => setSnapDir(e.target.value)} placeholder="workspace dir" />
           <button disabled={busy} onClick={() => run('snapshots', () => post('/recovery/snapshots', { dir: snapDir, tag: 'panel' }).then(() => req('/recovery/snapshots')))}>Take snapshot</button>
@@ -93,7 +95,7 @@ export function StabilityPanel() {
         {!!out.snapshots && J(out.snapshots)}{!!out.failure && J(out.failure)}
       </Section>
 
-      <Section title="Resources — 预算 / 用量 (§79)">
+      <Section title={t('stability.resources')}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <input value={taskId} onChange={(e) => setTaskId(e.target.value)} placeholder="taskId" />
           <button disabled={busy} onClick={() => run('budgets', () => req(`/resources/budgets/${encodeURIComponent(taskId)}`))}>Budget</button>
@@ -103,7 +105,7 @@ export function StabilityPanel() {
         {!!out.budgets && J(out.budgets)}{!!out.usage && J(out.usage)}
       </Section>
 
-      <Section title="Autonomy — 自治模式 (§80–81)">
+      <Section title={t('stability.autonomy')}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <select value={mode} onChange={(e) => setMode(e.target.value)}>
             {['assisted', 'semi', 'autonomous', 'full'].map((m) => <option key={m} value={m}>{m}</option>)}
@@ -115,7 +117,7 @@ export function StabilityPanel() {
         {!!out.mode && J(out.mode)}{!!out.decide && J(out.decide)}{!!out.prodcheck && J(out.prodcheck)}
       </Section>
 
-      <Section title="Coordination — 并行调度 / 冲突 / 锁 (§61–63)">
+      <Section title={t('stability.coordination')}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <input value={dagTasks} onChange={(e) => setDagTasks(e.target.value)} placeholder="tasks a,b,c" />
           <button disabled={busy} onClick={() => run('schedule', () => post('/coordination/schedule', { tasks: dagTasks.split(',').map((s) => s.trim()).filter(Boolean), edges: [{ from: 'a', to: 'b', kind: 'depends_on' }] }))}>Schedule</button>
@@ -125,7 +127,7 @@ export function StabilityPanel() {
         {!!out.schedule && J(out.schedule)}{!!out.overlap && J(out.overlap)}{!!out.lock && J(out.lock)}
       </Section>
 
-      <Section title="Disputes — AI 分歧裁决 (§96–97)">
+      <Section title={t('stability.disputes')}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <input value={verdictA} onChange={(e) => setVerdictA(e.target.value)} style={{ flex: 1, minWidth: 220 }} />
           <input value={verdictB} onChange={(e) => setVerdictB(e.target.value)} style={{ flex: 1, minWidth: 220 }} />

@@ -5,6 +5,7 @@ import {
 } from '../api';
 import { QaPanel, createQaApi, QaRun } from './QaPanel';
 import { CicdPanel, createCicdApi } from './CicdPanel';
+import { useLang } from '../i18n';
 
 /**
  * Task Detail — spec §86，任务的 single source of truth.
@@ -14,9 +15,12 @@ import { CicdPanel, createCicdApi } from './CicdPanel';
  * 复用已有面板（QA 结果、CI/CD、证据链），缺数据的页签显示"暂无"。
  */
 
+// TABS 持有 i18n key（与语言无关的稳定页签 id），渲染时 t() 翻译。
 const TABS = [
-  '概览', '时间线', 'AI团队', '子任务', '文件', 'Diff',
-  '测试', 'QA', '安全', 'CI/CD', '部署', '证据', 'Memory', 'Trace',
+  'taskdetail.tab.overview', 'taskdetail.tab.timeline', 'taskdetail.tab.team', 'taskdetail.tab.subtasks',
+  'taskdetail.tab.files', 'taskdetail.tab.diff', 'taskdetail.tab.tests', 'taskdetail.tab.qa',
+  'taskdetail.tab.security', 'taskdetail.tab.cicd', 'taskdetail.tab.deployments', 'taskdetail.tab.evidence',
+  'taskdetail.tab.memory', 'taskdetail.tab.trace',
 ] as const;
 type Tab = (typeof TABS)[number];
 
@@ -26,7 +30,8 @@ const EVIDENCE_TYPES = [
 ];
 
 function Empty() {
-  return <p className="muted">暂无</p>;
+  const { t } = useLang();
+  return <p className="muted">{t('taskdetail.empty')}</p>;
 }
 
 function useTaskAudit(taskId: string): AuditRecord[] | null {
@@ -52,6 +57,7 @@ function useTaskAudit(taskId: string): AuditRecord[] | null {
 
 // ---------------------------------------------------------------- 概览 --
 function OverviewTab({ task, onMoved }: { task: TaskDetail; onMoved: () => void }) {
+  const { t } = useLang();
   const [denied, setDenied] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [moving, setMoving] = useState<string | null>(null);
@@ -79,35 +85,36 @@ function OverviewTab({ task, onMoved }: { task: TaskDetail; onMoved: () => void 
   return (
     <div>
       <p className="muted">
-        #{task.id.slice(0, 8)} · {task.status} · {task.priority} · 风险 {task.risk}
+        {t('taskdetail.metaLine', { id: task.id.slice(0, 8), status: task.status, priority: task.priority, risk: task.risk })}
       </p>
-      {task.goal && <p><b>目标:</b> {task.goal}</p>}
-      {task.description && <p><b>描述:</b> {task.description}</p>}
+      {task.goal && <p><b>{t('taskdetail.goalLabel')}</b> {task.goal}</p>}
+      {task.description && <p><b>{t('taskdetail.descLabel')}</b> {task.description}</p>}
       {task.acceptanceCriteria.length > 0 && (
-        <p><b>验收标准:</b> {task.acceptanceCriteria.join('；')}</p>
+        <p><b>{t('taskdetail.acceptLabel')}</b> {task.acceptanceCriteria.join('；')}</p>
       )}
       {task.constraints.length > 0 && (
-        <p><b>约束:</b> {task.constraints.join('；')}</p>
+        <p><b>{t('taskdetail.constraintsLabel')}</b> {task.constraints.join('；')}</p>
       )}
       <p className="muted">
-        创建 {new Date(task.createdAt).toLocaleString()} · 更新 {new Date(task.updatedAt).toLocaleString()}
-        {task.completedAt && <> · 完成 {new Date(task.completedAt).toLocaleString()}</>}
+        {t('taskdetail.createdLine', { created: new Date(task.createdAt).toLocaleString(), updated: new Date(task.updatedAt).toLocaleString() })}
+        {task.completedAt && <>{t('taskdetail.completedSuffix', { at: new Date(task.completedAt).toLocaleString() })}</>}
       </p>
 
-      <h4>请求流转 §13（引擎裁决）</h4>
-      {task.nextStates.length === 0 && <p className="muted">暂无可用流转（终态）</p>}
+      <h4>{t('taskdetail.transitionTitle')}</h4>
+      {task.nextStates.length === 0 && <p className="muted">{t('taskdetail.noTransitions')}</p>}
       <div className="btn-row">
         {task.nextStates.map((n) => (
           <button key={n.to} title={n.requires.join('\n') || n.note} onClick={() => move(n.to)} disabled={moving !== null}>
-            → {moving === n.to ? '流转中…' : n.to}
+            → {moving === n.to ? t('taskdetail.moving') : n.to}
           </button>
         ))}
       </div>
       {error && <div className="banner err">{error}</div>}
       {denied.length > 0 && (
         <div className="denied">
-          <b>⛔ 流转被拒 — 缺少证据 (§12):</b>
-          <ul>{denied.map((m, i) => <li key={i}>{m}</li>)}</ul>
+          <b>{t('taskdetail.transitionDenied')}</b>
+          <ul>{denied.map((m, i) => <li key={i}>{m}</li>)}
+          </ul>
         </div>
       )}
     </div>
@@ -116,8 +123,9 @@ function OverviewTab({ task, onMoved }: { task: TaskDetail; onMoved: () => void 
 
 // ---------------------------------------------------------------- 时间线 --
 function TimelineTab({ taskId }: { taskId: string }) {
+  const { t } = useLang();
   const records = useTaskAudit(taskId);
-  if (records === null) return <p className="muted">加载中…</p>;
+  if (records === null) return <p className="muted">{t('taskdetail.loading')}</p>;
   if (records.length === 0) return <Empty />;
   return (
     <ul className="timeline">
@@ -134,6 +142,7 @@ function TimelineTab({ taskId }: { taskId: string }) {
 
 // ---------------------------------------------------------------- AI团队 --
 function TeamTab({ task, onSelectAgent }: { task: TaskDetail; onSelectAgent?: (id: string) => void }) {
+  const { t } = useLang();
   const [agents, setAgents] = useState<AgentFull[] | null>(null);
   const [agentsErr, setAgentsErr] = useState<string | null>(null);
   useEffect(() => {
@@ -143,8 +152,8 @@ function TeamTab({ task, onSelectAgent }: { task: TaskDetail; onSelectAgent?: (i
       .catch((e) => { if (!dead) { setAgents([]); setAgentsErr((e as Error).message); } });
     return () => { dead = true; };
   }, []);
-  if (agents === null) return <p className="muted">加载中…</p>;
-  if (agentsErr) return <p className="pill warn">员工列表加载失败：{agentsErr}</p>;
+  if (agents === null) return <p className="muted">{t('taskdetail.loading')}</p>;
+  if (agentsErr) return <p className="pill warn">{t('taskdetail.agentsLoadFailed', { message: agentsErr })}</p>;
   const ids = [...new Set([task.currentAgentId, ...task.assignedAgentIds].filter(Boolean) as string[])];
   if (ids.length === 0) return <Empty />;
   return (
@@ -156,13 +165,13 @@ function TeamTab({ task, onSelectAgent }: { task: TaskDetail; onSelectAgent?: (i
             key={id}
             className={onSelectAgent ? 'clickable' : ''}
             onClick={() => onSelectAgent?.(id)}
-            title={onSelectAgent ? '查看员工档案 §87' : undefined}
+            title={onSelectAgent ? t('taskdetail.viewAgent') : undefined}
           >
             {a ? (
               <><b>{a.displayName}</b> <span className="muted">{a.jobTitle} · {a.status}</span>
-              {id === task.currentAgentId && <span className="pill">当前</span>}</>
+              {id === task.currentAgentId && <span className="pill">{t('taskdetail.current')}</span>}</>
             ) : (
-              <span className="muted">{id.slice(0, 8)}（已离职或未知）</span>
+              <span className="muted">{t('taskdetail.unknownAgent', { id: id.slice(0, 8) })}</span>
             )}
           </li>
         );
@@ -173,6 +182,7 @@ function TeamTab({ task, onSelectAgent }: { task: TaskDetail; onSelectAgent?: (i
 
 // ---------------------------------------------------------------- 子任务 --
 function SubtasksTab({ task, onSelectTask }: { task: TaskDetail; onSelectTask: (id: string) => void }) {
+  const { t } = useLang();
   const [subs, setSubs] = useState<TaskDetail[] | null>(null);
   const [subsErr, setSubsErr] = useState<string | null>(null);
   useEffect(() => {
@@ -187,8 +197,8 @@ function SubtasksTab({ task, onSelectTask }: { task: TaskDetail; onSelectTask: (
       });
     return () => { dead = true; };
   }, [task]);
-  if (subs === null) return <p className="muted">加载中…</p>;
-  if (subsErr) return <p className="pill warn">子任务加载失败：{subsErr}</p>;
+  if (subs === null) return <p className="muted">{t('taskdetail.loading')}</p>;
+  if (subsErr) return <p className="pill warn">{t('taskdetail.subtasksLoadFailed', { message: subsErr })}</p>;
   if (subs.length === 0) return <Empty />;
   return (
     <ul className="plain">
@@ -204,6 +214,7 @@ function SubtasksTab({ task, onSelectTask }: { task: TaskDetail; onSelectTask: (
 
 // ---------------------------------------------------------------- 文件 --
 function FilesTab({ task }: { task: TaskDetail }) {
+  const { t } = useLang();
   const [entries, setEntries] = useState<FileEntry[] | 'missing' | null>(null);
   useEffect(() => {
     let dead = false;
@@ -213,7 +224,7 @@ function FilesTab({ task }: { task: TaskDetail }) {
       .catch(() => { if (!dead) setEntries('missing'); });
     return () => { dead = true; };
   }, [task]);
-  if (entries === null) return <p className="muted">加载中…</p>;
+  if (entries === null) return <p className="muted">{t('taskdetail.loading')}</p>;
   if (entries === 'missing') return <Empty />;
   if (entries.length === 0) return <Empty />;
   return (
@@ -251,6 +262,7 @@ function DiffTab({ task }: { task: TaskDetail }) {
 
 // ---------------------------------------------------------------- 测试 --
 function TestsTab({ taskId }: { taskId: string }) {
+  const { t } = useLang();
   const [runs, setRuns] = useState<QaRun[] | null>(null);
   const [runsErr, setRunsErr] = useState<string | null>(null);
   useEffect(() => {
@@ -260,8 +272,8 @@ function TestsTab({ taskId }: { taskId: string }) {
       .catch((e) => { if (!dead) { setRuns([]); setRunsErr((e as Error).message); } });
     return () => { dead = true; };
   }, [taskId]);
-  if (runs === null) return <p className="muted">加载中…</p>;
-  if (runsErr) return <p className="pill warn">测试记录加载失败：{runsErr}</p>;
+  if (runs === null) return <p className="muted">{t('taskdetail.loading')}</p>;
+  if (runsErr) return <p className="pill warn">{t('taskdetail.qaRunsLoadFailed', { message: runsErr })}</p>;
   if (runs.length === 0) return <Empty />;
   return (
     <div>
@@ -271,7 +283,7 @@ function TestsTab({ taskId }: { taskId: string }) {
           <span className="muted"> · {new Date(r.createdAt).toLocaleString()}</span>
           {r.summary && (
             <div className="muted">
-              {r.summary.passed}/{r.summary.total} 通过 · {r.summary.failed} 失败
+              {t('taskdetail.qaSummary', { passed: r.summary.passed, total: r.summary.total, failed: r.summary.failed })}
             </div>
           )}
           {r.summary?.categories.map((c) => (
@@ -290,6 +302,7 @@ function TestsTab({ taskId }: { taskId: string }) {
 
 // ---------------------------------------------------------------- 安全 --
 function SecurityTab({ task, taskId }: { task: TaskDetail; taskId: string }) {
+  const { t } = useLang();
   const reports = task.evidence.filter((e) => e.type === 'security_report');
   const [secCats, setSecCats] = useState<{ category: string; verdict: string }[] | null>(null);
   const [secErr, setSecErr] = useState<string | null>(null);
@@ -309,8 +322,8 @@ function SecurityTab({ task, taskId }: { task: TaskDetail; taskId: string }) {
     return () => { dead = true; };
   }, [taskId]);
   if (reports.length === 0 && (secCats === null || secCats.length === 0)) {
-    return secErr ? <p className="pill warn">安全分类加载失败：{secErr}</p>
-      : secCats === null ? <p className="muted">加载中…</p> : <Empty />;
+    return secErr ? <p className="pill warn">{t('taskdetail.secCatsLoadFailed', { message: secErr })}</p>
+      : secCats === null ? <p className="muted">{t('taskdetail.loading')}</p> : <Empty />;
   }
   return (
     <div>
@@ -325,7 +338,7 @@ function SecurityTab({ task, taskId }: { task: TaskDetail; taskId: string }) {
       ))}
       {(secCats ?? []).map((c, i) => (
         <div key={i} className="card-meta">
-          <span>QA security 分类</span>
+          <span>{t('taskdetail.qaSecurityCat')}</span>
           <span className={c.verdict === 'PASS' ? 'gate-ok' : 'err'}>{c.verdict}</span>
         </div>
       ))}
@@ -335,6 +348,7 @@ function SecurityTab({ task, taskId }: { task: TaskDetail; taskId: string }) {
 
 // ---------------------------------------------------------------- 部署 --
 function DeploymentsTab({ taskId }: { taskId: string }) {
+  const { t } = useLang();
   const [deps, setDeps] = useState<DeploymentRecord[] | null>(null);
   const [depsErr, setDepsErr] = useState<string | null>(null);
   useEffect(() => {
@@ -344,8 +358,8 @@ function DeploymentsTab({ taskId }: { taskId: string }) {
       .catch((e) => { if (!dead) { setDeps([]); setDepsErr((e as Error).message); } });
     return () => { dead = true; };
   }, [taskId]);
-  if (deps === null) return <p className="muted">加载中…</p>;
-  if (depsErr) return <p className="pill warn">部署记录加载失败：{depsErr}</p>;
+  if (deps === null) return <p className="muted">{t('taskdetail.loading')}</p>;
+  if (depsErr) return <p className="pill warn">{t('taskdetail.deploymentsLoadFailed', { message: depsErr })}</p>;
   if (deps.length === 0) return <Empty />;
   return (
     <ul className="plain">
@@ -362,6 +376,7 @@ function DeploymentsTab({ taskId }: { taskId: string }) {
 
 // ---------------------------------------------------------------- 证据 --
 function EvidenceTab({ task, onAttached }: { task: TaskDetail; onAttached: () => void }) {
+  const { t } = useLang();
   const [evType, setEvType] = useState('qa_result');
   const [evTitle, setEvTitle] = useState('');
   const [evPass, setEvPass] = useState(true);
@@ -389,7 +404,7 @@ function EvidenceTab({ task, onAttached }: { task: TaskDetail; onAttached: () =>
 
   return (
     <div>
-      {task.evidence.length === 0 && <p className="muted">暂无证据</p>}
+      {task.evidence.length === 0 && <p className="muted">{t('taskdetail.noEvidence')}</p>}
       <ul className="ev-list">
         {task.evidence.map((e: EvidenceItem) => (
           <li key={e.id}>
@@ -399,15 +414,15 @@ function EvidenceTab({ task, onAttached }: { task: TaskDetail; onAttached: () =>
           </li>
         ))}
       </ul>
-      <h4>附加证据 §42</h4>
-      {evError && <p className="pill warn">附加失败：{evError}</p>}
+      <h4>{t('taskdetail.attachTitle')}</h4>
+      {evError && <p className="pill warn">{t('taskdetail.attachFailed', { message: evError })}</p>}
       <div className="ev-form">
         <select value={evType} onChange={(e) => setEvType(e.target.value)}>
-          {EVIDENCE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          {EVIDENCE_TYPES.map((et) => <option key={et} value={et}>{et}</option>)}
         </select>
-        <input placeholder="证据标题" value={evTitle} onChange={(e) => setEvTitle(e.target.value)} />
+        <input placeholder={t('taskdetail.evidenceTitlePh')} value={evTitle} onChange={(e) => setEvTitle(e.target.value)} />
         <label><input type="checkbox" checked={evPass} onChange={(e) => setEvPass(e.target.checked)} /> PASS</label>
-        <button onClick={attach} disabled={!evTitle.trim() || evBusy}>{evBusy ? '附加中…' : '附加'}</button>
+        <button onClick={attach} disabled={!evTitle.trim() || evBusy}>{evBusy ? t('taskdetail.attaching') : t('taskdetail.attach')}</button>
       </div>
     </div>
   );
@@ -415,6 +430,7 @@ function EvidenceTab({ task, onAttached }: { task: TaskDetail; onAttached: () =>
 
 // ---------------------------------------------------------------- Memory --
 function MemoryTab({ taskId }: { taskId: string }) {
+  const { t } = useLang();
   const [entries, setEntries] = useState<MemoryEntry[] | null>(null);
   const [memErr, setMemErr] = useState<string | null>(null);
   useEffect(() => {
@@ -424,15 +440,15 @@ function MemoryTab({ taskId }: { taskId: string }) {
       .catch((e) => { if (!dead) { setEntries([]); setMemErr((e as Error).message); } });
     return () => { dead = true; };
   }, [taskId]);
-  if (entries === null) return <p className="muted">加载中…</p>;
-  if (memErr) return <p className="pill warn">记忆条目加载失败：{memErr}</p>;
+  if (entries === null) return <p className="muted">{t('taskdetail.loading')}</p>;
+  if (memErr) return <p className="pill warn">{t('taskdetail.memoryLoadFailed', { message: memErr })}</p>;
   if (entries.length === 0) return <Empty />;
   return (
     <ul className="plain">
       {entries.map((e) => (
         <li key={e.id}>
           <b>{String(e.title ?? e.type ?? e.id.slice(0, 8))}</b>
-          <span className="muted"> · 置信度 {e.confidence ?? '—'}</span>
+          <span className="muted"> · {t('taskdetail.confidence', { value: e.confidence ?? '—' })}</span>
           {e.content && <div className="muted">{String(e.content).slice(0, 300)}</div>}
         </li>
       ))}
@@ -442,8 +458,9 @@ function MemoryTab({ taskId }: { taskId: string }) {
 
 // ---------------------------------------------------------------- Trace --
 function TraceTab({ taskId }: { taskId: string }) {
+  const { t } = useLang();
   const records = useTaskAudit(taskId);
-  if (records === null) return <p className="muted">加载中…</p>;
+  if (records === null) return <p className="muted">{t('taskdetail.loading')}</p>;
   if (records.length === 0) return <Empty />;
   return (
     <div>
@@ -470,9 +487,10 @@ export function TaskDetailDrawer({ taskId, onClose, onChanged, onSelectTask, onS
   onSelectTask: (id: string) => void;
   onSelectAgent?: (id: string) => void;
 }) {
+  const { t } = useLang();
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [error, setError] = useState('');
-  const [tab, setTab] = useState<Tab>('概览');
+  const [tab, setTab] = useState<Tab>(TABS[0]);
 
   const load = useCallback(() => {
     setError('');
@@ -481,7 +499,7 @@ export function TaskDetailDrawer({ taskId, onClose, onChanged, onSelectTask, onS
 
   useEffect(() => {
     setTask(null);
-    setTab('概览');
+    setTab(TABS[0]);
     load();
   }, [taskId, load]);
 
@@ -493,35 +511,35 @@ export function TaskDetailDrawer({ taskId, onClose, onChanged, onSelectTask, onS
   return (
     <div className="detail wide">
       <div className="detail-head">
-        <h2>{task ? task.title : '任务详情'}</h2>
+        <h2>{task ? task.title : t('taskdetail.drawerTitle')}</h2>
         <button onClick={onClose}>✕</button>
       </div>
       {error && <div className="banner err">{error}</div>}
-      {!task && !error && <p className="muted">加载中…</p>}
+      {!task && !error && <p className="muted">{t('taskdetail.loading')}</p>}
       {task && (
         <>
           <div className="drawer-tabs">
-            {TABS.map((t) => (
-              <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
-                {t}
+            {TABS.map((k) => (
+              <button key={k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>
+                {t(k)}
               </button>
             ))}
           </div>
           <div className="drawer-body">
-            {tab === '概览' && <OverviewTab task={task} onMoved={moved} />}
-            {tab === '时间线' && <TimelineTab taskId={task.id} />}
-            {tab === 'AI团队' && <TeamTab task={task} onSelectAgent={onSelectAgent} />}
-            {tab === '子任务' && <SubtasksTab task={task} onSelectTask={onSelectTask} />}
-            {tab === '文件' && <FilesTab task={task} />}
-            {tab === 'Diff' && <DiffTab task={task} />}
-            {tab === '测试' && <TestsTab taskId={task.id} />}
-            {tab === 'QA' && <QaPanel taskId={task.id} qa={createQaApi()} />}
-            {tab === '安全' && <SecurityTab task={task} taskId={task.id} />}
-            {tab === 'CI/CD' && <CicdPanel taskId={task.id} cicd={createCicdApi()} />}
-            {tab === '部署' && <DeploymentsTab taskId={task.id} />}
-            {tab === '证据' && <EvidenceTab task={task} onAttached={moved} />}
-            {tab === 'Memory' && <MemoryTab taskId={task.id} />}
-            {tab === 'Trace' && <TraceTab taskId={task.id} />}
+            {tab === TABS[0] && <OverviewTab task={task} onMoved={moved} />}
+            {tab === TABS[1] && <TimelineTab taskId={task.id} />}
+            {tab === TABS[2] && <TeamTab task={task} onSelectAgent={onSelectAgent} />}
+            {tab === TABS[3] && <SubtasksTab task={task} onSelectTask={onSelectTask} />}
+            {tab === TABS[4] && <FilesTab task={task} />}
+            {tab === TABS[5] && <DiffTab task={task} />}
+            {tab === TABS[6] && <TestsTab taskId={task.id} />}
+            {tab === TABS[7] && <QaPanel taskId={task.id} qa={createQaApi()} />}
+            {tab === TABS[8] && <SecurityTab task={task} taskId={task.id} />}
+            {tab === TABS[9] && <CicdPanel taskId={task.id} cicd={createCicdApi()} />}
+            {tab === TABS[10] && <DeploymentsTab taskId={task.id} />}
+            {tab === TABS[11] && <EvidenceTab task={task} onAttached={moved} />}
+            {tab === TABS[12] && <MemoryTab taskId={task.id} />}
+            {tab === TABS[13] && <TraceTab taskId={task.id} />}
           </div>
         </>
       )}

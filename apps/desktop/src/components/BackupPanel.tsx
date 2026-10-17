@@ -6,6 +6,7 @@ import {
   type ProjectFilesRestoreResult,
   type RestoreStageResult,
 } from '../api';
+import { useLang } from '../i18n';
 
 /**
  * 备份 / 恢复面板（运维区）：工厂数据库的备份与排队恢复，以及
@@ -38,6 +39,7 @@ function fmtBytes(n: number): string {
 }
 
 export function BackupPanel() {
+  const { t, has } = useLang();
   const [backups, setBackups] = useState<BackupSummary[]>([]);
   const [pending, setPending] = useState<PendingRestore | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -51,6 +53,12 @@ export function BackupPanel() {
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [staged, setStaged] = useState<RestoreStageResult | null>(null);
 
+  /** 服务端 scope 码 → 展示文案（DashboardPanel statText 模式：有 key 用翻译、缺 key 回退服务端原文）。 */
+  const scopeLabel = (scope: string): string => {
+    const key = scope === 'factory-database+project-files' ? 'backup.scope.full' : 'backup.scope.dbOnly';
+    return has(key) ? t(key) : scope;
+  };
+
   const load = useCallback(async () => {
     try {
       const res = await api.backups();
@@ -58,10 +66,10 @@ export function BackupPanel() {
       setPending(res.pendingRestore ?? null);
       setLoaded(true);
     } catch (e) {
-      setErr(`备份列表不可用：${(e as Error).message}`);
+      setErr(t('backup.loadFailed', { message: (e as Error).message }));
       setLoaded(true);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -73,7 +81,7 @@ export function BackupPanel() {
       await api.createBackup();
       await load();
     } catch (e) {
-      setErr(`创建备份失败：${(e as Error).message}`);
+      setErr(t('backup.createFailed', { message: (e as Error).message }));
     } finally {
       setBusy('');
     }
@@ -91,7 +99,7 @@ export function BackupPanel() {
       await load();
     } catch (e) {
       const ex = e as Error & { problems?: string[] };
-      setErr(`排队恢复失败：${ex.message}`);
+      setErr(t('backup.stageRestoreFailed', { message: ex.message }));
       if (Array.isArray(ex.problems)) setProblems(ex.problems);
       // 409（已有排队）等状态变化后刷新列表，让 pending 状态如实呈现。
       await load();
@@ -112,7 +120,7 @@ export function BackupPanel() {
       await load();
     } catch (e) {
       const ex = e as Error & { problems?: string[] };
-      setErr(`项目文件恢复失败：${ex.message}`);
+      setErr(t('backup.restoreFilesFailed', { message: ex.message }));
       if (Array.isArray(ex.problems)) setProblems(ex.problems);
       await load();
     } finally {
@@ -129,12 +137,8 @@ export function BackupPanel() {
 
   return (
     <div className="panel">
-      <h2>备份 / 恢复 <span className="muted">VACUUM INTO 快照 + manifest 校验</span></h2>
-      <p className="muted">
-        备份范围 = 工厂数据库（项目、任务、证据、审批、审计链、需求、run 记录等）
-        + 已收录项目的项目工作文件（含 .ai/ 配置；符号链接不跟随，有排除项与
-        大小上限）。列表中的「范围」列如实标注每份备份实际收录的范围。
-      </p>
+      <h2>{t('backup.title')} <span className="muted">{t('backup.subtitle')}</span></h2>
+      <p className="muted">{t('backup.description')}</p>
       {err && <div className="banner err">{err}</div>}
       {problems.length > 0 && (
         <ul className="issue-list">
@@ -144,30 +148,27 @@ export function BackupPanel() {
 
       {pending && (
         <div className="card" style={{ borderColor: 'var(--yellow)', cursor: 'default' }}>
-          <div className="card-title">⏳ 有恢复正在排队，等待服务端重启生效</div>
+          <div className="card-title">{t('backup.pendingTitle')}</div>
           <div style={{ fontSize: 13 }}>
             <div>
-              目标备份：<code>{pending.backupId}</code> · 排队时间：{fmtTime(pending.stagedAt)}
+              {t('backup.pendingTarget')}<code>{pending.backupId}</code> · {t('backup.pendingTime')}{fmtTime(pending.stagedAt)}
             </div>
             <div>
-              排队时自动创建的 pre-restore 备份：<code>{pending.preRestoreBackupId}</code>
+              {t('backup.pendingPreRestore')}<code>{pending.preRestoreBackupId}</code>
             </div>
-            <div className="muted">
-              运行中的服务仍在使用当前数据库；重启服务端后该恢复才会应用，
-              届时现库会被保留为同目录下的 .superseded 文件。在重启前不能再排队其他恢复（服务端返回 409）。
-            </div>
+            <div className="muted">{t('backup.pendingNote')}</div>
           </div>
         </div>
       )}
 
       {staged && (
         <div className="card" style={{ cursor: 'default' }}>
-          <div className="card-title">✅ 恢复已排队（restartRequired）</div>
+          <div className="card-title">{t('backup.stagedTitle')}</div>
           <div style={{ fontSize: 13 }}>
             <p style={{ margin: '4px 0' }}>{staged.message}</p>
             <div className="muted">
-              目标备份：<code>{staged.backupId}</code> · pre-restore 备份：
-              <code>{staged.preRestoreBackupId}</code> · 请重启服务端以应用恢复。
+              {t('backup.pendingTarget')}<code>{staged.backupId}</code> · {t('backup.preRestoreLabel')}
+              <code>{staged.preRestoreBackupId}</code> · {t('backup.stagedRestartHint')}
             </div>
           </div>
         </div>
@@ -175,22 +176,22 @@ export function BackupPanel() {
 
       <div className="row">
         <button onClick={() => void onCreate()} disabled={busy !== ''}>
-          {busy === 'create' ? '备份中…' : '创建备份'}
+          {busy === 'create' ? t('backup.creating') : t('backup.create')}
         </button>
-        <button onClick={() => void load()} disabled={busy !== ''}>刷新列表</button>
-        <span className="muted">{backups.length} 个备份</span>
+        <button onClick={() => void load()} disabled={busy !== ''}>{t('backup.refresh')}</button>
+        <span className="muted">{t('backup.count', { count: backups.length })}</span>
       </div>
 
       {!loaded ? (
-        <p className="muted">Loading backups…</p>
+        <p className="muted">{t('backup.loading')}</p>
       ) : backups.length === 0 ? (
-        <p className="muted">暂无备份。点击「创建备份」生成第一份备份。</p>
+        <p className="muted">{t('backup.empty', { create: t('backup.create') })}</p>
       ) : (
         <table className="data-table">
           <thead>
             <tr>
-              <th>备份</th><th>类型</th><th>范围</th><th>创建时间</th><th>应用版本</th>
-              <th>总行数</th><th>大小</th><th>操作</th>
+              <th>{t('backup.col.backup')}</th><th>{t('backup.col.type')}</th><th>{t('backup.col.scope')}</th><th>{t('backup.col.created')}</th><th>{t('backup.col.appVersion')}</th>
+              <th>{t('backup.col.rows')}</th><th>{t('backup.col.size')}</th><th>{t('backup.col.actions')}</th>
             </tr>
           </thead>
           <tbody>
@@ -203,12 +204,10 @@ export function BackupPanel() {
                   </span>
                 </td>
                 <td>
-                  <span className="pill">
-                    {b.scope === 'factory-database+project-files' ? '数据库+项目文件' : '仅数据库'}
-                  </span>
+                  <span className="pill">{scopeLabel(b.scope)}</span>
                   {b.projectFiles && (
                     <div className="muted" style={{ fontSize: 11 }}>
-                      {b.projectFiles.projects.reduce((a, p) => a + p.fileCount, 0)} 个文件
+                      {t('backup.fileCount', { count: b.projectFiles.projects.reduce((a, p) => a + p.fileCount, 0) })}
                     </div>
                   )}
                 </td>
@@ -220,17 +219,17 @@ export function BackupPanel() {
                   <button
                     onClick={() => { setConfirmId(b.backupId); setStaged(null); }}
                     disabled={busy !== '' || pending !== null}
-                    title={pending ? '已有恢复在排队，重启服务端应用后才能再排队' : undefined}
+                    title={pending ? t('backup.restoreDbDisabledTitle') : undefined}
                   >
-                    恢复数据库…
+                    {t('backup.restoreDb')}
                   </button>
                   {b.scope === 'factory-database+project-files' && (
                     <button
                       onClick={() => { setConfirmFilesId(b.backupId); setStagedFiles(null); }}
                       disabled={busy !== ''}
-                      title="立即恢复该备份中的项目工作文件到 live 项目目录（不排队重启）"
+                      title={t('backup.restoreFilesTitle')}
                     >
-                      恢复项目文件…
+                      {t('backup.restoreFiles')}
                     </button>
                   )}
                 </td>
@@ -240,29 +239,23 @@ export function BackupPanel() {
         </table>
       )}
       {pending && backups.length > 0 && (
-        <p className="muted">已有恢复排队中，「恢复」按钮暂时禁用（服务端同样会以 409 拒绝新的排队）。</p>
+        <p className="muted">{t('backup.pendingDisabledNote')}</p>
       )}
 
       {confirmId && (
         <div className="card" style={{ borderColor: 'var(--red)', cursor: 'default' }}>
-          <div className="card-title">⚠ 确认排队恢复</div>
+          <div className="card-title">{t('backup.confirmRestoreTitle')}</div>
           <div style={{ fontSize: 13 }}>
             <p style={{ margin: '4px 0' }}>
-              将把数据库排队恢复到备份 <code>{confirmId}</code>
-              {confirmTarget && (
-                <>（创建于 {fmtTime(confirmTarget.createdAt)}，共 {confirmTarget.totalRows} 行）</>
-              )}
-              。提交前请确认以下事实：
+              {t('backup.confirmRestoreLead')} <code>{confirmId}</code>{confirmTarget && <>{t('backup.confirmRestoreTarget', { time: fmtTime(confirmTarget.createdAt), rows: confirmTarget.totalRows })}</>}{t('backup.confirmRestoreBefore')}
             </p>
             <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
-              <li>服务端会先自动备份当前数据库（pre-restore 备份），误操作可经该备份回滚。</li>
+              <li>{t('backup.confirmRestoreItem1')}</li>
               <li>
-                恢复<strong>不会立即生效</strong>：它被排队（restartRequired），
-                在下一次服务端重启时才应用；重启前运行中的服务继续使用当前数据库。
+                {t('backup.confirmRestoreItem2a')}<strong>{t('backup.confirmRestoreItem2b')}</strong>{t('backup.confirmRestoreItem2c')}
               </li>
-              <li>此路径只恢复数据库；项目工作文件不受影响（项目文件恢复是
-                独立的立即生效操作，见「恢复项目文件…」）。</li>
-              <li>恢复应用时，现库文件会被改名保留为 .superseded 文件，不直接删除。</li>
+              <li>{t('backup.confirmRestoreItem3', { btn: t('backup.restoreFiles') })}</li>
+              <li>{t('backup.confirmRestoreItem4')}</li>
             </ul>
             <div className="row">
               <button
@@ -270,31 +263,26 @@ export function BackupPanel() {
                 disabled={busy !== ''}
                 style={{ borderColor: 'var(--red)' }}
               >
-                {busy === 'restore' ? '排队中…' : '确认排队恢复'}
+                {busy === 'restore' ? t('backup.staging') : t('backup.confirmRestore')}
               </button>
-              <button onClick={() => setConfirmId(null)} disabled={busy !== ''}>取消</button>
+              <button onClick={() => setConfirmId(null)} disabled={busy !== ''}>{t('backup.cancel')}</button>
             </div>
           </div>
         </div>
       )}
       {confirmFilesId && (
         <div className="card" style={{ borderColor: 'var(--red)', cursor: 'default' }}>
-          <div className="card-title">⚠ 确认恢复项目文件（立即生效）</div>
+          <div className="card-title">{t('backup.confirmFilesTitle')}</div>
           <div style={{ fontSize: 13 }}>
             <p style={{ margin: '4px 0' }}>
-              将把备份 <code>{confirmFilesId}</code>
-              {confirmFilesTarget && (
-                <>（创建于 {fmtTime(confirmFilesTarget.createdAt)}，范围「{confirmFilesTarget.scope === 'factory-database+project-files' ? '数据库+项目文件' : confirmFilesTarget.scope}」）</>
-              )}
-              中的项目工作文件恢复到 live 项目目录。提交前请确认以下事实：
+              {t('backup.confirmFilesLead')} <code>{confirmFilesId}</code>{confirmFilesTarget && <>{t('backup.confirmFilesTarget', { time: fmtTime(confirmFilesTarget.createdAt), scope: scopeLabel(confirmFilesTarget.scope) })}</>}{t('backup.confirmFilesTail')}
             </p>
             <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
               <li>
-                恢复<strong>立即生效</strong>：不排队、不等重启（与数据库恢复
-                不对称——数据库恢复仍需重启服务端）。
+                {t('backup.confirmFilesItem1a')}<strong>{t('backup.confirmFilesItem1b')}</strong>{t('backup.confirmFilesItem1c')}
               </li>
-              <li>服务端会先把当前项目文件复制到备份目录下的回滚点（preRestoreDir），误操作可再回滚。</li>
-              <li>校验失败（422）时现树不动，不会部分写入。</li>
+              <li>{t('backup.confirmFilesItem2')}</li>
+              <li>{t('backup.confirmFilesItem3')}</li>
             </ul>
             <div className="row">
               <button
@@ -302,26 +290,26 @@ export function BackupPanel() {
                 disabled={busy !== ''}
                 style={{ borderColor: 'var(--red)' }}
               >
-                {busy === 'restore-files' ? '恢复中…' : '确认立即恢复'}
+                {busy === 'restore-files' ? t('backup.restoringFiles') : t('backup.confirmFilesNow')}
               </button>
-              <button onClick={() => setConfirmFilesId(null)} disabled={busy !== ''}>取消</button>
+              <button onClick={() => setConfirmFilesId(null)} disabled={busy !== ''}>{t('backup.cancel')}</button>
             </div>
           </div>
         </div>
       )}
       {stagedFiles && (
         <div className="card" style={{ cursor: 'default' }}>
-          <div className="card-title">✅ 项目文件已恢复（立即生效）</div>
+          <div className="card-title">{t('backup.filesRestoredTitle')}</div>
           <div style={{ fontSize: 13 }}>
             <div>
-              备份：<code>{stagedFiles.backupId}</code> ·
-              恢复 {stagedFiles.projects.reduce((a, p) => a + p.restored, 0)} 个文件
+              {t('backup.filesBackupLabel')}<code>{stagedFiles.backupId}</code> ·{' '}
+              {t('backup.filesRestoredCount', { count: stagedFiles.projects.reduce((a, p) => a + p.restored, 0) })}
               {stagedFiles.skipped.length > 0 && (
-                <> · 跳过 {stagedFiles.skipped.length} 个项目（{stagedFiles.skipped.map((s) => s.reason).join('、')}）</>
+                <> · {t('backup.filesSkipped', { count: stagedFiles.skipped.length, reasons: stagedFiles.skipped.map((s) => s.reason).join(t('backup.sep')) })}</>
               )}
             </div>
             <div className="muted">
-              回滚点：<code>{stagedFiles.preRestoreDir}</code>（恢复前复制的当前文件）
+              {t('backup.rollbackPoint')}<code>{stagedFiles.preRestoreDir}</code>{t('backup.rollbackHint')}
             </div>
           </div>
         </div>

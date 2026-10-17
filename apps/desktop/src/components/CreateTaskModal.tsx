@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { api } from '../api';
+import { useLang } from '../i18n';
 
 export function CreateTaskModal({ projectId, onClose, onCreated }: {
   projectId: string; onClose: () => void; onCreated: () => void;
 }) {
+  const { t } = useLang();
   const [title, setTitle] = useState('');
   const [goal, setGoal] = useState('');
   const [priority, setPriority] = useState('P2');
@@ -38,7 +40,7 @@ export function CreateTaskModal({ projectId, onClose, onCreated }: {
         </label>
         {error && <p className="err">{error}</p>}
         <div className="btn-row">
-          <button className="primary" onClick={submit} disabled={busy}>{busy ? '创建中…' : 'Create (§9 — AI PM takes it from here)'}</button>
+          <button className="primary" onClick={submit} disabled={busy}>{busy ? t('createtask.creating') : 'Create (§9 — AI PM takes it from here)'}</button>
           <button onClick={onClose}>Cancel</button>
         </div>
       </div>

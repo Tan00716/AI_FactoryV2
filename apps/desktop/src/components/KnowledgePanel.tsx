@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 /** Typed client for the knowledge endpoints. */
 export interface KnowledgeHit {
@@ -156,6 +157,7 @@ function FeedCardView({ card, onDecide }: { card: FeedCard; onDecide: (d: 'adopt
  * are never modified automatically, §53 policy).
  */
 export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
+  const { t } = useLang();
   const [api] = useState<KnowledgeApi>(() => props.knowledge ?? createKnowledgeApi());
   const [subtab, setSubtab] = useState<'browse' | 'feed'>('browse');
   const [hits, setHits] = useState<KnowledgeHit[]>([]);
@@ -280,7 +282,7 @@ export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
             </div>
             <div className="knowledge-list">
               <h4 style={{ margin: '4px 0' }}>Knowledge <span className="muted">({filtered.length})</span></h4>
-              {filtered.length === 0 && <div className="muted">暂无知识条目（可调整搜索或分类）。</div>}
+              {filtered.length === 0 && <div className="muted">{t('knowledge.empty')}</div>}
               <ul className="ev-list">
                 {filtered.map((h) => (
                   <li key={h.item.id} style={{ marginBottom: 6 }}>

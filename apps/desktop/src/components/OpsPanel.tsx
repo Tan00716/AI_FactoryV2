@@ -7,6 +7,7 @@ import {
   type QuotaBucketView,
   type WatchdogSelf,
 } from '../api';
+import { useLang, type TFunc } from '../i18n';
 
 /**
  * Ops 面板（spec §29.1/§50.2 Dashboard 视图的运维块，API-first）：
@@ -20,8 +21,8 @@ import {
  */
 const POLL_MS = 5000;
 
-function fmtTime(iso?: string): string {
-  if (!iso) return '未知';
+function fmtTime(iso: string | undefined, t: TFunc): string {
+  if (!iso) return t('ops.unknownTime');
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
@@ -35,15 +36,16 @@ function Block(props: { title: string; children: React.ReactNode }) {
   );
 }
 
-function bucketUsage(b: QuotaBucketView): string {
+function bucketUsage(b: QuotaBucketView, t: TFunc): string {
   // 不编造百分比：used/limit 缺失时只显示 unknown（spec AT-034）。
   if (typeof b.used === 'number' && typeof b.limit === 'number' && b.limit > 0) {
     return `${b.used}/${b.limit} (${((b.used / b.limit) * 100).toFixed(1)}%)`;
   }
-  return 'unknown（provider 未上报用量）';
+  return t('ops.bucketUnknown');
 }
 
 export function OpsPanel() {
+  const { t } = useLang();
   const [status, setStatus] = useState<FactoryStatus | null>(null);
   const [watchdog, setWatchdog] = useState<WatchdogSelf | null>(null);
   const [buckets, setBuckets] = useState<QuotaBucketView[]>([]);
@@ -93,20 +95,20 @@ export function OpsPanel() {
   }, [refresh]);
 
   if (error && !status) {
-    return <div className="banner err">Ops 数据不可用: {error}</div>;
+    return <div className="banner err">{t('ops.unavailable', { error })}</div>;
   }
   if (!status) return <p className="muted">Loading ops…</p>;
 
   return (
     <div className="ops-panel">
-      {error && <div className="banner err">{error}（显示上次成功数据）</div>}
+      {error && <div className="banner err">{error}{t('ops.showingStale')}</div>}
 
-      <Block title="Factory 三轴状态（§29.1 全局 Strip）">
+      <Block title={t('ops.factoryAxes')}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {[
-            { k: 'control', label: '控制', v: status.control },
-            { k: 'health', label: '健康', v: status.health },
-            { k: 'capacity', label: '容量', v: status.capacity },
+            { k: 'control', label: t('ops.axis.control'), v: status.control },
+            { k: 'health', label: t('ops.axis.health'), v: status.health },
+            { k: 'capacity', label: t('ops.axis.capacity'), v: status.capacity },
           ].map((x) => (
             <div key={x.k} className="pill" style={{ padding: '6px 10px', minWidth: 110, textAlign: 'center' }}>
               <div className="muted" style={{ fontSize: 10 }}>{x.label}</div>
@@ -119,69 +121,71 @@ export function OpsPanel() {
           </span>
         </div>
         <div className="card-meta" style={{ marginTop: 8 }}>
-          <div>ACK 门控显示: {status.display}</div>
+          <div>{t('ops.ackDisplay', { display: status.display })}</div>
           <div className="muted">
-            待 ACK worker: {status.pending_acks.length > 0 ? status.pending_acks.join(', ') : '无'} · 更新于 {fmtTime(status.updated_at)}
+            {t('ops.pendingAcks', {
+              workers: status.pending_acks.length > 0 ? status.pending_acks.join(', ') : t('ops.none'),
+              time: fmtTime(status.updated_at, t),
+            })}
           </div>
         </div>
       </Block>
 
-      <Block title="Watchdog 健康（§30）">
+      <Block title={t('ops.watchdogHealth')}>
         <p style={{ margin: '4px 0' }}>
-          自身健康: <b>{watchdog?.selfHealth ?? '未知'}</b>
-          <span className="muted">（ok = 心跳正常；degraded = 出现缺失 tick）</span>
+          {t('ops.selfHealth')}: <b>{watchdog?.selfHealth ?? t('ops.unknownTime')}</b>
+          <span className="muted">{t('ops.healthLegend')}</span>
         </p>
       </Block>
 
-      <Block title="审计链完整性（§32）">
+      <Block title={t('ops.chainIntegrity')}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <button
             type="button"
             onClick={verifyChain}
             disabled={chainState === 'loading'}
-            title="拉取全链验证：服务端从 genesis 锚定验证整条审计链，不分页（F33）。角色要求 operator+。"
+            title={t('ops.verifyTitle')}
           >
-            {chainState === 'loading' ? '验证中…' : '拉取全链验证'}
+            {chainState === 'loading' ? t('ops.verifying') : t('ops.verifyChain')}
           </button>
           <span className="muted" style={{ fontSize: 12 }}>
-            {chainState === 'idle' && '尚未验证'}
-            {chainState === 'loading' && '正在从 genesis 拉取全链…'}
+            {chainState === 'idle' && t('ops.chainIdle')}
+            {chainState === 'loading' && t('ops.chainLoading')}
           </span>
         </div>
         {chainState === 'ok' && chain && (
           <p style={{ margin: '8px 0 0', color: 'green' }}>
-            ✅ 链完整：已验证 {chain.verifiedCount} 条
+            {t('ops.chainOk', { count: chain.verifiedCount })}
             {chain.legacyCount > 0 && (
-              <span className="muted">（{chain.legacyCount} 条 legacy 记录跳过，不影响链完整性）</span>
+              <span className="muted">{t('ops.chainLegacy', { count: chain.legacyCount })}</span>
             )}
           </p>
         )}
         {chainState === 'broken' && chain && (
           <div className="banner err" style={{ marginTop: 8 }}>
-            ❌ 审计链断裂：首个失败位于追加序下标 {chain.brokenAt}（按 ORDER BY ts, rowid，非列表新在前序）
-            —— 断裂前 {chain.verifiedCount} 条已验证，断裂后的记录不可信。detection-not-prevention：链阻止不了 DB 写者，它让篡改显形并定位。
+            {t('ops.chainBroken', { at: chain.brokenAt ?? 0, count: chain.verifiedCount })}
           </div>
         )}
         {chainState === 'error' && (
           <div className="banner err" style={{ marginTop: 8 }}>
-            验证请求失败: {chainError}（权限不足时会是 403：端点要求 operator+ 角色）
+            {t('ops.chainError', { error: chainError ?? '' })}
           </div>
         )}
       </Block>
 
-      <Block title={`Quota Buckets 用量（§27） — ${buckets.length} 个`}>
+      <Block title={t('ops.quotaTitle', { count: buckets.length })}>
         {buckets.length === 0 ? (
-          <p className="muted">暂无 bucket 记录（provider 未上报）。</p>
+          <p className="muted">{t('ops.noBuckets')}</p>
         ) : (
           <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
             <thead>
               <tr className="muted" style={{ textAlign: 'left' }}>
-                <th>Provider 账号</th>
+                <th>{t('ops.col.providerAccount')}</th>
                 <th>Bucket</th>
-                <th>用量</th>
+                <th>{t('ops.col.usage')}</th>
                 <th>Auth</th>
-                <th>新鲜度</th>
-                <th>重置时间</th>
+                <th>{t('ops.col.freshness')}</th>
+                <th>{t('ops.col.resetAt')}</th>
               </tr>
             </thead>
             <tbody>
@@ -189,10 +193,10 @@ export function OpsPanel() {
                 <tr key={`${b.providerAccountId}|${b.workspaceId}|${b.limitBucket}`}>
                   <td>{b.providerAccountId}</td>
                   <td>{b.limitBucket}</td>
-                  <td>{bucketUsage(b)}</td>
+                  <td>{bucketUsage(b, t)}</td>
                   <td>{b.authState}</td>
                   <td>{b.freshness}</td>
-                  <td>{b.resetAt ? fmtTime(b.resetAt) : 'unknown'}</td>
+                  <td>{b.resetAt ? fmtTime(b.resetAt, t) : 'unknown'}</td>
                 </tr>
               ))}
             </tbody>
@@ -200,16 +204,21 @@ export function OpsPanel() {
         )}
       </Block>
 
-      <Block title={`Incidents（§33） — ${incidents.length} 条`}>
+      <Block title={t('ops.incidentsTitle', { count: incidents.length })}>
         {incidents.length === 0 ? (
-          <p className="muted">当前无 incident。</p>
+          <p className="muted">{t('ops.noIncidents')}</p>
         ) : (
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
             {incidents.map((i) => (
               <li key={i.id} style={{ marginBottom: 6 }}>
                 <b>[{i.severity}]</b> {i.title}{' '}
                 <span className="muted">
-                  {i.id} · {i.status} · 发现于 {fmtTime(i.detectedAt)} · 更新于 {fmtTime(i.updatedAt)}
+                  {t('ops.incidentMeta', {
+                    id: i.id,
+                    status: i.status,
+                    detected: fmtTime(i.detectedAt, t),
+                    updated: fmtTime(i.updatedAt, t),
+                  })}
                 </span>
               </li>
             ))}

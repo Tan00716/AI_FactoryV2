@@ -1,5 +1,15 @@
 # Changelog
 
+## Batch 238 (2026-10-17)
+
+i18n 英文全铺开——**33 文件、482 个新 key，27 面板 + 侧栏 + 弹窗全双语**。
+
+- **文案抽取**：除试点 5 文件外的 33 个文件（28 组件 + App.tsx + zh/en.ts），新增 482 key（93→575/边，两边集合逐字一致）；key 命名 `<panel>.<name>`；英文自然翻译；`Record<I18nKey,string>` 类型强制两边一致，漏 key tsc 直接报错。Terminal/Cicd/Memory/DiffViewer/ChangesPanel 本来就没有中文，0 key。
+- **服务端字符串**：零改动——按 key 映射（backup scope 码值、orggraph 7 状态、ops 链验证 6 状态；dashboard 15 指标沿用 B237 模式），`has()` 回退原文；自由文本（审计 narrative、任务标题/描述、AI 文本、日志行、文件名、分支名）如实保留不翻——内容不是 chrome。
+- **App.tsx 补漏**（试点遗留）：身份标签中文（'角色未知'/'本地模式（无令牌）'）——主组件在 LanguageProvider 外拿不到 hook，重构为 `App > LanguageProvider > IdeShell` 包裹；`api.ts:580` 的中文函数成 dead export（不在用户可见路径，留待清理）。
+- **验证**：desktop tsc `--noEmit` exit 0；`npm run build` exit 0；448 个 `t('…')` 调用程序化核对 0 缺 key，575 key 插值占位符中英同名同数；真机 EN 截图验（Dispatch/Manager/Observatory/Backup/Ops）：内容区中文残留 0（仅剩切换按钮"中"本身）；**三套回归全绿**：`npm test` 2593/0、`test:server` 500/500、`test:acceptance` 138/138——文案层改动零回归。
+- **拿不准的翻译**（原文备选）：`dispatch.waitMinutes` → `{min} min`；`observatory.has/hasNot` → `yes`/`no`；manager 阶段卡片 EN 只显英文（zh 与原来逐字一致，唯一渲染层微调）；`taskdetail.unknownAgent` → `departed or unknown`。
+
 ## Batch 237 (2026-10-16)
 
 D1 落地 + UI 双语试点——**Apache-2.0 许可证写入；4 个核心页面中/EN 一键切换**。

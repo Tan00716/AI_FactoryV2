@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
+import { useLang } from '../i18n';
 
 /**
  * Model Registry — spec §90.
@@ -53,6 +54,7 @@ export interface ModelsPanelProps {
 }
 
 export function ModelsPanel({ api, pollMs = 15000 }: ModelsPanelProps) {
+  const { t } = useLang();
   const client = api ?? createModelsApi();
   const [models, setModels] = useState<ModelRow[]>([]);
   const [error, setError] = useState('');
@@ -173,7 +175,7 @@ export function ModelsPanel({ api, pollMs = 15000 }: ModelsPanelProps) {
           ))}
         </tbody>
       </table>
-      {!loaded && visible.length === 0 && <div className="muted">加载中…</div>}
+      {!loaded && visible.length === 0 && <div className="muted">{t('models.loading')}</div>}
       {loaded && !error && visible.length === 0 && <div className="muted">No models match the filter.</div>}
       <div className="muted" style={{ marginTop: 8 }}>
         The router (§30) uses this capability metadata rather than hard-coded model names.

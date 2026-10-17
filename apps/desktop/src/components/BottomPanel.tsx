@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { api, AuditRecord } from '../api';
+import { useLang } from '../i18n';
 
 const TABS = ['AI Activity', 'Terminal', 'Tests', 'Logs', 'Evidence'] as const;
 
 /** §3 bottom panel. AI Activity streams the immutable audit log (§70). */
 export function BottomPanel() {
+  const { t } = useLang();
   const [tab, setTab] = useState<(typeof TABS)[number]>('AI Activity');
   const [records, setRecords] = useState<AuditRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -45,8 +47,8 @@ export function BottomPanel() {
       <div className="bottom-body">
         {tab === 'AI Activity' && (
           <div className="activity">
-            {err && <span className="pill warn">审计日志加载失败：{err}</span>}
-            {!err && loading && records.length === 0 && <span className="muted">加载中…</span>}
+            {err && <span className="pill warn">{t('bottom.auditLoadFailed', { message: err })}</span>}
+            {!err && loading && records.length === 0 && <span className="muted">{t('bottom.loading')}</span>}
             {!err && !loading && records.length === 0 && <span className="muted">No activity yet.</span>}
             {records.map((r) => (
               <div key={r.id} className="act-row">
