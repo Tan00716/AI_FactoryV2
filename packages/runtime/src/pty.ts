@@ -403,8 +403,33 @@ function normalizeOptions(opts: ShellRunOptions): Required<Omit<ShellRunOptions,
   };
 }
 
+/**
+ * Strip the server's own credential env vars before a child process
+ * inherits the environment (§46.2, H4 audit). Without this, any
+ * operator who can run a command (`printenv`) recovers
+ * FACTORY_API_TOKEN / FACTORY_API_TOKENS / FACTORY_SECRET_* in
+ * plaintext — a straight operator→admin privilege escalation, since
+ * the API token is the admin credential. Secrets reach children only
+ * through explicit secretEnv injection (which output redaction then
+ * covers); the ambient inheritance carried them silently.
+ *
+ * Only credential material is removed — the two API token names
+ * (exact) and every FACTORY_SECRET_* value (prefix); backend config
+ * (FACTORY_SECRETS_DIR/BACKEND), PATH, HOME, DB_PATH and everything
+ * else pass through untouched.
+ */
+const CREDENTIAL_ENV_RE = /^(FACTORY_API_TOKEN$|FACTORY_API_TOKENS$|FACTORY_SECRET_)/;
+
+export function scrubCredentialEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  for (const key of Object.keys(out)) {
+    if (CREDENTIAL_ENV_RE.test(key)) delete out[key];
+  }
+  return out;
+}
+
 function childEnv(opts: ShellRunOptions, pty: boolean): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
+  const env: NodeJS.ProcessEnv = { ...scrubCredentialEnv(process.env), ...(opts.env ?? {}) };
   // A real terminal session carries a TERM; without one, color- and
   // capability-aware programs cannot behave as they do on a terminal.
   // Only fill it in when nothing in the chain set one.

@@ -188,6 +188,27 @@ describe('Secret Broker on the real server (§46.2)', () => {
       assert.equal(execMissing.body['error'], 'secret not found: secret://ghost');
       assert.ok(!execMissing.text.includes('should-not-run-marker'));
 
+      // H4: a secret pasted inline into the command (not via secretEnv)
+      // must not reach the echoed response or the audit chain — the
+      // audit dump scanned below covers the entity_id side.
+      const execInline = await call('POST', '/api/exec', ADMIN, {
+        command: `echo inline-${SENTINEL}-tail`,
+      });
+      assert.equal(execInline.status, 200);
+      assert.ok(!String(execInline.body['command']).includes(SENTINEL), 'inline secret leaked into echoed command');
+      assert.ok(String(execInline.body['command']).includes('***'), 'inline secret not redacted in echoed command');
+      assert.ok(!String(execInline.body['output']).includes(SENTINEL), 'inline secret leaked into exec output');
+
+      // H4: the child env no longer inherits the server's own
+      // credentials — printenv must not reveal the API tokens
+      // (operator→admin privilege escalation otherwise).
+      const execEnv = await call('POST', '/api/exec', OPERATOR, { command: 'printenv' });
+      assert.equal(execEnv.status, 200);
+      const envOut = String(execEnv.body['output']);
+      assert.ok(!envOut.includes(ADMIN), 'admin API token leaked into child env');
+      assert.ok(!envOut.includes(OPERATOR), 'operator API token leaked into child env');
+      assert.ok(!envOut.includes(VIEWER), 'viewer API token leaked into child env');
+
       // Rotation replaces the value (still never visible anywhere).
       const rotated = await call('PUT', '/api/secrets/deploy-key', ADMIN, { value: SENTINEL_ROTATED });
       assert.equal(rotated.status, 200);

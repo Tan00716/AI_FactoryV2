@@ -174,6 +174,7 @@ export type SecretAuditAction =
   | 'SECRET_LEASED'
   | 'SECRET_LEASE_REVOKED'
   | 'SECRET_NOT_FOUND'
+  | 'SECRET_REDACTION_SCAN'
   | 'SECRET_BACKEND_ERROR';
 
 /**

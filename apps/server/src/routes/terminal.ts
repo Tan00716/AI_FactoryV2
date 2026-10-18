@@ -240,13 +240,25 @@ export async function handleTerminalRoutes(
       );
 
     // AI line denials are audited (values never: only the caller's own
-    // refused line and the policy reason).
+    // refused line and the policy reason). The refused line is redacted
+    // against known secret values first (H4 audit): a denied line can
+    // itself contain a pasted secret, and the audit chain is
+    // viewer-readable. Redact-then-slice: slicing first could leave a
+    // partial secret visible.
     session.onDenied(({ line, reason }) => {
-      ctx.audit.record(actor, 'AI_LINE_DENIED', 'terminal', session.id, {
-        principal,
-        line: line.slice(0, 120),
-        reason,
-      });
+      const record = (safeLine: string) =>
+        ctx.audit.record(actor, 'AI_LINE_DENIED', 'terminal', session.id, {
+          principal,
+          line: safeLine.slice(0, 120),
+          reason,
+        });
+      if (ctx.secretBroker) {
+        ctx.secretBroker
+          .redactKnownValues(line, { actor, purpose: 'terminal denied line audit' })
+          .then(record, () => record(line));
+      } else {
+        record(line);
+      }
     });
 
     ctx.audit.record(actor, 'SESSION_CREATE', 'terminal', session.id, {

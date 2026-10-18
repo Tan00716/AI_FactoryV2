@@ -55,6 +55,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { FactoryError } from './types';
+import { scrubCredentialEnv } from './pty';
 
 export type SessionPrincipal = 'human' | 'ai';
 
@@ -426,7 +427,7 @@ export class PtySession {
     }
     const rows = clampDim(opts.rows, 24);
     const cols = clampDim(opts.cols, 80);
-    const env: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
+    const env: NodeJS.ProcessEnv = { ...scrubCredentialEnv(process.env), ...(opts.env ?? {}) };
     if (env['TERM'] === undefined) env['TERM'] = 'xterm-256color';
     const child = spawn(
       pythonPath,

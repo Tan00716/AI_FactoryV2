@@ -282,6 +282,49 @@ export class SecretBroker {
     return deleted;
   }
 
+  /**
+   * Every secret value currently known to the broker, for redaction.
+   * Resolved with find() (no per-value audit record); the scan itself
+   * emits exactly one SECRET_REDACTION_SCAN audit event carrying
+   * identifiers only, never values. A backend that fails mid-scan
+   * degrades to partial coverage — redaction is best-effort defense
+   * in depth and must never break the caller.
+   */
+  async knownValues(opts: SecretAccessOptions): Promise<string[]> {
+    const names = (await this.list()).map((m) => m.name);
+    const values: string[] = [];
+    for (const name of names) {
+      try {
+        const hit = await this.find(name);
+        if (hit) values.push(hit.value);
+      } catch {
+        /* skip a failing backend entry; other values still redact */
+      }
+    }
+    this.audit({
+      action: 'SECRET_REDACTION_SCAN',
+      actor: opts.actor,
+      name: '*',
+      backend: null,
+      purpose: opts.purpose ?? null,
+    });
+    return values;
+  }
+
+  /**
+   * Redact every known secret value from a piece of text that is about
+   * to be persisted or echoed (audit entity ids, echoed commands,
+   * denied lines, captured output). A secret pasted inline — instead
+   * of injected by reference via secretEnv — must not land in the
+   * audit chain in plaintext, where viewer-role readers and DB backups
+   * could see it.
+   */
+  async redactKnownValues(text: string, opts: SecretAccessOptions): Promise<string> {
+    if (!text) return text;
+    const values = await this.knownValues(opts);
+    return redactSecretValues(text, values);
+  }
+
   /** Metadata for one ref — never throws on a miss (exists:false). */
   async describe(refOrName: string): Promise<SecretMetadata> {
     const name = parseSecretRef(refOrName);

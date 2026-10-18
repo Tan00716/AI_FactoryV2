@@ -29,8 +29,8 @@ import { dirname, relative, resolve, sep } from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
 import { UnverifiedBackend } from '@ai-factory/security';
-import { PtyUnavailableError, runCommandPty } from '@ai-factory/runtime';
-import { SecretNotFoundError, redactSecretValuesCounted } from '@ai-factory/secrets';
+import { PtyUnavailableError, runCommandPty, scrubCredentialEnv } from '@ai-factory/runtime';
+import { SecretNotFoundError, redactSecretValues, redactSecretValuesCounted } from '@ai-factory/secrets';
 import { recordRedactionHit } from '../redaction-monitor';
 
 const execFileAsync = promisify(execFile);
@@ -334,13 +334,37 @@ export async function handleExecRoutes(
     return true;
   }
 
+  // §46.2 defense in depth (H4 audit): a secret pasted inline into the
+  // command — instead of injected by reference via secretEnv — must not
+  // reach the audit chain (viewer-readable, baked into DB backups) or
+  // the echoed response in plaintext. The command still EXECUTES
+  // verbatim (tokens come from `command` below); only the display/audit
+  // copies use the redacted form. The same value set also redacts the
+  // captured output below (one scan covers both). Redaction never breaks
+  // execution: a broker failure degrades to the raw command and the
+  // injection-scoped values rather than refusing the run.
+  let displayCommand = command;
+  let redactionValues: readonly string[] = [];
+  if (ctx.secretBroker) {
+    try {
+      redactionValues = await ctx.secretBroker.knownValues({
+        actor,
+        purpose: 'exec redaction',
+      });
+      displayCommand = redactSecretValues(command, redactionValues);
+    } catch {
+      displayCommand = command;
+      redactionValues = [];
+    }
+  }
+
   // §7.5 fail-closed: autonomous (non-human) shell execution requires a
   // verified isolation backend. This server runs commands on the host
   // directly, so no backend can prove confinement — refuse outright.
   // Human terminals are unaffected.
   if (actor !== 'human') {
     const report = new UnverifiedBackend().verifyConfinement();
-    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
+    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', displayCommand.slice(0, 80), {
       reason: 'CONFINEMENT_UNAVAILABLE',
     });
     ctx.json(res, 403, {
@@ -359,7 +383,7 @@ export async function handleExecRoutes(
     tokens = checkCommandPolicy(command);
   } catch (err) {
     const denied = err as ExecPolicyDenied;
-    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
+    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', displayCommand.slice(0, 80), {
       reason: denied.reason,
     });
     ctx.json(res, 403, { error: denied.message });
@@ -380,7 +404,7 @@ export async function handleExecRoutes(
   // nor any argument may resolve inside it (or even name it — catches
   // `node -e` DB reads, `cat data/factory.db`, absolute paths, etc.).
   if (commandHitsControlDir(cwd, tokens)) {
-    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
+    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', displayCommand.slice(0, 80), {
       reason: 'control-plane data directory is off-limits',
     });
     ctx.json(res, 403, {
@@ -407,7 +431,7 @@ export async function handleExecRoutes(
   } catch (err) {
     const se = err as SecretEnvError;
     if (se.status !== 400) {
-      ctx.audit.record(actor, 'EXEC_DENIED', 'exec', command.slice(0, 80), {
+      ctx.audit.record(actor, 'EXEC_DENIED', 'exec', displayCommand.slice(0, 80), {
         reason: se.code,
         ...se.detail,
       });
@@ -415,6 +439,13 @@ export async function handleExecRoutes(
     ctx.json(res, se.status, { error: se.message, code: se.code });
     return true;
   }
+
+  // Output redaction covers every known value, not just this call's
+  // injections: with credential env scrubbed from childEnv, the
+  // remaining inline-paste risk is a value the command itself echoes
+  // back — and the broker-wide set already includes the injected ones.
+  const outputValues: readonly string[] =
+    redactionValues.length > 0 ? redactionValues : injectedValues;
 
   // 3d) opt-in real PTY (Batch 18) — identical policy, argv, secret
   // injection and output redaction as the pipe path below; only the
@@ -430,17 +461,17 @@ export async function handleExecRoutes(
         maxOutputBytes: 1024 * 1024,
       });
       const { text, truncated } = truncate(
-        redactExecOutput(r.stdout, injectedValues, command, actor, ctx),
+        redactExecOutput(r.stdout, outputValues, displayCommand, actor, ctx),
       );
       const isTruncated = truncated || r.truncated;
       if (r.timedOut) {
-        ctx.audit.record(actor, 'EXEC_TIMEOUT', 'exec', command.slice(0, 80), {
+        ctx.audit.record(actor, 'EXEC_TIMEOUT', 'exec', displayCommand.slice(0, 80), {
           cwd,
           code: r.exitCode,
           pty: true,
         });
       } else {
-        ctx.audit.record(actor, 'EXEC_RUN', 'exec', command.slice(0, 80), {
+        ctx.audit.record(actor, 'EXEC_RUN', 'exec', displayCommand.slice(0, 80), {
           cwd,
           truncated: isTruncated,
           pty: true,
@@ -454,7 +485,7 @@ export async function handleExecRoutes(
       }
       ctx.json(res, 200, {
         ok: r.exitCode === 0 && !r.timedOut,
-        command,
+        command: displayCommand,
         cwd,
         output: text,
         truncated: isTruncated,
@@ -465,7 +496,7 @@ export async function handleExecRoutes(
       return true;
     } catch (err) {
       if (err instanceof PtyUnavailableError) {
-        ctx.audit.record(actor, 'EXEC_FAILED', 'exec', command.slice(0, 80), {
+        ctx.audit.record(actor, 'EXEC_FAILED', 'exec', displayCommand.slice(0, 80), {
           reason: err.message,
           pty: true,
         });
@@ -485,18 +516,22 @@ export async function handleExecRoutes(
       cwd,
       timeout: TIMEOUT_MS,
       maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, ...injectedEnv },
+      // §46.2 (H4): the child never inherits the server's own credential
+      // env vars (FACTORY_API_TOKEN[S], FACTORY_SECRET_*) — secrets enter
+      // only through explicit secretEnv injection, whose values the
+      // output redaction below covers.
+      env: { ...scrubCredentialEnv(process.env), ...injectedEnv },
     });
     const { text, truncated } = truncate(
       redactExecOutput(
         stdout + (stderr ? `\n[stderr]\n${stderr}` : ''),
-        injectedValues,
-        command,
+        outputValues,
+        displayCommand,
         actor,
         ctx,
       ),
     );
-    ctx.audit.record(actor, 'EXEC_RUN', 'exec', command.slice(0, 80), {
+    ctx.audit.record(actor, 'EXEC_RUN', 'exec', displayCommand.slice(0, 80), {
       cwd,
       truncated,
       ...(injectedValues.length
@@ -506,7 +541,7 @@ export async function handleExecRoutes(
           }
         : {}),
     });
-    ctx.json(res, 200, { ok: true, command, cwd, output: text, truncated, exitCode: 0 });
+    ctx.json(res, 200, { ok: true, command: displayCommand, cwd, output: text, truncated, exitCode: 0 });
     return true;
   } catch (err) {
     const e = err as {
@@ -521,19 +556,19 @@ export async function handleExecRoutes(
     const { text, truncated } = truncate(
       redactExecOutput(
         out.trim() || (timedOut ? `command timed out after ${TIMEOUT_MS / 1000}s` : (e.message ?? 'failed')),
-        injectedValues,
-        command,
+        outputValues,
+        displayCommand,
         actor,
         ctx,
       ),
     );
-    ctx.audit.record(actor, timedOut ? 'EXEC_TIMEOUT' : 'EXEC_FAILED', 'exec', command.slice(0, 80), {
+    ctx.audit.record(actor, timedOut ? 'EXEC_TIMEOUT' : 'EXEC_FAILED', 'exec', displayCommand.slice(0, 80), {
       cwd,
       code: e.code ?? null,
     });
     ctx.json(res, 200, {
       ok: false,
-      command,
+      command: displayCommand,
       cwd,
       output: text,
       truncated,

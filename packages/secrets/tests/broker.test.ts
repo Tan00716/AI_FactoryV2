@@ -210,3 +210,31 @@ describe('redactSecretValuesCounted (Batch 42)', () => {
     assert.equal(redactSecretValues(text, values), redactSecretValuesCounted(text, values).text);
   });
 });
+
+describe('knownValues / redactKnownValues (H4)', () => {
+  it('redacts every known value from text', async () => {
+    const { broker } = makeBroker();
+    await broker.set('k1', 'alpha-secret-1', { actor: 'admin' });
+    await broker.set('k2', 'beta-secret-2', { actor: 'admin' });
+    const out = await broker.redactKnownValues('run alpha-secret-1 then beta-secret-2 ok', { actor: 'exec' });
+    assert.equal(out, 'run *** then *** ok');
+  });
+
+  it('knownValues audits exactly one scan and never carries values', async () => {
+    const { broker, events } = makeBroker();
+    await broker.set('k1', SENTINEL, { actor: 'admin' });
+    events.length = 0;
+    const values = await broker.knownValues({ actor: 'exec', purpose: 'test' });
+    assert.deepEqual(values, [SENTINEL]);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].action, 'SECRET_REDACTION_SCAN');
+    assert.ok(!JSON.stringify(events).includes(SENTINEL), 'audit must not carry the value');
+  });
+
+  it('leaves text unchanged when empty or when no secrets exist', async () => {
+    const { broker } = makeBroker();
+    assert.equal(await broker.redactKnownValues('', { actor: 'x' }), '');
+    assert.equal(await broker.redactKnownValues('hello', { actor: 'x' }), 'hello');
+    assert.deepEqual(await broker.knownValues({ actor: 'x' }), []);
+  });
+});
