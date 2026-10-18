@@ -7,6 +7,7 @@
   --text: #d4d4d4;
   --muted: #858585;
   --accent: #007acc;
+  --accent-text: #79c0ff; /* 深色底上的文字用 accent（#007acc 做文字对比度仅 3.7:1） */
   --green: #4ec9b0;
   --red: #f48771;
   --yellow: #dcdcaa;
@@ -75,7 +76,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 sys
 .feed-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
 .feed-card h5 { margin: 0 0 6px; font-size: 14px; }
 .feed-field { margin: 6px 0; font-size: 12px; }
-.feed-field .lbl { color: var(--accent); font-weight: 600; margin-right: 4px; }
+.feed-field .lbl { color: var(--accent-text); font-weight: 600; margin-right: 4px; }
 .feed-actions { display: flex; gap: 8px; margin-top: 10px; }
 .feed-decided { color: var(--muted); font-style: italic; }
 .muted { color: var(--muted); }
@@ -87,8 +88,16 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 sys
 .center-tabs button { white-space: nowrap; flex: 0 0 auto; }
 .center-tabs button, .bottom-tabs button {
   background: none; border: none; color: var(--muted); padding: 8px 14px; cursor: pointer; font-size: 13px;
+  position: relative;
 }
-.center-tabs button.active, .bottom-tabs button.active { color: var(--text); border-bottom: 2px solid var(--accent); }
+/* 选中指示条：::after 缩放动画替代原来的 border-bottom 硬切换 */
+.center-tabs button::after, .bottom-tabs button::after {
+  content: ''; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px;
+  background: var(--accent); border-radius: 1px;
+  transform: scaleX(0); transform-origin: center;
+}
+.center-tabs button.active, .bottom-tabs button.active { color: var(--text); }
+.center-tabs button.active::after, .bottom-tabs button.active::after { transform: scaleX(1); }
 .banner { margin: 8px 12px; padding: 8px 12px; border-radius: 4px; }
 .banner.err, .err { color: var(--red); }
 
@@ -179,7 +188,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .view-toggle button { border: 0; border-radius: 0; padding: 4px 14px; }
 .view-toggle button.active { background: var(--accent); color: #fff; }
 .clickable { cursor: pointer; }
-.clickable:hover { color: var(--accent); }
+.clickable:hover { color: var(--accent-text); }
 .org-name.clickable:hover { text-decoration: underline; }
 
 /* ---------- §85 完整看板 ---------- */
@@ -224,11 +233,11 @@ ul.plain li { padding: 5px 0; border-bottom: 1px solid var(--border); font-size:
 
 /* ---------- Activity / Events / Models panels (§67, §68, §90, §91) ---------- */
 .act-ts { min-width: 78px; }
-.link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; text-decoration: underline; }
+.link { background: none; border: 0; padding: 0; color: var(--accent-text); cursor: pointer; text-decoration: underline; }
 .link:hover { border: 0; }
 button.run-row { display: flex; width: 100%; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; color: var(--text); cursor: pointer; }
 button.run-row:hover { border-color: var(--accent); }
-.pill-event { color: var(--accent); border-color: var(--accent); }
+.pill-event { color: var(--accent-text); border-color: var(--accent-text); }
 .pill.ok { color: var(--green); border-color: var(--green); }
 .filter-box { margin: 8px 0 12px; }
 .filter-grid { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -239,3 +248,29 @@ button.run-row:hover { border-color: var(--accent); }
 .data-table th, .data-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
 .data-table th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 1px; }
 .data-table code { font-size: 11px; }
+
+/* ---------- 键盘焦点可见性（QA-R2） ---------- */
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible,
+a:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+
+/* ---------- 微交互（QA-R2）：克制的过渡，尊重 reduced-motion ---------- */
+@media (prefers-reduced-motion: no-preference) {
+  button { transition: background-color .15s ease, border-color .15s ease, color .15s ease; }
+  button:active { transform: translateY(1px); }
+  .card { transition: border-color .15s ease, box-shadow .15s ease; }
+  .card:hover { box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+  .center-tabs button, .bottom-tabs button { transition: color .15s ease; }
+  .center-tabs button::after, .bottom-tabs button::after { transition: transform .18s ease; }
+  .modal-backdrop { animation: r2-fade .15s ease; }
+  .modal { animation: r2-pop .18s ease; }
+  .detail { animation: r2-slide .2s ease; }
+  .toast { animation: r2-toast .2s ease; }
+  .org-row { transition: background-color .12s ease; }
+  .filter-chip { transition: background-color .15s ease, border-color .15s ease, color .15s ease; }
+}
+@keyframes r2-fade { from { opacity: 0; } }
+@keyframes r2-pop { from { opacity: 0; transform: translateY(6px) scale(.98); } }
+@keyframes r2-slide { from { opacity: 0; transform: translateX(28px); } }
+@keyframes r2-toast { from { opacity: 0; transform: translate(-50%, 10px); } }
