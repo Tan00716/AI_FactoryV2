@@ -259,6 +259,32 @@ export const BUILTIN_TOOLS: readonly ToolMetadata[] = [
     approvalPolicy: 'AUTO',
   },
   {
+    id: 'web_search',
+    version: V,
+    source: 'builtin',
+    category: 'Browser',
+    implementationStatus: 'implemented',
+    inputSchema: {
+      query: { type: 'string', required: true },
+      count: { type: 'number' },
+    },
+    outputSchema: {
+      provider: { type: 'string' },
+      promptSafe: { type: 'string' },
+      results: { type: 'array' },
+    },
+    capabilities: ['browser.search'],
+    sideEffect: 'network',
+    networkRequirements: ['http/https'],
+    filesystemRequirements: [],
+    timeoutMs: 60_000,
+    idempotency: true,
+    cancelable: true,
+    reconcilable: false,
+    health: 'unknown',
+    approvalPolicy: 'AUTO',
+  },
+  {
     id: 'db.query',
     version: V,
     source: 'builtin',
@@ -436,6 +462,13 @@ export const BUILTIN_TOOL_NOTES: Readonly<Record<string, string>> = {
   'ci.pipeline': 'Real pipeline execution in @ai-factory/cicd (stages, gates, snapshots) behind the server cicd routes.',
   'deploy.run':
     'Real DeploymentService in @ai-factory/cicd (park/approve/resume across requests since Batch 16).',
+  'web_search':
+    'Real implementation in @ai-factory/search (pluggable providers: ' +
+    'Bing RSS default, Brave/Tavily keyed) behind POST /api/search and ' +
+    'the server HTTP-run web_search tool (operator allowlist ' +
+    'FACTORY_RUNTIME_TOOLS, granted under the network.access capability). ' +
+    'Results are quarantined as DATA via sanitizeUntrusted before any ' +
+    'prompt embedding.',
   'mcp.call':
     'MCP tools arrive via registered MCP servers (§34), not as factory builtins; this definition only fixes the category in the taxonomy.',
   'runtime.echo':

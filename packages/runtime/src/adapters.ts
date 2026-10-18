@@ -41,6 +41,21 @@ export type { CodexTransport } from './codex-transport';
 export interface AdapterInput {
   prompt: string;
   tools: string[];
+  /**
+   * W-E multimodal: image attachments on the task, as descriptors only.
+   * Adapters declaring vision:false MUST ignore these (they cannot see
+   * the bytes) — the prompt still names them so the agent knows they
+   * exist and where to fetch them. A future vision-capable adapter
+   * fetches bytes via GET /api/tasks/:taskId/attachments/:id.
+   */
+  images?: AdapterImageRef[];
+}
+
+/** Descriptor for one task image attachment (bytes fetched separately). */
+export interface AdapterImageRef {
+  id: string;
+  filename: string;
+  mimeType: string;
 }
 
 export interface ToolCall {

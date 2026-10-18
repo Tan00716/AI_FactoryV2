@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/security":"0.1.0"},"description":"Pluggable web search for agents: SearchProvider interface, no-key default provider, keyed providers (Brave/Tavily), failover client","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/search","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

@@ -13,6 +13,8 @@
  * the logic is unit-testable without a server.
  */
 import { createHttpClient, resolveToken, type HttpClient, type HttpResult } from './http.ts';
+import { readFileSync, statSync } from 'node:fs';
+import { basename, extname } from 'node:path';
 
 export const EXIT_OK = 0;
 export const EXIT_FAILED = 1;
@@ -76,7 +78,7 @@ export function usage(): string {
   return [
     'ai-factory — headless CLI for the AI Factory API',
     '',
-    '  exec [--prompt TEXT | stdin] [--project ID] [--agent ID] [--timeout-ms N] [--poll-ms N]',
+    '  exec [--prompt TEXT | stdin] [--project ID] [--agent ID] [--image a.png,b.jpg] [--timeout-ms N] [--poll-ms N]',
     '      Create a task from the prompt, dispatch an agent run, wait, print the result.',
     '  sessions list',
     '  sessions create --title TEXT [--project ID]',
@@ -119,9 +121,46 @@ export interface ExecRequest {
   prompt: string;
   projectId?: string;
   agentId?: string;
+  /** W-E: local image paths to attach to the task (comma-separated at the CLI). */
+  images?: string[];
   json: boolean;
   timeoutMs: number;
   pollMs: number;
+}
+
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+};
+
+/** W-E: upload one local image to the task's attachments. Throws on failure. */
+export async function uploadTaskImage(
+  http: HttpClient,
+  taskId: string,
+  filePath: string,
+): Promise<void> {
+  let stat;
+  try {
+    stat = statSync(filePath);
+  } catch {
+    throw new Error(`image not found: ${filePath}`);
+  }
+  if (!stat.isFile()) throw new Error(`not a file: ${filePath}`);
+  if (stat.size > 10 * 1024 * 1024) throw new Error(`image exceeds 10 MiB: ${filePath}`);
+  const mime = IMAGE_MIME_BY_EXT[extname(filePath).toLowerCase()];
+  if (!mime) throw new Error(`unsupported image type (png/jpg/webp/gif): ${filePath}`);
+  const dataBase64 = readFileSync(filePath).toString('base64');
+  const r = await http.request('POST', `/api/tasks/${encodeURIComponent(taskId)}/attachments`, {
+    filename: basename(filePath),
+    mimeType: mime,
+    dataBase64,
+  });
+  if (!r || r.status !== 201) {
+    throw new Error(`upload failed for ${filePath}: HTTP ${r?.status ?? 'request failed'}`);
+  }
 }
 
 /** exec: task → agent run → poll → result. */
@@ -152,6 +191,16 @@ export async function execCommand(req: ExecRequest, http: HttpClient): Promise<C
   const task = tr.body as Record<string, unknown>;
   const taskId = task && typeof task['id'] === 'string' ? String(task['id']) : null;
   if (!taskId) return { exitCode: EXIT_FAILED, output: ['error: server did not return a task id'] };
+
+  // W-E: attach images before the run starts. A failed upload is loud —
+  // the task exists, but the run must not proceed pretending it saw them.
+  for (const img of req.images ?? []) {
+    try {
+      await uploadTaskImage(http, taskId, img);
+    } catch (e) {
+      return { exitCode: EXIT_FAILED, output: [`error: ${(e as Error).message} (task ${taskId} created without it)`] };
+    }
+  }
 
   // Agent: explicit, else the first registered agent.
   let agentId = req.agentId;

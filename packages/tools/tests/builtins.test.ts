@@ -40,6 +40,7 @@ describe('builtin tool catalog (§33)', () => {
       'runtime.add',
       'runtime.echo',
       'test.run',
+      'web_search',
     ]);
   });
 

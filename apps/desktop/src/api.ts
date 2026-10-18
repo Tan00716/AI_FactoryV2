@@ -232,6 +232,11 @@ export interface TaskDetail {
   createdAt: string; updatedAt: string;
   completedAt: string | null; evidence: EvidenceItem[]; nextStates: NextState[];
 }
+/** W-E: one image attached to a task (mirrors the server attachment record). */
+export interface TaskAttachment {
+  id: string; taskId: string; filename: string; mimeType: string;
+  size: number; createdAt: string; sha256: string;
+}
 export interface OrgNode {
   agent: { id: string; displayName: string; jobTitle: string; status: string; autonomyLevel: number };
   children: OrgNode[];
@@ -600,6 +605,14 @@ export const api = {
     req<TaskSummary[]>(`/tasks${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`),
   createTask: (input: { projectId: string; title: string; goal?: string; priority?: string }) =>
     req<TaskDetail>('/tasks', { method: 'POST', body: JSON.stringify(input) }),
+  /** W-E multimodal: upload one image to a task (base64 data URL or raw base64). */
+  uploadTaskAttachment: (taskId: string, input: { filename: string; mimeType: string; dataBase64: string }) =>
+    req<{ attachment: TaskAttachment }>(`/tasks/${encodeURIComponent(taskId)}/attachments`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  listTaskAttachments: (taskId: string) =>
+    req<{ attachments: TaskAttachment[] }>(`/tasks/${encodeURIComponent(taskId)}/attachments`),
   task: (id: string) => req<TaskDetail>(`/tasks/${id}`),
   transition: (id: string, to: string, actor = 'human') =>
     req<{ ok: boolean; from: string; to: string; missing?: string[] }>(

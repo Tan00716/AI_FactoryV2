@@ -79,11 +79,13 @@ async function main(): Promise<number> {
       case 'exec': {
         const piped = await readStdinIfPiped();
         const prompt = opt(opts, 'prompt') ?? opt(opts, 'p') ?? (piped ?? '');
+        const imageOpt = opt(opts, 'image');
         const result = await execCommand(
           {
             prompt,
             projectId: opt(opts, 'project'),
             agentId: opt(opts, 'agent'),
+            images: imageOpt ? imageOpt.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
             json: asJson,
             timeoutMs: num('timeout-ms', DEFAULT_TIMEOUT_MS),
             pollMs: num('poll-ms', DEFAULT_POLL_MS),

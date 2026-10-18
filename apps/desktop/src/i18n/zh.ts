@@ -780,6 +780,12 @@ export const zh = {
   'createtask.titleRequired': '标题为必填项',
   'createtask.create': '创建（§9 — AI PM 会接手）',
   'createtask.cancel': '取消',
+  'createtask.attachImages': '附加图片',
+  'createtask.attachHint': '粘贴 / 拖拽 / 点击选择图片（png/jpg/webp/gif，单张 ≤10MB，最多 8 张）',
+  'createtask.removeImage': '移除图片',
+  'createtask.uploadingImages': '上传图片中…',
+  'createtask.imageTooLarge': '图片过大（单张 ≤10MB）：{name}',
+  'createtask.imageUploadFailed': '图片上传失败：{message}',
   // -- DiffViewer --
   'diff.title': '差异',
   'diff.close': '关闭',

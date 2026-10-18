@@ -237,6 +237,7 @@ export type Permission =
   | 'deploy.prod'
   | 'secret.read'
   | 'secret.write' // §44 full list: added additively (policy package needs it)
+  | 'network.access' // W-E: web_search tool — outbound search API calls (additive; no role default includes it, fail-closed)
   | 'agent.create'
   | 'agent.modify'
   | 'agent.delete'
@@ -260,6 +261,7 @@ export const ALL_PERMISSIONS: ReadonlyArray<Permission> = [
   'deploy.prod',
   'secret.read',
   'secret.write', // §44 full list: added additively (policy package needs it)
+  'network.access',
   'agent.create',
   'agent.modify',
   'agent.delete',

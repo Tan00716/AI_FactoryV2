@@ -782,6 +782,12 @@ export const en: Record<I18nKey, string> = {
   'createtask.titleRequired': 'Title is required',
   'createtask.create': 'Create (§9 — AI PM takes it from here)',
   'createtask.cancel': 'Cancel',
+  'createtask.attachImages': 'Attach images',
+  'createtask.attachHint': 'Paste / drag-drop / click to add images (png/jpg/webp/gif, ≤10MB each, max 8)',
+  'createtask.removeImage': 'Remove image',
+  'createtask.uploadingImages': 'Uploading images…',
+  'createtask.imageTooLarge': 'Image too large (≤10MB each): {name}',
+  'createtask.imageUploadFailed': 'Image upload failed: {message}',
   // -- DiffViewer --
   'diff.title': 'Diff',
   'diff.close': 'Close',

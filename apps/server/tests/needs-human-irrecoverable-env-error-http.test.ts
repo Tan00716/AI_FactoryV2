@@ -433,17 +433,21 @@ describe("§81 'irrecoverable-env-error' HTTP boundary (Batch 44)", () => {
   );
 
   it('the registered runtime tool set cannot throw an ENV_* FactoryError (boundary tripwire)', async () => {
-    // Pure in-process tools: no filesystem, shell, git or network
-    // effects — see the RUNTIME_TOOLS header note in routes/runtime.ts.
-    // If this set ever gains a tool that can throw MissingBinaryError /
-    // SandboxUnavailableError (or any FactoryError with an ENV_* code),
-    // the irrecoverable-env-error emission may become HTTP-reachable and
-    // this tripwire forces that re-examination. See the file header for
+    // echo/add are pure in-process tools: no filesystem, shell, git or
+    // network effects — see the RUNTIME_TOOLS header note in
+    // routes/runtime.ts. web_search (W-E) DOES perform outbound HTTPS,
+    // so it was re-examined before being added here: its implementation
+    // throws only plain Errors (SearchError extends Error; the fetch
+    // helper rejects with Error) — never MissingBinaryError /
+    // SandboxUnavailableError or any FactoryError with an ENV_* code.
+    // The irrecoverable-env-error emission therefore stays unreachable
+    // via tool impls, and this tripwire pins the set so the next tool
+    // addition forces the same re-examination. See the file header for
     // the full chain of why no HTTP input can produce an ENV_*
     // stagnation signature today.
     assert.deepEqual(
       [...RUNTIME_TOOL_NAMES].sort(),
-      ['add', 'echo'],
+      ['add', 'echo', 'web_search'],
       'registered runtime tools changed — re-examine the env-error HTTP boundary',
     );
   });

@@ -96,7 +96,9 @@ import {
   setRuntimeCheckpointLog,
   setRuntimeManifestStore,
   setRuntimeRunStore,
+  setTaskAttachmentLister,
 } from './routes/runtime';
+import { listTaskAttachments } from './attachment-store';
 import { handleOrchestratorRoutes } from './routes/orchestrator';
 import { handleDelegationRoutes, initDelegationRoutes } from './routes/delegations';
 import { handleGateRoutes } from './routes/gates';
@@ -119,6 +121,8 @@ import { handlePlanModeRoutes } from './routes/plan-mode';
 import { handleCommandRoutes } from './routes/commands';
 import { handleHookRoutes } from './routes/hooks';
 import { handleSessionRoutes } from './routes/sessions';
+import { handleSearchRoutes } from './routes/search';
+import { handleAttachmentRoutes } from './routes/attachments';
 import { handleReleaseRoutes } from './routes/releases';
 import { handlePolicyRoutes } from './routes/policy';
 import { handleExecRoutes } from './routes/exec';
@@ -490,6 +494,23 @@ setRuntimeManifestStore(fdb.runManifests);
  * coordinator's one wiring act, done before the server takes traffic.
  */
 setRuntimeCheckpointLog(checkpointLog);
+
+/**
+ * W-E multimodal — the runtime route resolves a task's image
+ * attachments through this lister (descriptors only; bytes stay
+ * server-side). Installed here, next to the other route installs.
+ */
+setTaskAttachmentLister((taskId: string) => {
+  try {
+    return listTaskAttachments(taskId).map((a) => ({
+      id: a.id,
+      filename: a.filename,
+      mimeType: a.mimeType,
+    }));
+  } catch {
+    return [];
+  }
+});
 
 /**
  * Backup/restore (Batch 13-3) — the routes in routes/backup.ts read
@@ -976,6 +997,8 @@ const server = createServer(async (req, res) => {
     if (await handleCommandRoutes(req, res, url, routeCtx)) return;
     if (await handleHookRoutes(req, res, url, routeCtx)) return;
     if (await handleSessionRoutes(req, res, url, routeCtx)) return;
+    if (await handleSearchRoutes(req, res, url, routeCtx)) return;
+    if (await handleAttachmentRoutes(req, res, url, routeCtx)) return;
     if (await handleReleaseRoutes(req, res, url, routeCtx)) return;
     if (await handlePolicyRoutes(req, res, url, routeCtx)) return;
     if (await handleExecRoutes(req, res, url, routeCtx)) return;

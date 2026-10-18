@@ -156,6 +156,7 @@ import {
   type TraceStep,
 } from '@ai-factory/runtime';
 import type { Agent, Permission, Task } from '@ai-factory/core';
+import { createDefaultProviders, createSearchClient, formatResultsForPrompt } from '@ai-factory/search';
 import { effectiveAuthorizationStatus } from '@ai-factory/core';
 import { needsHuman } from '@ai-factory/autonomy';
 import {
@@ -211,9 +212,12 @@ const DEFAULT_SCRIPT = [
 
 /**
  * The tools this route can execute. Registration is not a grant — see
- * the header note. The implementations are pure in-process functions:
- * no filesystem, shell, git or network effects, which is why the grant
- * below can hang them on the least-privilege read-only capability.
+ * the header note. echo/add are pure in-process functions (no
+ * filesystem, shell, git or network effects). web_search is the
+ * exception: it performs real outbound HTTPS calls to search providers,
+ * which is why it is granted under its own 'network.access' capability
+ * (RUNTIME_TOOL_GRANTS) instead of the read-only floor — and why the
+ * operator must still opt it in explicitly via FACTORY_RUNTIME_TOOLS.
  */
 const RUNTIME_TOOLS: Record<string, ToolImpl> = {
   echo: async (args) => ({ ok: true, echo: (args as { msg?: string }).msg ?? '' }),
@@ -221,27 +225,94 @@ const RUNTIME_TOOLS: Record<string, ToolImpl> = {
     const a = args as { a?: number; b?: number };
     return { ok: true, sum: (a.a ?? 0) + (a.b ?? 0) };
   },
+  /**
+   * W-E agent web search. Args: { query: string, count?: number }.
+   * Results come back prompt-safe: every snippet is quarantined as
+   * DATA via sanitizeUntrusted() (formatResultsForPrompt), so a
+   * poisoned result can never reach the model as an instruction.
+   * Keyed providers resolve keys from env only on this path (no
+   * RouteContext here — createDefaultProviders); POST /api/search
+   * additionally checks the vault.
+   * Throws plain Errors on provider failure — never a FactoryError, so
+   * the irrecoverable-env-error HTTP boundary is unaffected.
+   */
+  web_search: async (args) => {
+    const a = args as { query?: unknown; count?: unknown };
+    if (typeof a.query !== 'string' || !a.query.trim()) {
+      throw new Error('web_search: query is required');
+    }
+    const client = createSearchClient({ providers: createDefaultProviders() });
+    const outcome = await client.search(a.query, {
+      count: typeof a.count === 'number' ? a.count : 5,
+    });
+    return {
+      ok: true,
+      provider: outcome.provider,
+      promptSafe: formatResultsForPrompt(a.query.trim(), outcome),
+      results: outcome.results,
+    };
+  },
 };
 
 /** Names of the tools registered above — the allowlist's whole universe. */
 export const RUNTIME_TOOL_NAMES: readonly string[] = Object.keys(RUNTIME_TOOLS);
 
+/** One task image attachment descriptor (bytes stay server-side). */
+export interface RuntimeAttachmentRef {
+  id: string;
+  filename: string;
+  mimeType: string;
+}
+
+/**
+ * W-E — resolves a task's image attachment descriptors for runAgent.
+ * Module-level for the same reason as the checkpoint log above: the
+ * coordinator installs the store-backed lister at startup via
+ * setTaskAttachmentLister; the default is () => [] (standalone use,
+ * tests — wiring only, no durability). Kept as a hook (not a direct
+ * import of ../attachment-store) so this route stays importable from
+ * src under node type-stripping — see AGENTS.md dual-mode rule.
+ */
+export type TaskAttachmentLister = (taskId: string) => RuntimeAttachmentRef[];
+let taskAttachmentLister: TaskAttachmentLister = () => [];
+export function setTaskAttachmentLister(lister: TaskAttachmentLister): void {
+  taskAttachmentLister = lister;
+}
+
+/**
+ * Test seam: the registered tool implementations, exported so the
+ * server suite can invoke one directly (the HTTP run path only records
+ * ok/fail in trace/evidence, never the result payload). Not a grant —
+ * invocation still goes through the harness gate in real runs.
+ */
+export function getRuntimeToolImpl(name: string): ToolImpl | undefined {
+  return RUNTIME_TOOLS[name];
+}
+
 /** Env var carrying the operator's tool allowlist for HTTP runs. */
 export const RUNTIME_TOOLS_ENV = 'FACTORY_RUNTIME_TOOLS';
 
 /**
- * The capability a whitelisted tool is granted under. echo/add are pure
- * functions, so the grant hangs them on 'filesystem.read' — the
+ * The capability each whitelisted tool is granted under. echo/add are
+ * pure functions, so the grant hangs them on 'filesystem.read' — the
  * read-only floor every role default already holds — purely as the
  * capability token the harness gate checks (the same admission pattern
- * the server tests used before this allowlist existed). The route adds
- * this permission to the harness's permission set for a run ONLY when
- * at least one tool is allowlisted, and only tools present in
+ * the server tests used before this allowlist existed). web_search
+ * performs real outbound network calls, so it gets its own
+ * 'network.access' token instead: an operator who allowlists
+ * 'echo,add' does NOT implicitly grant network access, and no role
+ * default includes 'network.access' (fail-closed). The route adds a
+ * tool's grant permission to the harness's permission set for a run
+ * ONLY when that tool is allowlisted, and only tools present in
  * RUNTIME_TOOLS can ever be invoked — the runner refuses a tool call
  * with no implementation before the gate is even consulted — so the
  * grant cannot widen into real filesystem access through this route.
  */
-const RUNTIME_TOOL_GRANT_PERMISSION: Permission = 'filesystem.read';
+const RUNTIME_TOOL_GRANTS: Record<string, Permission> = {
+  echo: 'filesystem.read',
+  add: 'filesystem.read',
+  web_search: 'network.access',
+};
 
 /**
  * Parse FACTORY_RUNTIME_TOOLS: comma-separated tool names, whitespace
@@ -1365,23 +1436,30 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
         // to all be 'unknown-run'; the checkpoint capture reads a
         // run's active tools from its intents).
         runId: id,
-        // §26 — the allowlist grant: when at least one tool is
-        // granted, the grant capability joins this run's permission
-        // set (the agent's own permissions are never mutated, and
-        // with no grant this is exactly agent.permissions, as before).
-        permissions:
-          grantedTools.length > 0 &&
-          !agent.permissions.includes(RUNTIME_TOOL_GRANT_PERMISSION)
-            ? [...agent.permissions, RUNTIME_TOOL_GRANT_PERMISSION]
-            : agent.permissions,
-        // §26 — each granted tool is mapped to the grant capability
+        // §26 — the allowlist grant: each granted tool joins this run's
+        // permission set under its own grant capability (RUNTIME_TOOL_GRANTS;
+        // web_search gets 'network.access', pure tools get the read-only
+        // floor). The agent's own permissions are never mutated, and with
+        // no grant this is exactly agent.permissions, as before.
+        permissions: (() => {
+          const grantPerms = [
+            ...new Set(
+              grantedTools
+                .map((t) => RUNTIME_TOOL_GRANTS[t])
+                .filter((p): p is Permission => typeof p === 'string'),
+            ),
+          ];
+          const missing = grantPerms.filter((p) => !agent.permissions.includes(p));
+          return missing.length > 0 ? [...agent.permissions, ...missing] : agent.permissions;
+        })(),
+        // §26 — each granted tool is mapped to its grant capability
         // via the harness's supported toolPermissions override. No
         // allowlist → no override → the gate denies every tool,
         // exactly as before this mechanism existed.
         ...(grantedTools.length > 0
           ? {
               toolPermissions: Object.fromEntries(
-                grantedTools.map((t) => [t, RUNTIME_TOOL_GRANT_PERMISSION]),
+                grantedTools.map((t) => [t, RUNTIME_TOOL_GRANTS[t]]),
               ),
             }
           : {}),
@@ -1461,6 +1539,17 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
           : undefined,
         routeRequest:
           deps.routeRequest != null ? (deps.routeRequest as never) : undefined,
+        // W-E multimodal: resolve the task's image attachments (descriptors
+        // only — bytes stay server-side, fetched via the attachments route).
+        // Fail-open to []: a run must never die because attachment listing
+        // hiccuped; the prompt simply names no images.
+        attachments: (() => {
+          try {
+            return taskAttachmentLister(task.id);
+          } catch {
+            return [];
+          }
+        })(),
         // §28.4 — the resumed run's seeded baseline; absent for a
         // fresh run, where runAgent builds the tracker itself.
         ...(deps.budgetTracker ? { budgetTracker: deps.budgetTracker } : {}),
