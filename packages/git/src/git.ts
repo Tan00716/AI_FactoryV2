@@ -174,6 +174,22 @@ export class GitRepo {
     return this.run(ref ? ['diff', ref] : ['diff']);
   }
 
+  /**
+   * W-F — three-dot diff for PR review: `git diff base...head`
+   * (changes on `head` since it diverged from `base`).
+   * Refs are validated (no leading dash, no shell metacharacters —
+   * execFile takes an argv array, but a ref like `--output=x` would
+   * still be parsed as a flag, so the allowlist stands on its own).
+   */
+  async diffRange(base: string, head: string): Promise<string> {
+    for (const r of [base, head]) {
+      if (!/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(r)) {
+        throw new GitError(`diffRange: invalid ref "${r}"`);
+      }
+    }
+    return this.run(['diff', `${base}...${head}`]);
+  }
+
   /** §34 — branch list + current branch. */
   async branches(): Promise<BranchInfo> {
     const out = await this.run(['branch', '--format=%(refname:short)']);

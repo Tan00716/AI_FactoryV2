@@ -36,6 +36,11 @@ const PREFIX = '/api/skills';
 const registry = new SkillRegistry();
 installBuiltinSkills(registry);
 
+/** W-F: plugin routes register/unregister capabilities through this registry. */
+export function getSkillRegistry(): SkillRegistry {
+  return registry;
+}
+
 function summarize(s: Skill) {
   const latest = s.versions[s.versions.length - 1];
   return {

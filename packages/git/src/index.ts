@@ -2,6 +2,14 @@
  * @ai-factory/git — Git engine (spec §34). Public API surface.
  */
 export {
+  parseUnifiedDiff,
+  type DiffLineType,
+  type DiffLine,
+  type DiffHunk,
+  type DiffFile,
+  type ParsedDiff,
+} from './diff';
+export {
   GitRepo,
   GitError,
   type GitStatus,

@@ -86,6 +86,7 @@ import { handleApprovalRoutes } from './routes/approvals';
 import { handlePermissionTierRoutes } from './routes/permissions';
 import { handleCicdRoutes } from './routes/cicd';
 import { handleSkillsRoutes } from './routes/skills';
+import { handlePluginRoutes } from './routes/plugins';
 import { handleMemoryRoutes } from './routes/memory';
 import { handleModelRouterRoutes } from './routes/model-router';
 import {
@@ -978,6 +979,7 @@ const server = createServer(async (req, res) => {
     if (await handlePermissionTierRoutes(req, res, url, routeCtx)) return;
     if (await handleCicdRoutes(req, res, url, routeCtx)) return;
     if (await handleSkillsRoutes(req, res, url, routeCtx)) return;
+    if (await handlePluginRoutes(req, res, url, routeCtx)) return;
     if (await handleMemoryRoutes(req, res, url, routeCtx)) return;
     if (await handleModelRouterRoutes(req, res, url, routeCtx)) return;
     if (await handleRuntimeRoutes(req, res, url, routeCtx)) return;

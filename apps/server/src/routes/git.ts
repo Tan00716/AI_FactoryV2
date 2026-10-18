@@ -65,9 +65,17 @@ import {
   defaultBranchProtection,
   codeChangeEvidencePayload,
   mergeEvidencePayload,
+  parseUnifiedDiff,
   type GitAction,
   type GitBrokerContext,
 } from '@ai-factory/git';
+import { sanitizeUntrusted } from '@ai-factory/security';
+import {
+  ReviewStore,
+  REVIEW_DECISIONS,
+  ReviewStoreError,
+  type ReviewDecision,
+} from '../review-store';
 import type { RouteContext } from './context';
 import type { RecordBuildInput } from '@ai-factory/db';
 import {
@@ -132,6 +140,16 @@ function decisionAuditId(ctx: RouteContext, entryId: string): string | null {
 
 /** Env that tightens the git broker allowlist (comma-separated actions). */
 export const GIT_BROKER_ACTIONS_ENV = 'FACTORY_GIT_BROKER_ACTIONS';
+
+/**
+ * PR review store (W-F) — module-level singleton like the merge queues
+ * above. Reads AI_FACTORY_REVIEW_STORE_FILE at import time; corrupt file
+ * → fail-closed (refuses writes, serves empty).
+ */
+const reviewStore = new ReviewStore();
+
+/** Max raw diff bytes served for PR review (larger diffs truncate, flagged). */
+export const PR_DIFF_LIMIT = 2 * 1024 * 1024;
 
 /** The write actions the routes in this module perform — the default
  *  broker allowlist when the env does not narrow it. */
@@ -316,6 +334,68 @@ export async function handleGitRoutes(
       const ref = str(url.searchParams.get('ref'));
       const diff = await new GitRepo(repo).diff(ref);
       return ctx.json(res, 200, { diff }), true;
+    }
+
+    // --------------------------------- W-F PR review reads -------------
+
+    if (method === 'GET' && path === '/api/git/prs') {
+      const status = str(url.searchParams.get('status'));
+      const prs = ctx.fdb.prStore.list();
+      return (
+        ctx.json(res, 200, { prs: status ? prs.filter((p) => p.status === status) : prs }),
+        true
+      );
+    }
+
+    const prDiffMatch = path.match(/^\/api\/git\/pr\/([^/]+)\/diff$/);
+    if (method === 'GET' && prDiffMatch) {
+      let pr;
+      try {
+        pr = ctx.fdb.prStore.get(prDiffMatch[1]);
+      } catch (e) {
+        return ctx.json(res, 404, { error: (e as Error).message }), true;
+      }
+      // PR records don't bind a repo (only the audit trail does), so the
+      // caller names the repo to diff in — same convention as /api/git/diff.
+      const repo = str(url.searchParams.get('repo'));
+      if (!repo) return ctx.json(res, 400, { error: 'repo query param is required' }), true;
+      let raw: string;
+      try {
+        raw = await new GitRepo(repo).diffRange(pr.targetBranch, pr.sourceBranch);
+      } catch (e) {
+        return ctx.json(res, gitErrorStatus(e), { error: (e as Error).message }), true;
+      }
+      const truncated = raw.length > PR_DIFF_LIMIT;
+      const parsed = parseUnifiedDiff(truncated ? raw.slice(0, PR_DIFF_LIMIT) : raw);
+      return (
+        ctx.json(res, 200, {
+          prId: pr.id,
+          sourceBranch: pr.sourceBranch,
+          targetBranch: pr.targetBranch,
+          truncated,
+          files: parsed.files,
+        }),
+        true
+      );
+    }
+
+    const prGetMatch = path.match(/^\/api\/git\/pr\/([^/]+)$/);
+    if (method === 'GET' && prGetMatch) {
+      let pr;
+      try {
+        pr = ctx.fdb.prStore.get(prGetMatch[1]);
+      } catch (e) {
+        return ctx.json(res, 404, { error: (e as Error).message }), true;
+      }
+      return (
+        ctx.json(res, 200, {
+          pr,
+          comments: reviewStore.commentsFor(pr.id),
+          reviews: reviewStore.reviewsFor(pr.id),
+          reviewState: reviewStore.reviewState(pr.id),
+        }),
+        true
+      );
     }
 
     if (method === 'GET' && path === '/api/git/merge-queue') {
@@ -720,6 +800,84 @@ export async function handleGitRoutes(
       await g.push('origin', branch, { audit: auditHook(actor) });
       ctx.audit.record(actor, 'GIT_PUSH', 'git', repo, { branch: target });
       return ctx.json(res, 200, { ok: true, branch: target }), true;
+    }
+
+    // -------------------------------- W-F PR review writes -------------
+
+    const prCommentMatch = path.match(/^\/api\/git\/pr\/([^/]+)\/comments$/);
+    if (method === 'POST' && prCommentMatch) {
+      const b = await ctx.readBody(req);
+      const prId = prCommentMatch[1];
+      try {
+        ctx.fdb.prStore.get(prId);
+      } catch (e) {
+        return ctx.json(res, 404, { error: (e as Error).message }), true;
+      }
+      const body = str(b['body']);
+      if (!body) return ctx.json(res, 400, { error: 'body is required' }), true;
+      const actor = str(b['author']) ?? 'human';
+      // Untrusted external content: quarantine as DATA before storing.
+      const clean = sanitizeUntrusted(body).sanitized;
+      const file = str(b['file']);
+      const lineRaw = b['line'];
+      const line = typeof lineRaw === 'number' ? lineRaw : null;
+      const side = b['side'] === 'old' ? ('old' as const) : ('new' as const);
+      try {
+        const comment = reviewStore.addComment({
+          prId,
+          file: file ?? null,
+          line,
+          side,
+          body: clean,
+          author: actor,
+        });
+        ctx.audit.record(actor, 'PR_COMMENT_ADDED', 'pr', prId, {
+          commentId: comment.id,
+          file: file ?? null,
+          line,
+        });
+        return ctx.json(res, 201, comment), true;
+      } catch (e) {
+        const status = e instanceof ReviewStoreError ? 400 : 500;
+        return ctx.json(res, status, { error: (e as Error).message }), true;
+      }
+    }
+
+    const prReviewMatch = path.match(/^\/api\/git\/pr\/([^/]+)\/review$/);
+    if (method === 'POST' && prReviewMatch) {
+      const b = await ctx.readBody(req);
+      const prId = prReviewMatch[1];
+      try {
+        ctx.fdb.prStore.get(prId);
+      } catch (e) {
+        return ctx.json(res, 404, { error: (e as Error).message }), true;
+      }
+      const decision = str(b['decision']);
+      if (!decision || !(REVIEW_DECISIONS as readonly string[]).includes(decision)) {
+        return (
+          ctx.json(res, 400, { error: `decision must be one of ${REVIEW_DECISIONS.join(', ')}` }),
+          true
+        );
+      }
+      const reviewer = str(b['reviewer']) ?? 'human';
+      const summaryRaw = str(b['summary']) ?? '';
+      const summary = summaryRaw ? sanitizeUntrusted(summaryRaw).sanitized : '';
+      try {
+        const review = reviewStore.addReview({
+          prId,
+          decision: decision as ReviewDecision,
+          summary,
+          reviewer,
+        });
+        ctx.audit.record(reviewer, 'PR_REVIEW_RECORDED', 'pr', prId, {
+          reviewId: review.id,
+          decision,
+        });
+        return ctx.json(res, 201, review), true;
+      } catch (e) {
+        const status = e instanceof ReviewStoreError ? 400 : 500;
+        return ctx.json(res, status, { error: (e as Error).message }), true;
+      }
     }
 
     return false;

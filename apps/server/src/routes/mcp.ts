@@ -76,6 +76,11 @@ const PREFIX = '/api/mcp';
 const registry = new McpRegistry();
 const manager = new McpManager(registry);
 const gate = new ToolCallGate({ registry, manager });
+
+/** W-F: plugin routes register/unregister capability servers through this registry. */
+export function getMcpRegistry(): McpRegistry {
+  return registry;
+}
 // Process table for launched stdio MCP servers. One instance per
 // process — launches die with the server, and that is stated in
 // KNOWN_LIMITATIONS (same honesty as the merge queue / PrStore).

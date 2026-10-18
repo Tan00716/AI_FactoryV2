@@ -42,6 +42,63 @@ export interface GitPr {
   mergedAt: string | null;
 }
 
+// ------------------------------------------------- W-F PR review ----
+
+export interface PrDiffLine {
+  type: 'context' | 'add' | 'del';
+  oldNo: number | null;
+  newNo: number | null;
+  text: string;
+}
+
+export interface PrDiffHunk {
+  header: string;
+  lines: PrDiffLine[];
+}
+
+export interface PrDiffFile {
+  from: string;
+  to: string;
+  change: 'added' | 'deleted' | 'modified' | 'renamed';
+  binary: boolean;
+  hunks: PrDiffHunk[];
+}
+
+export interface PrComment {
+  id: string;
+  prId: string;
+  file: string | null;
+  line: number | null;
+  side: 'new' | 'old';
+  body: string;
+  author: string;
+  createdAt: string;
+}
+
+export interface PrReview {
+  id: string;
+  prId: string;
+  decision: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
+  summary: string;
+  reviewer: string;
+  createdAt: string;
+}
+
+export interface PrDetail {
+  pr: GitPr;
+  comments: PrComment[];
+  reviews: PrReview[];
+  reviewState: { decision: PrReview['decision']; reviewer: string; at: string }[];
+}
+
+export interface PrDiff {
+  prId: string;
+  sourceBranch: string;
+  targetBranch: string;
+  truncated: boolean;
+  files: PrDiffFile[];
+}
+
 /** Typed client for the /api/git routes. */
 export interface GitApi {
   status(repo: string): Promise<GitStatus>;
@@ -74,6 +131,18 @@ export interface GitApi {
     actor?: string,
   ): Promise<{ ok: boolean; pr: GitPr }>;
   push(repo: string, branch?: string, actor?: string): Promise<{ ok: boolean; branch: string }>;
+  // W-F PR review
+  listPrs(status?: string): Promise<{ prs: GitPr[] }>;
+  getPr(prId: string): Promise<PrDetail>;
+  prDiff(prId: string, repo: string): Promise<PrDiff>;
+  addComment(
+    prId: string,
+    input: { file?: string | null; line?: number | null; side?: 'new' | 'old'; body: string },
+  ): Promise<PrComment>;
+  submitReview(
+    prId: string,
+    input: { decision: PrReview['decision']; summary?: string },
+  ): Promise<PrReview>;
 }
 
 /** Local copy of the `req` helper pattern from apps/desktop/src/api.ts. */
@@ -136,6 +205,21 @@ export function createGitApi(base: string): GitApi {
       req<{ ok: boolean; branch: string }>('/git/push', {
         method: 'POST',
         body: JSON.stringify({ repo, branch, actor }),
+      }),
+    listPrs: (status) =>
+      req<{ prs: GitPr[] }>(`/git/prs${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+    getPr: (prId) => req<PrDetail>(`/git/pr/${encodeURIComponent(prId)}`),
+    prDiff: (prId, repo) =>
+      req<PrDiff>(`/git/pr/${encodeURIComponent(prId)}/diff?repo=${encodeURIComponent(repo)}`),
+    addComment: (prId, input) =>
+      req<PrComment>(`/git/pr/${encodeURIComponent(prId)}/comments`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    submitReview: (prId, input) =>
+      req<PrReview>(`/git/pr/${encodeURIComponent(prId)}/review`, {
+        method: 'POST',
+        body: JSON.stringify(input),
       }),
   };
 }
@@ -308,6 +392,284 @@ export function GitPanel({ api }: { api: GitApi }) {
       <pre className="code-sample" style={{ whiteSpace: 'pre-wrap', maxHeight: 320, overflowY: 'auto' }}>
         {diff || <span className="muted">{t('git.noChanges')}</span>}
       </pre>
+
+      <PrReviewSection api={api} repo={repo} />
+    </div>
+  );
+}
+
+// ------------------------------------------------- W-F PR review UI ----
+
+function PrReviewSection({ api, repo }: { api: GitApi; repo: string }) {
+  const { t } = useLang();
+  const [prs, setPrs] = useState<GitPr[]>([]);
+  const [sel, setSel] = useState<string | null>(null);
+  const [detail, setDetail] = useState<PrDetail | null>(null);
+  const [diff, setDiff] = useState<PrDiff | null>(null);
+  const [openFile, setOpenFile] = useState<string | null>(null);
+  const [cFile, setCFile] = useState('');
+  const [cLine, setCLine] = useState('');
+  const [cBody, setCBody] = useState('');
+  const [summary, setSummary] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await api.listPrs();
+      setPrs(r.prs);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t('git.opFailed'));
+    }
+  }, [api, t]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const open = async (id: string) => {
+    setErr(null);
+    setBusy(true);
+    setSel(id);
+    try {
+      const [d, df] = await Promise.all([
+        api.getPr(id),
+        repo ? api.prDiff(id, repo).catch(() => null) : Promise.resolve(null),
+      ]);
+      setDetail(d);
+      setDiff(df);
+      setOpenFile(null);
+      setCFile('');
+      setCLine('');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t('git.opFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refreshDetail = async (id: string) => {
+    const d = await api.getPr(id);
+    setDetail(d);
+  };
+
+  const postComment = async () => {
+    if (!sel || !cBody.trim()) return;
+    setErr(null);
+    setBusy(true);
+    try {
+      await api.addComment(sel, {
+        file: cFile || null,
+        line: cLine ? Number(cLine) : null,
+        body: cBody,
+      });
+      setCBody('');
+      await refreshDetail(sel);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t('git.opFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const postReview = async (decision: PrReview['decision']) => {
+    if (!sel) return;
+    setErr(null);
+    setBusy(true);
+    try {
+      await api.submitReview(sel, { decision, summary });
+      setSummary('');
+      await refreshDetail(sel);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t('git.opFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Click a diff line to target the comment form at file/line. */
+  const targetLine = (file: string, l: PrDiffLine) => {
+    setCFile(file);
+    setCLine(l.type === 'del' ? String(l.oldNo ?? '') : String(l.newNo ?? ''));
+  };
+
+  return (
+    <div>
+      <h4 style={{ margin: '12px 0 4px' }}>{t('git.review.title')}</h4>
+      {err && <div className="banner err">{err}</div>}
+      {prs.length === 0 && <div className="muted">{t('git.review.noPrs')}</div>}
+      {prs.map((p) => (
+        <div
+          key={p.id}
+          onClick={() => void open(p.id)}
+          style={{
+            cursor: 'pointer',
+            padding: '6px 8px',
+            marginBottom: 4,
+            borderRadius: 4,
+            background: sel === p.id ? 'var(--bg-hover, #1c2128)' : 'transparent',
+            border: '1px solid var(--border, #2d333b)',
+          }}
+        >
+          <span className="pill">{p.status}</span>{' '}
+          <strong style={{ fontSize: 13 }}>{p.title}</strong>
+          <div className="muted" style={{ fontSize: 12 }}>
+            {p.sourceBranch} → {p.targetBranch} · {p.createdBy}
+          </div>
+        </div>
+      ))}
+
+      {detail && (
+        <div style={{ marginTop: 8, borderTop: '1px solid var(--border, #2d333b)', paddingTop: 8 }}>
+          <h5 style={{ margin: '4px 0' }}>{detail.pr.title}</h5>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+            {detail.reviewState.map((s) => (
+              <span key={s.reviewer + s.at} className="pill">
+                {s.decision === 'APPROVE' ? t('git.review.approvedBy') : s.decision === 'REQUEST_CHANGES' ? t('git.review.changesRequestedBy') : '💬'}{' '}
+                {s.reviewer}
+              </span>
+            ))}
+            {detail.reviewState.length === 0 && (
+              <span className="muted" style={{ fontSize: 12 }}>{t('git.review.noReviews')}</span>
+            )}
+          </div>
+
+          {diff ? (
+            <div>
+              <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+                {diff.files.length} {t('git.review.files')}
+                {diff.truncated && <span> · {t('git.review.truncated')}</span>}
+              </div>
+              {diff.files.map((f) => (
+                <div key={f.from + f.to} style={{ marginBottom: 6 }}>
+                  <div
+                    onClick={() => setOpenFile(openFile === f.to ? null : f.to)}
+                    style={{ cursor: 'pointer', fontFamily: 'monospace', fontSize: 12 }}
+                  >
+                    {openFile === f.to ? '▾' : '▸'} {f.to}
+                    <span className="pill" style={{ marginLeft: 6 }}>{f.change}</span>
+                    {f.binary && <span className="muted"> (binary)</span>}
+                  </div>
+                  {openFile === f.to && !f.binary && (
+                    <pre
+                      className="code-sample"
+                      style={{ fontSize: 11, maxHeight: 300, overflowY: 'auto', margin: '4px 0' }}
+                    >
+                      {f.hunks.map((h, hi) => (
+                        <div key={hi}>
+                          <div className="muted">{h.header}</div>
+                          {h.lines.map((l, li) => (
+                            <div
+                              key={li}
+                              onClick={() => targetLine(f.to, l)}
+                              title={t('git.review.clickToComment')}
+                              style={{
+                                cursor: 'pointer',
+                                background:
+                                  l.type === 'add'
+                                    ? 'rgba(46,160,67,0.15)'
+                                    : l.type === 'del'
+                                      ? 'rgba(248,81,73,0.15)'
+                                      : 'transparent',
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-all',
+                              }}
+                            >
+                              <span className="muted" style={{ userSelect: 'none' }}>
+                                {String(l.oldNo ?? '').padStart(4)} {String(l.newNo ?? '').padStart(4)}{' '}
+                              </span>
+                              {l.type === 'add' ? '+' : l.type === 'del' ? '-' : ' '}
+                              {l.text}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </pre>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="muted" style={{ fontSize: 12 }}>{t('git.review.needRepo')}</div>
+          )}
+
+          <h5 style={{ margin: '8px 0 4px' }}>{t('git.review.comments')} ({detail.comments.length})</h5>
+          {detail.comments.map((c) => (
+            <div key={c.id} style={{ fontSize: 12, marginBottom: 6, paddingLeft: 8, borderLeft: '2px solid var(--border, #2d333b)' }}>
+              <div className="muted">
+                {c.author} · {c.file ?? t('git.review.prLevel')}
+                {c.line ? `:${c.line}` : ''} · {new Date(c.createdAt).toLocaleString()}
+              </div>
+              <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+            </div>
+          ))}
+
+          <div style={{ display: 'flex', gap: 6, marginTop: 8, marginBottom: 6 }}>
+            <input
+              type="text"
+              placeholder={t('git.review.fileLabel')}
+              value={cFile}
+              onChange={(e) => setCFile(e.target.value)}
+              style={{ width: 180, padding: 6, borderRadius: 4 }}
+            />
+            <input
+              type="text"
+              placeholder={t('git.review.lineLabel')}
+              value={cLine}
+              onChange={(e) => setCLine(e.target.value.replace(/[^0-9]/g, ''))}
+              style={{ width: 80, padding: 6, borderRadius: 4 }}
+            />
+            {(cFile || cLine) && (
+              <button onClick={() => { setCFile(''); setCLine(''); }}>
+                {t('git.review.clearTarget')}
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              type="text"
+              placeholder={t('git.review.commentPlaceholder')}
+              value={cBody}
+              onChange={(e) => setCBody(e.target.value)}
+              style={{ flex: 1, padding: 6, borderRadius: 4 }}
+            />
+            <button disabled={busy || !cBody.trim()} onClick={() => void postComment()}>
+              {t('git.review.submitComment')}
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+            <input
+              type="text"
+              placeholder={t('git.review.summaryPlaceholder')}
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
+              style={{ flex: 1, padding: 6, borderRadius: 4 }}
+            />
+            <button className="primary" disabled={busy} onClick={() => void postReview('APPROVE')}>
+              {t('git.review.approve')}
+            </button>
+            <button disabled={busy} onClick={() => void postReview('REQUEST_CHANGES')}>
+              {t('git.review.requestChanges')}
+            </button>
+            <button disabled={busy} onClick={() => void postReview('COMMENT')}>
+              {t('git.review.commentOnly')}
+            </button>
+          </div>
+
+          {detail.reviews.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div className="muted" style={{ fontSize: 12 }}>{t('git.review.reviews')}</div>
+              {detail.reviews.map((r) => (
+                <div key={r.id} style={{ fontSize: 12 }}>
+                  <span className="pill">{r.decision}</span> {r.reviewer}
+                  {r.summary && <span> — {r.summary}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
