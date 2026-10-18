@@ -274,3 +274,53 @@ a:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
 @keyframes r2-pop { from { opacity: 0; transform: translateY(6px) scale(.98); } }
 @keyframes r2-slide { from { opacity: 0; transform: translateX(28px); } }
 @keyframes r2-toast { from { opacity: 0; transform: translate(-50%, 10px); } }
+
+/* ---------- W-B：slash 命令栏 + 链接按钮 ---------- */
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent-text, #79c0ff);
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 12px;
+  text-decoration: underline;
+}
+.link-btn:disabled { color: var(--muted); cursor: default; }
+.slash-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 60;
+  min-width: 280px;
+  max-width: 420px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-panel, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  padding: 4px;
+  margin-top: 4px;
+}
+.slash-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: inherit;
+}
+.slash-item:hover { background: rgba(88,166,255,.12); }
+.slash-item-static { padding: 6px 8px; border-bottom: 1px solid var(--border, #30363d); }
+.slash-item-static:last-child { border-bottom: none; }
+.slash-result { padding: 8px; }
+
+/* ---------- W-B：表单纵向布局 ---------- */
+.form-grid { display: flex; flex-direction: column; gap: 8px; max-width: 720px; }
+.form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.form-grid input, .form-grid select, .form-grid textarea { padding: 6px 8px; }

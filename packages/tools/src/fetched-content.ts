@@ -12,7 +12,10 @@
  *    URL-fetching code exists anywhere in this repo.
  *  - The single model-entry point today is
  *    `adapter.invoke({ prompt })` in @ai-factory/runtime's runner.ts, whose
- *    prompt is assembled from trusted operator-authored agent/task fields.
+ *    prompt quarantines user-controlled agent/task fields via
+ *    sanitizeUntrusted() (W-B P1 fix — the old "trusted
+ *    operator-authored" assumption was false: those fields arrive from any
+ *    API caller).
  *    NO external text reaches a model today.
  *  - The future consumption points are therefore exactly two:
  *      (1) the future browser.open executor, which MUST emit a
@@ -176,8 +179,10 @@ export function assertQuarantined(value: unknown): QuarantinedContent {
 
 /**
  * A block in a prompt under assembly. Plain strings are TRUSTED
- * operator-authored text (system instructions, task fields). Anything that
- * ORIGINATED from a webpage must arrive as QuarantinedContent.
+ * operator-authored text (system instructions). Anything that ORIGINATED
+ * from a webpage must arrive as QuarantinedContent. User-controlled
+ * agent/task fields are quarantined by the assembler itself (runner.ts
+ * buildPrompt → sanitizeUntrusted), never passed as trusted strings.
  */
 export type PromptBlock = string | QuarantinedContent;
 

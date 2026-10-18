@@ -114,6 +114,9 @@ import {
   projectIdOfTask,
 } from './routes/project-guard';
 import { handleReviewRoutes } from './routes/review';
+import { handlePlanModeRoutes } from './routes/plan-mode';
+import { handleCommandRoutes } from './routes/commands';
+import { handleHookRoutes } from './routes/hooks';
 import { handleReleaseRoutes } from './routes/releases';
 import { handlePolicyRoutes } from './routes/policy';
 import { handleExecRoutes } from './routes/exec';
@@ -966,6 +969,9 @@ const server = createServer(async (req, res) => {
     if (await handleFinalReportRoutes(req, res, url, routeCtx)) return;
     if (await handleProjectIoRoutes(req, res, url, routeCtx)) return;
     if (await handleReviewRoutes(req, res, url, routeCtx)) return;
+    if (await handlePlanModeRoutes(req, res, url, routeCtx)) return;
+    if (await handleCommandRoutes(req, res, url, routeCtx)) return;
+    if (await handleHookRoutes(req, res, url, routeCtx)) return;
     if (await handleReleaseRoutes(req, res, url, routeCtx)) return;
     if (await handlePolicyRoutes(req, res, url, routeCtx)) return;
     if (await handleExecRoutes(req, res, url, routeCtx)) return;

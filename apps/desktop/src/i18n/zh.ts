@@ -1115,6 +1115,55 @@ export const zh = {
   'tab.activity': '动态',
   'tab.events': '事件',
   'tab.models': '模型',
+
+  'tab.plan': '计划',
+  'tab.hooks': '钩子',
+
+  // ---- 计划模式 ----
+  'plan.title': '计划模式',
+  'plan.desc': 'Agent 先只读探索、生成计划，人批准后再执行。',
+  'plan.task': '任务',
+  'plan.planTitle': '计划标题',
+  'plan.goal': '目标',
+  'plan.steps': '步骤',
+  'plan.stepTitle': '步骤标题',
+  'plan.stepDetail': '详情（可选）',
+  'plan.addStep': '添加步骤',
+  'plan.removeStep': '删除',
+  'plan.create': '创建计划',
+  'plan.creating': '创建中…',
+  'plan.approve': '批准',
+  'plan.reject': '拒绝',
+  'plan.execute': '执行',
+  'plan.rejectReason': '拒绝原因',
+  'plan.rejectReasonRequired': '拒绝需要填写原因',
+  'plan.empty': '暂无计划',
+  'plan.createdBy': '创建者',
+  'plan.refresh': '刷新',
+  'plan.needsTask': '请先选择任务',
+  'plan.needsTitle': '请填写标题',
+  'plan.needsSteps': '至少需要一个步骤',
+
+  // ---- 钩子 ----
+  'hooks.title': '钩子',
+  'hooks.desc': '在工具执行前后运行确定性检查。PreToolUse 可否决调用。',
+  'hooks.event': '事件',
+  'hooks.tool': '工具（可选，空=全部）',
+  'hooks.command': '命令',
+  'hooks.timeout': '超时（毫秒）',
+  'hooks.description': '描述',
+  'hooks.add': '添加钩子',
+  'hooks.delete': '删除',
+  'hooks.test': '试运行',
+  'hooks.empty': '暂无钩子',
+  'hooks.confirmDelete': '删除这个钩子？',
+  'hooks.testResult': '试运行结果',
+  'hooks.commandRequired': '请填写命令',
+
+  // ---- 命令栏 ----
+  'cmd.placeholder': '输入 / 查看命令…',
+  'cmd.planCreated': '计划已创建',
+  'cmd.viewPlan': '查看计划',
 };
 
 export type I18nKey = keyof typeof zh;

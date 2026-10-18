@@ -10,6 +10,8 @@ import { CreateTaskModal } from './components/CreateTaskModal';
 import { GitPanel, createGitApi } from './components/GitPanel';
 import { QaPanel, createQaApi } from './components/QaPanel';
 import { ApprovalsPanel } from './components/ApprovalsPanel';
+import { PlanPanel, createPlanApi } from './components/PlanPanel';
+import { HooksPanel, createHooksApi } from './components/HooksPanel';
 import { DispatchPanel } from './components/DispatchPanel';
 import { CicdPanel, createCicdApi } from './components/CicdPanel';
 import { SkillsPanel, createSkillsApi } from './components/SkillsPanel';
@@ -60,7 +62,7 @@ function IdeShell() {
   /** Batch 15: API identity label for the top bar (role / local mode /
    *  unknown when whoami cannot be fetched — displayed as-is, never guessed). */
   const [apiIdentityLabel, setApiIdentityLabel] = useState('');
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   const [bootError, setBootError] = useState('');
   const [qaTaskId, setQaTaskId] = useState<string | null>(null);
@@ -77,6 +79,8 @@ function IdeShell() {
   const mcpApi = useMemo(() => createMcpApi(API_BASE), []);
   const knowledgeApi = useMemo(() => createKnowledgeApi(API_BASE), []);
   const evaluationApi = useMemo(() => createEvaluationApi(API_BASE), []);
+  const planApi = useMemo(() => createPlanApi(API_BASE), []);
+  const hooksApi = useMemo(() => createHooksApi(API_BASE), []);
   const changesApi = useMemo(() => createChangesApi(API_BASE), []);
   const dashboardApi = useMemo(() => createDashboardApi(API_BASE), []);
   // Flatten board cards for the QA task picker.
@@ -160,13 +164,14 @@ function IdeShell() {
         identityLabel={apiIdentityLabel || undefined}
         notificationsBase={API_BASE}
         onOpenProjectSettings={() => setCenterTab('Project')}
+        onCommandNavigate={(tab) => setCenterTab(tab as typeof centerTab)}
       />
       <div className="ide-mid">
         <Sidebar org={org} onSelectAgent={setSelectedAgentId} />
         <main className="center">
           {bootError && <div className="banner err">{bootError}</div>}
           <div className="center-tabs">
-            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models'] as const).map((name) => (
+            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks'] as const).map((name) => (
               <button key={name} className={centerTab === name ? 'active' : ''} onClick={() => setCenterTab(name)}>{t(`tab.${name.toLowerCase().replace('/', '')}` as const)}</button>
             ))}
           </div>
@@ -250,6 +255,10 @@ function IdeShell() {
             <EventsPanel />
           ) : centerTab === 'Models' ? (
             <ModelsPanel />
+          ) : centerTab === 'Plan' ? (
+            <PlanPanel planApi={planApi} />
+          ) : centerTab === 'Hooks' ? (
+            <HooksPanel hooksApi={hooksApi} />
           ) : (
             <EditorPanel />
           )}

@@ -1,11 +1,12 @@
 import { Project } from '../api';
 import { NotificationsBell } from './NotificationsBell';
+import { SlashCommandBar } from './SlashCommandBar';
 import { useLang } from '../i18n';
 
 /** §3 top bar: product name, active project, agent count, run status, notification bell (§30). */
 export function TopBar({
   projects, projectId, onProject, agentCount, connected, notificationsBase,
-  onOpenProjectSettings, identityLabel,
+  onOpenProjectSettings, identityLabel, onCommandNavigate,
 }: {
   projects: Project[];
   projectId: string;
@@ -18,6 +19,8 @@ export function TopBar({
   onOpenProjectSettings?: () => void;
   /** Batch 15: current API identity label (role / local mode); hidden when omitted. */
   identityLabel?: string;
+  /** W-B: slash command bar navigation; bar hidden when omitted. */
+  onCommandNavigate?: (tab: string) => void;
 }) {
   const { lang, setLang, t } = useLang();
   return (
@@ -36,6 +39,7 @@ export function TopBar({
           <button className="bell-btn" title={t('topbar.projectSettings')} onClick={onOpenProjectSettings}>⚙️</button>
         )}
         <span className="agent-count">{agentCount} Agents</span>
+        {onCommandNavigate && <SlashCommandBar onNavigateTab={onCommandNavigate} />}
         {identityLabel && (
           <span className="agent-count" title={t('topbar.identityTitle')}>{identityLabel}</span>
         )}
