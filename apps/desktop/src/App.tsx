@@ -13,6 +13,7 @@ import { ApprovalsPanel } from './components/ApprovalsPanel';
 import { PermissionsPanel } from './components/PermissionsPanel';
 import { PlanPanel, createPlanApi } from './components/PlanPanel';
 import { HooksPanel, createHooksApi } from './components/HooksPanel';
+import { SessionPanel, createSessionApi } from './components/SessionPanel';
 import { DispatchPanel } from './components/DispatchPanel';
 import { CicdPanel, createCicdApi } from './components/CicdPanel';
 import { SkillsPanel, createSkillsApi } from './components/SkillsPanel';
@@ -63,7 +64,7 @@ function IdeShell() {
   /** Batch 15: API identity label for the top bar (role / local mode /
    *  unknown when whoami cannot be fetched — displayed as-is, never guessed). */
   const [apiIdentityLabel, setApiIdentityLabel] = useState('');
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   const [bootError, setBootError] = useState('');
   const [qaTaskId, setQaTaskId] = useState<string | null>(null);
@@ -82,6 +83,7 @@ function IdeShell() {
   const evaluationApi = useMemo(() => createEvaluationApi(API_BASE), []);
   const planApi = useMemo(() => createPlanApi(API_BASE), []);
   const hooksApi = useMemo(() => createHooksApi(API_BASE), []);
+  const sessionApi = useMemo(() => createSessionApi(API_BASE), []);
   const changesApi = useMemo(() => createChangesApi(API_BASE), []);
   const dashboardApi = useMemo(() => createDashboardApi(API_BASE), []);
   // Flatten board cards for the QA task picker.
@@ -172,7 +174,7 @@ function IdeShell() {
         <main className="center">
           {bootError && <div className="banner err">{bootError}</div>}
           <div className="center-tabs">
-            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks'] as const).map((name) => (
+            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session'] as const).map((name) => (
               <button key={name} className={centerTab === name ? 'active' : ''} onClick={() => setCenterTab(name)}>{t(`tab.${name.toLowerCase().replace('/', '')}` as const)}</button>
             ))}
           </div>
@@ -262,6 +264,8 @@ function IdeShell() {
             <PlanPanel planApi={planApi} />
           ) : centerTab === 'Hooks' ? (
             <HooksPanel hooksApi={hooksApi} />
+          ) : centerTab === 'Session' ? (
+            <SessionPanel sessionApi={sessionApi} />
           ) : (
             <EditorPanel />
           )}

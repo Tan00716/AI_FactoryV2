@@ -1153,6 +1153,7 @@ export const en: Record<I18nKey, string> = {
 
   'tab.plan': 'Plan',
   'tab.hooks': 'Hooks',
+  'tab.session': 'Sessions',
 
   // ---- Plan mode ----
   'plan.title': 'Plan Mode',
@@ -1199,6 +1200,29 @@ export const en: Record<I18nKey, string> = {
   'cmd.placeholder': 'Type / for commands…',
   'cmd.planCreated': 'Plan created',
   'cmd.viewPlan': 'View plan',
+
+  // ---- Sessions (W-D) ----
+  'session.title': 'Sessions',
+  'session.desc': 'Tasks and runs of one conversation, grouped: resumable, with one-click checkpoint rollback.',
+  'session.create': 'Create',
+  'session.titleLabel': 'Session title',
+  'session.select': 'Select session',
+  'session.noSessions': 'No sessions yet',
+  'session.loading': 'Loading…',
+  'session.active': 'active',
+  'session.archived': 'archived',
+  'session.archive': 'Archive',
+  'session.resume': 'Resume session',
+  'session.resumeHint': 'Show everything needed to continue this session (tasks, run resume points)',
+  'session.checkpoints': 'Checkpoints',
+  'session.noCheckpoints': 'No checkpoints yet',
+  'session.checkpointLabel': 'Label (optional)',
+  'session.codeRoot': 'Code directory (optional, captures git diff)',
+  'session.createCheckpoint': 'Create checkpoint',
+  'session.restore': 'Roll back',
+  'session.restoreConfirm': 'Roll back to this checkpoint? A pre-restore snapshot is taken first.',
+  'session.codeApplied': 'Code rolled back; session state restored.',
+  'session.codeNotApplied': 'Session state restored; code not rolled back: {reason}',
 
   // ---- Error boundary ----
   'error.title': 'Something went wrong',

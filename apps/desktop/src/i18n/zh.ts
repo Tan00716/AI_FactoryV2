@@ -1151,6 +1151,7 @@ export const zh = {
 
   'tab.plan': '计划',
   'tab.hooks': '钩子',
+  'tab.session': '会话',
 
   // ---- 计划模式 ----
   'plan.title': '计划模式',
@@ -1197,6 +1198,29 @@ export const zh = {
   'cmd.placeholder': '输入 / 查看命令…',
   'cmd.planCreated': '计划已创建',
   'cmd.viewPlan': '查看计划',
+
+  // ---- 会话（W-D）----
+  'session.title': '会话',
+  'session.desc': '一次对话的任务与运行归集：可恢复、可做检查点一键回滚。',
+  'session.create': '创建',
+  'session.titleLabel': '会话标题',
+  'session.select': '选择会话',
+  'session.noSessions': '暂无会话',
+  'session.loading': '加载中…',
+  'session.active': '进行中',
+  'session.archived': '已归档',
+  'session.archive': '归档',
+  'session.resume': '恢复会话',
+  'session.resumeHint': '查看继续此会话所需的全部信息（任务、运行恢复点）',
+  'session.checkpoints': '检查点',
+  'session.noCheckpoints': '暂无检查点',
+  'session.checkpointLabel': '标签（可选）',
+  'session.codeRoot': '代码目录（可选，用于捕获 git diff）',
+  'session.createCheckpoint': '创建检查点',
+  'session.restore': '回滚',
+  'session.restoreConfirm': '回滚到该检查点？将先自动创建回滚前快照。',
+  'session.codeApplied': '代码已回滚，会话状态已恢复。',
+  'session.codeNotApplied': '会话状态已恢复；代码未回滚：{reason}',
 
   // ---- 错误兜底 ----
   'error.title': '出错了',

@@ -1,0 +1,1 @@
+{"bin":{"ai-factory":"dist/src/cli.js"},"description":"Headless CLI for AI Factory: non-interactive task execution (claude -p / codex exec style), session resume and session checkpoints","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/headless","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}
