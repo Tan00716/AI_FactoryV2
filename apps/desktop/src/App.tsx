@@ -10,6 +10,7 @@ import { CreateTaskModal } from './components/CreateTaskModal';
 import { GitPanel, createGitApi } from './components/GitPanel';
 import { QaPanel, createQaApi } from './components/QaPanel';
 import { ApprovalsPanel } from './components/ApprovalsPanel';
+import { PermissionsPanel } from './components/PermissionsPanel';
 import { PlanPanel, createPlanApi } from './components/PlanPanel';
 import { HooksPanel, createHooksApi } from './components/HooksPanel';
 import { DispatchPanel } from './components/DispatchPanel';
@@ -62,7 +63,7 @@ function IdeShell() {
   /** Batch 15: API identity label for the top bar (role / local mode /
    *  unknown when whoami cannot be fetched — displayed as-is, never guessed). */
   const [apiIdentityLabel, setApiIdentityLabel] = useState('');
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   const [bootError, setBootError] = useState('');
   const [qaTaskId, setQaTaskId] = useState<string | null>(null);
@@ -171,7 +172,7 @@ function IdeShell() {
         <main className="center">
           {bootError && <div className="banner err">{bootError}</div>}
           <div className="center-tabs">
-            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks'] as const).map((name) => (
+            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks'] as const).map((name) => (
               <button key={name} className={centerTab === name ? 'active' : ''} onClick={() => setCenterTab(name)}>{t(`tab.${name.toLowerCase().replace('/', '')}` as const)}</button>
             ))}
           </div>
@@ -214,6 +215,8 @@ function IdeShell() {
             </div>
           ) : centerTab === 'Approvals' ? (
             <ApprovalsPanel />
+          ) : centerTab === 'Permissions' ? (
+            <PermissionsPanel />
           ) : centerTab === 'NeedsHuman' ? (
             <NeedsHumanPanel />
           ) : centerTab === 'Dispatch' ? (

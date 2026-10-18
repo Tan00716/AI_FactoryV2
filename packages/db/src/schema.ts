@@ -1109,4 +1109,19 @@ CREATE TABLE IF NOT EXISTS management_reports (
 );
 CREATE INDEX IF NOT EXISTS idx_management_reports_task
   ON management_reports(task_id);
+
+-- W-C permission tiers: per-tier auto/ask/deny action policies
+-- (policy_json) + agent→tier assignment. CREATE TABLE IF NOT EXISTS
+-- covers old databases on open; the server seeds tier defaults on
+-- first read when the table is empty.
+CREATE TABLE IF NOT EXISTS permission_tiers (
+  tier TEXT PRIMARY KEY,
+  policy_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_tiers (
+  agent_id TEXT PRIMARY KEY,
+  tier TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `

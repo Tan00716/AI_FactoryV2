@@ -25,6 +25,7 @@ import {
   type Approval,
   type RiskLevel,
 } from '@ai-factory/approvals';
+import { composeTierDecision, resolveAgentTier } from './permissions';
 import type { RouteContext } from './context';
 import {
   isTaskProjectArchived,
@@ -76,7 +77,33 @@ export async function handleApprovalRoutes(
     if (riskLevel !== undefined && !isRiskLevel(riskLevel)) {
       return ctx.json(res, 400, { error: 'risk_level must be LOW|MEDIUM|HIGH|CRITICAL' }), true;
     }
-    return ctx.json(res, 200, evaluateAction(action, (riskLevel as RiskLevel) ?? 'LOW')), true;
+    const base = evaluateAction(action, (riskLevel as RiskLevel) ?? 'LOW');
+    // W-C: optional tier composition (strictest-wins with the tier
+    // policy). Back-compatible: the base evaluation fields are
+    // unchanged; tier fields are added only when requested via
+    // tier / agentId / agent_id.
+    const wantTier = body['tier'] !== undefined || body['agentId'] !== undefined || body['agent_id'] !== undefined;
+    if (!wantTier) {
+      return ctx.json(res, 200, base), true;
+    }
+    try {
+      const tier = resolveAgentTier(
+        ctx,
+        (body['agentId'] as string | undefined) ?? (body['agent_id'] as string | undefined),
+        body['tier'] as string | undefined,
+      );
+      const composed = composeTierDecision(ctx, action, tier, (riskLevel as RiskLevel) ?? 'LOW');
+      return ctx.json(res, 200, {
+        ...base,
+        tier: composed.tier,
+        tierVerdict: composed.tierVerdict,
+        effectiveLevel: composed.level,
+        effectiveRequiresApproval: composed.requiresApproval,
+        tierReasons: composed.reasons,
+      }), true;
+    } catch (e) {
+      return ctx.json(res, 400, { error: (e as Error).message }), true;
+    }
   }
 
   // POST /api/approvals
@@ -170,12 +197,20 @@ export async function handleApprovalRoutes(
     if (typeof body['approved'] !== 'boolean') {
       return ctx.json(res, 400, { error: 'approved (boolean) is required' }), true;
     }
-    const decidedBy =
-      typeof body['decided_by'] === 'string' && body['decided_by']
-        ? (body['decided_by'] as string)
-        : typeof body['decidedBy'] === 'string' && body['decidedBy']
-          ? (body['decidedBy'] as string)
-          : 'human';
+    // W-C (H3-A3 probe): decided_by used to silently default to
+    // 'human', so any local API caller could self-approve and the
+    // audit trail claimed a human decided. The decider identity is
+    // now REQUIRED explicitly — a missing one is a 400, not a
+    // silent 'human'. (Residual, documented: the identity is still
+    // client-asserted; cryptographically binding it to a human
+    // session needs human authentication, a product decision.)
+    const decidedByOf = (v: unknown): string =>
+      typeof v === 'string' && v.trim() ? v.trim() : '';
+    const decidedByRaw = decidedByOf(body['decided_by']) || decidedByOf(body['decidedBy']);
+    if (!decidedByRaw) {
+      return ctx.json(res, 400, { error: 'decided_by (string) is required' }), true;
+    }
+    const decidedBy = decidedByRaw;
     const decisionReason =
       typeof body['decision_reason'] === 'string' ? (body['decision_reason'] as string) : undefined;
     try {

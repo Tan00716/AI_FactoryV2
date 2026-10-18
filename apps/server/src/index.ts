@@ -83,6 +83,7 @@ import { handleGitRoutes } from './routes/git';
 import { handleWorktreeRoutes } from './routes/worktrees';
 import { handleQaRoutes } from './routes/qa';
 import { handleApprovalRoutes } from './routes/approvals';
+import { handlePermissionTierRoutes } from './routes/permissions';
 import { handleCicdRoutes } from './routes/cicd';
 import { handleSkillsRoutes } from './routes/skills';
 import { handleMemoryRoutes } from './routes/memory';
@@ -952,6 +953,7 @@ const server = createServer(async (req, res) => {
     if (await handleWorktreeRoutes(req, res, url, routeCtx)) return;
     if (await handleQaRoutes(req, res, url, routeCtx)) return;
     if (await handleApprovalRoutes(req, res, url, routeCtx)) return;
+    if (await handlePermissionTierRoutes(req, res, url, routeCtx)) return;
     if (await handleCicdRoutes(req, res, url, routeCtx)) return;
     if (await handleSkillsRoutes(req, res, url, routeCtx)) return;
     if (await handleMemoryRoutes(req, res, url, routeCtx)) return;

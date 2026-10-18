@@ -32,8 +32,32 @@ import { UnverifiedBackend } from '@ai-factory/security';
 import { PtyUnavailableError, runCommandPty, scrubCredentialEnv } from '@ai-factory/runtime';
 import { SecretNotFoundError, redactSecretValues, redactSecretValuesCounted } from '@ai-factory/secrets';
 import { recordRedactionHit } from '../redaction-monitor';
+import { evaluateHooks } from '../hooks';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * PostToolUse hooks (W-B): best-effort, never fatal. A hook failure is
+ * audited but never changes the exec response — PostToolUse is an
+ * observation point, not a gate (only PreToolUse vetoes).
+ */
+async function firePostToolUse(
+  ctx: RouteContext,
+  actor: string,
+  payload: { command: string; cwd: string; exitCode: number; timedOut: boolean },
+): Promise<void> {
+  try {
+    await evaluateHooks('PostToolUse', { tool: 'exec', actor, ...payload });
+  } catch (e) {
+    try {
+      ctx.audit.record(actor, 'HOOK_POSTTOOLUSE_FAILED', 'exec', payload.command.slice(0, 80), {
+        reason: (e as Error).message,
+      });
+    } catch {
+      /* audit itself failed — nothing left to do */
+    }
+  }
+}
 
 /**
  * Workspace root — the ai-factory project root (the server is started from
@@ -164,9 +188,15 @@ export const resolveExecCwd = resolveCwd;
 
 /**
  * The execution safety policy as a reusable check (Batch 19): deny
- * patterns on the raw line + binary whitelist on the first token.
+ * patterns on the raw line + binary whitelist on the first token +
+ * per-binary argv guards (W-C: node -e / npx fetch / git -c …).
  * Returns the tokenized argv. Throws ExecPolicyDenied (with `reason`)
  * when the line is refused — the SAME policy /api/exec enforces.
+ *
+ * opts.allowInlineEval: permit `node -e/--eval/-p/--print`. Only for
+ * operator-configured commands (FACTORY_BUILD_COMMAND in the build
+ * runner); human one-shots, agent tool calls and AI terminal lines
+ * never get it — inline eval is unauditable arbitrary code execution.
  */
 export class ExecPolicyDenied extends Error {
   readonly reason: string;
@@ -177,7 +207,76 @@ export class ExecPolicyDenied extends Error {
   }
 }
 
-export function checkCommandPolicy(command: string): string[] {
+export interface CheckCommandPolicyOptions {
+  allowInlineEval?: boolean;
+}
+
+const NODE_INLINE_EVAL_FLAGS = new Set(['-e', '--eval', '-p', '--print']);
+
+/** argv-level guards for binaries that are code executors themselves. */
+function checkBinaryArgv(binary: string, tokens: string[], allowInlineEval: boolean): void {
+  const args = tokens.slice(1);
+  const deny = (reason: string, message: string): never => {
+    throw new ExecPolicyDenied(reason, message);
+  };
+  if (binary === 'node') {
+    if (!allowInlineEval && args.some((a) => NODE_INLINE_EVAL_FLAGS.has(a))) {
+      deny(
+        "node inline eval ('-e/--eval/-p/--print') is refused",
+        "command refused: node inline eval is blocked by the execution safety policy " +
+          "(write a script file and run `node <file>` instead)",
+      );
+    }
+  }
+  if (binary === 'npx') {
+    // npx without --no-install/--offline fetches the package from the
+    // registry and executes it: silent remote-code download+exec, the
+    // same class curl/wget are denied for.
+    if (!args.some((a) => a === '--no-install' || a === '--offline')) {
+      deny(
+        'npx may download and execute remote packages',
+        'command refused: npx without --no-install/--offline may fetch remote code ' +
+          '(re-run with --no-install to use only locally installed binaries)',
+      );
+    }
+  }
+  if (binary === 'git') {
+    for (const a of args) {
+      // -c/--config injects arbitrary git configuration: core.pager /
+      // core.editor become command execution (CVE-class: `git -c
+      // core.pager='evil' log`).
+      if (a === '-c' || a === '--config') {
+        deny(
+          'git -c/--config is refused (config injection, e.g. core.pager)',
+          'command refused: git -c/--config can inject executable configuration ' +
+            '(core.pager/core.editor); set configuration through files instead',
+        );
+      }
+      // --exec-path= redirects git to attacker-controlled subcommand binaries.
+      if (a.startsWith('--exec-path=')) {
+        deny(
+          'git --exec-path= is refused (subcommand binary hijack)',
+          'command refused: git --exec-path= redirects git to attacker-controlled binaries',
+        );
+      }
+      // ext:: runs an arbitrary local command as the "remote".
+      if (a.includes('ext::')) {
+        deny(
+          'git ext:: transport is refused (arbitrary command as remote)',
+          'command refused: the git ext:: transport executes an arbitrary local command',
+        );
+      }
+      if (a.includes('protocol.ext.allow')) {
+        deny(
+          'git protocol.ext.allow override is refused',
+          'command refused: overriding protocol.ext.allow re-enables the ext:: transport',
+        );
+      }
+    }
+  }
+}
+
+export function checkCommandPolicy(command: string, opts?: CheckCommandPolicyOptions): string[] {
   for (const re of DENY_PATTERNS) {
     if (re.test(command)) {
       throw new ExecPolicyDenied(
@@ -197,7 +296,108 @@ export function checkCommandPolicy(command: string): string[] {
       `command refused: '${binary}' is not in the allowed command list (${[...ALLOWED_BINARIES].sort().join(', ')})`,
     );
   }
+  checkBinaryArgv(binary, tokens, opts?.allowInlineEval === true);
   return tokens;
+}
+
+/**
+ * Shell-syntax-aware gate for interactive AI terminal lines (W-C).
+ *
+ * Background (H3-A2 probe, confirmed): the AI line gate used to run
+ * the SAME checkCommandPolicy as /api/exec, but an interactive pty
+ * runs a REAL shell (bash -i). checkCommandPolicy assumes no shell
+ * interpretation, so `echo $(id)`, `echo a; id` and `echo x | evil`
+ * all passed the gate while bash executed the smuggled commands —
+ * a complete whitelist bypass for AI sessions.
+ *
+ * This gate closes it: it scans the raw line quote-aware and
+ *   - denies command substitution / expansion outright: unquoted
+ *     backtick, `$` (covers $(), ${}, $var), `<`, `>`, `(`, `)`,
+ *     and single `&` (backgrounding);
+ *   - splits pipelines/chains on unquoted `;`, `|`, `&&`, `||` and
+ *     requires EVERY segment to pass checkCommandPolicy on its own
+ *     (so `git log --oneline | head -5` still works, but neither
+ *     side may smuggle anything the policy would refuse alone).
+ * Quoted metacharacters are inert (`echo "a;b"` stays allowed).
+ * Returns the per-segment token arrays for the control-dir check.
+ */
+export function checkAiShellLine(line: string): string[][] {
+  const segments: string[] = [];
+  let cur = '';
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  const denyShell = (what: string): never => {
+    throw new ExecPolicyDenied(
+      `shell syntax '${what}' is refused in AI terminal lines`,
+      `command refused: shell metacharacter '${what}' is not allowed in AI terminal lines ` +
+        `(no command substitution, expansion, redirection or backgrounding; ` +
+        `use one whitelisted command per line, chain with ; | && ||)`,
+    );
+  };
+  const pushSegment = (): void => {
+    const s = cur.trim();
+    cur = '';
+    if (s) segments.push(s);
+  };
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i] as string;
+    if (escaped) {
+      cur += ch;
+      escaped = false;
+      i++;
+      continue;
+    }
+    if (ch === '\\') {
+      // A backslash inside the gate's view only escapes the next char
+      // for scanning purposes; keep both so the segment text is intact.
+      cur += ch;
+      escaped = true;
+      i++;
+      continue;
+    }
+    if (quote) {
+      cur += ch;
+      if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      cur += ch;
+      i++;
+      continue;
+    }
+    if (ch === '`' || ch === '$' || ch === '<' || ch === '>' || ch === '(' || ch === ')') {
+      denyShell(ch);
+    }
+    if (ch === '&') {
+      if (line[i + 1] === '&') {
+        pushSegment();
+        i += 2;
+        continue;
+      }
+      denyShell('&');
+    }
+    if (ch === '|') {
+      pushSegment();
+      // '||' is a chain operator; a lone '|' is a pipe — both split.
+      i += line[i + 1] === '|' ? 2 : 1;
+      continue;
+    }
+    if (ch === ';') {
+      pushSegment();
+      i++;
+      continue;
+    }
+    cur += ch;
+    i++;
+  }
+  pushSegment();
+  if (segments.length === 0) {
+    throw new ExecPolicyDenied('empty command', 'command is required');
+  }
+  return segments.map((s) => checkCommandPolicy(s));
 }
 
 /**
@@ -413,7 +613,40 @@ export async function handleExecRoutes(
     return true;
   }
 
-  // 3c) §46.2 Secret Broker consumption: the caller may ask for
+  // 3c) Hooks (W-B) — PreToolUse deterministic checkpoint. Any enabled
+  // PreToolUse hook may veto the call (non-zero exit or {"decision":"deny"}
+  // verdict = deny; timeouts fail closed). A veto is audited and answered
+  // 403 like the static policy gates above.
+  try {
+    const pre = await evaluateHooks('PreToolUse', {
+      tool: 'exec',
+      command: displayCommand,
+      actor,
+      cwd,
+    });
+    if (!pre.allowed) {
+      ctx.audit.record(actor, 'EXEC_DENIED', 'exec', displayCommand.slice(0, 80), {
+        reason: `PreToolUse hook veto (${pre.veto?.hookId})`,
+        hookReason: pre.veto?.reason ?? '',
+      });
+      ctx.json(res, 403, {
+        error: `denied by PreToolUse hook: ${pre.veto?.reason ?? 'hook veto'}`,
+        code: 'HOOK_VETO',
+        hookId: pre.veto?.hookId,
+      });
+      return true;
+    }
+  } catch (e) {
+    // A broken hook registry must not silently disable the checkpoint —
+    // fail closed.
+    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', displayCommand.slice(0, 80), {
+      reason: `PreToolUse evaluation failed: ${(e as Error).message}`,
+    });
+    ctx.json(res, 500, { error: `PreToolUse hook evaluation failed: ${(e as Error).message}` });
+    return true;
+  }
+
+  // 3d) §46.2 Secret Broker consumption: the caller may ask for
   // secrets to be injected into the child's environment by REFERENCE
   // ({ secretEnv: { ENV_VAR: "secret-name" } }). The broker resolves
   // each ref in-process; the value goes only into the child env —
@@ -447,7 +680,7 @@ export async function handleExecRoutes(
   const outputValues: readonly string[] =
     redactionValues.length > 0 ? redactionValues : injectedValues;
 
-  // 3d) opt-in real PTY (Batch 18) — identical policy, argv, secret
+  // 3e) opt-in real PTY (Batch 18) — identical policy, argv, secret
   // injection and output redaction as the pipe path below; only the
   // device differs. The merged terminal stream is the output (there
   // is no separate stderr), redacted with the same injected values
@@ -492,6 +725,12 @@ export async function handleExecRoutes(
         exitCode: r.exitCode ?? -1,
         timedOut: r.timedOut,
         pty: true,
+      });
+      await firePostToolUse(ctx, actor, {
+        command: displayCommand,
+        cwd,
+        exitCode: r.exitCode ?? -1,
+        timedOut: r.timedOut,
       });
       return true;
     } catch (err) {
@@ -542,6 +781,7 @@ export async function handleExecRoutes(
         : {}),
     });
     ctx.json(res, 200, { ok: true, command: displayCommand, cwd, output: text, truncated, exitCode: 0 });
+    await firePostToolUse(ctx, actor, { command: displayCommand, cwd, exitCode: 0, timedOut: false });
     return true;
   } catch (err) {
     const e = err as {
@@ -572,6 +812,12 @@ export async function handleExecRoutes(
       cwd,
       output: text,
       truncated,
+      exitCode: e.code ?? -1,
+      timedOut,
+    });
+    await firePostToolUse(ctx, actor, {
+      command: displayCommand,
+      cwd,
       exitCode: e.code ?? -1,
       timedOut,
     });

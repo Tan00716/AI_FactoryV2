@@ -56,7 +56,7 @@ import {
 } from '@ai-factory/secrets';
 import { recordRedactionHit } from '../redaction-monitor';
 import {
-  checkCommandPolicy,
+  checkAiShellLine,
   commandHitsControlDir,
   resolveExecCwd,
   resolveSecretEnvRefs,
@@ -114,19 +114,26 @@ function getSessionOr404(ctx: RouteContext, res: ServerResponse, id: string): Pt
   }
 }
 
-/** The AI line gate: the /api/exec policy, applied per input line. */
+/** The AI line gate: the shell-syntax-aware policy (W-C), applied per input line. */
 function aiLineGate(cwd: string): (line: string) => void {
   return (line: string) => {
     const trimmed = line.trim();
     if (!trimmed) return; // blank lines pass through
-    let tokens: string[];
+    let segments: string[][];
     try {
-      tokens = checkCommandPolicy(trimmed);
+      // checkAiShellLine: denies unquoted shell metacharacters
+      // ($, backtick, redirects, backgrounding) and requires every
+      // ;- / |- / &&- / ||-separated segment to pass the command
+      // policy on its own — a real shell interprets the line, so the
+      // gate must too (H3-A2: `echo $(id)` used to sail through).
+      segments = checkAiShellLine(trimmed);
     } catch (err) {
       throw new Error((err as ExecPolicyDenied).message);
     }
-    if (commandHitsControlDir(cwd, tokens)) {
-      throw new Error('command refused: the control-plane data directory is off-limits');
+    for (const tokens of segments) {
+      if (commandHitsControlDir(cwd, tokens)) {
+        throw new Error('command refused: the control-plane data directory is off-limits');
+      }
     }
   };
 }

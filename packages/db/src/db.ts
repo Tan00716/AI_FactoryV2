@@ -37,6 +37,7 @@ import { SqliteDeploymentStore } from './deployments';
 import { SqlitePipelineRecordStore } from './pipelines';
 import { SqliteWorktreeStore } from './worktrees';
 import { SqliteMcpServerStore } from './mcp-servers';
+import { SqlitePermissionTierStore } from './permission-tiers';
 import { SqliteGateStore } from './gates';
 import { SqliteDelegationStore } from './delegations';
 import { SqliteProjectKnowledgeStore } from './project-knowledge';
@@ -1108,6 +1109,8 @@ export class FactoryDatabase {
    * hydrate (never trusted as fresh).
    */
   readonly mcpServers: SqliteMcpServerStore;
+  /** W-C permission tiers: per-tier policies + agent→tier assignment. */
+  readonly permissionTiers: SqlitePermissionTierStore;
   /**
    * §39.3 (Batch 32) — durable gate definitions + append-only
    * evaluation log. Verdicts are computed by the deterministic
@@ -1244,6 +1247,7 @@ export class FactoryDatabase {
       new SqliteMergeQueueDrainLock(this.db),
     );
     this.mcpServers = new SqliteMcpServerStore(this.db);
+    this.permissionTiers = new SqlitePermissionTierStore(this.db);
     this.gates = new SqliteGateStore(this.db);
     this.delegations = new SqliteDelegationStore(this.db);
     this.projectKnowledge = new SqliteProjectKnowledgeStore(this.db);

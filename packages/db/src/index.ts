@@ -16,6 +16,7 @@ export * from './pipelines';
 export * from './merge-queue';
 export * from './builds';
 export * from './mcp-servers';
+export * from './permission-tiers';
 export * from './gates';
 export * from './delegations';
 export * from './project-knowledge';

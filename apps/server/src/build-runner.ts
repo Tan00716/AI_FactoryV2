@@ -624,9 +624,13 @@ export class BuildRunner {
 
       // Same execution policy as /api/exec — a refused command is a
       // FAILED build, recorded and audited, never a silent skip.
+      // allowInlineEval: FACTORY_BUILD_COMMAND is operator-configured
+      // (trusted), unlike human one-shots / agent tool calls / AI
+      // terminal lines — and the existing test-suite uses `node -e`
+      // build commands.
       let tokens: string[];
       try {
-        tokens = checkCommandPolicy(this.config.command);
+        tokens = checkCommandPolicy(this.config.command, { allowInlineEval: true });
         if (commandHitsControlDir(workDir, tokens)) {
           throw new Error(
             'build command touches the control-plane data directory',

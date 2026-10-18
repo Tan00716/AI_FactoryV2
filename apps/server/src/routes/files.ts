@@ -13,13 +13,28 @@
  *   if (await handleFileRoutes(req, res, url, ctx)) return;
  */
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname, relative, resolve } from 'path';
+import { dirname, relative, resolve, sep } from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
 
 const WORKSPACE_ROOT = resolve(process.cwd());
 const MAX_FILE_BYTES = 1024 * 1024; // 1 MiB — prototype cap
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.next', 'out', '__pycache__']);
+
+/**
+ * SPEC §4.1 — control-plane data directory (same default as index.ts:
+ * DB_PATH ?? './data/factory.db'). W-C P0 fix (H3-A4 probe): POST
+ * /api/file had NO control-dir guard, so any local API caller could
+ * overwrite data/factory.db (and secrets/, snapshots/, …) — full
+ * database replacement, audit chain included. The binary-file check
+ * on GET happened to block .db *reads*, but nothing blocked writes.
+ * Both read and write now refuse the control-plane tree.
+ */
+const CONTROL_DATA_DIR = dirname(resolve(process.env.DB_PATH ?? './data/factory.db'));
+
+function hitsControlDir(abs: string): boolean {
+  return abs === CONTROL_DATA_DIR || abs.startsWith(CONTROL_DATA_DIR + sep);
+}
 
 /** Confine a relative path to the workspace tree. Returns absolute path. */
 function resolveWorkspacePath(raw: string | undefined | null): string {
@@ -57,6 +72,10 @@ export async function handleFileRoutes(
       ctx.json(res, 404, { error: `directory not found: ${relOf(dir)}` });
       return true;
     }
+    if (hitsControlDir(dir)) {
+      ctx.json(res, 403, { error: `path refused: the control-plane data directory (${CONTROL_DATA_DIR}) is off-limits` });
+      return true;
+    }
     const entries = readdirSync(dir, { withFileTypes: true })
       .filter((e) => !(e.isDirectory() && SKIP_DIRS.has(e.name)))
       .map((e) => ({
@@ -78,6 +97,10 @@ export async function handleFileRoutes(
       file = resolveWorkspacePath(url.searchParams.get('path'));
     } catch (err) {
       ctx.json(res, 403, { error: (err as Error).message });
+      return true;
+    }
+    if (hitsControlDir(file)) {
+      ctx.json(res, 403, { error: `path refused: the control-plane data directory (${CONTROL_DATA_DIR}) is off-limits` });
       return true;
     }
     if (!existsSync(file) || !statSync(file).isFile()) {
@@ -113,6 +136,14 @@ export async function handleFileRoutes(
       file = resolveWorkspacePath(rel);
     } catch (err) {
       ctx.json(res, 403, { error: (err as Error).message });
+      return true;
+    }
+    if (hitsControlDir(file)) {
+      const actor0 = (body['actor'] as string | undefined) ?? 'human';
+      ctx.audit.record(actor0, 'FILE_WRITE_DENIED', 'file', relOf(file), {
+        reason: 'control-plane data directory is off-limits',
+      });
+      ctx.json(res, 403, { error: `path refused: the control-plane data directory (${CONTROL_DATA_DIR}) is off-limits` });
       return true;
     }
     if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) {

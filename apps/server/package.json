@@ -11,6 +11,7 @@
     "@ai-factory/approvals": "0.1.0",
     "@ai-factory/autonomy": "0.1.0",
     "@ai-factory/cicd": "0.1.0",
+    "@ai-factory/comms": "0.1.0",
     "@ai-factory/core": "0.1.0",
     "@ai-factory/dashboard": "0.1.0",
     "@ai-factory/db": "0.1.0",
@@ -19,7 +20,6 @@
     "@ai-factory/events": "0.1.0",
     "@ai-factory/factory-control": "0.1.0",
     "@ai-factory/git": "0.1.0",
-    "@ai-factory/worktrees": "0.1.0",
     "@ai-factory/incidents": "0.1.0",
     "@ai-factory/knowledge": "0.1.0",
     "@ai-factory/leases": "0.1.0",
@@ -28,6 +28,7 @@
     "@ai-factory/model-router": "0.1.0",
     "@ai-factory/notifications": "0.1.0",
     "@ai-factory/orchestrator": "0.1.0",
+    "@ai-factory/permissions": "0.1.0",
     "@ai-factory/policy": "0.1.0",
     "@ai-factory/progress": "0.1.0",
     "@ai-factory/project-io": "0.1.0",
@@ -36,15 +37,15 @@
     "@ai-factory/quota": "0.1.0",
     "@ai-factory/requirements": "0.1.0",
     "@ai-factory/review": "0.1.0",
-    "@ai-factory/secrets": "0.1.0",
     "@ai-factory/runtime": "0.1.0",
+    "@ai-factory/secrets": "0.1.0",
     "@ai-factory/security": "0.1.0",
     "@ai-factory/skills": "0.1.0",
     "@ai-factory/squads": "0.1.0",
-    "@ai-factory/comms": "0.1.0",
     "@ai-factory/takeover": "0.1.0",
     "@ai-factory/tools": "0.1.0",
-    "@ai-factory/watchdog": "0.1.0"
+    "@ai-factory/watchdog": "0.1.0",
+    "@ai-factory/worktrees": "0.1.0"
   },
   "license": "Apache-2.0"
 }
