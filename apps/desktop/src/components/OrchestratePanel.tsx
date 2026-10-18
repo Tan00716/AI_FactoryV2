@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { defaultApiBase, authHeaders, type CheckpointV2 } from '../api';
 import { RunCheckpointsSection } from './RunCheckpointsView';
 import { useLang } from '../i18n';
@@ -126,6 +126,13 @@ export function OrchestratePanel({
   const [err, setErr] = useState('');
   /** 正在进行的动作（decompose/route/run）—— 期间对应按钮禁用防重提交。 */
   const [busy, setBusy] = useState<'' | 'decompose' | 'route' | 'run'>('');
+  // QA-R1: 连击防护——state 更新异步，同 tick 连击会绕过 if (busy)。
+  const busyRef = useRef(false);
+  const takeBusy = (slot: 'decompose' | 'route' | 'run') => {
+    if (busyRef.current) return false;
+    busyRef.current = true; setBusy(slot); return true;
+  };
+  const releaseBusy = () => { busyRef.current = false; setBusy(''); };
   const [kind, setKind] = useState<'bugfix' | 'feature' | 'refactor' | 'research'>('bugfix');
 
   // §28.3 — whenever a run is on display, load its checkpoints. An empty
@@ -164,8 +171,7 @@ export function OrchestratePanel({
   }, [loadAccount]);
 
   const doDecompose = async () => {
-    if (busy) return;
-    setBusy('decompose');
+    if (!takeBusy('decompose')) return;
     setErr('');
     try {
       setPlan(
@@ -178,13 +184,12 @@ export function OrchestratePanel({
     } catch (e) {
       setErr((e as Error).message);
     } finally {
-      setBusy('');
+      releaseBusy();
     }
   };
 
   const doRoute = async () => {
-    if (busy) return;
-    setBusy('route');
+    if (!takeBusy('route')) return;
     setErr('');
     try {
       setDecision(
@@ -199,17 +204,16 @@ export function OrchestratePanel({
     } catch (e) {
       setErr((e as Error).message);
     } finally {
-      setBusy('');
+      releaseBusy();
     }
   };
 
   const doRun = async () => {
-    if (busy) return;
-    setBusy('run');
+    if (!takeBusy('run')) return;
     setErr('');
     if (!agentId || !taskId) {
       setErr(t('orchestrate.needAgentTask'));
-      setBusy('');
+      releaseBusy();
       return;
     }
     try {
@@ -224,7 +228,7 @@ export function OrchestratePanel({
     } catch (e) {
       setErr((e as Error).message);
     } finally {
-      setBusy('');
+      releaseBusy();
     }
   };
 

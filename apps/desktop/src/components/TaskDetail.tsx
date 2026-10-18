@@ -503,6 +503,13 @@ export function TaskDetailDrawer({ taskId, onClose, onChanged, onSelectTask, onS
     load();
   }, [taskId, load]);
 
+  // QA-R1: Esc 关闭抽屉（与 CreateTaskModal 行为一致）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   const moved = useCallback(() => {
     load();
     onChanged();

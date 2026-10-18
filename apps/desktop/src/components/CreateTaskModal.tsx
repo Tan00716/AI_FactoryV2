@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { useLang } from '../i18n';
 
@@ -11,10 +11,21 @@ export function CreateTaskModal({ projectId, onClose, onCreated }: {
   const [priority, setPriority] = useState('P2');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // QA-R1: 连击防护不能只靠 state——setBusy(true) 是异步的，同 tick 内的
+  // 连续点击都会看到 busy=false。用 ref 做同步守卫。
+  const busyRef = useRef(false);
+
+  // QA-R1: Esc 关闭弹窗（之前只能点取消/背景关闭）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const submit = async () => {
     if (!title.trim()) { setError(t('createtask.titleRequired')); return; }
-    if (busy) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setError('');
     try {
@@ -23,6 +34,7 @@ export function CreateTaskModal({ projectId, onClose, onCreated }: {
       onClose();
     } catch (e) {
       setError((e as Error).message);
+      busyRef.current = false;
       setBusy(false);
     }
   };

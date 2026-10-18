@@ -116,6 +116,25 @@ function IdeShell() {
   useEffect(() => { refresh(); }, [refresh]);
 
   /**
+   * QA-R1: "Running" 指示灯之前只在启动 refresh() 里探测一次——服务端中途
+   * 挂掉后指示灯永远绿色，误导用户。加轻量心跳：每 10s 只调 /health，
+   * 不触发全量数据刷新（各面板已有自己的轮询）。
+   */
+  useEffect(() => {
+    let alive = true;
+    const probe = async () => {
+      try {
+        await api.health();
+        if (alive) setConnected(true);
+      } catch {
+        if (alive) setConnected(false);
+      }
+    };
+    const id = setInterval(() => { void probe(); }, 10000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  /**
    * Boot race: the packaged app spawns the backend concurrently with window
    * creation, so the first health probe can legitimately fail while the
    * backend is still listening. Keep probing until the first success so a

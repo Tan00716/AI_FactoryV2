@@ -1,5 +1,18 @@
 # Changelog
 
+## QA-R1 (2026-10-18)
+
+Round 1 功能审计 + 破坏性真实用户测试（MASTER PROMPT 第一轮）。真机：Xvfb + 真 Electron 44.8.0 + 真 server + vite dev，另起生产路径（`NODE_ENV=production` + file:// 正式渲染器）做对照。**修了 5 个 bug**（1×P1、3×P2、1×P3 翻译），1×P3 未修。
+
+- **P1 连击重复提交**：连击"创建" 3 次建出 3 个任务——`if (busy) return` 靠异步 setState，同 tick 连击全看到 busy=false。修：同步 `busyRef` 守卫；同模式一并修 WorkforcePanel（hire/assemble/archive）与 OrchestratePanel（doDecompose/doRoute/doRun）——共 7 处。CDP 重验 delta=1 PASS。
+- **P2 Esc 关不掉弹窗**：CreateTaskModal（全库唯一弹窗）之前只能点取消/背景关闭；TaskDetailDrawer / EmployeeDetail 抽屉只有✕。修：window keydown Esc→关闭。双抽屉 CDP 验证 PASS。
+- **P2 "● Running" 撒谎**：server 中途被杀后指示灯永远绿色——`connected` 只在启动 refresh() 里置一次。修：App.tsx 加 10s 轻量 `/health` 心跳（不触发全量刷新）；杀 server→"● Offline"、重启→"● Running"，断线期间 dashboard 优雅降级 0 JS 错误（截图证据）。
+- **P3 翻译**：zh.ts 程序化扫描 53 嫌疑，甄别修 6 真 bug（git.hint "点 Refresh"、backup.loading / finalreport.loading 英文残留、dispatch.via 系列中英混杂）；其余 47 处刻意保留（枚举码/spec 术语/文件名）。
+- **P3 未修**：vite dev 下终端 tab 的 xterm Viewport 未捕获异常——根因 React StrictMode dev 双挂载；**生产 file:// 渲染器实测 0 错误、PTY 真实可用**，用户零影响，故不碰 xterm 生命周期。
+- **验证通过（无 bug）**：27/27 tab 0 错误；弹窗开→Esc→重开→取消循环；刷新连击 5 次；新建任务全旅程；resize 900×600/1920×1080；通知铃铛；生产渲染器完整启动。
+- **验证**：desktop/server tsc 0；`npm run build` EXIT=0；i18n 983/983 对称；每个修复 CDP e2e 重验全 PASS（`~/qa-r1/*.cjs` 即回归套件；本仓库无桌面单测基建，未伪造单测）。`npm test`/`test:server`/`test:acceptance` 未重跑——零服务端/包改动，B241 基线（2593/0、507/507、138/138）仍有效，如实声明。
+- **UNVERIFIED**：Win/Mac 打包；Codex 真实模型链路；认证多用户模式；长稳 soak；40 个 NOT_RUN AT（B107 口径不变）。
+
 ## Batch 241 (2026-10-17)
 
 中文版补完整——**338 个新 key（645→983/边），中文模式零英文残留**。

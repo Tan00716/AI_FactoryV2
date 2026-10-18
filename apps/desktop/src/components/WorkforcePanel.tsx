@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { defaultApiBase, OrgNode as AgentOrgNode, authHeaders } from '../api';
 import { OrgGraph } from './OrgGraph';
 import { useLang } from '../i18n';
@@ -87,6 +87,10 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
   const [err, setErr] = useState('');
   /** 动作进行中（hire/assemble/archive 共享）—— 防连击重复提交。 */
   const [busy, setBusy] = useState(false);
+  // QA-R1: 连击防护——state 更新异步，同 tick 连击会绕过 if (busy)。
+  const busyRef = useRef(false);
+  const takeBusy = () => { if (busyRef.current) return false; busyRef.current = true; setBusy(true); return true; };
+  const releaseBusy = () => { busyRef.current = false; setBusy(false); };
 
   const refresh = useCallback(async () => {
     try {
@@ -105,8 +109,7 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
   }, [refresh]);
 
   const hire = async () => {
-    if (busy) return;
-    setBusy(true);
+    if (!takeBusy()) return;
     setMsg('');
     setErr('');
     try {
@@ -116,13 +119,12 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
     } catch (e) {
       setErr((e as Error).message);
     } finally {
-      setBusy(false);
+      releaseBusy();
     }
   };
 
   const assemble = async () => {
-    if (busy) return;
-    setBusy(true);
+    if (!takeBusy()) return;
     setMsg('');
     setErr('');
     try {
@@ -132,20 +134,19 @@ export function WorkforcePanel({ api, agentTree, onSelectAgent }: {
     } catch (e) {
       setErr((e as Error).message);
     } finally {
-      setBusy(false);
+      releaseBusy();
     }
   };
 
   const archive = async (id: string) => {
-    if (busy) return;
-    setBusy(true);
+    if (!takeBusy()) return;
     try {
       await client.archiveSquad(id);
       await refresh();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
-      setBusy(false);
+      releaseBusy();
     }
   };
 

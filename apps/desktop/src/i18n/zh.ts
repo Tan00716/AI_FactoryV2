@@ -153,9 +153,9 @@ export const zh = {
   'dispatch.changedAt': '变更于 {time}',
   'dispatch.assignTo': '指派给',
   'dispatch.noAssignee': '不指派执行者',
-  'dispatch.via': '派发方式 via',
-  'dispatch.viaHuman': 'via: HUMAN（人工派发）',
-  'dispatch.viaPolicy': 'via: POLICY（预授权）',
+  'dispatch.via': '派发方式',
+  'dispatch.viaHuman': '人工派发（HUMAN）',
+  'dispatch.viaPolicy': '预授权（POLICY）',
   'dispatch.policyRuleIdPlaceholder': 'policyRuleId（必填）',
   'dispatch.processing': '处理中…',
   'dispatch.dispatchBtn': '派发（授权执行）',
@@ -339,7 +339,7 @@ export const zh = {
   'backup.create': '创建备份',
   'backup.refresh': '刷新列表',
   'backup.count': '{count} 个备份',
-  'backup.loading': 'Loading backups…',
+  'backup.loading': '正在加载备份…',
   'backup.empty': '暂无备份。点击「{create}」生成第一份备份。',
   'backup.col.backup': '备份',
   'backup.col.type': '类型',
@@ -478,7 +478,7 @@ export const zh = {
   'finalreport.exporting': '导出中…',
   'finalreport.reportNote': '报告由服务端在请求时从数据库实时汇编，每次生成都会写入审计。',
   'finalreport.mdExportFailed': 'Markdown 导出失败：{message}',
-  'finalreport.loading': 'Loading final report…',
+  'finalreport.loading': '正在生成最终报告…',
   'finalreport.metaLine': '生成时间：{generatedAt} · 数据截止：{dataThrough} · 内容哈希（{algo}）：',
   'finalreport.metrics': '指标',
   'finalreport.tasks': '任务（{total}）',
@@ -663,7 +663,7 @@ export const zh = {
   'sidebar.profileTitle': '查看员工档案 §87',
 
   // ---- Git ----
-  'git.hint': '输入仓库路径后点 Refresh 查看状态（§64）。',
+  'git.hint': '输入仓库路径后点“刷新”查看状态（§64）。',
 
   // ---- Skills ----
   'skills.noSkills': '暂无已安装的 skill（可用下方发现功能安装）。',

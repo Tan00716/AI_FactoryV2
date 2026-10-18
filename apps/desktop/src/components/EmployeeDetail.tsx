@@ -216,6 +216,13 @@ export function EmployeeDetail({ agentId, onClose, onSelectTask }: {
   const agent = useAgent(agentId);
   const [tab, setTab] = useState<Tab>(TABS[0]);
 
+  // QA-R1: Esc 关闭抽屉（与 TaskDetailDrawer / CreateTaskModal 行为一致）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   return (
     <div className="detail wide">
       <div className="detail-head">
