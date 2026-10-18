@@ -14,6 +14,10 @@
  *  - resilience classify → bounded retry / breaker → alternative [§34.4]
  *  - runtimePolicy stdio env / credentials / redirect / OAuth /  [§34.3]
  *              TLS / dynamic URL / resource-size restrictions
+ *  - streamable-connector remote client: stateless Streamable HTTP
+ *              (2026-07-28 spec: no initialize, no session id) [§34.2]
+ *  - oauth OAuth 2.1 authorization-code flow (PKCE, discovery,
+ *              refresh, secrets-backed token store)          [§34.3]
  */
 export * from './types';
 export * from './registry';
@@ -21,6 +25,8 @@ export * from './security';
 export * from './gate';
 export * from './handshake';
 export * from './stdio-connector';
+export * from './streamable-connector';
+export * from './oauth';
 export * from './health';
 export * from './resilience';
 export * from './runtimePolicy';

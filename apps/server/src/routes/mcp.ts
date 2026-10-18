@@ -40,12 +40,28 @@ import {
   McpRegistry,
   McpManager,
   ToolCallGate,
+  withBoundedRetry,
+  StreamableMcpConnector,
+  OAuthTokenManager,
+  buildAuthorizationUrl,
+  generatePkcePair,
+  generateState,
+  statesEqual,
+  exchangeCodeForToken,
+  discoverOAuthMetadata,
+  decodeJwtClaims,
+  resolveClientId,
+  validateAuthorizationResponseIss,
   type McpServerDefinition,
+  type StatelessMcpConnector,
+  type McpServer,
 } from '@ai-factory/mcp';
 import type { RouteContext } from './context';
 import type { FactoryDatabase, McpServerStore } from '@ai-factory/db';
 import { McpServerLauncher, McpLaunchError } from '../mcp-launcher';
 import { recordRedactionHit } from '../redaction-monitor';
+import { SecretsBackedOAuthTokenStore, oauthSecretName } from '../mcp-oauth-store';
+import { readServerModeFlag, writeServerModeFlag } from '../mcp-server-mode';
 import {
   hydrateMcpRegistry,
   attachMcpPersistence,
@@ -64,6 +80,32 @@ const gate = new ToolCallGate({ registry, manager });
 // process — launches die with the server, and that is stated in
 // KNOWN_LIMITATIONS (same honesty as the merge queue / PrStore).
 const launcher = new McpServerLauncher();
+
+// W-A — remote (sse/http) connectors, one per connected server. Created
+// by POST /api/mcp/remote/connect, reused by /api/mcp/remote/call.
+// Process-local like the stdio launch table: a restart drops them and
+// the panel reconnects (the registry records persist).
+const remoteConnectors = new Map<string, { connector: StatelessMcpConnector; server: McpServer }>();
+
+// W-A — in-flight OAuth authorization flows: state → PKCE + identity.
+// Entries expire after 10 minutes; the callback validates `state` with
+// a constant-time comparison and `iss` per RFC 9207 before any token
+// is exchanged.
+const oauthPending = new Map<string, {
+  name: string;
+  version: string;
+  verifier: string;
+  redirectUri: string;
+  /** issuer used for RFC 8414 discovery — the callback's `iss` must match (RFC 9207) */
+  issuer: string;
+  createdAt: number;
+}>();
+
+const OAUTH_PENDING_TTL_MS = 10 * 60 * 1000;
+
+function remoteKey(name: string, version: string): string {
+  return `${name}@${version}`;
+}
 
 /**
  * Durable registry backing (§46, Batch 21). Set once at server
@@ -147,6 +189,13 @@ function summarize(name: string, version: string) {
     health: server?.health
       ? { overall: server.health.overall, checkedAt: server.health.checkedAt, failureClass: server.health.failureClass ?? null }
       : null,
+    // W-A — remote servers: pinned URL + whether OAuth is configured.
+    serverUrl: server?.runtimePolicy?.serverUrl ?? null,
+    oauthConfigured: server?.oauth != null,
+    // W-A — stateless HTTP: a live connector in this process means
+    // capability discovery succeeded (no protocol negotiation exists
+    // in the 2026-07-28 stateless model).
+    connected: name != null && version != null && remoteConnectors.has(remoteKey(name, version)),
   };
 }
 
@@ -229,6 +278,44 @@ export async function handleMcpRoutes(
     const def = body['server'] as McpServerDefinition | undefined;
     if (!def || typeof def.name !== 'string' || typeof def.version !== 'string') {
       return ctx.json(res, 400, { error: 'server {name, version, provider, transport} is required' }), true;
+    }
+    // W-A — remote servers must pin a URL at registration (§34.3: a
+    // changed URL is a changed server). OAuth metadata is validated
+    // for shape here; the secret itself lives in the vault.
+    // HTTP+SSE ('sse') is refused: deprecated by the MCP spec on
+    // 2025-03-26, formally in the 2026-07-28 revision
+    // (CVE-2026-16496). Use Streamable HTTP ('http'). Checked on the
+    // raw wire value — 'sse' is not a member of the Transport union.
+    if ((body['server'] as { transport?: unknown } | undefined)?.transport === 'sse') {
+      return ctx.json(res, 400, {
+        error: `transport 'sse' is deprecated and no longer accepted (MCP 2025-03-26 / 2026-07-28) — register as 'http' (Streamable HTTP) instead`,
+        code: 'MCP_TRANSPORT_DEPRECATED',
+      }), true;
+    }
+    if (def.transport === 'http') {
+      const url = def.runtimePolicy?.serverUrl;
+      if (typeof url !== 'string' || !url) {
+        return ctx.json(res, 400, { error: `transport '${def.transport}' requires runtimePolicy.serverUrl` }), true;
+      }
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          return ctx.json(res, 400, { error: 'serverUrl must be http(s)' }), true;
+        }
+      } catch {
+        return ctx.json(res, 400, { error: 'serverUrl is not a valid URL' }), true;
+      }
+      if (def.oauth) {
+        const o = def.oauth;
+        // Static clientId or a Client ID Metadata Document (DCR is
+        // deprecated per MCP 2026-07-28) — one of the two is required.
+        if ((typeof o.clientId !== 'string' || !o.clientId) && !o.clientIdMetadataUrl) {
+          return ctx.json(res, 400, { error: 'oauth.clientId or oauth.clientIdMetadataUrl is required when oauth is configured' }), true;
+        }
+        if (!o.authorizationEndpoint && !o.tokenEndpoint && !o.issuer) {
+          return ctx.json(res, 400, { error: 'oauth needs authorizationEndpoint/tokenEndpoint or issuer (RFC 8414 discovery)' }), true;
+        }
+      }
     }
     try {
       const s = registry.register(def);
@@ -593,5 +680,364 @@ export async function handleMcpRoutes(
     return ctx.json(res, verdict.allowed ? 200 : 403, gateVerdict), true;
   }
 
+  // ------------------------------------------------------------------
+  // W-A: remote MCP (Streamable HTTP) + OAuth 2.1 + MCP server mode.
+  // ------------------------------------------------------------------
+
+  /**
+   * Resolve the OAuth endpoints for a server (explicit or RFC 8414
+   * discovery). Also returns the issuer identity the client used —
+   * the authorization response's `iss` must match it (RFC 9207).
+   */
+  async function resolveOAuthEndpoints(server: McpServer): Promise<{ authorizationEndpoint: string; tokenEndpoint: string; issuer: string }> {
+    const o = server.oauth;
+    if (!o) throw new Error(`mcp server ${server.name}@${server.version} has no OAuth configuration`);
+    if (o.authorizationEndpoint && o.tokenEndpoint) {
+      return { authorizationEndpoint: o.authorizationEndpoint, tokenEndpoint: o.tokenEndpoint, issuer: o.issuer ?? o.authorizationEndpoint };
+    }
+    if (o.issuer) {
+      const meta = await discoverOAuthMetadata(o.issuer);
+      return { authorizationEndpoint: meta.authorizationEndpoint, tokenEndpoint: meta.tokenEndpoint, issuer: meta.issuer };
+    }
+    throw new Error('oauth misconfigured: need authorizationEndpoint/tokenEndpoint or issuer');
+  }
+
+  function oauthStore(): SecretsBackedOAuthTokenStore | null {
+    if (!ctx.secretBroker) return null;
+    return new SecretsBackedOAuthTokenStore(ctx.secretBroker);
+  }
+
+  /** Authorization header for a remote server (OAuth token when configured). */
+  async function remoteAuthHeaders(server: McpServer): Promise<{ headers: Record<string, string>; token: string | null }> {
+    if (!server.oauth) return { headers: {}, token: null };
+    const store = oauthStore();
+    if (!store) {
+      throw Object.assign(new Error('secret broker is not configured on this server'), { status: 503 });
+    }
+    const { tokenEndpoint } = await resolveOAuthEndpoints(server);
+    let clientSecret: string | undefined;
+    if (server.oauth.clientSecretRef) {
+      try {
+        clientSecret = await ctx.secretBroker!.resolve(server.oauth.clientSecretRef, {
+          actor: 'mcp-oauth',
+          purpose: 'mcp-oauth-client-secret',
+        });
+      } catch {
+        throw Object.assign(
+          new Error(`oauth client secret ref '${server.oauth.clientSecretRef}' cannot be resolved from the vault`),
+          { status: 400 },
+        );
+      }
+    }
+    const mgr = new OAuthTokenManager();
+    const token = await mgr.getValidAccessToken(
+      oauthSecretName(server.name, server.version, server.oauth),
+      { tokenEndpoint, clientId: server.oauth.clientId, clientSecret },
+      store,
+    );
+    return { headers: { authorization: `Bearer ${token}` }, token };
+  }
+
+  function defaultCallbackUrl(): string {
+    const port = process.env.PORT ?? '3100';
+    return `http://127.0.0.1:${port}/api/mcp/oauth/callback`;
+  }
+
+  function pruneOAuthPending(): void {
+    const now = Date.now();
+    for (const [k, v] of oauthPending) {
+      if (v.createdAt + OAUTH_PENDING_TTL_MS < now) oauthPending.delete(k);
+    }
+  }
+
+  // POST /api/mcp/remote/connect {name, version} — capability discovery
+  // against a remote (Streamable HTTP) server and keep its connector
+  // for /remote/call. Stateless per the MCP 2026-07-28 revision: there
+  // is no initialize handshake and no session — discovery is a direct
+  // tools/list + resources/list + prompts/list. (stdio keeps the
+  // stateful handshake path; it is untouched.)
+  if (method === 'POST' && path === `${PREFIX}/remote/connect`) {
+    const body = await ctx.readBody(req);
+    const name = body['name'];
+    const version = body['version'];
+    if (typeof name !== 'string' || typeof version !== 'string') {
+      return ctx.json(res, 400, { error: 'name and version are required' }), true;
+    }
+    const server = registry.get(name, version);
+    if (!server) return ctx.json(res, 404, { error: `mcp server ${name}@${version} is not registered` }), true;
+    if (server.transport !== 'http') {
+      return ctx.json(res, 400, { error: `transport '${server.transport}' is not remote (use /api/mcp/launch for stdio)` }), true;
+    }
+    if (server.approvalPolicy === 'BLOCKED') {
+      return ctx.json(res, 403, { error: `refusing to connect ${name}@${version}: approval policy BLOCKED`, code: 'MCP_TRUST_NOT_APPROVED' }), true;
+    }
+    if (manager.getInstall(name, version)?.status !== 'INSTALLED') {
+      return ctx.json(res, 403, { error: `refusing to connect ${name}@${version}: not installed`, code: 'MCP_REMOTE_NOT_INSTALLED' }), true;
+    }
+    if (!manager.isEnabled(name, version)) {
+      return ctx.json(res, 403, { error: `refusing to connect ${name}@${version}: disabled`, code: 'MCP_REMOTE_DISABLED' }), true;
+    }
+    try {
+      const { headers } = await remoteAuthHeaders(server);
+      const connector: StatelessMcpConnector = new StreamableMcpConnector({ headers });
+      await connector.launch(server);
+      const caps = await connector.discoverCapabilities(server);
+      remoteConnectors.set(remoteKey(name, version), { connector, server });
+      ctx.audit.record('human', 'MCP_REMOTE_CONNECTED', 'mcp_server', `${name}@${version}`, {
+        transport: server.transport,
+        tools: caps.tools.length,
+        oauth: server.oauth != null,
+      });
+      return ctx.json(res, 200, {
+        ok: true,
+        server: name,
+        version,
+        transport: server.transport,
+        stateless: true,
+        tools: caps.tools.map((t) => t.name),
+        resources: caps.resources.map((r) => r.uri),
+        prompts: caps.prompts.map((p) => p.name),
+      }), true;
+    } catch (e) {
+      const status = (e as { status?: number }).status ?? 502;
+      return ctx.json(res, status, { error: (e as Error).message, code: 'MCP_REMOTE_CONNECT_FAILED' }), true;
+    }
+  }
+
+  // POST /api/mcp/remote/call {name, version?, tool, args?, agentId?, taskId?}
+  // Full chain: gate.checkCall (with REAL OAuth claims when a token is
+  // in play) → withBoundedRetry(connector.callTool).
+  if (method === 'POST' && path === `${PREFIX}/remote/call`) {
+    const body = await ctx.readBody(req);
+    const name = body['name'];
+    const tool = body['tool'];
+    if (typeof name !== 'string' || typeof tool !== 'string') {
+      return ctx.json(res, 400, { error: 'name and tool are required' }), true;
+    }
+    const version = typeof body['version'] === 'string' ? body['version'] : undefined;
+    const entry = version ? remoteConnectors.get(remoteKey(name, version)) : undefined;
+    const live = entry ?? [...remoteConnectors.values()].find((e) => e.server.name === name);
+    if (!live) {
+      return ctx.json(res, 409, { error: `mcp server '${name}' is not connected — POST /api/mcp/remote/connect first`, code: 'MCP_REMOTE_NOT_CONNECTED' }), true;
+    }
+    const server = live.server;
+    let oauthToken: { audience?: string; scopes: string[] } | undefined;
+    try {
+      const { token } = await remoteAuthHeaders(server);
+      if (token) {
+        const claims = decodeJwtClaims(token);
+        if (claims) oauthToken = { audience: claims.audience, scopes: claims.scopes };
+        // Opaque token: no client-readable claims — enforcement rests
+        // with the remote server (see tokenClaimsForGate docs).
+      }
+    } catch (e) {
+      return ctx.json(res, (e as { status?: number }).status ?? 502, { error: (e as Error).message }), true;
+    }
+    const verdict = gate.checkCall({
+      server: server.name,
+      version: server.version,
+      tool,
+      agentId: typeof body['agentId'] === 'string' ? body['agentId'] : undefined,
+      taskId: typeof body['taskId'] === 'string' ? body['taskId'] : undefined,
+      ...(oauthToken ? { oauthToken } : {}),
+    });
+    if (!verdict.allowed) {
+      ctx.audit.record('system', 'MCP_REMOTE_GATE_DENIED', 'mcp_server', `${server.name}@${server.version}`, {
+        tool, reason: verdict.reason,
+      });
+      return ctx.json(res, 403, { allowed: false, reason: verdict.reason }), true;
+    }
+    const args =
+      body['args'] !== null && typeof body['args'] === 'object' && !Array.isArray(body['args'])
+        ? (body['args'] as Record<string, unknown>)
+        : {};
+    try {
+      const result = await withBoundedRetry(() => live.connector.callTool(server, tool, args));
+      return ctx.json(res, 200, { ok: true, result }), true;
+    } catch (e) {
+      return ctx.json(res, 502, { ok: false, error: (e as Error).message, code: 'MCP_REMOTE_CALL_FAILED' }), true;
+    }
+  }
+
+  // POST /api/mcp/oauth/start {name, version, redirectUri?} — begin the
+  // OAuth 2.1 authorization-code flow (PKCE S256 + state).
+  if (method === 'POST' && path === `${PREFIX}/oauth/start`) {
+    const body = await ctx.readBody(req);
+    const name = body['name'];
+    const version = body['version'];
+    if (typeof name !== 'string' || typeof version !== 'string') {
+      return ctx.json(res, 400, { error: 'name and version are required' }), true;
+    }
+    const server = registry.get(name, version);
+    if (!server) return ctx.json(res, 404, { error: `mcp server ${name}@${version} is not registered` }), true;
+    if (!server.oauth) return ctx.json(res, 400, { error: 'this server has no OAuth configuration' }), true;
+    const redirectUri = typeof body['redirectUri'] === 'string' && body['redirectUri'] ? body['redirectUri'] : defaultCallbackUrl();
+    try {
+      const { authorizationEndpoint, issuer } = await resolveOAuthEndpoints(server);
+      // Client ID Metadata Document (MCP 2026-07-28; DCR deprecated):
+      // the document URL itself becomes the client_id, and the redirect
+      // URI must be listed in the document.
+      const clientId = await resolveClientId(
+        { clientId: server.oauth.clientId, clientIdMetadataUrl: server.oauth.clientIdMetadataUrl },
+        redirectUri,
+      );
+      const { verifier, challenge } = generatePkcePair();
+      const state = generateState();
+      pruneOAuthPending();
+      oauthPending.set(state, { name, version, verifier, redirectUri, issuer, createdAt: Date.now() });
+      const authorizationUrl = buildAuthorizationUrl({
+        authorizationEndpoint,
+        clientId,
+        redirectUri,
+        scopes: server.oauth.scopes,
+        state,
+        codeChallenge: challenge,
+        resource: server.runtimePolicy?.serverUrl,
+      });
+      ctx.audit.record('human', 'MCP_OAUTH_START', 'mcp_server', `${name}@${version}`, { redirectUri });
+      return ctx.json(res, 200, { authorizationUrl, state }), true;
+    } catch (e) {
+      return ctx.json(res, 502, { error: (e as Error).message, code: 'MCP_OAUTH_START_FAILED' }), true;
+    }
+  }
+
+  // GET /api/mcp/oauth/callback?code=&state= — the provider redirects
+  // here; the code is exchanged (PKCE) and tokens go to the vault.
+  if (method === 'GET' && path === `${PREFIX}/oauth/callback`) {
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    const errParam = url.searchParams.get('error');
+    const fail = (message: string, status = 400) => {
+      res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(
+        `<html><body style="font-family:sans-serif"><h2>OAuth failed</h2><p>${escapeHtml(message)}</p>` +
+          `<p>You can close this window.</p></body></html>`,
+      );
+      return true;
+    };
+    if (errParam) return fail(`provider returned error: ${errParam} — ${url.searchParams.get('error_description') ?? ''}`);
+    if (!code || !state) return fail('missing code or state');
+    pruneOAuthPending();
+    let pendingKey: string | undefined;
+    for (const k of oauthPending.keys()) {
+      if (statesEqual(k, state)) { pendingKey = k; break; }
+    }
+    const pending = pendingKey ? oauthPending.get(pendingKey)! : undefined;
+    if (pendingKey) oauthPending.delete(pendingKey);
+    if (!pending) return fail('unknown or expired state — restart the login from the McpPanel');
+    // RFC 9207: when the authorization server returns `iss`, it must
+    // match the issuer this flow was started against.
+    try {
+      validateAuthorizationResponseIss(pending.issuer, url.searchParams.get('iss'));
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+    const server = registry.get(pending.name, pending.version);
+    if (!server?.oauth) return fail('server no longer has an OAuth configuration');
+    try {
+      const { tokenEndpoint } = await resolveOAuthEndpoints(server);
+      let clientSecret: string | undefined;
+      if (server.oauth.clientSecretRef && ctx.secretBroker) {
+        clientSecret = await ctx.secretBroker.resolve(server.oauth.clientSecretRef, {
+          actor: 'mcp-oauth', purpose: 'mcp-oauth-client-secret',
+        });
+      }
+      const tokens = await exchangeCodeForToken({
+        tokenEndpoint,
+        code,
+        codeVerifier: pending.verifier,
+        clientId: server.oauth.clientId,
+        redirectUri: pending.redirectUri,
+        clientSecret,
+      });
+      const store = oauthStore();
+      if (!store) return fail('secret broker is not configured on this server', 503);
+      await new OAuthTokenManager().saveTokenResponse(oauthSecretName(server.name, server.version, server.oauth), tokens, store);
+      ctx.audit.record('human', 'MCP_OAUTH_TOKEN_STORED', 'mcp_server', `${pending.name}@${pending.version}`, {
+        scopes: tokens.scope ?? null,
+      });
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(
+        `<html><body style="font-family:sans-serif"><h2>✅ OAuth login complete</h2>` +
+          `<p>${escapeHtml(pending.name)}@${escapeHtml(pending.version)} is now authorized. You can close this window and return to AI Factory.</p></body></html>`,
+      );
+      return true;
+    } catch (e) {
+      return fail((e as Error).message, 502);
+    }
+  }
+
+  // GET /api/mcp/oauth/status?name=&version= — token presence/expiry (no values).
+  if (method === 'GET' && path === `${PREFIX}/oauth/status`) {
+    const name = url.searchParams.get('name');
+    const version = url.searchParams.get('version');
+    if (!name || !version) return ctx.json(res, 400, { error: 'name and version are required' }), true;
+    const server = registry.get(name, version);
+    if (!server) return ctx.json(res, 404, { error: `mcp server ${name}@${version} is not registered` }), true;
+    const store = oauthStore();
+    const stored = store ? await store.load(oauthSecretName(name, version, server.oauth)) : null;
+    return ctx.json(res, 200, {
+      configured: server.oauth != null,
+      hasToken: stored != null,
+      expired: stored ? stored.obtainedAt + (stored.expiresIn ?? 0) * 1000 - 60_000 <= Date.now() && stored.expiresIn !== undefined : null,
+      scopes: stored?.scope ?? null,
+    }), true;
+  }
+
+  // POST /api/mcp/oauth/refresh {name, version} — force a refresh now.
+  if (method === 'POST' && path === `${PREFIX}/oauth/refresh`) {
+    const body = await ctx.readBody(req);
+    const name = body['name'];
+    const version = body['version'];
+    if (typeof name !== 'string' || typeof version !== 'string') {
+      return ctx.json(res, 400, { error: 'name and version are required' }), true;
+    }
+    const server = registry.get(name, version);
+    if (!server?.oauth) return ctx.json(res, 404, { error: 'server not found or has no OAuth configuration' }), true;
+    const store = oauthStore();
+    if (!store) return ctx.json(res, 503, { error: 'secret broker is not configured on this server' }), true;
+    try {
+      const { tokenEndpoint } = await resolveOAuthEndpoints(server);
+      let clientSecret: string | undefined;
+      if (server.oauth.clientSecretRef && ctx.secretBroker) {
+        clientSecret = await ctx.secretBroker.resolve(server.oauth.clientSecretRef, {
+          actor: 'mcp-oauth', purpose: 'mcp-oauth-client-secret',
+        });
+      }
+      const token = await new OAuthTokenManager().getValidAccessToken(
+        oauthSecretName(name, version, server.oauth),
+        { tokenEndpoint, clientId: server.oauth.clientId, clientSecret },
+        store,
+      );
+      void token;
+      ctx.audit.record('human', 'MCP_OAUTH_REFRESHED', 'mcp_server', `${name}@${version}`, {});
+      return ctx.json(res, 200, { ok: true }), true;
+    } catch (e) {
+      return ctx.json(res, 502, { error: (e as Error).message, code: 'MCP_OAUTH_REFRESH_FAILED' }), true;
+    }
+  }
+
+  // GET /api/mcp/server-mode — the MCP server-mode kill switch state.
+  if (method === 'GET' && path === `${PREFIX}/server-mode`) {
+    return ctx.json(res, 200, readServerModeFlag()), true;
+  }
+
+  // POST /api/mcp/server-mode {enabled, updatedBy?} — flip the switch.
+  if (method === 'POST' && path === `${PREFIX}/server-mode`) {
+    const body = await ctx.readBody(req);
+    const enabled = body['enabled'];
+    if (typeof enabled !== 'boolean') {
+      return ctx.json(res, 400, { error: 'enabled (boolean) is required' }), true;
+    }
+    const updatedBy = typeof body['updatedBy'] === 'string' ? body['updatedBy'] : 'human';
+    const flag = writeServerModeFlag(enabled, updatedBy);
+    ctx.audit.record(updatedBy, 'MCP_SERVER_MODE_SET', 'mcp_server_mode', 'global', { enabled });
+    return ctx.json(res, 200, flag), true;
+  }
+
   return false;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

@@ -6,7 +6,15 @@
  * Requirements. Default: unknown MCP = BLOCK.
  */
 
-export type Transport = 'stdio' | 'sse' | 'http';
+/**
+ * Transports a registered MCP server may use.
+ *
+ * Only stdio and Streamable HTTP are current. HTTP+SSE was deprecated
+ * by the MCP spec on 2025-03-26 and formally listed as deprecated in
+ * the 2026-07-28 revision (see also CVE-2026-16496 against the
+ * stateful SSE transport) — 'sse' is intentionally NOT a member.
+ */
+export type Transport = 'stdio' | 'http';
 
 export type TrustLevel = 'UNKNOWN' | 'LOW' | 'MEDIUM' | 'HIGH' | 'VERIFIED';
 
@@ -128,6 +136,8 @@ export interface McpServer {
   history?: McpLifecycleEvent[];
   /** §34.3 — runtime restrictions for this server (see runtimePolicy.ts). */
   runtimePolicy?: McpRuntimePolicy;
+  /** §34.3 — OAuth client configuration for remote (sse/http) servers (see McpOAuthConfig). */
+  oauth?: McpOAuthConfig;
   /**
    * §34.2 [S4] — negotiated protocol version from the handshake. The
    * implementation MUST persist this; it drives the legacy-server
@@ -160,6 +170,34 @@ export interface McpServerDefinition {
   networkTargets?: string[];
   credentialRefs?: string[];
   runtimePolicy?: McpRuntimePolicy;
+  /** §34.3 — OAuth client configuration for remote (sse/http) servers. Metadata only: no secrets here. */
+  oauth?: McpOAuthConfig;
+}
+
+/**
+ * §34.3 — OAuth client configuration for a remote MCP server.
+ * This is operator-supplied metadata (endpoints, client id, scopes);
+ * the client SECRET (confidential clients) lives in the secrets vault
+ * under `clientSecretRef`, and issued TOKENS live under the
+ * `mcp-oauth:<name>@<version>` secret — never in this record.
+ */
+export interface McpOAuthConfig {
+  /** RFC 8414 issuer base URL; when set, endpoints may be discovered from it */
+  issuer?: string;
+  authorizationEndpoint?: string;
+  tokenEndpoint?: string;
+  clientId: string;
+  /**
+   * Client ID Metadata Document URL (MCP 2026-07-28: Dynamic Client
+   * Registration is deprecated). When set, this URL is sent as the
+   * client_id and its document is fetched to validate redirect_uris.
+   */
+  clientIdMetadataUrl?: string;
+  /** secret-vault ref holding the client secret (confidential clients); the value never appears here */
+  clientSecretRef?: string;
+  scopes: string[];
+  /** redirect URI registered with the provider; the server layer fills the default local callback URL */
+  redirectUri?: string;
 }
 
 /**
@@ -191,7 +229,7 @@ export interface McpRuntimePolicy {
   requireTlsForCredentials: boolean;
   /** the server URL may change at runtime without re-registration/re-approval */
   allowDynamicUrl: boolean;
-  /** the pinned URL for http/sse transports, when one is recorded */
+  /** the pinned URL for the http transport, when one is recorded */
   serverUrl?: string;
   /** max bytes for one resource read / tool result payload */
   maxResourceBytes: number;
@@ -308,9 +346,10 @@ export interface McpToolCallResult {
 
 /**
  * Transport-level client for ONE MCP server. stdio servers get a real
- * transport via StdioMcpConnector (stdio-connector.ts); SSE/HTTP still
- * need a production client, and tests wire a fixture. Each method maps
- * to one graded-health level.
+ * transport via StdioMcpConnector (stdio-connector.ts), remote servers
+ * via StreamableMcpConnector (streamable-connector.ts, stateless
+ * Streamable HTTP per the 2026-07-28 spec revision); tests wire a
+ * fixture. Each method maps to one graded-health level.
  */
 export interface McpConnector {
   /** level 'launch': the process starts / the connection opens */
@@ -319,6 +358,31 @@ export interface McpConnector {
   initialize(server: McpServer, clientProtocolVersions: string[]): Promise<McpInitializeResult>;
   /** level 'tools': tools/list is answered */
   listTools(server: McpServer): Promise<McpTool[]>;
+  listPrompts?(server: McpServer): Promise<McpPrompt[]>;
+  /** level 'execution': a real tool invocation completes */
+  callTool(server: McpServer, tool: string, args: Record<string, unknown>): Promise<McpToolCallResult>;
+  close?(server: McpServer): Promise<void> | void;
+}
+
+/**
+ * Stateless Streamable HTTP client (MCP spec 2026-07-28 revision).
+ *
+ * There is NO initialize handshake and NO session id: capability
+ * discovery is a direct `tools/list` / `resources/list` / `prompts/list`
+ * against the single endpoint, optionally cached for `ttlMs`
+ * (pass 0/undefined to always re-list). The stateful `McpConnector`
+ * above remains the contract for stdio only.
+ */
+export interface StatelessMcpConnector {
+  /** level 'launch': the endpoint URL validates against the §34.3 policy (no network I/O) */
+  launch(server: McpServer): Promise<void>;
+  /** capability discovery: direct list calls, cached for `ttlMs` when positive */
+  discoverCapabilities(
+    server: McpServer,
+    opts?: { ttlMs?: number },
+  ): Promise<{ tools: McpTool[]; resources: McpResource[]; prompts: McpPrompt[] }>;
+  listTools(server: McpServer): Promise<McpTool[]>;
+  listResources?(server: McpServer): Promise<McpResource[]>;
   listPrompts?(server: McpServer): Promise<McpPrompt[]>;
   /** level 'execution': a real tool invocation completes */
   callTool(server: McpServer, tool: string, args: Record<string, unknown>): Promise<McpToolCallResult>;

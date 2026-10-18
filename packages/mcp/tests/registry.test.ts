@@ -51,6 +51,22 @@ describe('McpRegistry', () => {
     assert.equal(s.trustLevel, 'VERIFIED');
     assert.equal(s.approvalPolicy, 'AUTO');
   });
+
+  it('stores and preserves oauth metadata across re-registration', () => {
+    const { registry } = fresh();
+    const rp = {
+      stdioEnvAllowlist: [], allowedCredentialHeaders: [],
+      followRedirects: false, tlsMode: 'system' as const,
+      requireTlsForCredentials: true, allowDynamicUrl: false,
+      maxResourceBytes: 1024, serverUrl: 'http://127.0.0.1:9/mcp',
+    };
+    const oauth = { issuer: 'http://127.0.0.1:9', clientId: 'cid', scopes: ['mcp:tools'] };
+    const first = registry.register({ ...githubDef, transport: 'http', runtimePolicy: rp, oauth });
+    assert.deepEqual(first.oauth, oauth);
+    // re-register without oauth: the earlier metadata survives (merge rule)
+    const second = registry.register({ ...githubDef, transport: 'http', runtimePolicy: rp });
+    assert.deepEqual(second.oauth, oauth);
+  });
 });
 
 describe('McpManager install flow', () => {

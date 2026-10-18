@@ -169,6 +169,8 @@ function mergeRegistration(
     networkTargets: keep(def.networkTargets, existing?.networkTargets),
     credentialRefs: keep(def.credentialRefs, existing?.credentialRefs),
     runtimePolicy: keep(def.runtimePolicy, existing?.runtimePolicy),
+    // W-A — remote OAuth client metadata (no secrets; tokens live in the vault).
+    oauth: keep(def.oauth, existing?.oauth),
     health: existing?.health,
     history: existing?.history ? [...existing.history] : [],
     negotiatedVersion: opts?.negotiatedVersion ?? existing?.negotiatedVersion,
