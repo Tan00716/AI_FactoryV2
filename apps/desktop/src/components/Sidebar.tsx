@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, OrgNode } from '../api';
 import { useLang } from '../i18n';
+import { APP_VERSION } from '../version';
 
 function OrgTreeNode({ node, depth, onSelectAgent }: {
   node: OrgNode; depth: number; onSelectAgent?: (agentId: string) => void;
@@ -72,6 +73,9 @@ export function Sidebar({ org, onSelectAgent }: {
         <h3>{t('sidebar.cicd')}</h3>
         <div className="muted"><span className="pill">{t('sidebar.stubBadge')}</span></div>
       </section>
+      <footer className="sidebar-version muted" title="AI Factory">
+        AI Factory v{APP_VERSION}
+      </footer>
     </aside>
   );
 }

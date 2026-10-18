@@ -85,7 +85,7 @@
     "test:desktop": "node scripts/test-desktop.mjs",
     "headless": "node packages/headless/dist/src/cli.js"
   },
-  "version": "0.1.0",
+  "version": "0.2.0",
   "workspaces": [
     "packages/*",
     "apps/*"

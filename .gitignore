@@ -1,5 +1,5 @@
 node_modules/
-release/
+/release/
 dist/
 dist-electron/
 dist-tests/
