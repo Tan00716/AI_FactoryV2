@@ -35,6 +35,7 @@ import { EventsPanel } from './components/EventsPanel';
 import { ModelsPanel } from './components/ModelsPanel';
 import { NeedsHumanPanel } from './components/NeedsHumanPanel';
 import { LanguageProvider, useLang } from './i18n';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import './styles.css';
 
 const API_BASE = defaultApiBase();
@@ -284,7 +285,9 @@ function IdeShell() {
 export default function App() {
   return (
     <LanguageProvider>
-      <IdeShell />
+      <ErrorBoundary>
+        <IdeShell />
+      </ErrorBoundary>
     </LanguageProvider>
   );
 }
