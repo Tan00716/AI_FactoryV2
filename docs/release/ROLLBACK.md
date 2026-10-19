@@ -51,6 +51,20 @@ curl -s -X POST http://127.0.0.1:3100/api/backup \
 5. **启动验证**：打开应用 → 侧栏版本显示 `v0.1.0` → 建一个测试任务
    走完创建→删除 → 查审计链 `verify` 通过。
 
+## 审计链尾锚定（restore 后必读）
+
+每次 `verify` 通过后，服务端会在数据目录保存一个"尾锚定"水位
+（`audit-tail-anchor.json`，最高链记录数 + 链头 hash），用于检出
+**尾记录被删除**这种哈希链本身看不见的篡改。
+
+`POST /api/restore` 恢复旧备份会**合法地**让链变短——下一次
+`verify` 会报 `TAIL_TRUNCATED`。这是正确的 fail-closed 行为
+（从链的角度看，restore 就是一次尾截断），不是数据损坏。
+恢复方法：确认 restore 是你自己做的之后，删除与 DB 文件同目录的
+`audit-tail-anchor.json`（默认就是 `data/audit-tail-anchor.json`，或
+`AI_FACTORY_AUDIT_TAIL_ANCHOR_FILE` 指定的文件），下一次 verify 会
+重新初始化基线并报告 ok。
+
 ## 4. 数据兼容性说明（0.2.0 → 0.1.0）
 
 | 0.2.0 新增 | 0.1.0 打开时的行为 |

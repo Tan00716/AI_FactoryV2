@@ -81,6 +81,9 @@ class ArrayCheckpointStore implements CheckpointStore {
       .filter((r) => runId === undefined || r.runId === runId)
       .map((r) => structuredClone(r));
   }
+  count(runId?: string): number {
+    return this.list(runId).length;
+  }
   delete(runId: string, stepPosition: number): boolean {
     const i = this.rows.findIndex((r) => r.runId === runId && r.stepPosition === stepPosition);
     if (i < 0) return false;

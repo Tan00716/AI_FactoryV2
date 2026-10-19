@@ -84,6 +84,11 @@ export interface RuntimeRunStore {
   put(record: RuntimeRunRecord): void;
   /** Every stored record, in first-put (creation) order. */
   list(): RuntimeRunRecord[];
+  /**
+   * How many records are stored. Exists so hot paths (e.g. /api/health)
+   * can report a count without the per-row JSON parsing of list().
+   */
+  count(): number;
 }
 
 /**
@@ -107,6 +112,10 @@ export class InMemoryRuntimeRunStore implements RuntimeRunStore {
 
   list(): RuntimeRunRecord[] {
     return [...this.runs.values()].map((r) => structuredClone(r));
+  }
+
+  count(): number {
+    return this.runs.size;
   }
 }
 
@@ -174,5 +183,14 @@ export class SqliteRuntimeRunStore implements RuntimeRunStore {
       .prepare('SELECT * FROM runtime_runs ORDER BY rowid')
       .all() as unknown as Record<string, unknown>[];
     return rows.map(rowToRun);
+  }
+
+  count(): number {
+    // COUNT(*) — the /api/health hot path needs only the number; each
+    // row of list() costs three JSON.parse calls in rowToRun.
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM runtime_runs')
+      .get() as { n: number };
+    return Number(row.n);
   }
 }

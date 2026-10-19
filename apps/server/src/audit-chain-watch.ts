@@ -52,6 +52,7 @@
 import { needsHuman } from '@ai-factory/autonomy';
 import type { AuditLog } from '@ai-factory/core';
 import type { NeedsHumanDbRecord, NeedsHumanStore } from '@ai-factory/db';
+import type { TailAnchoredVerification } from './audit-tail-anchor';
 
 /** Source key for §81 upgrades raised by this watch. */
 export const AUDIT_CHAIN_WATCH_SOURCE = 'audit-chain-watch';
@@ -61,11 +62,13 @@ export const AUDIT_CHAIN_WATCH_DEFAULT_INTERVAL_MS = 60_000;
 
 /**
  * Minimal surface the watch needs — a fake of both stores satisfies
- * it, and the server passes { needsHuman: fdb.needsHuman, audit }.
+ * it, and the server passes { needsHuman: fdb.needsHuman, audit } with
+ * audit.verify wired to the tail-anchored verifier (the same one the
+ * GET /api/audit/verify endpoint uses).
  */
 export interface AuditChainWatchDeps {
   needsHuman: Pick<NeedsHumanStore, 'submit' | 'list'>;
-  audit: Pick<AuditLog, 'record' | 'verify'>;
+  audit: Pick<AuditLog, 'record'> & { verify(): TailAnchoredVerification };
 }
 
 /**
@@ -90,24 +93,46 @@ export function parseAuditChainWatchIntervalMs(
  * the DB, identifying what changed, and restoring from a known-good
  * backup via POST /api/restore. (Spec defines no risk→rank mapping;
  * this choice is documented, not derived.)
+ *
+ * When tailTruncated is set, the hash links themselves are intact —
+ * the tail was shortened or rewritten versus the tail anchor (W-C P2).
+ * The narrative and suggestion differ: a legitimate backup restore
+ * also shrinks the chain, so the operator must rule that out first,
+ * then re-baseline the anchor by deleting the anchor file.
  */
 export function buildAuditChainBreakRecord(args: {
   brokenAt: number;
   verifiedCount: number;
   legacyCount: number;
+  tailTruncated?: boolean;
+  code?: string;
+  expectedChainedCount?: number;
+  observedChainedCount?: number;
 }): NeedsHumanDbRecord {
+  const tail = args.tailTruncated === true;
   // F19 (Batch 44): the honest narrative must survive persistence — it
   // goes into detailJson, not only the transient record.
-  const narrative =
-    `Periodic audit-chain self-check found the §32 hash chain BROKEN at append-order ` +
-    `index ${args.brokenAt} (${args.verifiedCount} record(s) verified before the break` +
-    `${args.legacyCount > 0 ? `, ${args.legacyCount} legacy record(s) skipped` : ''}). ` +
-    `Note: the index counts the full append-order chain from genesis (ORDER BY ts, rowid), ` +
-    `not the newest-first GET /api/audit order. An out-of-band database write changed a ` +
-    `sealed record after it was written. The chain does not prevent writes; it makes ` +
-    `tampering visible and locatable (detection-not-prevention, Batch 52) — and this is ` +
-    `the server's local chain only: no external timestamping, no third-party notarization. ` +
-    `Human judgment needed.`;
+  const narrative = tail
+    ? `Periodic audit-chain self-check found the §32 hash chain TAIL-TRUNCATED: ` +
+      `all remaining hash links verify, but the chain is shorter than the tail ` +
+      `anchor recorded (${args.observedChainedCount ?? '?'} chained record(s) observed ` +
+      `vs ${args.expectedChainedCount ?? '?'} anchored). Tail records were deleted ` +
+      `(or the tail was rewritten) out-of-band after the anchor was written — the ` +
+      `forward hash check alone cannot see this (W-C P2), which is why the tail ` +
+      `anchor exists. A legitimate backup restore ALSO shrinks the chain: rule that ` +
+      `out first (check the restore history); if this followed a restore, delete ` +
+      `the tail-anchor file to re-baseline it. The chain does not prevent writes; ` +
+      `it makes tampering visible and locatable (detection-not-prevention, Batch 52). ` +
+      `Human judgment needed.`
+    : `Periodic audit-chain self-check found the §32 hash chain BROKEN at append-order ` +
+      `index ${args.brokenAt} (${args.verifiedCount} record(s) verified before the break` +
+      `${args.legacyCount > 0 ? `, ${args.legacyCount} legacy record(s) skipped` : ''}). ` +
+      `Note: the index counts the full append-order chain from genesis (ORDER BY ts, rowid), ` +
+      `not the newest-first GET /api/audit order. An out-of-band database write changed a ` +
+      `sealed record after it was written. The chain does not prevent writes; it makes ` +
+      `tampering visible and locatable (detection-not-prevention, Batch 52) — and this is ` +
+      `the server's local chain only: no external timestamping, no third-party notarization. ` +
+      `Human judgment needed.`;
   const rec = needsHuman('security-issue', {
     detail: narrative,
     context: {
@@ -115,18 +140,39 @@ export function buildAuditChainBreakRecord(args: {
       brokenAt: String(args.brokenAt),
       verifiedCount: String(args.verifiedCount),
       legacyCount: String(args.legacyCount),
+      ...(tail
+        ? {
+            tailTruncated: 'true',
+            code: args.code ?? 'AUDIT_TAIL_TRUNCATED',
+            expectedChainedCount: String(args.expectedChainedCount ?? ''),
+            observedChainedCount: String(args.observedChainedCount ?? ''),
+          }
+        : {}),
     },
-    impactScope:
-      `Audit-chain integrity: records at and after append-order index ${args.brokenAt} can no ` +
-      `longer be proven unmodified. Records before the break still verify. The break itself ` +
-      `is the evidence — see the AUDIT_CHAIN_VERIFY_FAILED audit event for the exact location.`,
+    impactScope: tail
+      ? `Audit-chain integrity: the newest ${args.expectedChainedCount ?? '?'} → ` +
+        `${args.observedChainedCount ?? '?'} tail records can no longer be proven ` +
+        `present. Records still in the chain verify. The anchor comparison itself ` +
+        `is the evidence — see the AUDIT_CHAIN_VERIFY_FAILED audit event.`
+      : `Audit-chain integrity: records at and after append-order index ${args.brokenAt} can no ` +
+        `longer be proven unmodified. Records before the break still verify. The break itself ` +
+        `is the evidence — see the AUDIT_CHAIN_VERIFY_FAILED audit event for the exact location.`,
     stoppedActions: [],
-    suggestion:
-      'Treat the database as suspect. Identify what changed (compare against a backup), then ' +
-      'restore from a known-good backup: POST /api/restore stages a verified backup for ' +
-      'application on restart (see docs/backup-restore-guide.md). ' +
-      'Mark this upgrade resolved via POST /api/needs-human/:id/resolve — if the chain is ' +
-      'still broken, the watch re-raises on the next tick.',
+    suggestion: tail
+      ? 'Treat the database as suspect. Rule out a legitimate restore first (a restore ' +
+        'legitimately shrinks the chain): check the backup/restore history. If this ' +
+        'followed a restore, delete the tail-anchor file (audit-tail-anchor.json ' +
+        'next to the DB file, or AI_FACTORY_AUDIT_TAIL_ANCHOR_FILE) to re-baseline ' +
+        'it — the next verify will re-initialize from the current chain. Otherwise ' +
+        'identify what changed (compare against a backup) and restore from a ' +
+        'known-good backup via POST /api/restore (see docs/backup-restore-guide.md). ' +
+        'Mark this upgrade resolved via POST /api/needs-human/:id/resolve — if the ' +
+        'chain is still short, the watch re-raises on the next tick.'
+      : 'Treat the database as suspect. Identify what changed (compare against a backup), then ' +
+        'restore from a known-good backup: POST /api/restore stages a verified backup for ' +
+        'application on restart (see docs/backup-restore-guide.md). ' +
+        'Mark this upgrade resolved via POST /api/needs-human/:id/resolve — if the chain is ' +
+        'still broken, the watch re-raises on the next tick.',
   });
   return {
     id: rec.id,
@@ -142,6 +188,14 @@ export function buildAuditChainBreakRecord(args: {
       brokenAt: args.brokenAt,
       verifiedCount: args.verifiedCount,
       legacyCount: args.legacyCount,
+      ...(tail
+        ? {
+            tailTruncated: true,
+            code: args.code ?? 'AUDIT_TAIL_TRUNCATED',
+            expectedChainedCount: args.expectedChainedCount,
+            observedChainedCount: args.observedChainedCount,
+          }
+        : {}),
       suggestion: rec.suggestion,
     }),
     contextJson: JSON.stringify(rec.context ?? {}),
@@ -202,6 +256,15 @@ export function tickAuditChainWatch(
         brokenAt,
         verifiedCount: v.verifiedCount,
         legacyCount: v.legacyCount,
+        tailTruncated: v.tailTruncated,
+        tailAnchorStatus: v.tailAnchorStatus,
+        ...(v.code ? { code: v.code } : {}),
+        ...(typeof v.expectedChainedCount === 'number'
+          ? { expectedChainedCount: v.expectedChainedCount }
+          : {}),
+        ...(typeof v.observedChainedCount === 'number'
+          ? { observedChainedCount: v.observedChainedCount }
+          : {}),
       });
     } catch {
       // The break-evidence write failing must not block the alert.
@@ -212,6 +275,10 @@ export function tickAuditChainWatch(
         brokenAt,
         verifiedCount: v.verifiedCount,
         legacyCount: v.legacyCount,
+        tailTruncated: v.tailTruncated,
+        code: v.code,
+        expectedChainedCount: v.expectedChainedCount,
+        observedChainedCount: v.observedChainedCount,
       }),
     );
     return 'raised';

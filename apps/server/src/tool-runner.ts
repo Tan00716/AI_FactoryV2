@@ -63,6 +63,10 @@ import {
   commandHitsControlDir,
   resolveExecCwd,
 } from './routes/exec';
+import {
+  decideExecSandbox,
+  execSandboxConfigFromEnv,
+} from './exec-sandbox';
 
 /**
  * Tool ids this server wires a REAL implementation for. Everything
@@ -159,11 +163,17 @@ export function createServerToolRunner(_opts: ServerToolRunnerOptions = {}): Too
         }
         const usePty = args.pty === true;
         const run = usePty ? runCommandPty : runCommandPipe;
+        // OS sandbox (exec-sandbox.ts): same confinement as /api/exec.
+        // The sandbox never permits — policy/approval gates above are
+        // unchanged; the mode is reported in `note` so the attempts log
+        // never silently claims isolation.
+        const sb = await decideExecSandbox(cwd, execSandboxConfigFromEnv());
         let r;
         try {
           r = await run(tokens, {
             cwd,
             timeoutMs: call.tool.timeoutMs,
+            argvPrefix: sb.prefix,
           });
         } catch (err) {
           // No POSIX pty on this host: a host-capability refusal, not a
@@ -180,7 +190,9 @@ export function createServerToolRunner(_opts: ServerToolRunnerOptions = {}): Too
           exitCode: r.exitCode ?? -1,
           stdout: r.stdout,
           stderr: r.stderr,
-          note: r.timedOut ? 'timed out: process tree killed' : undefined,
+          note:
+            (r.timedOut ? 'timed out: process tree killed; ' : '') +
+            `sandbox: ${sb.mode}${sb.reason ? ` (${sb.reason})` : ''}`,
         };
       }
       default: {

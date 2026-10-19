@@ -303,6 +303,13 @@ export interface PtySessionOptions {
   cols?: number;
   pythonPath?: string;
   /**
+   * Argv placed BEFORE the supervisor spawn: the session is launched
+   * as [...argvPrefix, python3, '-c', helper, ...]. Lets embedders wrap
+   * the session shell in a sandbox (e.g. a bwrap prefix ending in
+   * '--'). Empty/undefined = spawn directly.
+   */
+  argvPrefix?: string[];
+  /**
    * AI line gate: called with each newline-terminated input line for
    * 'ai' sessions BEFORE it reaches the pty. Throw to deny the line
    * (it is dropped; the throw's message becomes the denial reason).
@@ -429,9 +436,14 @@ export class PtySession {
     const cols = clampDim(opts.cols, 80);
     const env: NodeJS.ProcessEnv = { ...scrubCredentialEnv(process.env), ...(opts.env ?? {}) };
     if (env['TERM'] === undefined) env['TERM'] = 'xterm-256color';
+    const prefix = opts.argvPrefix ?? [];
+    if (prefix.some((a) => typeof a !== 'string' || a === '')) {
+      throw new PtySessionError('argvPrefix must be an array of non-empty strings');
+    }
+    const spawnArgv = [...prefix, pythonPath, '-c', PTY_SESSION_HELPER_SOURCE, String(rows), String(cols), '--', ...shell];
     const child = spawn(
-      pythonPath,
-      ['-c', PTY_SESSION_HELPER_SOURCE, String(rows), String(cols), '--', ...shell],
+      spawnArgv[0] as string,
+      spawnArgv.slice(1),
       {
         cwd: opts.cwd,
         env,

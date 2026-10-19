@@ -83,6 +83,14 @@ export interface ShellRunOptions {
    * tests — can pin or probe a specific interpreter.
    */
   pythonPath?: string;
+  /**
+   * Argv placed BEFORE the spawned command: the supervisor is launched
+   * as [...argvPrefix, ...command]. Lets embedders wrap execution in a
+   * sandbox (e.g. a bwrap prefix ending in '--') without this module
+   * knowing what the sandbox is. Empty/undefined = spawn directly.
+   * Every entry must be a non-empty string.
+   */
+  argvPrefix?: string[];
 }
 
 export interface ShellRunResult {
@@ -400,6 +408,7 @@ function normalizeOptions(opts: ShellRunOptions): Required<Omit<ShellRunOptions,
     cols: clampDim(opts.cols, 80),
     rows: clampDim(opts.rows, 24),
     pythonPath: opts.pythonPath ?? 'python3',
+    argvPrefix: opts.argvPrefix ?? [],
   };
 }
 
@@ -443,6 +452,17 @@ function assertArgv(argv: string[]): void {
   }
 }
 
+/**
+ * Prepend the sandbox argv prefix (if any) to the command argv and
+ * return the full spawn argv. The prefix is validated the same way as
+ * the command itself.
+ */
+function applyArgvPrefix(argv: string[], prefix: readonly string[] | undefined): string[] {
+  if (!prefix || prefix.length === 0) return argv;
+  assertArgv([...prefix]);
+  return [...prefix, ...argv];
+}
+
 /* ------------------------------------------------------------------ */
 /* Pipe mode                                                           */
 /* ------------------------------------------------------------------ */
@@ -456,7 +476,8 @@ export async function runCommandPipe(argv: string[], opts: ShellRunOptions = {})
   assertArgv(argv);
   const o = normalizeOptions(opts);
   const started = Date.now();
-  const child = spawn(argv[0] as string, argv.slice(1), {
+  const full = applyArgvPrefix(argv, opts.argvPrefix);
+  const child = spawn(full[0] as string, full.slice(1), {
     cwd: opts.cwd,
     env: childEnv(opts, false),
     detached: true,
@@ -512,9 +533,13 @@ export async function runCommandPty(argv: string[], opts: ShellRunOptions = {}):
   const o = normalizeOptions(opts);
   assertPtyBackend(o.pythonPath);
   const started = Date.now();
+  const full = applyArgvPrefix(
+    [o.pythonPath, '-c', PTY_HELPER_SOURCE, String(o.rows), String(o.cols), '--', ...argv],
+    opts.argvPrefix,
+  );
   const child = spawn(
-    o.pythonPath,
-    ['-c', PTY_HELPER_SOURCE, String(o.rows), String(o.cols), '--', ...argv],
+    full[0] as string,
+    full.slice(1),
     {
       cwd: opts.cwd,
       env: childEnv(opts, true),
@@ -531,7 +556,7 @@ export async function runCommandPty(argv: string[], opts: ShellRunOptions = {}):
   else child.stdin?.end();
   const exit = await supervise(child, o.timeoutMs);
   if (exit.spawnError) {
-    throw new PtyUnavailableError(`failed to spawn '${o.pythonPath}': ${exit.spawnError.message}`);
+    throw new PtyUnavailableError(`failed to spawn '${full[0]}': ${exit.spawnError.message}`);
   }
   const diagnostics = diagCap.text().trim();
   return {
@@ -608,6 +633,7 @@ export function createShellTool(toolOpts: ShellToolOptions = {}): ToolImpl {
       cols: a.cols ?? toolOpts.cols,
       rows: a.rows ?? toolOpts.rows,
       pythonPath: toolOpts.pythonPath,
+      argvPrefix: toolOpts.argvPrefix,
     };
     const mode: ShellRunMode = a.pty !== undefined ? (a.pty ? 'pty' : 'pipe') : (toolOpts.mode ?? 'pipe');
     if (a.argv !== undefined) {

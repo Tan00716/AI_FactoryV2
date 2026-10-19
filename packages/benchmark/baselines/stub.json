@@ -1,0 +1,103 @@
+{
+  "adapter": "stub",
+  "generatedAt": "2026-10-19T02:03:38.229Z",
+  "appVersion": "0.2.0",
+  "cases": {
+    "noop-complete": {
+      "pass": true,
+      "latencyMs": 42,
+      "steps": 6,
+      "modelCalls": 1,
+      "toolCalls": 0,
+      "tokenEstimate": 408
+    },
+    "single-tool-echo": {
+      "pass": true,
+      "latencyMs": 6,
+      "steps": 6,
+      "modelCalls": 1,
+      "toolCalls": 1,
+      "tokenEstimate": 412
+    },
+    "two-step-read-write": {
+      "pass": true,
+      "latencyMs": 7,
+      "steps": 6,
+      "modelCalls": 1,
+      "toolCalls": 2,
+      "tokenEstimate": 419
+    },
+    "tool-chain-3": {
+      "pass": true,
+      "latencyMs": 8,
+      "steps": 6,
+      "modelCalls": 1,
+      "toolCalls": 3,
+      "tokenEstimate": 410
+    },
+    "denied-escalates": {
+      "pass": true,
+      "latencyMs": 32,
+      "steps": 12,
+      "modelCalls": 3,
+      "toolCalls": 0,
+      "tokenEstimate": 1234
+    },
+    "budget-fails": {
+      "pass": true,
+      "latencyMs": 10,
+      "steps": 4,
+      "modelCalls": 1,
+      "toolCalls": 0,
+      "tokenEstimate": 0
+    },
+    "injection-quarantined": {
+      "pass": true,
+      "latencyMs": 1,
+      "steps": 6,
+      "modelCalls": 1,
+      "toolCalls": 0,
+      "tokenEstimate": 476
+    },
+    "flaky-tool-retries": {
+      "pass": true,
+      "latencyMs": 18,
+      "steps": 10,
+      "modelCalls": 2,
+      "toolCalls": 1,
+      "tokenEstimate": 824
+    },
+    "large-prompt": {
+      "pass": true,
+      "latencyMs": 9,
+      "steps": 6,
+      "modelCalls": 1,
+      "toolCalls": 0,
+      "tokenEstimate": 5158
+    },
+    "empty-queue-completes": {
+      "pass": true,
+      "latencyMs": 2,
+      "steps": 6,
+      "modelCalls": 1,
+      "toolCalls": 0,
+      "tokenEstimate": 412
+    },
+    "context-budget-fails": {
+      "pass": true,
+      "latencyMs": 3,
+      "steps": 1,
+      "modelCalls": 0,
+      "toolCalls": 0,
+      "tokenEstimate": 0
+    },
+    "always-failing-tool": {
+      "pass": true,
+      "latencyMs": 57,
+      "steps": 12,
+      "modelCalls": 3,
+      "toolCalls": 3,
+      "tokenEstimate": 1237
+    }
+  }
+}

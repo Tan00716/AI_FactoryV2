@@ -9,6 +9,14 @@
  *  - deny patterns: rm -rf /, curl/wget outbound, sudo, chmod, disk ops…
  *  - cwd is confined to the server workspace root (no path escape)
  *  - 30s timeout, output truncated to a fixed budget
+ *  - OS sandbox (exec-sandbox.ts): when bwrap works on the host the
+ *    command runs in a user-namespace sandbox (read-only /usr//opt,
+ *    tmpfs /tmp, one writable bind = the cwd at its real path, fresh
+ *    pid/ipc/uts namespaces, host network shared by default); when
+ *    bwrap is unavailable the command runs directly as before and the
+ *    run is marked `sandbox: 'none (fallback)'` in audit + response.
+ *    The sandbox confines — it never permits; the policy above is
+ *    unchanged.
  *
  * Execution device: by default the tokenized argv runs over pipes
  * (execFile, stdout/stderr apart). With `pty: true` the SAME argv —
@@ -33,6 +41,11 @@ import { PtyUnavailableError, runCommandPty, scrubCredentialEnv } from '@ai-fact
 import { SecretNotFoundError, redactSecretValues, redactSecretValuesCounted } from '@ai-factory/secrets';
 import { recordRedactionHit } from '../redaction-monitor';
 import { evaluateHooks } from '../hooks';
+import {
+  decideExecSandbox,
+  execSandboxConfigFromEnv,
+  type ExecSandboxDecision,
+} from '../exec-sandbox';
 
 const execFileAsync = promisify(execFile);
 
@@ -589,8 +602,6 @@ export async function handleExecRoutes(
     ctx.json(res, 403, { error: denied.message });
     return true;
   }
-  const binary = tokens[0] as string;
-
   // 3) cwd confinement
   let cwd: string;
   try {
@@ -680,6 +691,20 @@ export async function handleExecRoutes(
   const outputValues: readonly string[] =
     redactionValues.length > 0 ? redactionValues : injectedValues;
 
+  // 3db) OS sandbox (exec-sandbox.ts): when bwrap works on the host the
+  // command runs inside a user-namespace sandbox (read-only /usr//opt,
+  // tmpfs /tmp, exactly one writable bind — the cwd at its real path,
+  // fresh pid/ipc/uts namespaces). When bwrap is unavailable the
+  // command runs directly as before, but the run is marked
+  // `sandbox: 'none (fallback)'` with the probe's reason in the audit
+  // record and the response — never a silent downgrade. The policy
+  // above is unchanged: the sandbox confines, it never permits.
+  const sb: ExecSandboxDecision = await decideExecSandbox(cwd, execSandboxConfigFromEnv());
+  const sandboxFields: Record<string, unknown> = {
+    sandbox: sb.mode,
+    ...(sb.reason ? { sandboxReason: sb.reason } : {}),
+  };
+
   // 3e) opt-in real PTY (Batch 18) — identical policy, argv, secret
   // injection and output redaction as the pipe path below; only the
   // device differs. The merged terminal stream is the output (there
@@ -692,6 +717,7 @@ export async function handleExecRoutes(
         env: injectedEnv,
         timeoutMs: TIMEOUT_MS,
         maxOutputBytes: 1024 * 1024,
+        argvPrefix: sb.prefix,
       });
       const { text, truncated } = truncate(
         redactExecOutput(r.stdout, outputValues, displayCommand, actor, ctx),
@@ -702,12 +728,14 @@ export async function handleExecRoutes(
           cwd,
           code: r.exitCode,
           pty: true,
+          ...sandboxFields,
         });
       } else {
         ctx.audit.record(actor, 'EXEC_RUN', 'exec', displayCommand.slice(0, 80), {
           cwd,
           truncated: isTruncated,
           pty: true,
+          ...sandboxFields,
           ...(injectedValues.length
             ? {
                 secretEnvVars: Object.keys(injectedEnv),
@@ -725,6 +753,7 @@ export async function handleExecRoutes(
         exitCode: r.exitCode ?? -1,
         timedOut: r.timedOut,
         pty: true,
+        sandbox: sb.mode,
       });
       await firePostToolUse(ctx, actor, {
         command: displayCommand,
@@ -738,8 +767,9 @@ export async function handleExecRoutes(
         ctx.audit.record(actor, 'EXEC_FAILED', 'exec', displayCommand.slice(0, 80), {
           reason: err.message,
           pty: true,
+          ...sandboxFields,
         });
-        ctx.json(res, 500, { error: err.message, code: err.code });
+        ctx.json(res, 500, { error: err.message, code: err.code, sandbox: sb.mode });
         return true;
       }
       throw err;
@@ -751,7 +781,12 @@ export async function handleExecRoutes(
   // printed before the output is truncated or returned (§46.2:
   // stdout/stderr 统一脱敏).
   try {
-    const { stdout, stderr } = await execFileAsync(binary, tokens.slice(1), {
+    // Sandboxed when bwrap is available: the prefix ends in '--', so
+    // this is still one execFile — same timeout, buffer and env
+    // semantics; with an empty prefix the argv is byte-identical to
+    // the pre-sandbox call.
+    const argv = [...sb.prefix, ...tokens];
+    const { stdout, stderr } = await execFileAsync(argv[0] as string, argv.slice(1), {
       cwd,
       timeout: TIMEOUT_MS,
       maxBuffer: 64 * 1024 * 1024,
@@ -773,6 +808,7 @@ export async function handleExecRoutes(
     ctx.audit.record(actor, 'EXEC_RUN', 'exec', displayCommand.slice(0, 80), {
       cwd,
       truncated,
+      ...sandboxFields,
       ...(injectedValues.length
         ? {
             secretEnvVars: Object.keys(injectedEnv),
@@ -780,7 +816,7 @@ export async function handleExecRoutes(
           }
         : {}),
     });
-    ctx.json(res, 200, { ok: true, command: displayCommand, cwd, output: text, truncated, exitCode: 0 });
+    ctx.json(res, 200, { ok: true, command: displayCommand, cwd, output: text, truncated, exitCode: 0, sandbox: sb.mode });
     await firePostToolUse(ctx, actor, { command: displayCommand, cwd, exitCode: 0, timedOut: false });
     return true;
   } catch (err) {
@@ -805,6 +841,7 @@ export async function handleExecRoutes(
     ctx.audit.record(actor, timedOut ? 'EXEC_TIMEOUT' : 'EXEC_FAILED', 'exec', displayCommand.slice(0, 80), {
       cwd,
       code: e.code ?? null,
+      ...sandboxFields,
     });
     ctx.json(res, 200, {
       ok: false,
@@ -814,6 +851,7 @@ export async function handleExecRoutes(
       truncated,
       exitCode: e.code ?? -1,
       timedOut,
+      sandbox: sb.mode,
     });
     await firePostToolUse(ctx, actor, {
       command: displayCommand,

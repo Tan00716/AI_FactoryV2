@@ -204,3 +204,35 @@ describe('createShellTool — the Harness ToolImpl (§26/§33)', () => {
     }, /requires args\.command/);
   });
 });
+
+describe('argvPrefix — sandbox/supervisor argv wrapping', () => {
+  it('pipe mode: prefix is prepended to the spawned command', async () => {
+    const r = await runCommandPipe(['hello'], {
+      argvPrefix: ['/bin/echo', 'PREFIX:'],
+    });
+    assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, /PREFIX: hello/);
+  });
+  it('pipe mode: empty prefix behaves like no prefix', async () => {
+    const r = await runCommandPipe(['/bin/echo', 'plain'], { argvPrefix: [] });
+    assert.equal(r.exitCode, 0);
+    assert.match(r.stdout, /plain/);
+  });
+  it('pipe mode: invalid prefix entries throw', async () => {
+    await assert.rejects(runCommandPipe(['x'], { argvPrefix: [''] }), /non-empty/);
+  });
+  it('pty mode: prefix wraps the python supervisor spawn', { skip: ptySkip }, async () => {
+    // prefix ['/bin/echo'] turns the spawn into: /bin/echo python3 -c <helper> …
+    const r = await runCommandPty(['echo', 'unreached'], {
+      argvPrefix: ['/bin/echo', 'WRAPPED:'],
+    });
+    assert.equal(r.exitCode, 0, `diagnostics: ${r.backendDiagnostics ?? ''}`);
+    assert.match(r.stdout, /WRAPPED: .*python3/);
+  });
+  it('createShellTool passes argvPrefix through to the run', async () => {
+    const tool = createShellTool({ argvPrefix: ['/bin/echo', 'TOOL:'] });
+    const r = (await tool({ argv: ['via-tool'] })) as ShellRunResult;
+    assert.equal(r.exitCode, 0);
+    assert.match(r.stdout, /TOOL: via-tool/);
+  });
+});

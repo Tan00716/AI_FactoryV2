@@ -258,6 +258,15 @@ export class SqliteRetentionStore {
     return this.listHolds().filter((h) => h.releasedAt === null);
   }
 
+  countActiveHolds(): number {
+    // COUNT(*) — the /api/health hot path needs only the number; the
+    // list() above materializes every hold row.
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM legal_holds WHERE released_at IS NULL')
+      .get() as { n: number };
+    return Number(row.n);
+  }
+
   /** The active hold already covering this exact scope, if any. */
   findActiveHold(
     scope: LegalHold['scope'],

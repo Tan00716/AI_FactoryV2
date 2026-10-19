@@ -127,6 +127,19 @@ export class SqliteCheckpointStore implements CheckpointStore {
     return rows.map(rowToCheckpoint);
   }
 
+  count(runId?: string): number {
+    // COUNT(*) — the /api/health hot path needs only the number, never
+    // the rows (each of which costs a JSON.parse in rowToCheckpoint).
+    const row = (
+      runId === undefined
+        ? this.db.prepare('SELECT COUNT(*) AS n FROM checkpoints').get()
+        : this.db
+            .prepare('SELECT COUNT(*) AS n FROM checkpoints WHERE run_id = ?')
+            .get(runId)
+    ) as { n: number };
+    return Number(row.n);
+  }
+
   delete(runId: string, stepPosition: number): boolean {
     const res = this.db
       .prepare('DELETE FROM checkpoints WHERE run_id = ? AND step_position = ?')

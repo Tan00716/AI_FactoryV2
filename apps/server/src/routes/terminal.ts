@@ -27,6 +27,11 @@
  * refusal — is the mechanism. The per-line approximation is stated in
  * the runtime module and in KNOWN_LIMITATIONS.
  *
+ * OS sandbox: the session shell spawns inside the bwrap sandbox from
+ * exec-sandbox.ts when bwrap works on the host (same confinement as
+ * /api/exec one-shots); otherwise it runs directly and the session
+ * create record carries `sandbox: 'none (fallback)'`.
+ *
  * Streaming transport: SSE over plain node:http (the repo is zero-dep;
  * no WebSocket library). The desktop reads it with fetch + a manual
  * frame parser so the Authorization header keeps working (EventSource
@@ -63,6 +68,10 @@ import {
   ExecPolicyDenied,
   SecretEnvError,
 } from './exec';
+import {
+  decideExecSandbox,
+  execSandboxConfigFromEnv,
+} from '../exec-sandbox';
 
 const manager = new PtySessionManager({ maxSessions: 16, archiveDepth: 50 });
 const IDLE_REAP_MS = 30 * 60 * 1000;
@@ -198,6 +207,11 @@ export async function handleTerminalRoutes(
     }
 
     await manager.sweepIdle(IDLE_REAP_MS).catch(() => undefined);
+    // OS sandbox (exec-sandbox.ts): when bwrap works the session shell
+    // spawns inside the sandbox (same confinement as /api/exec
+    // one-shots); otherwise the session runs directly and the create
+    // record is marked `sandbox: 'none (fallback)'` — never silent.
+    const sb = await decideExecSandbox(cwd, execSandboxConfigFromEnv());
     let session: PtySession;
     try {
       session = manager.create({
@@ -207,6 +221,7 @@ export async function handleTerminalRoutes(
         env: secretEnv,
         rows: body['rows'] as number | undefined,
         cols: body['cols'] as number | undefined,
+        argvPrefix: sb.prefix,
         ...(principal === 'ai' ? { aiLinePolicy: aiLineGate(cwd) } : {}),
       });
     } catch (err) {
@@ -274,9 +289,11 @@ export async function handleTerminalRoutes(
       cols: session.cols,
       cwd,
       shell: shell.join(' '),
+      sandbox: sb.mode,
+      ...(sb.reason ? { sandboxReason: sb.reason } : {}),
       ...(secretValues.length > 0 ? { secretEnvVars: Object.keys(secretEnv) } : {}),
     });
-    ctx.json(res, 201, { ...session.toRecord(), cwd });
+    ctx.json(res, 201, { ...session.toRecord(), cwd, sandbox: sb.mode });
     return true;
   }
 

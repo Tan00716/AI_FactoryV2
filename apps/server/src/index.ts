@@ -187,6 +187,7 @@ import {
   parseAuditChainWatchIntervalMs,
   tickAuditChainWatch,
 } from './audit-chain-watch';
+import { FileAuditTailAnchorStore, auditTailAnchorPathForDb, verifyAuditChainWithTailAnchor } from './audit-tail-anchor';
 import { createDbBrokerService } from './db-broker';
 import { EventBus } from '@ai-factory/events';
 import { BruteForceDetector } from '@ai-factory/security';
@@ -271,6 +272,14 @@ const fdb = new FactoryDatabase(DB_PATH);
 const tasks = new TaskManager(fdb.tasks);
 const evidence = new EvidenceEngine(fdb.evidence);
 const audit = new AuditLog(fdb.audit);
+/**
+ * Audit-chain tail anchor (W-C P2 follow-up): a tiny watermark file that
+ * makes tail-record deletion visible to verify (the §32 hash chain alone
+ * cannot see it). Shared by the on-demand GET /api/audit/verify and the
+ * periodic audit-chain watch below — both must use the same anchored
+ * verifier or a truncation could pass one check and fail the other.
+ */
+const auditTailAnchorStore = new FileAuditTailAnchorStore(auditTailAnchorPathForDb(DB_PATH));
 /**
  * §81 'security-issue' brute-force detector (Batch 42): in-memory
  * sliding-window 401 counter (10 denials / 5 min per source → the
@@ -641,7 +650,15 @@ if (typeof backupSchedulerTimer.unref === 'function') backupSchedulerTimer.unref
  * re-raises on the next tick while the chain is still broken.
  */
 if (process.env.FACTORY_AUDIT_CHAIN_WATCH !== '0') {
-  const auditChainWatchDeps = { needsHuman: fdb.needsHuman, audit };
+  const auditChainWatchDeps = {
+    needsHuman: fdb.needsHuman,
+    // The watch must use the same tail-anchored verifier as the endpoint:
+    // a tail truncation the endpoint reports must also raise here.
+    audit: {
+      record: audit.record.bind(audit),
+      verify: () => verifyAuditChainWithTailAnchor(audit, auditTailAnchorStore),
+    },
+  };
   const auditChainWatchIntervalMs = parseAuditChainWatchIntervalMs(
     process.env.FACTORY_AUDIT_CHAIN_WATCH_INTERVAL_MS,
   );
@@ -866,6 +883,13 @@ const server = createServer(async (req, res) => {
     // request — drain only ever happens via the engine's in-process
     // consumers, never from here.
     if (method === 'GET' && path === '/api/health') {
+      // NOTE (perf): the counts below deliberately use COUNT(*) via the
+      // stores' count*() methods — never list(). list() materializes
+      // every row (JSON.parse per checkpoint/run row, N+1
+      // version-payload queries per requirement), which made /api/health
+      // p95 degrade as tables grew (H5 soak). Counts are exact; the only
+      // residual full materialization is secrets.list() (vault, small)
+      // and listPolicies() (fixed small category set).
       return json(res, 200, {
         ok: true,
         ts: nowIso(),
@@ -883,15 +907,15 @@ const server = createServer(async (req, res) => {
         },
         checkpoints: {
           store: 'sqlite',
-          stored: checkpointLog.list().length,
+          stored: checkpointLog.count(),
         },
         requirements: {
           store: 'sqlite',
-          stored: fdb.requirements.listRequirements().length,
+          stored: fdb.requirements.countRequirements(),
         },
         runs: {
           store: 'sqlite',
-          stored: fdb.runs.list().length,
+          stored: fdb.runs.count(),
         },
         retention: {
           store: 'sqlite',
@@ -899,7 +923,7 @@ const server = createServer(async (req, res) => {
             .listPolicies()
             .filter((p) => p.retentionDays !== null && p.retentionDays !== 0)
             .length,
-          activeHolds: fdb.retention.activeHolds().length,
+          activeHolds: fdb.retention.countActiveHolds(),
         },
         outbox: {
           store: 'sqlite',
@@ -1724,13 +1748,13 @@ const server = createServer(async (req, res) => {
       const limit = Number(url.searchParams.get('limit') ?? 100);
       return json(res, 200, audit.list().slice(-limit).reverse());
     }
-    // GET /api/audit/verify — §32 chain verification (Batch 53, F33).
-    // The server verifies its FULL chain anchored at genesis and returns
-    // {ok, verifiedCount, legacyCount, brokenAt?} (brokenAt present only
-    // when ok is false, indexing the full append-order chain). Pagination
-    // is refused, not silently ignored: a truncated window's first record
-    // points outside the window and would falsely report brokenAt:0
-    // (F33), so `limit`/`offset` is a 400 — fail-closed. Role:
+    // GET /api/audit/verify — §32 chain verification (Batch 53, F33),
+    // plus tail anchoring (W-C P2): the hash chain alone cannot see tail
+    // deletion, so the response also carries tailTruncated / tailAnchorStatus
+    // (and, when relevant, code + expected/observed chained counts).
+    // Pagination is refused, not silently ignored: a truncated window's
+    // first record points outside the window and would falsely report
+    // brokenAt:0 (F33), so `limit`/`offset` is a 400 — fail-closed. Role:
     // operator/admin (see requiredRoleFor in auth.ts).
     if (path === '/api/audit/verify' && method === 'GET') {
       if (url.searchParams.has('limit') || url.searchParams.has('offset')) {
@@ -1740,7 +1764,7 @@ const server = createServer(async (req, res) => {
           code: 'AUDIT_VERIFY_NO_PAGINATION',
         });
       }
-      return json(res, 200, audit.verify());
+      return json(res, 200, verifyAuditChainWithTailAnchor(audit, auditTailAnchorStore));
     }
 
     return json(res, 404, { error: 'Not found' });

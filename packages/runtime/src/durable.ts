@@ -508,6 +508,12 @@ export interface CheckpointStore {
   put(checkpoint: CheckpointV2): void;
   /** Every stored checkpoint in first-capture order, optionally one run only. */
   list(runId?: string): CheckpointV2[];
+  /**
+   * How many checkpoints are stored, optionally one run only. Exists so
+   * hot paths (e.g. /api/health) can report a count without paying for
+   * full-row materialization + JSON parsing of list().
+   */
+  count(runId?: string): number;
   /** Remove one capture; returns whether one existed. */
   delete(runId: string, stepPosition: number): boolean;
 }
@@ -542,6 +548,12 @@ export class InMemoryCheckpointStore implements CheckpointStore {
     return [...this.checkpoints.values()]
       .filter((c) => runId === undefined || c.runId === runId)
       .map((c) => structuredClone(c));
+  }
+
+  count(runId?: string): number {
+    return runId === undefined
+      ? this.checkpoints.size
+      : this.list(runId).length;
   }
 
   delete(runId: string, stepPosition: number): boolean {
@@ -610,6 +622,11 @@ export class CheckpointLog {
   /** Every stored checkpoint in first-capture order, optionally one run only. */
   list(runId?: string): CheckpointV2[] {
     return this.store.list(runId);
+  }
+
+  /** How many checkpoints are stored — count-only, no row materialization. */
+  count(runId?: string): number {
+    return this.store.count(runId);
   }
 
   /** Remove one capture; returns whether one existed. */

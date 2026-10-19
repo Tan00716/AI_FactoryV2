@@ -65,6 +65,15 @@ export class SqliteRequirementStore implements RequirementStore {
     });
   }
 
+  countRequirements(): number {
+    // COUNT(*) — the /api/health hot path needs only the number; the
+    // list() above runs one extra query + JSON.parse per requirement.
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM requirements')
+      .get() as { n: number };
+    return Number(row.n);
+  }
+
   putRequirement(requirement: Requirement): void {
     this.db
       .prepare(

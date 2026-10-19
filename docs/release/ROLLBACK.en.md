@@ -59,6 +59,22 @@ Rolling back from 0.2.0 to 0.1.0 as an example:
 5. **Verify**: open the app → sidebar shows `v0.1.0` → create and
    delete a test task → audit chain `verify` passes.
 
+## Audit-chain tail anchor (read after a restore)
+
+After every successful `verify`, the server persists a "tail anchor"
+watermark in the data directory (`audit-tail-anchor.json`: highest chained
+record count + head record hash). It closes the one mutation the hash
+chain itself cannot see: **deletion of tail records**.
+
+`POST /api/restore` with an older backup **legitimately** shortens the
+chain — the next `verify` will report `TAIL_TRUNCATED`. This is correct
+fail-closed behavior (from the chain's perspective, a restore *is* a tail
+truncation), not data corruption. Recovery: once you confirm the restore
+was yours, delete the `audit-tail-anchor.json` colocated with the DB file
+(`data/audit-tail-anchor.json` by default, or the file named by
+`AI_FACTORY_AUDIT_TAIL_ANCHOR_FILE`); the next verify re-initializes the
+baseline and reports ok.
+
 ## 4. Data compatibility (0.2.0 → 0.1.0)
 
 | Added in 0.2.0 | How 0.1.0 treats it |

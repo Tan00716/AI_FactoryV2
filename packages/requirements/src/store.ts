@@ -45,6 +45,12 @@ export interface RequirementStore {
   /** Every stored requirement, versions included, in creation order. */
   listRequirements(): Requirement[];
   /**
+   * How many requirements are stored. Exists so hot paths (e.g.
+   * /api/health) can report a count without the N+1 version-payload
+   * queries + JSON parsing that listRequirements() performs per row.
+   */
+  countRequirements(): number;
+  /**
    * Insert a requirement, or replace the stored record for its id.
    * Versions are append-only in the manager, so a replace only ever
    * carries the same earlier versions plus newly appended ones.
@@ -88,6 +94,10 @@ export class InMemoryRequirementStore implements RequirementStore {
 
   listRequirements(): Requirement[] {
     return [...this.requirements.values()].map((r) => structuredClone(r));
+  }
+
+  countRequirements(): number {
+    return this.requirements.size;
   }
 
   putRequirement(requirement: Requirement): void {
