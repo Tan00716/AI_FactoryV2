@@ -24,6 +24,25 @@ declare module 'electron' {
     quit(): void;
   }
   export const app: App;
+  export interface IpcMain {
+    on(channel: string, listener: (event: unknown, ...args: any[]) => void): void;
+  }
+  export const ipcMain: IpcMain;
+  export interface IpcRenderer {
+    send(channel: string, ...args: any[]): void;
+  }
+  export const ipcRenderer: IpcRenderer;
+  export const contextBridge: {
+    exposeInMainWorld(apiKey: string, api: unknown): void;
+  };
+  export interface NotificationOptions {
+    title: string;
+    body?: string;
+  }
+  export class Notification {
+    constructor(opts: NotificationOptions);
+    show(): void;
+  }
 }
 
 declare namespace NodeJS {

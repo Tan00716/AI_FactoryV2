@@ -68,6 +68,7 @@ import {
   type AuthorizationTicket,
 } from '@ai-factory/db';
 import { NotificationEngine } from '@ai-factory/notifications';
+import { PersistentNotificationEngine } from './notification-store';
 import { createSecretBrokerFromEnv } from '@ai-factory/secrets';
 import { CheckpointLog, OperationLedger } from '@ai-factory/runtime';
 import type { StepIntentStore, TargetLedgerQuery } from '@ai-factory/runtime';
@@ -95,6 +96,7 @@ import {
   resolveRuntimeToolAllowlist,
   runtimeToolsStartupError,
   setRuntimeCheckpointLog,
+  setRuntimeCodeIndexService,
   setRuntimeManifestStore,
   setRuntimeRunStore,
   setTaskAttachmentLister,
@@ -123,7 +125,9 @@ import { handleCommandRoutes } from './routes/commands';
 import { handleHookRoutes } from './routes/hooks';
 import { handleSessionRoutes } from './routes/sessions';
 import { handleSearchRoutes } from './routes/search';
+import { getCodeIndexService, handleCodeIndexRoutes } from './routes/codeindex';
 import { handleAttachmentRoutes } from './routes/attachments';
+import { handleMetricsRoutes, recordHealthLatency } from './routes/metrics';
 import { handleReleaseRoutes } from './routes/releases';
 import { handlePolicyRoutes } from './routes/policy';
 import { handleExecRoutes } from './routes/exec';
@@ -180,6 +184,8 @@ import {
   initBackupScheduler,
   TICK_MS,
 } from './routes/backup-scheduler';
+import { handleScheduleRoutes, initTaskScheduler, taskScheduler } from './routes/schedules';
+import { SCHEDULER_TICK_MS } from './scheduler';
 import { handleAuthorizationTicketRoutes } from './routes/authorization-tickets';
 import { handleDbRoutes } from './routes/db';
 import { handleBuildsRoutes } from './routes/builds';
@@ -506,6 +512,15 @@ setRuntimeManifestStore(fdb.runManifests);
 setRuntimeCheckpointLog(checkpointLog);
 
 /**
+ * Code index (local repo search for agents) — the runtime route's
+ * code_search tool and the /api/codeindex routes share one service
+ * (one in-memory index registry). Installed here, next to the other
+ * route installs. The service reads FACTORY_CODEINDEX_ROOTS itself
+ * (fail-closed when unset).
+ */
+setRuntimeCodeIndexService(getCodeIndexService());
+
+/**
  * W-E multimodal — the runtime route resolves a task's image
  * attachments through this lister (descriptors only; bytes stay
  * server-side). Installed here, next to the other route installs.
@@ -750,7 +765,40 @@ const startupOperationScan = {
 
 const agents = new AgentRegistry(fdb.agents);
 const engine = new WorkflowEngine({ tasks, evidence, audit });
-const notify = new NotificationEngine();
+// Durable notification center: the engine persists to
+// AI_FACTORY_DATA_DIR/notifications.json after every mutation (was
+// in-memory only, lost on restart).
+const notify: NotificationEngine = new PersistentNotificationEngine();
+/**
+ * needsHuman → notification fan-out: every §81 upgrade row submitted
+ * anywhere (runtime budget/stagnation, brute-force, audit-chain watch,
+ * authority conflicts, high-risk deploys) enqueues a HIGH notification.
+ * The audit-chain watch's raise is a needsHuman row, so audit alerts are
+ * covered here too — no separate event, no double notification.
+ * Delivery is best-effort: a notification failure is logged, never thrown
+ * (it must not break the submit path).
+ */
+{
+  const needsHumanStore = fdb.needsHuman;
+  const rawSubmit = needsHumanStore.submit.bind(needsHumanStore);
+  needsHumanStore.submit = (record) => {
+    rawSubmit(record);
+    try {
+      notify.emit({
+        type: 'NEEDS_HUMAN_RAISED',
+        actor: 'system',
+        entity: { kind: 'needs-human', id: record.id, label: record.reason },
+        detail: {
+          reason: record.reason,
+          severity: record.severity,
+          source: record.source ?? undefined,
+        },
+      });
+    } catch (e) {
+      console.error('[notifications] needs-human fan-out failed:', (e as Error).message);
+    }
+  };
+}
 /** System Event Bus — spec §91; shared by all route modules via RouteContext. */
 const bus = new EventBus({ retention: 2000 });
 
@@ -799,6 +847,63 @@ function taskView(id: string) {
 }
 
 // ---------------------------------------------------------------- routes --
+function makeRouteCtx(): RouteContext {
+  return {
+      tasks, evidence, audit, agents, engine, fdb, stepIntentStore, notify, bus, json, readBody,
+      // Batch 66-d — project policy store for agent auto-creation gates
+      // (INV-08): qa.ts reads the QA creation policy from it.
+      factoryPolicyStore: new FactoryPolicyStore(),
+      // §47 (Batch 14): retention reads/deletes backup directories and
+      // must respect a staged restore — the backup module owns both.
+      backupAccess: {
+        dir: backupDirPath,
+        list: listBackupManifests,
+        stagedRestoreBackupId,
+      },
+      // Batch 26 — SBOM file access for the retention 'sboms'
+      // category. Same directory the build runner writes to; wired
+      // even when no build command is configured (the directory may
+      // still hold files from an earlier configuration).
+      sbomAccess: {
+        dir: () => sbomDirFromEnv(),
+        list: () => {
+          const dir = sbomDirFromEnv();
+          let entries: string[];
+          try {
+            entries = fs.readdirSync(dir);
+          } catch {
+            return [];
+          }
+          return entries.filter((name) => {
+            if (!SBOM_FILE_RE.test(name)) return false;
+            try {
+              return fs.statSync(`${dir}/${name}`).isFile();
+            } catch {
+              return false;
+            }
+          });
+        },
+      },
+      // Batch 14 — the archive guard evaluator for the route modules
+      // that cannot import project-guard directly (see context.ts).
+      archivedTaskBody: (taskId: string) =>
+        isTaskProjectArchived(fdb, taskId)
+          ? projectArchivedBody(projectIdOfTask(fdb, taskId) as string)
+          : null,
+      // §46.2 (Batch 18) — the Secret Broker for /api/secrets and for
+      // consumption points (exec secretEnv injection).
+      secretBroker: secretBrokerSetup.broker,
+      // §40 (Batch 24) — post-merge build runner. Only constructed
+      // when FACTORY_BUILD_COMMAND is explicitly configured; otherwise
+      // build records honestly stay NOT_EXECUTED.
+      ...(buildRunner ? { buildRunner } : {}),
+      // §33 (Batch 29) — database broker: host-injected SQLite engine
+      // over this server's own database.
+      dbBroker: dbBrokerService,
+
+  };
+}
+
 const server = createServer(async (req, res) => {
   try {
     if (req.method === 'OPTIONS') {
@@ -883,6 +988,10 @@ const server = createServer(async (req, res) => {
     // request — drain only ever happens via the engine's in-process
     // consumers, never from here.
     if (method === 'GET' && path === '/api/health') {
+      // Metrics self-sampling: the dashboard's /health latency series is
+      // fed from here (routes/metrics.ts recordHealthLatency). The timer
+      // wraps only the handler body, not socket I/O.
+      const healthStart = Date.now();
       // NOTE (perf): the counts below deliberately use COUNT(*) via the
       // stores' count*() methods — never list(). list() materializes
       // every row (JSON.parse per checkpoint/run row, N+1
@@ -890,6 +999,7 @@ const server = createServer(async (req, res) => {
       // p95 degrade as tables grew (H5 soak). Counts are exact; the only
       // residual full materialization is secrets.list() (vault, small)
       // and listPolicies() (fixed small category set).
+      recordHealthLatency(Date.now() - healthStart);
       return json(res, 200, {
         ok: true,
         ts: nowIso(),
@@ -943,59 +1053,7 @@ const server = createServer(async (req, res) => {
     // workforce (§14, §18–§20, §59), mcp (§46, §73), knowledge (§50–§53),
     // evaluation (§57–§58).
     // Each handler returns true when it owned the path.
-    const routeCtx: RouteContext = {
-      tasks, evidence, audit, agents, engine, fdb, stepIntentStore, notify, bus, json, readBody,
-      // Batch 66-d — project policy store for agent auto-creation gates
-      // (INV-08): qa.ts reads the QA creation policy from it.
-      factoryPolicyStore: new FactoryPolicyStore(),
-      // §47 (Batch 14): retention reads/deletes backup directories and
-      // must respect a staged restore — the backup module owns both.
-      backupAccess: {
-        dir: backupDirPath,
-        list: listBackupManifests,
-        stagedRestoreBackupId,
-      },
-      // Batch 26 — SBOM file access for the retention 'sboms'
-      // category. Same directory the build runner writes to; wired
-      // even when no build command is configured (the directory may
-      // still hold files from an earlier configuration).
-      sbomAccess: {
-        dir: () => sbomDirFromEnv(),
-        list: () => {
-          const dir = sbomDirFromEnv();
-          let entries: string[];
-          try {
-            entries = fs.readdirSync(dir);
-          } catch {
-            return [];
-          }
-          return entries.filter((name) => {
-            if (!SBOM_FILE_RE.test(name)) return false;
-            try {
-              return fs.statSync(`${dir}/${name}`).isFile();
-            } catch {
-              return false;
-            }
-          });
-        },
-      },
-      // Batch 14 — the archive guard evaluator for the route modules
-      // that cannot import project-guard directly (see context.ts).
-      archivedTaskBody: (taskId: string) =>
-        isTaskProjectArchived(fdb, taskId)
-          ? projectArchivedBody(projectIdOfTask(fdb, taskId) as string)
-          : null,
-      // §46.2 (Batch 18) — the Secret Broker for /api/secrets and for
-      // consumption points (exec secretEnv injection).
-      secretBroker: secretBrokerSetup.broker,
-      // §40 (Batch 24) — post-merge build runner. Only constructed
-      // when FACTORY_BUILD_COMMAND is explicitly configured; otherwise
-      // build records honestly stay NOT_EXECUTED.
-      ...(buildRunner ? { buildRunner } : {}),
-      // §33 (Batch 29) — database broker: host-injected SQLite engine
-      // over this server's own database.
-      dbBroker: dbBrokerService,
-    };
+    const routeCtx = makeRouteCtx();
     if (await handleGitRoutes(req, res, url, routeCtx)) return;
     if (await handleWorktreeRoutes(req, res, url, routeCtx)) return;
     if (await handleQaRoutes(req, res, url, routeCtx)) return;
@@ -1023,8 +1081,11 @@ const server = createServer(async (req, res) => {
     if (await handleCommandRoutes(req, res, url, routeCtx)) return;
     if (await handleHookRoutes(req, res, url, routeCtx)) return;
     if (await handleSessionRoutes(req, res, url, routeCtx)) return;
+    if (await handleCodeIndexRoutes(req, res, url, routeCtx)) return;
     if (await handleSearchRoutes(req, res, url, routeCtx)) return;
     if (await handleAttachmentRoutes(req, res, url, routeCtx)) return;
+    if (await handleScheduleRoutes(req, res, url, routeCtx)) return;
+    if (await handleMetricsRoutes(req, res, url, routeCtx)) return;
     if (await handleReleaseRoutes(req, res, url, routeCtx)) return;
     if (await handlePolicyRoutes(req, res, url, routeCtx)) return;
     if (await handleExecRoutes(req, res, url, routeCtx)) return;
@@ -1772,6 +1833,45 @@ const server = createServer(async (req, res) => {
     return json(res, 500, { error: (e as Error).message });
   }
 });
+
+/**
+ * General task scheduler (local cron) — operator-configured schedules
+ * firing run-task / webhook / backup jobs. Same safety posture as the
+ * backup scheduler: a 30s in-process tick, missed slots are never
+ * backfilled (boot() advances them and audits SCHEDULE_MISSED), a tick
+ * never takes the process down. The scheduler gets its own full route
+ * context (makeRouteCtx) so scheduled run-task jobs start runs through
+ * the exact same machinery as POST /api/runtime/runs.
+ */
+initTaskScheduler(makeRouteCtx());
+taskScheduler().boot();
+const taskSchedulerTimer = setInterval(() => {
+  taskScheduler()
+    .tick()
+    .catch((e) => {
+      // Belt-and-braces: tick() never throws by contract, but a
+      // rejected promise must never become an unhandled rejection.
+      console.error('task scheduler tick failed:', (e as Error).message);
+    });
+}, SCHEDULER_TICK_MS);
+if (typeof taskSchedulerTimer.unref === 'function') taskSchedulerTimer.unref();
+let schedulerShuttingDown = false;
+function gracefulSchedulerShutdown(signal: string): void {
+  if (schedulerShuttingDown) return;
+  schedulerShuttingDown = true;
+  console.log(`received ${signal}: persisting schedules and shutting down`);
+  try {
+    taskScheduler().shutdown(); // final persist of schedule state
+  } catch (e) {
+    console.error('task scheduler shutdown failed:', (e as Error).message);
+  }
+  clearInterval(taskSchedulerTimer);
+  server.close(() => process.exit(0));
+  // Failsafe: shutdown must never hang the process forever.
+  setTimeout(() => process.exit(0), 5000).unref();
+}
+process.once('SIGTERM', () => gracefulSchedulerShutdown('SIGTERM'));
+process.once('SIGINT', () => gracefulSchedulerShutdown('SIGINT'));
 
 server.listen(PORT, HOST, () => {
   console.log(`[ai-factory] API listening on http://${HOST}:${PORT} (db: ${DB_PATH})`);

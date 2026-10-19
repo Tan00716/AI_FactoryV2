@@ -63,6 +63,34 @@ export const BUILTIN_TOOLS: readonly ToolMetadata[] = [
     approvalPolicy: 'AUTO',
   },
   {
+    id: 'code_search',
+    version: V,
+    source: 'builtin',
+    category: 'Custom',
+    implementationStatus: 'implemented',
+    inputSchema: {
+      root: { type: 'string', required: true },
+      q: { type: 'string', required: true },
+      mode: { type: 'string' },
+      limit: { type: 'number' },
+    },
+    outputSchema: {
+      mode: { type: 'string' },
+      promptSafe: { type: 'string' },
+      hits: { type: 'array' },
+    },
+    capabilities: ['code.search'],
+    sideEffect: 'none',
+    networkRequirements: [],
+    filesystemRequirements: ['read'],
+    timeoutMs: 30_000,
+    idempotency: true,
+    cancelable: true,
+    reconcilable: false,
+    health: 'unknown',
+    approvalPolicy: 'AUTO',
+  },
+  {
     id: 'fs.write',
     version: V,
     source: 'builtin',
@@ -262,8 +290,7 @@ export const BUILTIN_TOOLS: readonly ToolMetadata[] = [
     id: 'web_search',
     version: V,
     source: 'builtin',
-    category: 'Browser',
-    implementationStatus: 'implemented',
+    category: 'Browser',    implementationStatus: 'implemented',
     inputSchema: {
       query: { type: 'string', required: true },
       count: { type: 'number' },
@@ -468,6 +495,15 @@ export const BUILTIN_TOOL_NOTES: Readonly<Record<string, string>> = {
     'the server HTTP-run web_search tool (operator allowlist ' +
     'FACTORY_RUNTIME_TOOLS, granted under the network.access capability). ' +
     'Results are quarantined as DATA via sanitizeUntrusted before any ' +
+    'prompt embedding.',
+  'code_search':
+    'Real implementation in @ai-factory/codeindex (heuristic symbol ' +
+    'extraction + inverted full-text index, incremental rebuilds) behind ' +
+    'POST /api/codeindex/index, GET /api/codeindex/search|definition, and ' +
+    'the server HTTP-run code_search tool (operator allowlist ' +
+    'FACTORY_RUNTIME_TOOLS, granted under the filesystem.read capability). ' +
+    'Roots are jailed to FACTORY_CODEINDEX_ROOTS (fail-closed when unset); ' +
+    'snippets are quarantined as DATA via sanitizeUntrusted before any ' +
     'prompt embedding.',
   'mcp.call':
     'MCP tools arrive via registered MCP servers (§34), not as factory builtins; this definition only fixes the category in the taxonomy.',

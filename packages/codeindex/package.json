@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/security":"0.1.0"},"description":"Local code index for agents: heuristic symbol extraction + inverted full-text index, incremental updates, zero external dependencies","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/codeindex","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

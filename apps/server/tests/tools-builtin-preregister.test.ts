@@ -89,7 +89,7 @@ const CAPABILITY = {
 
 describe('builtin tool definitions pre-registered at boot (Batch 49)', () => {
   it(
-    'GET /api/tools lists 17 builtins; wired tools execute; definition-only still denied',
+    'GET /api/tools lists 18 builtins; wired tools execute; definition-only still denied',
     { timeout: 120_000 },
     async () => {
       const dir = mkdtempSync(join(tmpdir(), 'factory-tools-pre-'));
@@ -101,9 +101,10 @@ describe('builtin tool definitions pre-registered at boot (Batch 49)', () => {
         const list = await api(port, 'GET', '/api/tools');
         assert.equal(list.status, 200);
         const tools = list.body['tools'] as Array<Json>;
-        assert.equal(tools.length, 17, `17 builtin definitions pre-registered, got ${tools.length}`);
+        assert.equal(tools.length, 18, `18 builtin definitions pre-registered, got ${tools.length}`);
         assert.ok(tools.some((t) => t['id'] === 'runtime.echo'), 'runtime.echo listed');
         assert.ok(tools.some((t) => t['id'] === 'web_search'), 'web_search listed');
+        assert.ok(tools.some((t) => t['id'] === 'code_search'), 'code_search listed');
 
         const echo = await api(port, 'POST', '/api/tools/execute', {
           toolId: 'runtime.echo',

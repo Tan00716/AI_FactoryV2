@@ -1,5 +1,5 @@
 import { Project } from '../api';
-import { NotificationsBell } from './NotificationsBell';
+import { NotificationCenter } from './NotificationCenter';
 import { SlashCommandBar } from './SlashCommandBar';
 import { useLang } from '../i18n';
 
@@ -44,7 +44,7 @@ export function TopBar({
           <span className="agent-count" title={t('topbar.identityTitle')}>{identityLabel}</span>
         )}
       </div>
-      {notificationsBase && <NotificationsBell base={notificationsBase} />}
+      {notificationsBase && <NotificationCenter base={notificationsBase} />}
       {/* i18n 试点：中 / EN 切换。只影响已接入 i18n 的面板
           （Dashboard / Board / Approvals / NeedsHuman），其余面板本批不动。 */}
       <div className="lang-switch" role="group" aria-label="language">

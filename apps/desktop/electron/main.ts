@@ -4,7 +4,7 @@
  * production. The local backend (apps/server) is spawned as a child process
  * so the desktop app is self-contained (local-first, §104).
  */
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain, Notification } from 'electron';
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 
@@ -45,8 +45,10 @@ function createWindow(): void {
     // (__dirname = <app>/apps/desktop/dist-electron).
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: {
-      // Prototype: no preload/IPC bridge yet; renderer talks to the local
-      // HTTP API. A preload bridge is the planned hardening (§71).
+      // Preload bridge (preload.ts): exposes window.aiFactory.notify()
+      // for OS-level desktop notifications; the renderer still talks to
+      // the local HTTP API otherwise. Context isolation stays on (§71).
+      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
     },
   });
@@ -61,6 +63,20 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // OS desktop notifications from the renderer's notification center.
+  // The console line doubles as a test hook (headless Xvfb has no
+  // notification daemon, so "shown" can't be observed there).
+  ipcMain.on('ai-factory:notify', (_event, payload: unknown) => {
+    const p = (payload ?? {}) as { title?: unknown; body?: unknown };
+    const title = String(p.title ?? 'AI Factory').slice(0, 120);
+    const body = String(p.body ?? '').slice(0, 300);
+    console.log(`[main] desktop notification: ${title}`);
+    try {
+      new Notification({ title, body }).show();
+    } catch (e) {
+      console.error('[main] Notification.show failed:', (e as Error).message);
+    }
+  });
   // In dev, `npm run dev` already starts the backend; only spawn it here
   // when this main process is launched standalone (e.g. packaged app).
   if (!isDev || process.env.SPAWN_BACKEND === '1') startBackend();

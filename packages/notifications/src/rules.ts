@@ -120,6 +120,29 @@ export const DEFAULT_RULES: NotificationRule[] = [
         'INFO',
       )(e),
   },
+  {
+    id: 'run-completed',
+    eventTypes: ['RUN_COMPLETED'],
+    build: (e) =>
+      outcome(
+        `Run completed: ${label(e)}`,
+        `Run ${label(e)} finished with outcome ${detail(e, 'outcome') || 'unknown'}` +
+          `${detail(e, 'steps') ? ` after ${detail(e, 'steps')} step(s)` : ''}.`,
+        'INFO',
+      )(e),
+  },
+  {
+    id: 'needs-human-raised',
+    eventTypes: ['NEEDS_HUMAN_RAISED'],
+    build: (e) =>
+      outcome(
+        `Human attention needed: ${label(e)}`,
+        `${detail(e, 'reason') || label(e)}` +
+          `${detail(e, 'severity') ? ` (severity: ${detail(e, 'severity')})` : ''}. ` +
+          `Open the Needs Human tab to review.`,
+        'HIGH',
+      )(e),
+  },
   // Fallback: any unmatched event still produces an INFO notification so
   // nothing is silently dropped.
   {

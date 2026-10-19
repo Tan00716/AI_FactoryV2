@@ -36,9 +36,33 @@ import type {
   NotificationRule,
 } from './types';
 
+/**
+ * Guard for rehydrating persisted records: only structurally valid
+ * notifications are seeded (invalid entries are dropped, never crash).
+ */
+function isSeedableNotification(n: unknown): n is Notification {
+  if (!n || typeof n !== 'object') return false;
+  const r = n as Record<string, unknown>;
+  return (
+    typeof r['id'] === 'string' &&
+    typeof r['type'] === 'string' &&
+    typeof r['title'] === 'string' &&
+    typeof r['body'] === 'string' &&
+    typeof r['priority'] === 'string' &&
+    typeof r['actor'] === 'string' &&
+    typeof r['read'] === 'boolean' &&
+    typeof r['createdAt'] === 'string'
+  );
+}
+
 export interface EngineOptions {
   rules?: NotificationRule[];
   clock?: Clock;
+  /**
+   * Seed records (e.g. rehydrated from a persistent store). Invalid
+   * entries are dropped; the list is trimmed to maxStored (newest kept).
+   */
+  initial?: Notification[];
   /** Cap stored notifications; oldest are evicted (default 500). */
   maxStored?: number;
   /**
@@ -91,6 +115,14 @@ export class NotificationEngine {
     this.dedupeWindowMs = opts.dedupeWindowMs ?? DEFAULT_DEDUPE_WINDOW_MS;
     this.rateMaxPerWindow = opts.rateLimit?.maxPerWindow ?? DEFAULT_RATE_MAX_PER_WINDOW;
     this.rateWindowMs = opts.rateLimit?.windowMs ?? DEFAULT_RATE_WINDOW_MS;
+    if (opts.initial) {
+      for (const n of opts.initial) {
+        if (isSeedableNotification(n)) this.notifications.push({ ...n });
+      }
+      // Newest-first trim to the cap (oldest evicted, like storeRecord).
+      this.notifications.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      while (this.notifications.length > this.maxStored) this.notifications.shift();
+    }
   }
 
   /**
@@ -322,5 +354,27 @@ export class NotificationEngine {
       ? this.deliveries.filter((d) => d.notificationId === notificationId)
       : [...this.deliveries];
     return all.sort((a, b) => b.deliveredAt.localeCompare(a.deliveredAt));
+  }
+
+  /**
+   * Remove all read notifications; returns the count removed.
+   * (Backs the notification center's "clear" action.)
+   */
+  removeRead(): number {
+    let removed = 0;
+    for (let i = this.notifications.length - 1; i >= 0; i -= 1) {
+      if (this.notifications[i].read) {
+        this.notifications.splice(i, 1);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  /** Remove every notification; returns the count removed. */
+  clear(): number {
+    const count = this.notifications.length;
+    this.notifications.splice(0, count);
+    return count;
   }
 }

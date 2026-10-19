@@ -440,6 +440,11 @@ describe("§81 'irrecoverable-env-error' HTTP boundary (Batch 44)", () => {
     // throws only plain Errors (SearchError extends Error; the fetch
     // helper rejects with Error) — never MissingBinaryError /
     // SandboxUnavailableError or any FactoryError with an ENV_* code.
+    // code_search (code index) was re-examined the same way: it walks
+    // the local filesystem and throws only plain Errors
+    // (CodeIndexError extends Error for ROOT_DENIED/ROOT_NOT_FOUND/
+    // NOT_INDEXED); sanitizeUntrusted is pure. No FactoryError with an
+    // ENV_* code is reachable.
     // The irrecoverable-env-error emission therefore stays unreachable
     // via tool impls, and this tripwire pins the set so the next tool
     // addition forces the same re-examination. See the file header for
@@ -447,7 +452,7 @@ describe("§81 'irrecoverable-env-error' HTTP boundary (Batch 44)", () => {
     // stagnation signature today.
     assert.deepEqual(
       [...RUNTIME_TOOL_NAMES].sort(),
-      ['add', 'echo', 'web_search'],
+      ['add', 'code_search', 'echo', 'web_search'],
       'registered runtime tools changed — re-examine the env-error HTTP boundary',
     );
   });

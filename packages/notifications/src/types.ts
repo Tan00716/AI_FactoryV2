@@ -17,6 +17,8 @@ export type NotificationEventType =
   | 'APPROVAL_DECIDED'
   | 'BUILD_FAILED'
   | 'TASK_COMPLETED'
+  | 'RUN_COMPLETED'
+  | 'NEEDS_HUMAN_RAISED'
   | 'GENERIC';
 
 /** Notification priority (drives the UI badge + ordering). */

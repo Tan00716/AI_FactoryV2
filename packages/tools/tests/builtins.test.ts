@@ -33,6 +33,7 @@ describe('builtin tool catalog (§33)', () => {
     const implemented = TOOL_CATEGORIES.flatMap((c) => summary[c].implemented).sort();
     assert.deepEqual(implemented, [
       'ci.pipeline',
+      'code_search',
       'deploy.run',
       'git.commit',
       'git.pull_request',
