@@ -21,6 +21,46 @@ export function BottomPanel() {
   const [records, setRecords] = useState<AuditRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // 审计合规导出（GET /api/audit/export，operator+）
+  const [showExport, setShowExport] = useState(false);
+  const [expFormat, setExpFormat] = useState<'csv' | 'json'>('csv');
+  const [expFrom, setExpFrom] = useState('');
+  const [expTo, setExpTo] = useState('');
+  const [expBusy, setExpBusy] = useState(false);
+  const [expMsg, setExpMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  const doExport = async () => {
+    setExpBusy(true);
+    setExpMsg(null);
+    try {
+      const from = expFrom ? new Date(expFrom).toISOString() : undefined;
+      const to = expTo ? new Date(expTo).toISOString() : undefined;
+      const { blob, filename, recordCount } = await api.auditExportBlob(expFormat, from, to);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      setExpMsg({
+        kind: 'ok',
+        text: t('audit.exported', { count: recordCount === null ? '?' : String(recordCount) }),
+      });
+    } catch (e) {
+      const err = e as Error & { status?: number };
+      setExpMsg({
+        kind: 'err',
+        text:
+          err.status === 409
+            ? t('audit.exportChainInvalid')
+            : t('audit.exportFailed', { message: err.message ?? String(e) }),
+      });
+    } finally {
+      setExpBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (tab !== 'AI Activity') return;
@@ -60,6 +100,32 @@ export function BottomPanel() {
             {err && <span className="pill warn">{t('bottom.auditLoadFailed', { message: err })}</span>}
             {!err && loading && records.length === 0 && <span className="muted">{t('bottom.loading')}</span>}
             {!err && !loading && records.length === 0 && <span className="muted">{t('activity.empty')} {t('activity.emptyHint')}</span>}
+            <div className="act-toolbar">
+              <button className="link" onClick={() => { setShowExport((v) => !v); setExpMsg(null); }}>
+                {t('audit.export')}
+              </button>
+              {showExport && (
+                <span className="export-form">
+                  <label>{t('audit.exportFormat')}
+                    <select value={expFormat} onChange={(e) => setExpFormat(e.target.value as 'csv' | 'json')}>
+                      <option value="csv">CSV</option>
+                      <option value="json">JSON</option>
+                    </select>
+                  </label>
+                  <label>{t('audit.exportFrom')}
+                    <input type="datetime-local" value={expFrom} onChange={(e) => setExpFrom(e.target.value)} title={t('audit.exportRangeHint')} />
+                  </label>
+                  <label>{t('audit.exportTo')}
+                    <input type="datetime-local" value={expTo} onChange={(e) => setExpTo(e.target.value)} title={t('audit.exportRangeHint')} />
+                  </label>
+                  <button className="pill" disabled={expBusy} onClick={doExport}>
+                    {expBusy ? t('audit.exporting') : t('audit.exportRun')}
+                  </button>
+                  <button className="link" onClick={() => setShowExport(false)}>{t('audit.exportCancel')}</button>
+                  {expMsg && <span className={expMsg.kind === 'ok' ? 'pill' : 'pill warn'}>{expMsg.text}</span>}
+                </span>
+              )}
+            </div>
             {records.map((r) => (
               <div key={r.id} className="act-row">
                 <span className="muted">{new Date(r.ts).toLocaleTimeString()}</span>

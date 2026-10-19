@@ -492,6 +492,11 @@ export function requiredRoleFor(method: string, path: string): ApiRole | null {
   // not get it. The endpoint always verifies the FULL chain anchored at
   // genesis; pagination is refused, not silently truncated (F33).
   if (path === '/api/audit/verify') return 'operator';
+  // Audit compliance export: minting an attested compliance artifact is a
+  // control action like verify — viewer may list (/api/audit) but may not
+  // mint reports. The export verifies the chain first and refuses (409)
+  // on a broken/truncated chain, so it is strictly stronger than listing.
+  if (path === '/api/audit/export') return 'operator';
   return method === 'GET' ? 'viewer' : 'operator';
 }
 

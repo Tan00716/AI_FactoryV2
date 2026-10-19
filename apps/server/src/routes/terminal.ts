@@ -72,6 +72,7 @@ import {
   decideExecSandbox,
   execSandboxConfigFromEnv,
 } from '../exec-sandbox';
+import { NETWORK_OFFLINE_CODE, networkMode } from '../network-mode';
 
 const manager = new PtySessionManager({ maxSessions: 16, archiveDepth: 50 });
 const IDLE_REAP_MS = 30 * 60 * 1000;
@@ -211,7 +212,29 @@ export async function handleTerminalRoutes(
     // spawns inside the sandbox (same confinement as /api/exec
     // one-shots); otherwise the session runs directly and the create
     // record is marked `sandbox: 'none (fallback)'` — never silent.
-    const sb = await decideExecSandbox(cwd, execSandboxConfigFromEnv());
+    //
+    // Offline mode: force --unshare-net; without bwrap there is no
+    // provable network isolation, so the session is refused outright —
+    // no fake offline.
+    const offline = networkMode().isOffline();
+    const sandboxCfg = execSandboxConfigFromEnv();
+    if (offline) sandboxCfg.network = false;
+    const sb = await decideExecSandbox(cwd, sandboxCfg);
+    if (offline && sb.mode !== 'bwrap') {
+      const detail = sb.reason ? ` (${sb.reason})` : '';
+      ctx.audit.record(actor, 'SESSION_DENIED', 'terminal', '(session create)', {
+        reason: NETWORK_OFFLINE_CODE,
+        sandbox: sb.mode,
+        ...(sb.reason ? { sandboxReason: sb.reason } : {}),
+      });
+      ctx.json(res, 403, {
+        error:
+          `${NETWORK_OFFLINE_CODE}: offline mode requires bwrap network isolation, ` +
+          `but the sandbox is '${sb.mode}'${detail} — refusing to run unisolated`,
+        code: NETWORK_OFFLINE_CODE,
+      });
+      return true;
+    }
     let session: PtySession;
     try {
       session = manager.create({

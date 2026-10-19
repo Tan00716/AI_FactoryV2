@@ -70,6 +70,7 @@ import {
   attachLaunchPersistence,
   newMcpBootId,
 } from '../mcp-persistence';
+import { NETWORK_OFFLINE_CODE, networkMode } from '../network-mode';
 
 const PREFIX = '/api/mcp';
 
@@ -768,6 +769,13 @@ export async function handleMcpRoutes(
     if (typeof name !== 'string' || typeof version !== 'string') {
       return ctx.json(res, 400, { error: 'name and version are required' }), true;
     }
+    // Offline mode: fail closed — never dial out to a remote server.
+    if (networkMode().isOffline()) {
+      return ctx.json(res, 403, {
+        error: `refusing to connect ${name}@${version}: offline mode is enabled`,
+        code: NETWORK_OFFLINE_CODE,
+      }), true;
+    }
     const server = registry.get(name, version);
     if (!server) return ctx.json(res, 404, { error: `mcp server ${name}@${version} is not registered` }), true;
     if (server.transport !== 'http') {
@@ -818,6 +826,14 @@ export async function handleMcpRoutes(
     const tool = body['tool'];
     if (typeof name !== 'string' || typeof tool !== 'string') {
       return ctx.json(res, 400, { error: 'name and tool are required' }), true;
+    }
+    // Offline mode: fail closed — existing remote connectors are not
+    // usable either (the egress is the call, not just the connect).
+    if (networkMode().isOffline()) {
+      return ctx.json(res, 403, {
+        error: `refusing remote call ${name}.${tool}: offline mode is enabled`,
+        code: NETWORK_OFFLINE_CODE,
+      }), true;
     }
     const version = typeof body['version'] === 'string' ? body['version'] : undefined;
     const entry = version ? remoteConnectors.get(remoteKey(name, version)) : undefined;

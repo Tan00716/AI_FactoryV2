@@ -14,4 +14,10 @@ contextBridge.exposeInMainWorld('aiFactory', {
   notify: (title: string, body: string): void => {
     ipcRenderer.send('ai-factory:notify', { title, body });
   },
+  // Multi-project: open a new window bound to a projectId. The new
+  // window shares the single backend process; only its ?project=
+  // query param differs.
+  openWindow: (projectId: string): void => {
+    ipcRenderer.send('ai-factory:open-window', { projectId });
+  },
 });

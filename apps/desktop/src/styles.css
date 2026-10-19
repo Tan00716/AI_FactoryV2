@@ -31,6 +31,31 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 sys
 .run-status .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); }
 .run-status.off .dot { background: var(--red); }
 
+/* Offline mode (加强项6): top-bar switch + full-width alert banner. */
+.offline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+}
+.offline-toggle .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+.offline-toggle.is-offline { border-color: var(--red); color: var(--red); }
+.offline-toggle.is-offline .dot { background: var(--red); }
+.offline-toggle:disabled { opacity: 0.6; cursor: wait; }
+.offline-banner {
+  padding: 8px 16px;
+  background: rgba(244, 135, 113, 0.12);
+  border-bottom: 1px solid var(--red);
+  color: var(--red);
+  font-size: 13px;
+}
+
 /* i18n 试点：顶栏中 / EN 切换开关 */
 .lang-switch { display: flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
 .lang-switch button { background: transparent; border: 0; color: var(--muted); padding: 3px 10px; cursor: pointer; font-size: 12px; }
@@ -155,6 +180,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .bottom-tabs { display: flex; border-bottom: 1px solid var(--border); }
 .bottom-body { flex: 1; overflow-y: auto; padding: 8px 12px; font-family: ui-monospace, monospace; font-size: 12px; }
 .act-row { display: flex; gap: 10px; padding: 2px 0; }
+.act-toolbar { display: flex; align-items: center; gap: 8px; padding: 4px 0 6px; flex-wrap: wrap; }
+.export-form { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.export-form label { display: inline-flex; align-items: center; gap: 4px; }
+.export-form input[type="datetime-local"] { font: inherit; }
 .term { color: var(--green); }
 
 /* project settings panel (spec module 33 import/export) */

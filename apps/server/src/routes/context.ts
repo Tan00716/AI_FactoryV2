@@ -20,6 +20,9 @@ import type { BackupManifest } from './backup';
 import type { EventBus } from '@ai-factory/events';
 import type { StepIntentStore } from '@ai-factory/runtime';
 import type { SecretBroker } from '@ai-factory/secrets';
+import type { TailAnchoredVerification } from '../audit-tail-anchor';
+import type { ApiRole } from '../auth';
+import type { TaskTemplateStore } from '../task-template-store';
 
 export interface RouteContext {
   tasks: TaskManager;
@@ -39,6 +42,8 @@ export interface RouteContext {
   stepIntentStore: StepIntentStore;
   /** In-app notification engine (spec module 30). */
   notify: NotificationEngine;
+  /** Task template library (JSON-backed; see task-template-store.ts). */
+  taskTemplateStore: TaskTemplateStore;
   /**
    * §47 (Batch 14) — backup-directory access for the retention
    * routes: retention ages/deletes backup directories and must never
@@ -118,4 +123,19 @@ export interface RouteContext {
   factoryPolicyStore?: import('@ai-factory/employee-factory').FactoryPolicyStore;
   json(res: ServerResponse, status: number, body: unknown): void;
   readBody(req: IncomingMessage): Promise<Record<string, unknown>>;
+  /**
+   * Tail-anchored §32 chain verifier (routes/audit-export.ts): the same
+   * verifier as GET /api/audit/verify — forward hash chain plus the tail
+   * anchor that sees tail deletion. Injected by the coordinator; an
+   * embedder that omits it gets the plain forward-chain verify() instead
+   * (tailAnchorStatus 'unavailable' on the export).
+   */
+  verifyAuditChainWithTail?: () => TailAnchoredVerification;
+  /**
+   * Caller's role for the current request, resolved by the coordinator
+   * (index.ts) via requestRole() past the auth gate. Used by routes that
+   * audit WHO acted (routes/audit-export.ts AUDIT_EXPORTED). Undefined
+   * for embedders that don't resolve roles — recorded as 'unknown'.
+   */
+  callerRole?: ApiRole | null;
 }

@@ -237,6 +237,13 @@ export interface TaskAttachment {
   id: string; taskId: string; filename: string; mimeType: string;
   size: number; createdAt: string; sha256: string;
 }
+/** 任务模板库：mirrors the server TaskTemplate record. */
+export interface TaskTemplate {
+  id: string; name: string; description: string; promptTemplate: string;
+  variables: string[]; defaultAgentId?: string; defaultPriority?: string;
+  toolAllowlist?: string[]; builtIn?: boolean; createdBy: string;
+  createdAt: string; updatedAt: string;
+}
 export interface OrgNode {
   agent: { id: string; displayName: string; jobTitle: string; status: string; autonomyLevel: number };
   children: OrgNode[];
@@ -457,6 +464,26 @@ export interface RestoreStageResult {
   preRestoreBackupId: string;
   message: string;
 }
+/** 自动备份策略（GET /api/auto-backup 的 policy 形状）。 */
+export interface AutoBackupPolicy {
+  enabled: boolean;
+  kind: 'cron' | 'interval';
+  cronExpr: string | null;
+  intervalMs: number | null;
+  retainCount: number;
+  healthCheck: boolean;
+  scheduleId: string | null;
+  updatedAt: string;
+}
+/** 更新自动备份策略的请求体（PUT /api/auto-backup，字段均为可选）。 */
+export interface AutoBackupPolicyInput {
+  enabled?: boolean;
+  kind?: 'cron' | 'interval';
+  cronExpr?: string | null;
+  intervalMs?: number | null;
+  retainCount?: number;
+  healthCheck?: boolean;
+}
 /** §28.3 checkpoint（runtime CheckpointV2 的线上形状；capturedAt 为 epoch ms）。 */
 export interface CheckpointV2 {
   schemaVersion: '2.0';
@@ -605,6 +632,17 @@ export const api = {
     req<TaskSummary[]>(`/tasks${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`),
   createTask: (input: { projectId: string; title: string; goal?: string; priority?: string }) =>
     req<TaskDetail>('/tasks', { method: 'POST', body: JSON.stringify(input) }),
+  /** 任务模板库：CRUD + 从模板发起（建任务并启动 run）。 */
+  listTaskTemplates: () =>
+    req<{ templates: TaskTemplate[] }>('/task-templates'),
+  createTaskTemplate: (input: { name: string; description?: string; promptTemplate: string; defaultAgentId?: string; defaultPriority?: string; toolAllowlist?: string[] }) =>
+    req<{ template: TaskTemplate }>('/task-templates', { method: 'POST', body: JSON.stringify(input) }),
+  updateTaskTemplate: (id: string, patch: Partial<{ name: string; description: string; promptTemplate: string; defaultAgentId: string; defaultPriority: string; toolAllowlist: string[] }>) =>
+    req<{ template: TaskTemplate }>(`/task-templates/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteTaskTemplate: (id: string) =>
+    req<{ deleted: boolean }>(`/task-templates/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  launchTaskTemplate: (id: string, input: { projectId: string; params?: Record<string, string>; agentId?: string; title?: string }) =>
+    req<TaskDetail & { runId: string }>(`/task-templates/${encodeURIComponent(id)}/launch`, { method: 'POST', body: JSON.stringify(input) }),
   /** W-E multimodal: upload one image to a task (base64 data URL or raw base64). */
   uploadTaskAttachment: (taskId: string, input: { filename: string; mimeType: string; dataBase64: string }) =>
     req<{ attachment: TaskAttachment }>(`/tasks/${encodeURIComponent(taskId)}/attachments`, {
@@ -672,6 +710,39 @@ export const api = {
    *  不接受 limit/offset（F33：截断窗口会误报 brokenAt:0，所以端点 400
    *  拒绝分页）；角色门控 operator+（auth 模式下 viewer 403）。 */
   auditVerify: () => req<AuditChainVerification>('/audit/verify'),
+  /** 审计合规导出：GET /api/audit/export（operator+）。返回 blob +
+   *  服务端建议的文件名，调用方负责触发浏览器下载。服务端先验链，
+   *  链断裂/尾被截时抛 409（err.status === 409）。 */
+  auditExportBlob: async (
+    format: 'csv' | 'json',
+    from?: string,
+    to?: string,
+  ): Promise<{ blob: Blob; filename: string; recordCount: number | null }> => {
+    const qs = new URLSearchParams({ format });
+    if (from) qs.set('from', from);
+    if (to) qs.set('to', to);
+    const res = await fetch(`${BASE}/audit/export?${qs.toString()}`, {
+      headers: { ...authHeaders() },
+    });
+    if (!res.ok) {
+      let message = `HTTP ${res.status}`;
+      try {
+        const body = (await res.json()) as { error?: string; code?: string };
+        if (body.error) message = body.code ? `[${body.code}] ${body.error}` : body.error;
+      } catch {
+        /* keep the HTTP status message */
+      }
+      const e = new Error(message) as Error & { status: number };
+      e.status = res.status;
+      throw e;
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') ?? '';
+    const m = /filename="?([^";]+)"?/.exec(cd);
+    const rcRaw = res.headers.get('X-Audit-Export-Record-Count');
+    const recordCount = rcRaw !== null && rcRaw !== '' && Number.isFinite(Number(rcRaw)) ? Number(rcRaw) : null;
+    return { blob, filename: m?.[1] ?? `audit-export.${format}`, recordCount };
+  },
   deployments: () => req<DeploymentRecord[]>('/deployments'),
   memoryEntries: (scope: string, scopeId: string) =>
     req<MemoryEntry[]>(`/memory?scope=${encodeURIComponent(scope)}&scopeId=${encodeURIComponent(scopeId)}`),
@@ -735,6 +806,19 @@ export const api = {
   restoreProjectFiles: (backupId: string) =>
     req<ProjectFilesRestoreResult>(
       '/restore/project-files', { method: 'POST', body: JSON.stringify({ backupId }) },
+    ),
+  /** 自动备份策略（GET /api/auto-backup）：读 viewer。 */
+  autoBackup: () =>
+    req<{ policy: AutoBackupPolicy }>('/auto-backup'),
+  /** 更新自动备份策略（PUT /api/auto-backup）：写 operator。 */
+  updateAutoBackup: (p: AutoBackupPolicyInput) =>
+    req<{ policy: AutoBackupPolicy; sync: string }>(
+      '/auto-backup', { method: 'PUT', body: JSON.stringify(p) },
+    ),
+  /** 立即执行一次受卫备份（POST /api/auto-backup/run）：operator。 */
+  runAutoBackupNow: () =>
+    req<{ backupId: string; pruned: string[] }>(
+      '/auto-backup/run', { method: 'POST', body: JSON.stringify({}) },
     ),
   /** Batch 50：§81 needs-human 升级记录（只读 viewer，NeedsHumanPanel 用）。
    *  默认列 OPEN；status 可为 open|acknowledged|resolved（非法值服务端 400）。

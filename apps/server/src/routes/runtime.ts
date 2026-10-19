@@ -175,6 +175,37 @@ import {
 } from '@ai-factory/db';
 import type { RouteContext } from './context';
 
+/**
+ * Offline-mode checker for the web_search tool. Wired by the
+ * coordinator (index.ts) via setNetworkOfflineChecker — mirroring
+ * setRuntimeCodeIndexService — so this route module never
+ * extensionless-imports a sibling src module (dual-mode import rule:
+ * server tests import this file's src with type-stripping).
+ * Default: the FACTORY_NETWORK_OFFLINE env override only; the
+ * coordinator upgrades this to the full file-backed store check.
+ */
+let networkOfflineCheck: () => boolean = () => {
+  const v = (process.env.FACTORY_NETWORK_OFFLINE ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+};
+
+export function setNetworkOfflineChecker(fn: () => boolean): void {
+  networkOfflineCheck = fn;
+}
+
+/**
+ * Plain Error carrying the NETWORK_OFFLINE code (the code string is
+ * owned by ../network-mode — duplicated here as a literal so this
+ * module keeps zero extensionless sibling value-imports). Runtime
+ * tools must throw plain Errors (never FactoryError) so the
+ * irrecoverable-env-error HTTP boundary is unaffected.
+ */
+function webSearchOfflineError(): Error & { code: string } {
+  const e = new Error('web_search is unavailable: offline mode is enabled') as Error & { code: string };
+  e.code = 'NETWORK_OFFLINE';
+  return e;
+}
+
 // The record type is owned by @ai-factory/db (see the header note);
 // re-exported so existing imports from this module keep working.
 export type { RuntimeRunRecord } from '@ai-factory/db';
@@ -243,6 +274,10 @@ const RUNTIME_TOOLS: Record<string, ToolImpl> = {
     if (typeof a.query !== 'string' || !a.query.trim()) {
       throw new Error('web_search: query is required');
     }
+    // Offline mode: fail closed with NETWORK_OFFLINE (plain Error with a
+    // code property — never FactoryError — so the irrecoverable-env-error
+    // HTTP boundary is unaffected).
+    if (networkOfflineCheck()) throw webSearchOfflineError();
     const client = createSearchClient({ providers: createDefaultProviders() });
     const outcome = await client.search(a.query, {
       count: typeof a.count === 'number' ? a.count : 5,

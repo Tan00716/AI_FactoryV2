@@ -67,6 +67,7 @@ import {
   decideExecSandbox,
   execSandboxConfigFromEnv,
 } from './exec-sandbox';
+import { networkMode } from './network-mode';
 
 /**
  * Tool ids this server wires a REAL implementation for. Everything
@@ -167,7 +168,23 @@ export function createServerToolRunner(_opts: ServerToolRunnerOptions = {}): Too
         // The sandbox never permits — policy/approval gates above are
         // unchanged; the mode is reported in `note` so the attempts log
         // never silently claims isolation.
-        const sb = await decideExecSandbox(cwd, execSandboxConfigFromEnv());
+        //
+        // Offline mode: force --unshare-net; without bwrap there is no
+        // provable network isolation, so the call is refused outright —
+        // no fake offline. CONFINEMENT_UNAVAILABLE is the honest code:
+        // no qualified isolation backend is available.
+        const offline = networkMode().isOffline();
+        const sandboxCfg = execSandboxConfigFromEnv();
+        if (offline) sandboxCfg.network = false;
+        const sb = await decideExecSandbox(cwd, sandboxCfg);
+        if (offline && sb.mode !== 'bwrap') {
+          const detail = sb.reason ? ` (${sb.reason})` : '';
+          throw new ToolDeniedError(
+            'CONFINEMENT_UNAVAILABLE',
+            `NETWORK_OFFLINE: offline mode requires bwrap network isolation, ` +
+              `but the sandbox is '${sb.mode}'${detail} — refusing to run unisolated`,
+          );
+        }
         let r;
         try {
           r = await run(tokens, {

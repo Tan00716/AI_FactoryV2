@@ -522,6 +522,13 @@ export interface SchedulerDeps {
   startRun(input: { agentId: string; taskId: string }): Promise<{ runId: string }>;
   runBackup(): { backupId: string };
   fetchWebhook(url: string, opts: WebhookFetchOpts): Promise<{ status: number; body: string }>;
+  /**
+   * Offline-mode gate (wired by routes/schedules.ts to the network-mode
+   * store). Kept as an injected function — not an import — so this
+   * module stays pure (node builtins + @ai-factory/security) and the
+   * src-importing unit tests keep passing (dual-mode import rule).
+   */
+  isOffline?: () => boolean;
   now?: () => Date;
 }
 
@@ -641,6 +648,15 @@ export class TaskScheduler {
       return { ok: true, summary: `task ${task.id} created (no agent — run not started)`, taskId: task.id };
     }
     if (job.type === 'webhook') {
+      // Offline mode: fail closed with NETWORK_OFFLINE — never dial out.
+      // The skip is recorded via SCHEDULE_FIRED/SCHEDULE_FAILED below,
+      // so the audit trail shows exactly why nothing was sent.
+      if (this.deps.isOffline?.()) {
+        return {
+          ok: false,
+          summary: `webhook ${job.url} skipped: offline mode is enabled (NETWORK_OFFLINE)`,
+        };
+      }
       const res = await this.deps.fetchWebhook(job.url, {
         method: job.method ?? 'GET',
         headers: job.headers ?? {},

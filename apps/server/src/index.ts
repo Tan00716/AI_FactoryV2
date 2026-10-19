@@ -95,6 +95,7 @@ import {
   handleRuntimeRoutes,
   resolveRuntimeToolAllowlist,
   runtimeToolsStartupError,
+  setNetworkOfflineChecker,
   setRuntimeCheckpointLog,
   setRuntimeCodeIndexService,
   setRuntimeManifestStore,
@@ -128,6 +129,8 @@ import { handleSearchRoutes } from './routes/search';
 import { getCodeIndexService, handleCodeIndexRoutes } from './routes/codeindex';
 import { handleAttachmentRoutes } from './routes/attachments';
 import { handleMetricsRoutes, recordHealthLatency } from './routes/metrics';
+import { handleNetworkRoutes } from './routes/network';
+import { networkMode } from './network-mode';
 import { handleReleaseRoutes } from './routes/releases';
 import { handlePolicyRoutes } from './routes/policy';
 import { handleExecRoutes } from './routes/exec';
@@ -162,6 +165,9 @@ import { handleReportRoutes, initReportsPersistence } from './routes/reports';
 import { handleV2TransitionRoutes } from './routes/v2-transitions';
 import { handleDashboardRoutes } from './routes/dashboard';
 import { handleNotificationRoutes } from './routes/notifications';
+import { handleAuditExportRoutes } from './routes/audit-export';
+import { handleTaskTemplateRoutes } from './routes/task-templates';
+import { TaskTemplateStore } from './task-template-store';
 import { handleEventRoutes } from './routes/events';
 import { handleActivityRoutes } from './routes/activity';
 import {
@@ -177,6 +183,7 @@ import {
   validateProjectPath,
 } from './routes/backup';
 import { handleRetentionRoutes } from './routes/retention';
+import { handleAutoBackupRoutes, syncAutoBackupPolicy } from './routes/auto-backup';
 import { initMcpPersistence } from './routes/mcp';
 import {
   backupScheduler,
@@ -521,6 +528,16 @@ setRuntimeCheckpointLog(checkpointLog);
 setRuntimeCodeIndexService(getCodeIndexService());
 
 /**
+ * Offline mode — the web_search runtime tool checks the file-backed
+ * network-mode store through this injected checker (mirroring
+ * setRuntimeCodeIndexService; the runtime route module never
+ * extensionless-imports a sibling src module per the dual-mode import
+ * rule). The search HTTP route and MCP remote routes read the store
+ * directly.
+ */
+setNetworkOfflineChecker(() => networkMode().isOffline());
+
+/**
  * W-E multimodal — the runtime route resolves a task's image
  * attachments through this lister (descriptors only; bytes stay
  * server-side). Installed here, next to the other route installs.
@@ -770,6 +787,13 @@ const engine = new WorkflowEngine({ tasks, evidence, audit });
 // in-memory only, lost on restart).
 const notify: NotificationEngine = new PersistentNotificationEngine();
 /**
+ * Task template library: operator-authored dispatch prompts with
+ * {{variable}} placeholders, persisted to
+ * AI_FACTORY_DATA_DIR/task-templates.json (first boot seeds three
+ * built-in templates).
+ */
+const taskTemplateStore = new TaskTemplateStore();
+/**
  * needsHuman → notification fan-out: every §81 upgrade row submitted
  * anywhere (runtime budget/stagnation, brute-force, audit-chain watch,
  * authority conflicts, high-risk deploys) enqueues a HIGH notification.
@@ -850,6 +874,7 @@ function taskView(id: string) {
 function makeRouteCtx(): RouteContext {
   return {
       tasks, evidence, audit, agents, engine, fdb, stepIntentStore, notify, bus, json, readBody,
+      taskTemplateStore,
       // Batch 66-d — project policy store for agent auto-creation gates
       // (INV-08): qa.ts reads the QA creation policy from it.
       factoryPolicyStore: new FactoryPolicyStore(),
@@ -900,6 +925,11 @@ function makeRouteCtx(): RouteContext {
       // §33 (Batch 29) — database broker: host-injected SQLite engine
       // over this server's own database.
       dbBroker: dbBrokerService,
+      // Audit compliance export (routes/audit-export.ts): the same
+      // tail-anchored verifier as GET /api/audit/verify. The per-request
+      // caller role is resolved once below (requestRole) so the export's
+      // AUDIT_EXPORTED record names who acted.
+      verifyAuditChainWithTail: () => verifyAuditChainWithTailAnchor(audit, auditTailAnchorStore),
 
   };
 }
@@ -1054,6 +1084,10 @@ const server = createServer(async (req, res) => {
     // evaluation (§57–§58).
     // Each handler returns true when it owned the path.
     const routeCtx = makeRouteCtx();
+    // Resolve the caller's role once per request (past the gate above)
+    // so routes that audit WHO acted (e.g. audit-export's AUDIT_EXPORTED)
+    // don't touch credentials themselves.
+    routeCtx.callerRole = requestRole(req, AUTH_CONFIG).role;
     if (await handleGitRoutes(req, res, url, routeCtx)) return;
     if (await handleWorktreeRoutes(req, res, url, routeCtx)) return;
     if (await handleQaRoutes(req, res, url, routeCtx)) return;
@@ -1086,6 +1120,7 @@ const server = createServer(async (req, res) => {
     if (await handleAttachmentRoutes(req, res, url, routeCtx)) return;
     if (await handleScheduleRoutes(req, res, url, routeCtx)) return;
     if (await handleMetricsRoutes(req, res, url, routeCtx)) return;
+    if (await handleNetworkRoutes(req, res, url, routeCtx)) return;
     if (await handleReleaseRoutes(req, res, url, routeCtx)) return;
     if (await handlePolicyRoutes(req, res, url, routeCtx)) return;
     if (await handleExecRoutes(req, res, url, routeCtx)) return;
@@ -1116,10 +1151,13 @@ const server = createServer(async (req, res) => {
     if (await handleV2TransitionRoutes(req, res, url, routeCtx)) return;
     if (await handleDashboardRoutes(req, res, url, routeCtx)) return;
     if (await handleNotificationRoutes(req, res, url, routeCtx)) return;
+    if (await handleAuditExportRoutes(req, res, url, routeCtx)) return;
+    if (await handleTaskTemplateRoutes(req, res, url, routeCtx)) return;
     if (await handleEventRoutes(req, res, url, routeCtx)) return;
     if (await handleActivityRoutes(req, res, url, routeCtx)) return;
     if (await handleBackupRoutes(req, res, url, routeCtx)) return;
     if (await handleBackupScheduleRoutes(req, res, url, routeCtx)) return;
+    if (await handleAutoBackupRoutes(req, res, url, routeCtx)) return;
     if (await handleRetentionRoutes(req, res, url, routeCtx)) return;
     if (await handleAuthorizationTicketRoutes(req, res, url, routeCtx)) return;
     if (await handleDbRoutes(req, res, url, routeCtx)) return;
@@ -1845,6 +1883,10 @@ const server = createServer(async (req, res) => {
  */
 initTaskScheduler(makeRouteCtx());
 taskScheduler().boot();
+// Auto-backup policy: reconcile the one schedule the policy owns (if
+// enabled). Never throws — a broken policy file must not take the
+// server down.
+syncAutoBackupPolicy(makeRouteCtx());
 const taskSchedulerTimer = setInterval(() => {
   taskScheduler()
     .tick()

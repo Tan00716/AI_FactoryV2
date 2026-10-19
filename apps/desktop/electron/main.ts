@@ -34,11 +34,14 @@ function startBackend(): void {
   backend.on('exit', (code) => console.log(`[main] backend exited with ${code}`));
 }
 
-function createWindow(): void {
+function createWindow(initialProject?: string): void {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
-    title: 'AI Factory — Engineering IDE',
+    // Window title follows the bound project; the renderer sets
+    // document.title once it resolves the project name (see App.tsx),
+    // and Electron mirrors page titles onto the native window.
+    title: initialProject ? `AI Factory — ${initialProject}` : 'AI Factory — Engineering IDE',
     // Product icon, shipped in the packaged app via electron-builder.yml
     // `files` (apps/desktop/build/icon.png). Same relative layout in dev
     // (__dirname = apps/desktop/dist-electron) and packaged
@@ -54,11 +57,13 @@ function createWindow(): void {
   });
 
   if (isDev) {
-    win.loadURL(`http://localhost:${UI_PORT}?apiPort=${API_PORT}`);
+    const q = new URLSearchParams({ apiPort: String(API_PORT) });
+    if (initialProject) q.set('project', initialProject);
+    win.loadURL(`http://localhost:${UI_PORT}?${q.toString()}`);
   } else {
-    win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'), {
-      query: { apiPort: String(API_PORT) },
-    });
+    const query: Record<string, string> = { apiPort: String(API_PORT) };
+    if (initialProject) query['project'] = initialProject;
+    win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'), { query });
   }
 }
 
@@ -76,6 +81,17 @@ app.whenReady().then(() => {
     } catch (e) {
       console.error('[main] Notification.show failed:', (e as Error).message);
     }
+  });
+  // Multi-project windows (§multi-project): every window binds its own
+  // projectId via the ?project= query param. The backend is project-scoped
+  // per request (no global current-project singleton), so all windows share
+  // the ONE backend process — no extra servers, no port conflicts.
+  ipcMain.on('ai-factory:open-window', (_event, payload: unknown) => {
+    const p = (payload ?? {}) as { projectId?: unknown };
+    const raw = typeof p.projectId === 'string' ? p.projectId : '';
+    // Same allowlist as the renderer's project-query helper: fail closed.
+    const projectId = /^[A-Za-z0-9_-]{1,64}$/.test(raw) ? raw : undefined;
+    createWindow(projectId);
   });
   // In dev, `npm run dev` already starts the backend; only spawn it here
   // when this main process is launched standalone (e.g. packaged app).

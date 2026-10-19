@@ -21,6 +21,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RouteContext } from './context';
+import { NETWORK_OFFLINE_CODE, networkMode } from '../network-mode';
 import {
   BingRssProvider,
   BraveProvider,
@@ -77,6 +78,13 @@ export async function handleSearchRoutes(
 
   // POST /api/search — run a web search.
   if (method === 'POST' && path === PREFIX) {
+    // Offline mode: fail closed with NETWORK_OFFLINE (not a timeout).
+    if (networkMode().isOffline()) {
+      return ctx.json(res, 403, {
+        error: 'web search is unavailable: offline mode is enabled',
+        code: NETWORK_OFFLINE_CODE,
+      }), true;
+    }
     const body = await ctx.readBody(req).catch(() => ({} as Record<string, unknown>));
     const query = body['query'];
     if (typeof query !== 'string' || !query.trim()) {

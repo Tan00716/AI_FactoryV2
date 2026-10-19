@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   api,
+  type AutoBackupPolicy,
+  type AutoBackupPolicyInput,
   type BackupSummary,
   type PendingRestore,
   type ProjectFilesRestoreResult,
@@ -36,6 +38,162 @@ function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * 自动备份策略配置区（加强项7）：GET/PUT /api/auto-backup +
+ * POST /api/auto-backup/run。策略启用后，服务端在 TaskScheduler
+ * 里拥有一个名为 'auto-backup (policy)' 的备份计划；每次计划备份
+ * 都经过 live-DB 健康检查门，成功后按保留份数清理多余的计划备份。
+ */
+function AutoBackupSection() {
+  const { t, has } = useLang();
+  const [loaded, setLoaded] = useState(false);
+  const [err, setErr] = useState('');
+  const [okMsg, setOkMsg] = useState('');
+  const [busy, setBusy] = useState('');
+  const [enabled, setEnabled] = useState(false);
+  const [kind, setKind] = useState<'cron' | 'interval'>('interval');
+  const [intervalHours, setIntervalHours] = useState('24');
+  const [cronExpr, setCronExpr] = useState('0 3 * * *');
+  const [retainCount, setRetainCount] = useState('7');
+  const [healthCheck, setHealthCheck] = useState(true);
+
+  const applyPolicy = useCallback((p: AutoBackupPolicy) => {
+    setEnabled(p.enabled);
+    setKind(p.kind);
+    setIntervalHours(p.intervalMs != null ? String(p.intervalMs / 3600000) : '24');
+    setCronExpr(p.cronExpr ?? '0 3 * * *');
+    setRetainCount(String(p.retainCount));
+    setHealthCheck(p.healthCheck);
+  }, []);
+
+  const loadPolicy = useCallback(async () => {
+    try {
+      const res = await api.autoBackup();
+      applyPolicy(res.policy);
+      setLoaded(true);
+    } catch (e) {
+      setErr(t('autobackup.loadFailed', { message: (e as Error).message }));
+      setLoaded(true);
+    }
+  }, [t, applyPolicy]);
+
+  useEffect(() => { void loadPolicy(); }, [loadPolicy]);
+
+  const syncLabel = (s: string) => (has(`autobackup.sync.${s}`) ? t(`autobackup.sync.${s}`) : s);
+
+  const onSave = async () => {
+    setBusy('save');
+    setErr('');
+    setOkMsg('');
+    try {
+      const hours = parseFloat(intervalHours);
+      const body: AutoBackupPolicyInput = {
+        enabled,
+        kind,
+        retainCount: Math.min(365, Math.max(1, parseInt(retainCount, 10) || 7)),
+        healthCheck,
+        ...(kind === 'cron'
+          ? { cronExpr: cronExpr.trim(), intervalMs: null }
+          : {
+              intervalMs: Math.max(3600000, Math.round((Number.isFinite(hours) && hours > 0 ? hours : 24) * 3600000)),
+              cronExpr: null,
+            }),
+      };
+      const res = await api.updateAutoBackup(body);
+      applyPolicy(res.policy);
+      setOkMsg(t('autobackup.saved', { sync: syncLabel(res.sync) }));
+    } catch (e) {
+      setErr(t('autobackup.saveFailed', { message: (e as Error).message }));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const onRunNow = async () => {
+    setBusy('run');
+    setErr('');
+    setOkMsg('');
+    try {
+      const res = await api.runAutoBackupNow();
+      const pruned = res.pruned.length > 0 ? t('autobackup.prunedSuffix', { count: res.pruned.length }) : '';
+      setOkMsg(t('autobackup.runDone', { backupId: res.backupId, pruned }));
+    } catch (e) {
+      setErr(t('autobackup.runFailed', { message: (e as Error).message }));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  return (
+    <div className="card" style={{ cursor: 'default' }}>
+      <div className="card-title">{t('autobackup.title')}</div>
+      <p className="muted" style={{ fontSize: 12 }}>{t('autobackup.description')}</p>
+      {err && <div className="banner err">{err}</div>}
+      {okMsg && <div className="banner" style={{ color: 'var(--green)' }}>{okMsg}</div>}
+      {!loaded ? (
+        <p className="muted">…</p>
+      ) : (
+        <>
+          <div className="row">
+            <label>
+              <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} disabled={busy !== ''} />
+              {' '}{t('autobackup.enabled')}
+            </label>
+            <label>
+              <input type="checkbox" checked={healthCheck} onChange={(e) => setHealthCheck(e.target.checked)} disabled={busy !== ''} />
+              {' '}{t('autobackup.healthCheck')}
+            </label>
+          </div>
+          <div className="row">
+            <label>
+              {t('autobackup.kind')}{' '}
+              <select value={kind} onChange={(e) => setKind(e.target.value as 'cron' | 'interval')} disabled={busy !== ''}>
+                <option value="interval">{t('autobackup.kind.interval')}</option>
+                <option value="cron">{t('autobackup.kind.cron')}</option>
+              </select>
+            </label>
+            {kind === 'interval' ? (
+              <label>
+                {t('autobackup.intervalHours')}{' '}
+                <input
+                  type="number" min={1} step={1} value={intervalHours}
+                  onChange={(e) => setIntervalHours(e.target.value)} disabled={busy !== ''}
+                  style={{ width: 80 }}
+                />
+              </label>
+            ) : (
+              <label>
+                {t('autobackup.cronExpr')}{' '}
+                <input
+                  type="text" value={cronExpr}
+                  onChange={(e) => setCronExpr(e.target.value)} disabled={busy !== ''}
+                  style={{ width: 170 }} placeholder="0 3 * * *"
+                />
+              </label>
+            )}
+            <label>
+              {t('autobackup.retainCount')}{' '}
+              <input
+                type="number" min={1} max={365} step={1} value={retainCount}
+                onChange={(e) => setRetainCount(e.target.value)} disabled={busy !== ''}
+                style={{ width: 80 }}
+              />
+            </label>
+          </div>
+          <div className="row">
+            <button onClick={() => void onSave()} disabled={busy !== ''}>
+              {busy === 'save' ? t('autobackup.saving') : t('autobackup.save')}
+            </button>
+            <button onClick={() => void onRunNow()} disabled={busy !== ''}>
+              {busy === 'run' ? t('autobackup.running') : t('autobackup.runNow')}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 export function BackupPanel() {
@@ -181,6 +339,8 @@ export function BackupPanel() {
         <button onClick={() => void load()} disabled={busy !== ''}>{t('backup.refresh')}</button>
         <span className="muted">{t('backup.count', { count: backups.length })}</span>
       </div>
+
+      <AutoBackupSection />
 
       {!loaded ? (
         <p className="muted">{t('backup.loading')}</p>

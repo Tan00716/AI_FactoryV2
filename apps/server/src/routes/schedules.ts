@@ -29,8 +29,12 @@ import {
   type ScheduleJob,
   type WebhookFetchOpts,
 } from '../scheduler';
-import { createBackup } from './backup';
+import { createBackup, listBackupManifests, backupDirPath, stagedRestoreBackupId } from './backup';
+import { runGuardedBackup, checkLiveDbIntegrity } from '../auto-backup';
 import { startScheduledRun } from './runtime';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { networkMode } from '../network-mode';
 
 const PREFIX = '/api/schedules';
 
@@ -173,8 +177,31 @@ export function initTaskScheduler(ctx: RouteContext): TaskScheduler {
       return { id: t.id };
     },
     startRun: async (input) => startScheduledRun(ctx, input),
-    runBackup: () => ({ backupId: createBackup(ctx.fdb, 'scheduled').backupId }),
+    // The `backup` job goes through the auto-backup policy guard:
+    // a live-DB PRAGMA quick_check gates every scheduled backup (a
+    // corrupt database is never snapshotted — the firing is skipped
+    // and audited), and when the auto-backup policy is enabled the
+    // keep-newest-N retention prunes excess scheduled snapshots.
+    runBackup: () =>
+      runGuardedBackup({
+        audit: {
+          record: (actor, event, entityType, entityId, details) =>
+            ctx.audit.record(actor, event, entityType, entityId, details),
+        },
+        createBackup: (kind: 'manual' | 'scheduled') => createBackup(ctx.fdb, kind),
+        listBackups: () => listBackupManifests(),
+        deleteBackupDir: (backupId: string) => {
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(backupId) || backupId.includes('..')) {
+            throw new Error(`refusing to delete backup with unsafe id: ${backupId}`);
+          }
+          rmSync(join(backupDirPath(), backupId), { recursive: true, force: true });
+        },
+        stagedRestoreBackupId: () => stagedRestoreBackupId(),
+        activeHoldCount: () => ctx.fdb.retention.countActiveHolds(),
+        checkLiveDbIntegrity: () => checkLiveDbIntegrity(ctx.fdb),
+      }),
     fetchWebhook: fetchWebhookReal,
+    isOffline: () => networkMode().isOffline(),
   });
   return scheduler;
 }
@@ -187,9 +214,11 @@ export function taskScheduler(): TaskScheduler {
 /**
  * The singleton store — shared by the tick loop (inside the
  * scheduler) and these routes. A second instance would serve stale
- * reads because ScheduleStore caches in memory.
+ * reads because ScheduleStore caches in memory. Exported for the
+ * auto-backup policy (routes/auto-backup.ts), which owns exactly one
+ * schedule in this store and reconciles it at boot / on PUT.
  */
-function scheduleStore(): ScheduleStore {
+export function scheduleStore(): ScheduleStore {
   if (!store) store = new ScheduleStore();
   return store;
 }

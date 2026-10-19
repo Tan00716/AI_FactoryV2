@@ -46,6 +46,7 @@ import {
   execSandboxConfigFromEnv,
   type ExecSandboxDecision,
 } from '../exec-sandbox';
+import { NETWORK_OFFLINE_CODE, networkMode } from '../network-mode';
 
 const execFileAsync = promisify(execFile);
 
@@ -699,7 +700,29 @@ export async function handleExecRoutes(
   // `sandbox: 'none (fallback)'` with the probe's reason in the audit
   // record and the response — never a silent downgrade. The policy
   // above is unchanged: the sandbox confines, it never permits.
-  const sb: ExecSandboxDecision = await decideExecSandbox(cwd, execSandboxConfigFromEnv());
+  //
+  // Offline mode: force --unshare-net. And no fake offline — when bwrap
+  // is unavailable (or disabled) there is no provable network isolation,
+  // so the call is refused outright instead of running on the host.
+  const offline = networkMode().isOffline();
+  const sandboxCfg = execSandboxConfigFromEnv();
+  if (offline) sandboxCfg.network = false;
+  const sb: ExecSandboxDecision = await decideExecSandbox(cwd, sandboxCfg);
+  if (offline && sb.mode !== 'bwrap') {
+    const detail = sb.reason ? ` (${sb.reason})` : '';
+    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', displayCommand.slice(0, 80), {
+      reason: NETWORK_OFFLINE_CODE,
+      sandbox: sb.mode,
+      ...(sb.reason ? { sandboxReason: sb.reason } : {}),
+    });
+    ctx.json(res, 403, {
+      error:
+        `${NETWORK_OFFLINE_CODE}: offline mode requires bwrap network isolation, ` +
+        `but the sandbox is '${sb.mode}'${detail} — refusing to run unisolated`,
+      code: NETWORK_OFFLINE_CODE,
+    });
+    return true;
+  }
   const sandboxFields: Record<string, unknown> = {
     sandbox: sb.mode,
     ...(sb.reason ? { sandboxReason: sb.reason } : {}),

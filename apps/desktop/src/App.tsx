@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, defaultApiBase, BoardCard, OrgNode, Project, TaskSummary } from './api';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
@@ -43,6 +43,7 @@ import { ModelsPanel } from './components/ModelsPanel';
 import { NeedsHumanPanel } from './components/NeedsHumanPanel';
 import { LanguageProvider, useLang } from './i18n';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { initialProjectId } from './utils/project-query';
 import './styles.css';
 
 const API_BASE = defaultApiBase();
@@ -57,7 +58,12 @@ const API_BASE = defaultApiBase();
 function IdeShell() {
   const { t } = useLang();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [projectId, setProjectId] = useState('proj-myapp');
+  // Multi-project: a window opened via "open in new window" carries
+  // ?project=<id>; each window keeps its own projectId state, so two
+  // windows can work on two projects against the same backend.
+  const [projectId, setProjectId] = useState(() =>
+    typeof window === 'undefined' ? 'proj-myapp' : initialProjectId(window.location.search),
+  );
   const [columns, setColumns] = useState<Record<string, BoardCard[]>>({});
   /** §85 完整看板数据源（含 createdAt，供运行时长/进度/门禁展示）。 */
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
@@ -128,6 +134,31 @@ function IdeShell() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  // Multi-project: Ctrl/Cmd+Shift+N opens a new window bound to the
+  // current project (Electron main handles it via IPC).
+  const projectIdRef = useRef(projectId);
+  useEffect(() => { projectIdRef.current = projectId; }, [projectId]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'N' || e.key === 'n')) {
+        if (window.aiFactory?.openWindow) {
+          e.preventDefault();
+          window.aiFactory.openWindow(projectIdRef.current);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Multi-project: the native window title follows the bound project so
+  // two windows are distinguishable at a glance (Electron mirrors
+  // document.title onto the window).
+  useEffect(() => {
+    const name = projects.find((p) => p.id === projectId)?.name ?? projectId;
+    document.title = `AI Factory — ${name}`;
+  }, [projects, projectId]);
+
   /**
    * QA-R1: "Running" 指示灯之前只在启动 refresh() 里探测一次——服务端中途
    * 挂掉后指示灯永远绿色，误导用户。加轻量心跳：每 10s 只调 /health，
@@ -171,6 +202,7 @@ function IdeShell() {
         connected={connected}
         identityLabel={apiIdentityLabel || undefined}
         notificationsBase={API_BASE}
+        networkBase={API_BASE}
         onOpenProjectSettings={() => setCenterTab('Project')}
         onCommandNavigate={(tab) => setCenterTab(tab as typeof centerTab)}
       />
