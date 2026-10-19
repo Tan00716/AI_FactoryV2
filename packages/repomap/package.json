@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/codeindex":"0.1.0"},"description":"AST-style repository map for agents: heuristic defs+refs importance-ranked structural summary, zero external dependencies","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/repomap","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

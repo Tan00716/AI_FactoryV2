@@ -6,11 +6,19 @@
  *   GET  /api/permissions/agents           list agent→tier assignments
  *   PUT  /api/permissions/agents/:agentId  {tier} — assign a tier
  *   POST /api/permissions/evaluate         {action, agentId?, tier?, riskLevel?}
- *        → {tier, tierVerdict, level, requiresApproval, reasons[]}
+ *        → {tier, tierVerdict, level, requiresApproval, reasons[], rule?}
  *        strictest-wins composition of the tier policy and the
  *        approvals engine (evaluateAction). A tier can only make an
  *        action MORE restrictive, never less: approvals-BLOCKED
  *        (e.g. 'secret.write') stays blocked for every tier.
+ *        Optional {tool, target} dry-runs the declarative rules and
+ *        reports the winning rule (or null) without executing.
+ *   GET  /api/permissions/rules            three rule layers (project /
+ *        personal / global) with paths, rules and corrupt flags
+ *   PUT  /api/permissions/rules            {layer?, rules[]} — replace one
+ *        layer's rules; audited as PERMISSION_RULE_CHANGED. The rules
+ *        are enforced at the tool-runner choke point: a deny rule
+ *        refuses the call even when approval was bypassed upstream.
  *
  * Wired into apps/server/src/index.ts by the coordinator:
  *   import { handlePermissionTierRoutes } from './routes/permissions';
@@ -28,6 +36,11 @@ import {
 } from '@ai-factory/permissions';
 import { evaluateAction, type RiskLevel } from '@ai-factory/approvals';
 import type { RouteContext } from './context';
+import {
+  RULE_LAYER_NAMES,
+  permissionRules,
+  type RuleLayerName,
+} from '../permission-rules';
 
 const PREFIX = '/api/permissions';
 const DEFAULT_AGENT_TIER: PermissionTier = 'write';
@@ -186,6 +199,35 @@ export async function handlePermissionTierRoutes(
     return ctx.json(res, 200, { agentId, tier }), true;
   }
 
+  // GET /api/permissions/rules — three layers + surviving paths
+  if (method === 'GET' && seg.length === 1 && seg[0] === 'rules') {
+    const layers = permissionRules().layers();
+    return ctx.json(res, 200, {
+      layers: layers.map((l) => ({ name: l.name, path: l.path, rules: l.rules, corrupt: l.corrupt })),
+      layerNames: [...RULE_LAYER_NAMES],
+    }), true;
+  }
+
+  // PUT /api/permissions/rules {layer?, rules[]} — replace one layer's rules
+  if (method === 'PUT' && seg.length === 1 && seg[0] === 'rules') {
+    const body = await ctx.readBody(req);
+    const layer = (body['layer'] as string | undefined) ?? 'project';
+    if (!(RULE_LAYER_NAMES as readonly string[]).includes(layer)) {
+      return ctx.json(res, 400, { error: `layer must be one of: ${RULE_LAYER_NAMES.join(', ')}` }), true;
+    }
+    const actor = (body['updatedBy'] as string | undefined) ?? 'human';
+    try {
+      const { saved, warnings } = permissionRules().saveLayer(layer as RuleLayerName, body['rules']);
+      ctx.audit.record(actor, 'PERMISSION_RULE_CHANGED', 'permission_rules', layer, {
+        saved,
+        warnings: warnings.length,
+      });
+      return ctx.json(res, 200, { layer, saved, warnings }), true;
+    } catch (e) {
+      return ctx.json(res, 400, { error: (e as Error).message }), true;
+    }
+  }
+
   // POST /api/permissions/evaluate
   if (method === 'POST' && seg.length === 1 && seg[0] === 'evaluate') {
     const body = await ctx.readBody(req);
@@ -200,7 +242,18 @@ export async function handlePermissionTierRoutes(
     try {
       const tier = resolveAgentTier(ctx, body['agentId'] as string | undefined, body['tier'] as string | undefined);
       const comp = composeTierDecision(ctx, action, tier, (riskLevel as RiskLevel) ?? 'LOW');
-      return ctx.json(res, 200, { action, ...comp }), true;
+      // Optional declarative-rule dry-run: {tool: 'shell.execute', target: 'npm run build'}
+      // reports the winning rule without executing anything.
+      let rule: { effect: string; tool: string; pattern: string; layer: string } | null = null;
+      const tool = body['tool'];
+      if (typeof tool === 'string' && tool) {
+        const target = typeof body['target'] === 'string' ? (body['target'] as string) : '';
+        const v = permissionRules().evaluateRaw(tool, target);
+        if (v !== undefined) {
+          rule = { effect: v.effect, tool: v.rule.tool, pattern: v.rule.pattern, layer: v.layer };
+        }
+      }
+      return ctx.json(res, 200, { action, ...comp, rule }), true;
     } catch (e) {
       return ctx.json(res, 400, { error: (e as Error).message }), true;
     }

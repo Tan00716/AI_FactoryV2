@@ -206,6 +206,10 @@ async function startServer(): Promise<Running> {
     PORT: String(port),
     DB_PATH: path.join(dir, 'factory.db'),
     AI_FACTORY_DATA_DIR: path.join(dir, 'data'),
+    // This suite tests hook veto semantics, not OS sandboxing: run
+    // with the sandbox explicitly disabled so /api/exec works on
+    // machines without bwrap (fail-closed would 403 everything).
+    FACTORY_EXEC_SANDBOX: '0',
   };
   for (const k of ['FACTORY_API_TOKEN', 'FACTORY_SECRETS_DIR', 'FACTORY_RUNTIME_TOOLS']) {
     delete env[k];

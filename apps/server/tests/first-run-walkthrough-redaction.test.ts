@@ -62,6 +62,10 @@ async function bootServer(): Promise<{ child: ChildProcess; port: number; dir: s
     FACTORY_API_TOKENS: `admin:${ADMIN}`,
     // Hermetic secrets: the R-legs store real secrets in this temp vault.
     FACTORY_SECRETS_DIR: join(dir, 'secrets'),
+    // This walkthrough tests redaction legs, not OS sandboxing: disable
+    // the sandbox explicitly so exec/terminal work on machines without
+    // bwrap (fail-closed would 403 every run).
+    FACTORY_EXEC_SANDBOX: '0',
   };
   delete env['FACTORY_API_TOKEN'];
   const child = spawn(process.execPath, [serverMain], { cwd: serverCwd, env, stdio: 'ignore' });

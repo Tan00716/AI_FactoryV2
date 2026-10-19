@@ -111,6 +111,25 @@ export async function handleToolRoutes(
     // tool audit, and DENIED/FAILED outcomes are additionally forwarded
     // into the server audit log so they sit next to EXEC_DENIED from the
     // other execution surfaces (/api/exec, /api/terminal).
+    //
+    // Declarative permission-rule denials are special: the runner throws
+    // ToolDeniedError with a PERMISSION_DENIED_BY_RULE marker, which the
+    // executor records as DENIED (its note gains a '<code>: ' prefix, so
+    // match with includes, not startsWith). Here it becomes its own audit
+    // event and a 403 (a policy refusal, not a soft outcome) — deny rules
+    // cannot be bypassed upstream, and the HTTP surface says so plainly.
+    const ruleDeny =
+      record.outcome === 'DENIED' && (record.note ?? '').includes('PERMISSION_DENIED_BY_RULE');
+    if (ruleDeny) {
+      ctx.audit.record(principal.id, 'PERMISSION_DENIED_BY_RULE', 'tools', `${toolId}:${action}`, {
+        note: record.note ?? undefined,
+      });
+      return ctx.json(res, 403, {
+        error: record.note,
+        code: 'PERMISSION_DENIED_BY_RULE',
+        record,
+      }), true;
+    }
     if (record.outcome === 'DENIED' || record.outcome === 'FAILED') {
       ctx.audit.record(
         principal.id,

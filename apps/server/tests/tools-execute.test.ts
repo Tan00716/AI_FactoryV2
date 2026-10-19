@@ -159,18 +159,28 @@ describe('server runner: real execution', () => {
   });
 
   it('shell.execute really runs an allowed command', async () => {
-    const registry = new ToolRegistry();
-    registry.register(
-      meta({ id: 'shell.execute', implementationStatus: 'definition-only', approvalPolicy: 'AUTO' }),
-    );
-    const ex = new ToolExecutor(registry, {
-      runner: createServerToolRunner(),
-      implementationGate: createImplementationGate(),
-    });
-    const record = await ex.execute(call({ toolId: 'shell.execute', args: { command: 'echo real-run' } }));
-    assert.equal(record.outcome, 'SUCCEEDED');
-    assert.match(record.stdout, /real-run/);
-    assert.equal(record.exitCode, 0);
+    // This test exercises the tool runner, not OS sandboxing: disable
+    // the sandbox explicitly so the command runs on machines without
+    // bwrap (fail-closed would deny it).
+    const prev = process.env['FACTORY_EXEC_SANDBOX'];
+    process.env['FACTORY_EXEC_SANDBOX'] = '0';
+    try {
+      const registry = new ToolRegistry();
+      registry.register(
+        meta({ id: 'shell.execute', implementationStatus: 'definition-only', approvalPolicy: 'AUTO' }),
+      );
+      const ex = new ToolExecutor(registry, {
+        runner: createServerToolRunner(),
+        implementationGate: createImplementationGate(),
+      });
+      const record = await ex.execute(call({ toolId: 'shell.execute', args: { command: 'echo real-run' } }));
+      assert.equal(record.outcome, 'SUCCEEDED');
+      assert.match(record.stdout, /real-run/);
+      assert.equal(record.exitCode, 0);
+    } finally {
+      if (prev === undefined) delete process.env['FACTORY_EXEC_SANDBOX'];
+      else process.env['FACTORY_EXEC_SANDBOX'] = prev;
+    }
   });
 
   it('shell.execute policy refusal is DENIED, not TIMED_OUT', async () => {

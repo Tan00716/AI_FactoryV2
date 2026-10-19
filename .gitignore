@@ -6,3 +6,4 @@ dist-tests/
 *.tsbuildinfo
 data/
 .DS_Store
+session-worktrees/

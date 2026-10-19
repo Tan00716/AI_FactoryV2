@@ -107,7 +107,10 @@ describe('Secret Broker on the real server (§46.2)', () => {
     };
     const dir = mkdtempSync(join(tmpdir(), 'factory-secrets-e2e-'));
     const secretDir = join(dir, 'secrets');
-    const bootEnv = { ...env, FACTORY_SECRETS_DIR: secretDir };
+    // This test exercises the secret broker (incl. exec injection with
+    // redaction), not OS sandboxing: disable the sandbox explicitly so
+    // exec works on machines without bwrap (fail-closed would 403 it).
+    const bootEnv = { ...env, FACTORY_SECRETS_DIR: secretDir, FACTORY_EXEC_SANDBOX: '0' };
     const { child, port } = await bootRealServer(bootEnv, dir);
     const base = `http://127.0.0.1:${port}`;
     const seenBodies: string[] = [];

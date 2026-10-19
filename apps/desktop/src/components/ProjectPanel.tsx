@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import { api } from '../api';
+import { useEffect, useRef, useState } from 'react';
+import { api, type QualityGateConfig, type QualityGateLastRun } from '../api';
 import { useLang } from '../i18n';
 
 interface Issue { file: string; message: string }
@@ -29,6 +29,156 @@ function downloadJson(filename: string, payload: unknown) {
  * `.ai-export.json` document; import validates it (schema + secret scan)
  * and shows every issue before anything is written.
  */
+/**
+ * 质量闸门（确定性 lint/test 门禁，零模型）：项目级配置 + 最近一次
+ * 运行结果。只做"跑 + 判 + 报"，不做自动修复。
+ */
+function QualityGateSection({ projectId }: { projectId: string }) {
+  const { t } = useLang();
+  const [config, setConfig] = useState<QualityGateConfig | null>(null);
+  const [lastRun, setLastRun] = useState<Record<'lint' | 'test', QualityGateLastRun | null> | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState<'lint' | 'test' | null>(null);
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [lintCmd, setLintCmd] = useState('');
+  const [testCmd, setTestCmd] = useState('');
+  const [timeoutMs, setTimeoutMs] = useState('120000');
+  const [runOnEdit, setRunOnEdit] = useState(false);
+  const [blockOnFailure, setBlockOnFailure] = useState(false);
+  const [lastResult, setLastResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.qualityGate(projectId);
+        if (cancelled) return;
+        setConfig(res.config);
+        setLastRun(res.lastRun);
+        setLintCmd(res.config.lintCmd);
+        setTestCmd(res.config.testCmd);
+        setTimeoutMs(String(res.config.timeoutMs));
+        setRunOnEdit(res.config.runOnEdit);
+        setBlockOnFailure(res.config.blockOnFailure);
+        setLoaded(true);
+      } catch (e) {
+        if (!cancelled) setMsg({ kind: 'err', text: t('quality.loadFailed', { message: (e as Error).message }) });
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  const onSave = async () => {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const res = await api.updateQualityGate(projectId, {
+        lintCmd,
+        testCmd,
+        timeoutMs: Number(timeoutMs) || 120000,
+        runOnEdit,
+        blockOnFailure,
+      });
+      setConfig(res.config);
+      setMsg({ kind: 'ok', text: t('quality.saved') });
+    } catch (e) {
+      setMsg({ kind: 'err', text: t('quality.saveFailed', { message: (e as Error).message }) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onRun = async (kind: 'lint' | 'test') => {
+    setRunning(kind);
+    setMsg(null);
+    setLastResult(null);
+    try {
+      const r = await api.runQualityGate(projectId, kind);
+      const res = await api.qualityGate(projectId);
+      setLastRun(res.lastRun);
+      setLastResult(
+        r.skipped
+          ? t('quality.skipped', { reason: r.skipReason ?? '' })
+          : t('quality.runDone', {
+              kind,
+              verdict: r.ok ? t('quality.pass') : t('quality.fail'),
+              ms: r.durationMs,
+              blocked: r.blocked ? t('quality.blockedNote') : '',
+            }),
+      );
+    } catch (e) {
+      setMsg({ kind: 'err', text: t('quality.runFailed', { message: (e as Error).message }) });
+    } finally {
+      setRunning(null);
+    }
+  };
+
+  const runBadge = (r: QualityGateLastRun | null | undefined, kind: string) => {
+    if (!r) return <span className="muted">{t('quality.neverRun', { kind })}</span>;
+    return (
+      <span className={r.ok ? 'ok' : 'err'}>
+        {kind}: {r.ok ? t('quality.pass') : t('quality.fail')} · {r.durationMs}ms · {r.at}
+        {r.timedOut ? ` · ${t('quality.timedOut')}` : ''}
+        {r.truncated ? ` · ${t('quality.truncated')}` : ''}
+      </span>
+    );
+  };
+
+  return (
+    <div className="panel" style={{ marginTop: 16 }}>
+      <h3>{t('quality.title')}</h3>
+      <p className="muted">{t('quality.description')}</p>
+      {config && (
+        <>
+          <label className="field">
+            <span>{t('quality.lintCmd')}</span>
+            <input value={lintCmd} onChange={(e) => setLintCmd(e.target.value)}
+              placeholder="ruff check --fix ." style={{ width: '100%' }} />
+          </label>
+          <label className="field">
+            <span>{t('quality.testCmd')}</span>
+            <input value={testCmd} onChange={(e) => setTestCmd(e.target.value)}
+              placeholder="pytest -x -q" style={{ width: '100%' }} />
+          </label>
+          <div className="row">
+            <label className="field">
+              <span>{t('quality.timeoutMs')}</span>
+              <input value={timeoutMs} onChange={(e) => setTimeoutMs(e.target.value)}
+                inputMode="numeric" style={{ width: 120 }} />
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={runOnEdit} onChange={(e) => setRunOnEdit(e.target.checked)} />
+              {t('quality.runOnEdit')}
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={blockOnFailure} onChange={(e) => setBlockOnFailure(e.target.checked)} />
+              {t('quality.blockOnFailure')}
+            </label>
+          </div>
+          <div className="row">
+            <button onClick={onSave} disabled={saving}>{t('quality.save')}</button>
+            <button onClick={() => void onRun('lint')} disabled={running !== null}>
+              {running === 'lint' ? t('quality.running') : t('quality.runLint')}
+            </button>
+            <button onClick={() => void onRun('test')} disabled={running !== null}>
+              {running === 'test' ? t('quality.running') : t('quality.runTest')}
+            </button>
+          </div>
+          <p className="muted">{t('quality.lastRunTitle')}</p>
+          <ul>
+            <li>{runBadge(lastRun?.lint, 'lint')}</li>
+            <li>{runBadge(lastRun?.test, 'test')}</li>
+          </ul>
+        </>
+      )}
+      {lastResult && <p className="muted">{lastResult}</p>}
+      {msg && <p className={msg.kind === 'ok' ? 'ok' : 'err'}>{msg.text}</p>}
+    </div>
+  );
+}
+
 export function ProjectPanel({ projectId, projectName }: { projectId: string; projectName: string }) {
   const { t } = useLang();
   const [state, setState] = useState<ImportState>({ kind: 'idle' });
@@ -117,6 +267,7 @@ export function ProjectPanel({ projectId, projectName }: { projectId: string; pr
           </ul>
         </div>
       )}
+      <QualityGateSection projectId={projectId} />
     </div>
   );
 }

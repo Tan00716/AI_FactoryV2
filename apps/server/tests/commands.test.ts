@@ -109,7 +109,7 @@ test('GET /api/commands lists built-ins', async () => {
     const r = await api(s.port, 'GET', '/api/commands');
     assert.equal(r.status, 200);
     const names = (r.body.builtins as { name: string }[]).map((b) => b.name).sort();
-    assert.deepEqual(names, ['help', 'plan', 'review']);
+    assert.deepEqual(names, ['help', 'lint', 'map', 'map-refresh', 'plan', 'review', 'run', 'test']);
   } finally {
     await stopServer(s);
   }

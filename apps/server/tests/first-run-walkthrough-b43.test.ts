@@ -101,6 +101,10 @@ async function bootServer(dbFile: string): Promise<BootedServer> {
     // Hermetic secrets: point the file vault at the temp dir (the R1 leg
     // stores a real secret there).
     FACTORY_SECRETS_DIR: join(tmpdir(), `factory-walk-b43-secrets-${port}`),
+    // This walkthrough tests §81 chains, not OS sandboxing: disable the
+    // sandbox explicitly so exec/terminal work on machines without
+    // bwrap (fail-closed would 403 every run).
+    FACTORY_EXEC_SANDBOX: '0',
   };
   delete env['FACTORY_API_TOKEN'];
   if (!('FACTORY_RUNTIME_TOOLS' in env)) delete env['FACTORY_RUNTIME_TOOLS'];

@@ -98,6 +98,7 @@ import {
   setNetworkOfflineChecker,
   setRuntimeCheckpointLog,
   setRuntimeCodeIndexService,
+  setRuntimeRepoMapService,
   setRuntimeManifestStore,
   setRuntimeRunStore,
   setTaskAttachmentLister,
@@ -125,12 +126,17 @@ import { handlePlanModeRoutes } from './routes/plan-mode';
 import { handleCommandRoutes } from './routes/commands';
 import { handleHookRoutes } from './routes/hooks';
 import { handleSessionRoutes } from './routes/sessions';
+import { handleSessionWorktreeRoutes } from './routes/session-worktrees';
 import { handleSearchRoutes } from './routes/search';
 import { getCodeIndexService, handleCodeIndexRoutes } from './routes/codeindex';
+import { getRepoMapService, handleRepoMapRoutes } from './routes/repomap';
 import { handleAttachmentRoutes } from './routes/attachments';
 import { handleMetricsRoutes, recordHealthLatency } from './routes/metrics';
 import { handleNetworkRoutes } from './routes/network';
 import { networkMode } from './network-mode';
+import { handleSandboxRoutes } from './routes/sandbox';
+import { setToolRunnerDangerGate, makeToolDangerGate } from './tool-runner';
+import { ApprovalManager } from '@ai-factory/approvals';
 import { handleReleaseRoutes } from './routes/releases';
 import { handlePolicyRoutes } from './routes/policy';
 import { handleExecRoutes } from './routes/exec';
@@ -184,6 +190,7 @@ import {
 } from './routes/backup';
 import { handleRetentionRoutes } from './routes/retention';
 import { handleAutoBackupRoutes, syncAutoBackupPolicy } from './routes/auto-backup';
+import { handleQualityRoutes } from './routes/quality';
 import { initMcpPersistence } from './routes/mcp';
 import {
   backupScheduler,
@@ -528,6 +535,13 @@ setRuntimeCheckpointLog(checkpointLog);
 setRuntimeCodeIndexService(getCodeIndexService());
 
 /**
+ * Repo map (deterministic structural summary for agents) — the
+ * runtime route's code_search tool (map:true) and the /api/repomap
+ * route share one service. Same install pattern as the code index.
+ */
+setRuntimeRepoMapService(getRepoMapService());
+
+/**
  * Offline mode — the web_search runtime tool checks the file-backed
  * network-mode store through this injected checker (mirroring
  * setRuntimeCodeIndexService; the runtime route module never
@@ -536,6 +550,24 @@ setRuntimeCodeIndexService(getCodeIndexService());
  * directly.
  */
 setNetworkOfflineChecker(() => networkMode().isOffline());
+
+/**
+ * Sandbox danger tier — the tool-runner's shell.execute runs danger
+ * checks through this gate (installed once at boot). The gate mints
+ * PENDING tickets for missing approvals (visible in the Approvals
+ * tab); approval itself still requires a human decider — the agent
+ * never approves its own ticket. Denials surface as ToolDeniedError →
+ * DENIED attempts, which the tools route forwards into the server
+ * audit log.
+ */
+setToolRunnerDangerGate(
+  makeToolDangerGate(
+    new ApprovalManager(fdb.approvals, {
+      audit: (action, entityId, details) =>
+        audit.record('danger-gate', action, 'approval', entityId, details),
+    }),
+  ),
+);
 
 /**
  * W-E multimodal — the runtime route resolves a task's image
@@ -1115,12 +1147,15 @@ const server = createServer(async (req, res) => {
     if (await handleCommandRoutes(req, res, url, routeCtx)) return;
     if (await handleHookRoutes(req, res, url, routeCtx)) return;
     if (await handleSessionRoutes(req, res, url, routeCtx)) return;
+    if (await handleSessionWorktreeRoutes(req, res, url, routeCtx)) return;
     if (await handleCodeIndexRoutes(req, res, url, routeCtx)) return;
+    if (await handleRepoMapRoutes(req, res, url, routeCtx)) return;
     if (await handleSearchRoutes(req, res, url, routeCtx)) return;
     if (await handleAttachmentRoutes(req, res, url, routeCtx)) return;
     if (await handleScheduleRoutes(req, res, url, routeCtx)) return;
     if (await handleMetricsRoutes(req, res, url, routeCtx)) return;
     if (await handleNetworkRoutes(req, res, url, routeCtx)) return;
+    if (await handleSandboxRoutes(req, res, url, routeCtx)) return;
     if (await handleReleaseRoutes(req, res, url, routeCtx)) return;
     if (await handlePolicyRoutes(req, res, url, routeCtx)) return;
     if (await handleExecRoutes(req, res, url, routeCtx)) return;
@@ -1158,6 +1193,7 @@ const server = createServer(async (req, res) => {
     if (await handleBackupRoutes(req, res, url, routeCtx)) return;
     if (await handleBackupScheduleRoutes(req, res, url, routeCtx)) return;
     if (await handleAutoBackupRoutes(req, res, url, routeCtx)) return;
+    if (await handleQualityRoutes(req, res, url, routeCtx)) return;
     if (await handleRetentionRoutes(req, res, url, routeCtx)) return;
     if (await handleAuthorizationTicketRoutes(req, res, url, routeCtx)) return;
     if (await handleDbRoutes(req, res, url, routeCtx)) return;

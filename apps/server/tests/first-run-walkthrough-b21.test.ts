@@ -83,6 +83,10 @@ async function bootServer(
     // local data/secrets/ may carry a stale vault from earlier dev runs
     // (fail-closed decrypt errors). Point the file vault at the temp dir.
     FACTORY_SECRETS_DIR: join(dirname(dbFile), 'secrets'),
+    // This walkthrough tests capability chains, not OS sandboxing:
+    // disable the sandbox explicitly so exec/terminal work on machines
+    // without bwrap (fail-closed would 403 every run).
+    FACTORY_EXEC_SANDBOX: '0',
     ...extraEnv,
   };
   delete env['FACTORY_API_TOKEN'];

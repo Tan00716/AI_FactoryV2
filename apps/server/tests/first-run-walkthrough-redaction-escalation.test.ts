@@ -59,6 +59,10 @@ async function bootServer(): Promise<{ child: ChildProcess; port: number; dir: s
     DB_PATH: join(dir, 'factory.db'),
     FACTORY_API_TOKENS: `admin:${ADMIN}`,
     FACTORY_SECRETS_DIR: join(dir, 'secrets'),
+    // This walkthrough tests redaction escalation, not OS sandboxing:
+    // disable the sandbox explicitly so terminal sessions work on
+    // machines without bwrap (fail-closed would 403 every run).
+    FACTORY_EXEC_SANDBOX: '0',
   };
   delete env['FACTORY_API_TOKEN'];
   const child = spawn(process.execPath, [serverMain], { cwd: serverCwd, env, stdio: 'ignore' });

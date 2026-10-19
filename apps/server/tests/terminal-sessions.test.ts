@@ -160,6 +160,10 @@ describe('terminal sessions e2e (§50.1)', () => {
   it('full lifecycle: create → input → SSE output → resize → close', async function () {
     const { child, port, dir } = await bootRealServer({
       FACTORY_API_TOKENS: `viewer:${VIEWER},operator:${OPERATOR},admin:${ADMIN}`,
+      // This suite tests terminal sessions, not OS sandboxing: disable
+      // the sandbox explicitly so sessions work on machines without
+      // bwrap (fail-closed would 403 every session create).
+      FACTORY_EXEC_SANDBOX: '0',
     });
     try {
       // anonymous → 401
@@ -268,6 +272,8 @@ describe('terminal sessions e2e (§50.1)', () => {
   it('ai sessions are line-gated: denied lines never reach the pty', async () => {
     const { child, port, dir } = await bootRealServer({
       FACTORY_API_TOKENS: `operator:${OPERATOR},admin:${ADMIN}`,
+      // (sandbox explicitly disabled — see above)
+      FACTORY_EXEC_SANDBOX: '0',
     });
     try {
       const created = (await (
@@ -322,6 +328,8 @@ describe('terminal sessions e2e (§50.1)', () => {
   it('concurrent sessions are isolated per principal', async () => {
     const { child, port, dir } = await bootRealServer({
       FACTORY_API_TOKENS: `operator:${OPERATOR}`,
+      // (sandbox explicitly disabled — see above)
+      FACTORY_EXEC_SANDBOX: '0',
     });
     try {
       const mk = async (principal: string): Promise<string> => {

@@ -73,6 +73,7 @@ export const BUILTIN_TOOLS: readonly ToolMetadata[] = [
       q: { type: 'string', required: true },
       mode: { type: 'string' },
       limit: { type: 'number' },
+      map: { type: 'boolean' },
     },
     outputSchema: {
       mode: { type: 'string' },
@@ -504,7 +505,9 @@ export const BUILTIN_TOOL_NOTES: Readonly<Record<string, string>> = {
     'FACTORY_RUNTIME_TOOLS, granted under the filesystem.read capability). ' +
     'Roots are jailed to FACTORY_CODEINDEX_ROOTS (fail-closed when unset); ' +
     'snippets are quarantined as DATA via sanitizeUntrusted before any ' +
-    'prompt embedding.',
+    'prompt embedding. map:true additionally attaches the @ai-factory/repomap ' +
+    'importance-ranked structural map (heuristic defs, name-based refs, ' +
+    'capped at 4000 tokens) — opt-in, same jail, same sanitization.',
   'mcp.call':
     'MCP tools arrive via registered MCP servers (§34), not as factory builtins; this definition only fixes the category in the taxonomy.',
   'runtime.echo':

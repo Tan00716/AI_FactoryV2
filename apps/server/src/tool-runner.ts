@@ -66,8 +66,18 @@ import {
 import {
   decideExecSandbox,
   execSandboxConfigFromEnv,
+  type ExecSandboxDecision,
 } from './exec-sandbox';
+import {
+  SANDBOX_UNAVAILABLE_CODE,
+  checkDangerExec,
+  resolveSandboxMode,
+  type ApprovalPolicy,
+  type DangerGateResult,
+} from './sandbox-modes';
+import { ApprovalManager } from '@ai-factory/approvals';
 import { networkMode } from './network-mode';
+import { checkToolRules } from './permission-rules';
 
 /**
  * Tool ids this server wires a REAL implementation for. Everything
@@ -107,6 +117,54 @@ export interface ServerToolRunnerOptions {
 }
 
 /**
+ * Danger-tier gate for shell.execute. Installed once at server boot in
+ * index.ts with a closure over the approvals store. Unlike the
+ * human-driven surfaces it ALSO mints: when the agent call carries no
+ * (or an invalid) dangerApprovalId, a PENDING ticket bound to the exact
+ * command is created so the human sees it in the Approvals tab and the
+ * agent can retry with dangerApprovalId. An agent must never approve
+ * its own ticket — approval still requires a human decider.
+ */
+let dangerGateForTools:
+  | ((opts: {
+      actor: string;
+      command: string;
+      allowDanger: boolean;
+      approvalPolicy: ApprovalPolicy;
+      dangerApprovalId?: string;
+    }) => DangerGateResult)
+  | null = null;
+
+/** Re-exported for tests. */
+export function setToolRunnerDangerGate(
+  fn: ((opts: {
+    actor: string;
+    command: string;
+    allowDanger: boolean;
+    approvalPolicy: ApprovalPolicy;
+    dangerApprovalId?: string;
+  }) => DangerGateResult) | null,
+): void {
+  dangerGateForTools = fn;
+}
+
+/** Re-exported for tests. */
+export function resetToolRunnerDangerGateForTests(): void {
+  dangerGateForTools = null;
+}
+
+/** Test seam: build the boot-style gate around any ApprovalManager. */
+export function makeToolDangerGate(manager: ApprovalManager) {
+  return (opts: {
+    actor: string;
+    command: string;
+    allowDanger: boolean;
+    approvalPolicy: ApprovalPolicy;
+    dangerApprovalId?: string;
+  }): DangerGateResult => checkDangerExec({ manager, ...opts });
+}
+
+/**
  * The real ToolRunner for POST /api/tools/execute.
  *
  * Policy refusals throw ToolDeniedError, which the executor converts
@@ -115,6 +173,38 @@ export interface ServerToolRunnerOptions {
  */
 export function createServerToolRunner(_opts: ServerToolRunnerOptions = {}): ToolRunner {
   return async (call: ResolvedToolCall): Promise<RunnerResult> => {
+    // Declarative permission rules (deny > ask > allow) — enforced HERE,
+    // at the execution choke point, before any tool implementation runs.
+    // A deny rule cannot be bypassed by an auto-approve / bypass-permissions
+    // mode upstream: even if the executor's approval gate approved (or was
+    // skipped), the runner itself refuses. The executor converts the
+    // ToolDeniedError into a DENIED record; routes/tools.ts maps the
+    // PERMISSION_DENIED_BY_RULE marker to a 403 + audit event.
+    //
+    // 'ask' has no interactive approval path at this surface, so it fails
+    // closed with APPROVAL_REQUIRED and an explicit message — never a
+    // silent pass, never a fake approval.
+    const ruleVerdict = checkToolRules(call.tool.id, (call.args ?? {}) as Record<string, unknown>);
+    if (ruleVerdict !== undefined && ruleVerdict.effect !== 'allow') {
+      const where = `'${ruleVerdict.rule.tool}(${ruleVerdict.rule.pattern})' [${ruleVerdict.layer}]`;
+      if (ruleVerdict.effect === 'deny') {
+        throw new ToolDeniedError(
+          'POLICY_DENIED',
+          `PERMISSION_DENIED_BY_RULE: rule ${where} denies ${call.tool.id}`,
+        );
+      }
+      // 'ask' has no interactive approval path at this surface, so it
+      // fails closed with APPROVAL_REQUIRED and an explicit message —
+      // never a silent pass, never a fake approval.
+      throw new ToolDeniedError(
+        'APPROVAL_REQUIRED',
+        `permission rule ${where} requires approval for ${call.tool.id} — ` +
+          'no approval path is wired at the tool execution surface, denied fail-closed',
+      );
+    }
+    // NOTE: an 'allow' verdict is a no-op at this choke point — it only
+    // matters at the evaluate endpoint and in future approval wiring.
+    // Wired tools have no default-deny here for allow to suppress.
     switch (call.tool.id) {
       case 'runtime.echo': {
         const msg = (call.args as { msg?: unknown }).msg;
@@ -136,7 +226,12 @@ export function createServerToolRunner(_opts: ServerToolRunnerOptions = {}): Too
         return { exitCode: 0, stdout: String(a + b), stderr: '' };
       }
       case 'shell.execute': {
-        const args = call.args as { command?: unknown; pty?: unknown; cwd?: unknown };
+        const args = call.args as {
+          command?: unknown;
+          pty?: unknown;
+          cwd?: unknown;
+          dangerApprovalId?: unknown;
+        };
         const command = typeof args.command === 'string' ? args.command : '';
         let tokens: string[];
         try {
@@ -164,25 +259,97 @@ export function createServerToolRunner(_opts: ServerToolRunnerOptions = {}): Too
         }
         const usePty = args.pty === true;
         const run = usePty ? runCommandPty : runCommandPipe;
-        // OS sandbox (exec-sandbox.ts): same confinement as /api/exec.
-        // The sandbox never permits — policy/approval gates above are
-        // unchanged; the mode is reported in `note` so the attempts log
-        // never silently claims isolation.
+        // OS sandbox tiers (exec-sandbox.ts + sandbox-modes.ts): same
+        // confinement as /api/exec. The sandbox never permits —
+        // policy/approval gates above are unchanged; the tier is
+        // reported in `note` so the attempts log never silently claims
+        // isolation. Fail-closed: read-only/workspace-write REQUIRE a
+        // working bwrap; without it the call is refused
+        // (CONFINEMENT_UNAVAILABLE — the fixed reason taxonomy), never
+        // run unisolated.
+        //
+        // Danger tier: the agent must supply a human-minted
+        // dangerApprovalId (action 'sandbox.danger-exec', bound to this
+        // exact command). No auto-minting here — an agent must never
+        // mint its own danger approval; the human creates it via
+        // POST /api/approvals or the Approvals tab.
         //
         // Offline mode: force --unshare-net; without bwrap there is no
         // provable network isolation, so the call is refused outright —
         // no fake offline. CONFINEMENT_UNAVAILABLE is the honest code:
         // no qualified isolation backend is available.
         const offline = networkMode().isOffline();
-        const sandboxCfg = execSandboxConfigFromEnv();
-        if (offline) sandboxCfg.network = false;
-        const sb = await decideExecSandbox(cwd, sandboxCfg);
-        if (offline && sb.mode !== 'bwrap') {
+        const resolved = resolveSandboxMode(cwd);
+        const dangerApprovalId =
+          typeof args.dangerApprovalId === 'string' && args.dangerApprovalId
+            ? args.dangerApprovalId
+            : undefined;
+        let sb: ExecSandboxDecision;
+        if (resolved.mode === 'danger-full-access') {
+          // Danger tier: the call must carry a human-approved,
+          // command-bound dangerApprovalId. Without one the gate
+          // refuses — the tool call carries no task to bind a fresh
+          // ticket to (approvals.task_id FK), so the server cannot
+          // auto-mint here. The denial tells the agent exactly how a
+          // human mints the ticket (POST /api/approvals with the
+          // candidate_digest); the agent retries with dangerApprovalId
+          // after a human approves. The agent never approves its own
+          // ticket.
+          const gate: DangerGateResult = dangerGateForTools
+            ? dangerGateForTools({
+                actor: 'agent',
+                command,
+                allowDanger: resolved.allowDanger,
+                approvalPolicy: resolved.approvalPolicy,
+                dangerApprovalId,
+              })
+            : {
+                ok: false,
+                code: 'DANGER_APPROVAL_INVALID',
+                message: 'danger gate is not installed on this server',
+              };
+          if (!gate.ok) {
+            throw new ToolDeniedError(
+              'CONFINEMENT_UNAVAILABLE',
+              `${gate.code}: danger-full-access shell.execute requires a human-approved, ` +
+                `command-bound approval (action 'sandbox.danger-exec'); ${gate.message}.` +
+                (gate.approvalId ? ` Approval '${gate.approvalId}' is PENDING.` : '') +
+                (gate.candidateDigest && !gate.approvalId
+                  ? ` candidate_digest=${gate.candidateDigest}`
+                  : ''),
+            );
+          }
+          sb = {
+            mode: 'danger-full-access',
+            prefix: [],
+            reason: null,
+            sandboxed: false,
+            refused: false,
+            refuseCode: null,
+          };
+        } else {
+          const sandboxCfg = execSandboxConfigFromEnv();
+          sandboxCfg.mode = resolved.mode;
+          if (offline) sandboxCfg.network = false;
+          sb = await decideExecSandbox(cwd, sandboxCfg);
+        }
+        // Refusal precedence: offline mode's NETWORK_OFFLINE first (it
+        // names the operator's own intent); SANDBOX_UNAVAILABLE when
+        // online. Both fail closed — never run unisolated.
+        if (offline && !sb.sandboxed) {
           const detail = sb.reason ? ` (${sb.reason})` : '';
           throw new ToolDeniedError(
             'CONFINEMENT_UNAVAILABLE',
             `NETWORK_OFFLINE: offline mode requires bwrap network isolation, ` +
               `but the sandbox is '${sb.mode}'${detail} — refusing to run unisolated`,
+          );
+        }
+        if (sb.refused) {
+          const detail = sb.reason ? ` (${sb.reason})` : '';
+          throw new ToolDeniedError(
+            'CONFINEMENT_UNAVAILABLE',
+            `${SANDBOX_UNAVAILABLE_CODE}: tier '${sb.mode}' requires OS-enforced isolation (bwrap), ` +
+              `but no working bwrap was found${detail} — refusing to run unisolated`,
           );
         }
         let r;
@@ -209,7 +376,10 @@ export function createServerToolRunner(_opts: ServerToolRunnerOptions = {}): Too
           stderr: r.stderr,
           note:
             (r.timedOut ? 'timed out: process tree killed; ' : '') +
-            `sandbox: ${sb.mode}${sb.reason ? ` (${sb.reason})` : ''}`,
+            `sandbox: ${sb.mode}${sb.reason ? ` (${sb.reason})` : ''}` +
+            (sb.mode === 'danger-full-access' && dangerApprovalId
+              ? ` (approval ${dangerApprovalId})`
+              : ''),
         };
       }
       default: {

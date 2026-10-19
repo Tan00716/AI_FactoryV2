@@ -132,6 +132,16 @@ export const DEFAULT_RULES: NotificationRule[] = [
       )(e),
   },
   {
+    id: 'quality-gate-failed',
+    eventTypes: ['QUALITY_GATE_FAILED'],
+    build: (e) =>
+      outcome(
+        `Quality gate failed: ${label(e)}`,
+        `The ${detail(e, 'kind') || 'quality'} gate failed${detail(e, 'exitCode') ? ` (exit code ${detail(e, 'exitCode')})` : ''}${detail(e, 'timedOut') === 'true' ? ' — the command timed out' : ''}. Fix the issues and re-run the gate.`,
+        'HIGH',
+      )(e),
+  },
+  {
     id: 'needs-human-raised',
     eventTypes: ['NEEDS_HUMAN_RAISED'],
     build: (e) =>

@@ -3,11 +3,12 @@ import { Project } from '../api';
 import { NotificationCenter } from './NotificationCenter';
 import { SlashCommandBar } from './SlashCommandBar';
 import { useNetworkMode } from './OfflineToggle';
+import { SandboxModeBadge, SandboxDangerBanner } from './SandboxModeBadge';
 import { useLang } from '../i18n';
 
 /** §3 top bar: product name, active project, agent count, run status, notification bell (§30). */
 export function TopBar({
-  projects, projectId, onProject, agentCount, connected, notificationsBase, networkBase,
+  projects, projectId, onProject, agentCount, connected, notificationsBase, networkBase, sandboxBase,
   onOpenProjectSettings, identityLabel, onCommandNavigate,
 }: {
   projects: Project[];
@@ -19,6 +20,8 @@ export function TopBar({
   notificationsBase?: string;
   /** API base for the offline-mode switch; switch hidden when omitted. */
   networkBase?: string;
+  /** API base for the sandbox tier badge; badge hidden when omitted. */
+  sandboxBase?: string;
   /** Jump to the Project settings tab (import/export); button hidden when omitted. */
   onOpenProjectSettings?: () => void;
   /** Batch 15: current API identity label (role / local mode); hidden when omitted. */
@@ -83,6 +86,7 @@ export function TopBar({
             {networkMode.offline ? `📴 ${t('offline.offline')}` : `📡 ${t('offline.online')}`}
           </button>
         )}
+        {sandboxBase !== undefined && <SandboxModeBadge base={sandboxBase} />}
       </div>
       {notificationsBase && <NotificationCenter base={notificationsBase} />}
       {/* i18n 试点：中 / EN 切换。只影响已接入 i18n 的面板
@@ -106,6 +110,7 @@ export function TopBar({
     {networkMode?.offline && (
       <div className="offline-banner" role="alert">{t('offline.banner')}</div>
     )}
+    {sandboxBase !== undefined && <SandboxDangerBanner base={sandboxBase} />}
     </>
   );
 }

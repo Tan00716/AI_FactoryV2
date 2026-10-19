@@ -31,9 +31,10 @@ import {
 const BOGUS_BIN = '/nonexistent/bwrap-exec-sandbox-xyz';
 
 describe('execSandboxConfigFromEnv', () => {
-  it('defaults: enabled, network shared, bwrap on PATH', () => {
+  it('defaults: enabled, workspace-write, network shared, bwrap on PATH', () => {
     const c = execSandboxConfigFromEnv({});
     assert.equal(c.enabled, true);
+    assert.equal(c.mode, 'workspace-write');
     assert.equal(c.network, true);
     assert.equal(c.bwrapBin, 'bwrap');
     assert.deepEqual(c.extraRoBinds, ['/usr', '/opt']);
@@ -87,6 +88,7 @@ describe('decideExecSandbox', () => {
   it('disabled config → mode disabled, empty prefix, no probe', async () => {
     const d = await decideExecSandbox('/tmp', {
       enabled: false,
+      mode: 'workspace-write',
       network: true,
       bwrapBin: BOGUS_BIN,
       extraRoBinds: ['/usr', '/opt'],
@@ -94,19 +96,23 @@ describe('decideExecSandbox', () => {
     assert.equal(d.mode, 'disabled');
     assert.deepEqual(d.prefix, []);
     assert.equal(d.reason, null);
+    assert.equal(d.refused, false);
   });
-  it('bogus bwrap → mode "none (fallback)" with a reason, empty prefix', async () => {
+  it('bogus bwrap → refused SANDBOX_UNAVAILABLE (fail-closed, no fallback)', async () => {
     resetExecSandboxProbeCacheForTests();
     try {
       const d = await decideExecSandbox('/tmp', {
         enabled: true,
+        mode: 'workspace-write',
         network: true,
         bwrapBin: BOGUS_BIN,
         extraRoBinds: ['/usr', '/opt'],
       });
-      assert.equal(d.mode, 'none (fallback)');
+      assert.equal(d.refused, true);
+      assert.equal(d.refuseCode, 'SANDBOX_UNAVAILABLE');
+      assert.equal(d.mode, 'workspace-write');
       assert.deepEqual(d.prefix, []);
-      assert.ok(d.reason && d.reason.length > 0, 'fallback must carry a reason');
+      assert.ok(d.reason && d.reason.length > 0, 'refusal must carry a reason');
     } finally {
       resetExecSandboxProbeCacheForTests();
     }
@@ -152,7 +158,7 @@ describe('sandboxed execution wiring (fake bwrap)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('decideExecSandbox with a working fake bwrap → mode bwrap + usable prefix', async () => {
+  it('decideExecSandbox with a working fake bwrap → mode workspace-write + usable prefix', async () => {
     resetExecSandboxProbeCacheForTests();
     try {
       // The fake bwrap cannot pass the REAL probe (it would try to run
@@ -161,11 +167,14 @@ describe('sandboxed execution wiring (fake bwrap)', () => {
       // therefore succeeds, exercising the decision path.
       const d = await decideExecSandbox(dir, {
         enabled: true,
+        mode: 'workspace-write',
         network: true,
         bwrapBin: fakeBin,
         extraRoBinds: ['/usr', '/opt'],
       });
-      assert.equal(d.mode, 'bwrap');
+      assert.equal(d.mode, 'workspace-write');
+      assert.equal(d.sandboxed, true);
+      assert.equal(d.refused, false);
       assert.ok(d.prefix.length > 0);
       assert.equal(d.prefix[d.prefix.length - 1], '--');
       assert.equal(d.prefix[0], fakeBin);
@@ -180,6 +189,7 @@ describe('sandboxed execution wiring (fake bwrap)', () => {
     const { runCommandPipe } = await import('@ai-factory/runtime');
     const d = await decideExecSandbox(dir, {
       enabled: true,
+      mode: 'workspace-write',
       network: true,
       bwrapBin: fakeBin,
       extraRoBinds: ['/usr', '/opt'],
@@ -197,7 +207,7 @@ describe('sandboxed execution wiring (fake bwrap)', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* Route-level: the fallback is NEVER silent (real server boot)        */
+/* Route-level: fail-closed is NEVER silent (real server boot)         */
 /* ------------------------------------------------------------------ */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -267,8 +277,8 @@ async function stopChild(child: ChildProcess): Promise<void> {
   }
 }
 
-describe('route-level fallback marking (real server, bogus bwrap)', () => {
-  it("POST /api/exec still runs but reports sandbox 'none (fallback)' in response AND audit", async () => {
+describe('route-level fail-closed (real server, bogus bwrap)', () => {
+  it("POST /api/exec → 403 SANDBOX_UNAVAILABLE, honestly marked in response AND audit", async () => {
     // $HOME, not /tmp (512MB tmpfs on this machine).
     const dir = mkdtempSync(join(homedir(), 'exec-sb-route-'));
     const { child, port } = await bootServerWithEnv(dir, {
@@ -278,14 +288,13 @@ describe('route-level fallback marking (real server, bogus bwrap)', () => {
       const res = await fetch(`http://127.0.0.1:${port}/api/exec`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command: 'echo hello-sandbox-fallback', actor: 'human' }),
+        body: JSON.stringify({ command: 'echo hello-sandbox-refused', actor: 'human' }),
       });
-      assert.equal(res.status, 200);
+      assert.equal(res.status, 403);
       const body = (await res.json()) as Record<string, unknown>;
-      assert.equal(body['ok'], true);
-      assert.match(String(body['output'] ?? ''), /hello-sandbox-fallback/);
-      // The fallback must be marked in the RESPONSE — never silent.
-      assert.equal(body['sandbox'], 'none (fallback)');
+      assert.equal(body['code'], 'SANDBOX_UNAVAILABLE');
+      // The refusal is honestly marked in the RESPONSE — never silent.
+      assert.equal(body['sandbox'], 'workspace-write');
 
       // …and in the AUDIT record.
       const auditRes = await fetch(`http://127.0.0.1:${port}/api/audit?limit=50`);
@@ -294,12 +303,13 @@ describe('route-level fallback marking (real server, bogus bwrap)', () => {
         action: string;
         details?: Record<string, unknown>;
       }>;
-      const run = records.find((r) => r.action === 'EXEC_RUN');
-      assert.ok(run, 'expected an EXEC_RUN audit record');
-      assert.equal(run.details?.['sandbox'], 'none (fallback)');
+      const denied = records.find((r) => r.action === 'EXEC_DENIED');
+      assert.ok(denied, 'expected an EXEC_DENIED audit record');
+      assert.equal(denied.details?.['reason'], 'SANDBOX_UNAVAILABLE');
+      assert.equal(denied.details?.['sandbox'], 'workspace-write');
       assert.ok(
-        String(run.details?.['sandboxReason'] ?? '').length > 0,
-        'fallback audit must carry the probe reason',
+        String(denied.details?.['sandboxReason'] ?? '').length > 0,
+        'refusal audit must carry the probe reason',
       );
     } finally {
       await stopChild(child);
@@ -307,7 +317,7 @@ describe('route-level fallback marking (real server, bogus bwrap)', () => {
     }
   });
 
-  it('terminal session create marks the fallback too', async () => {
+  it('terminal session create is refused too (no unisolated session)', async () => {
     const dir = mkdtempSync(join(homedir(), 'exec-sb-route-term-'));
     const { child, port } = await bootServerWithEnv(dir, {
       FACTORY_BWRAP_BIN: BOGUS_BIN,
@@ -318,15 +328,9 @@ describe('route-level fallback marking (real server, bogus bwrap)', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ principal: 'human', actor: 'human' }),
       });
-      assert.equal(res.status, 201);
+      assert.equal(res.status, 403);
       const body = (await res.json()) as Record<string, unknown>;
-      assert.equal(body['sandbox'], 'none (fallback)');
-      const sessionId = String(body['id'] ?? '');
-      assert.ok(sessionId, 'expected a session id');
-      // Clean up the session so the server child exits promptly.
-      await fetch(`http://127.0.0.1:${port}/api/terminal/sessions/${sessionId}`, {
-        method: 'DELETE',
-      });
+      assert.equal(body['code'], 'SANDBOX_UNAVAILABLE');
     } finally {
       await stopChild(child);
       rmSync(dir, { recursive: true, force: true });

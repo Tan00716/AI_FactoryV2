@@ -31,6 +31,8 @@ export interface Session {
   runIds: string[];
   taskIds: string[];
   checkpointIds: string[];
+  /** Bound session worktree id (task 3) — null when the session runs in the main checkout. */
+  worktreeId: string | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -135,7 +137,11 @@ export class SessionStore {
     try {
       const raw = JSON.parse(readFileSync(this.path, 'utf8')) as { sessions?: unknown[] };
       for (const s of raw.sessions ?? []) {
-        if (isValidSession(s)) map.set(s.id, s);
+        if (isValidSession(s)) {
+          // Pre-task-3 records have no worktreeId — normalize to null.
+          if (s.worktreeId == null) s.worktreeId = null;
+          map.set(s.id, s);
+        }
       }
     } catch {
       // Fail-closed: serve empty, refuse writes — never silently drop sessions.
@@ -175,6 +181,7 @@ export class SessionStore {
       runIds: [],
       taskIds: [],
       checkpointIds: [],
+      worktreeId: null,
       createdBy: input.createdBy ?? 'human',
       createdAt: now,
       updatedAt: now,
@@ -207,6 +214,21 @@ export class SessionStore {
     const s = this.load().get(id);
     if (!s) throw new SessionStoreError(`session not found: ${id}`);
     if (!s.checkpointIds.includes(checkpointId)) s.checkpointIds.push(checkpointId);
+    s.updatedAt = nowIso();
+    this.persist();
+    return s;
+  }
+
+  /**
+   * Bind (or unbind with null) a session worktree to a session. The
+   * caller validates that the worktree exists — the store only records
+   * the id. Restoring a checkpoint snapshot replaces this field like
+   * every other field (the snapshot is the authority).
+   */
+  bindWorktree(id: string, worktreeId: string | null): Session {
+    const s = this.load().get(id);
+    if (!s) throw new SessionStoreError(`session not found: ${id}`);
+    s.worktreeId = worktreeId;
     s.updatedAt = nowIso();
     this.persist();
     return s;

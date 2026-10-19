@@ -27,10 +27,11 @@
  * refusal — is the mechanism. The per-line approximation is stated in
  * the runtime module and in KNOWN_LIMITATIONS.
  *
- * OS sandbox: the session shell spawns inside the bwrap sandbox from
- * exec-sandbox.ts when bwrap works on the host (same confinement as
- * /api/exec one-shots); otherwise it runs directly and the session
- * create record carries `sandbox: 'none (fallback)'`.
+ * OS sandbox tiers: the session shell spawns inside the bwrap sandbox
+ * from exec-sandbox.ts for read-only / workspace-write (fail-closed
+ * when bwrap is unavailable — the session is refused, never run
+ * unisolated); danger-full-access runs directly by design but needs
+ * the project allowDanger config plus a per-run human approval.
  *
  * Streaming transport: SSE over plain node:http (the repo is zero-dep;
  * no WebSocket library). The desktop reads it with fetch + a manual
@@ -71,7 +72,15 @@ import {
 import {
   decideExecSandbox,
   execSandboxConfigFromEnv,
+  type ExecSandboxDecision,
 } from '../exec-sandbox';
+import {
+  DANGER_APPROVAL_REQUIRED_CODE,
+  SANDBOX_UNAVAILABLE_CODE,
+  checkDangerExec,
+  resolveSandboxMode,
+} from '../sandbox-modes';
+import { ApprovalManager } from '@ai-factory/approvals';
 import { NETWORK_OFFLINE_CODE, networkMode } from '../network-mode';
 
 const manager = new PtySessionManager({ maxSessions: 16, archiveDepth: 50 });
@@ -208,19 +217,72 @@ export async function handleTerminalRoutes(
     }
 
     await manager.sweepIdle(IDLE_REAP_MS).catch(() => undefined);
-    // OS sandbox (exec-sandbox.ts): when bwrap works the session shell
-    // spawns inside the sandbox (same confinement as /api/exec
-    // one-shots); otherwise the session runs directly and the create
-    // record is marked `sandbox: 'none (fallback)'` — never silent.
+    // OS sandbox tiers (exec-sandbox.ts + sandbox-modes.ts): the session
+    // shell spawns inside the bwrap sandbox for read-only /
+    // workspace-write (fail-closed when bwrap is unavailable — the
+    // session is refused, never run unisolated); danger-full-access
+    // runs directly BY DESIGN but requires the project allowDanger
+    // config plus a per-run human approval (ApprovalManager).
     //
-    // Offline mode: force --unshare-net; without bwrap there is no
-    // provable network isolation, so the session is refused outright —
-    // no fake offline.
+    // Offline mode: force --unshare-net; without a real bwrap prefix
+    // there is no provable network isolation, so the session is
+    // refused outright — no fake offline.
     const offline = networkMode().isOffline();
-    const sandboxCfg = execSandboxConfigFromEnv();
-    if (offline) sandboxCfg.network = false;
-    const sb = await decideExecSandbox(cwd, sandboxCfg);
-    if (offline && sb.mode !== 'bwrap') {
+    const resolved = resolveSandboxMode(cwd);
+    const effMode = resolved.mode;
+    let sb: ExecSandboxDecision;
+    if (effMode === 'danger-full-access') {
+      const dangerManager = new ApprovalManager(ctx.fdb.approvals, {
+        audit: (action, entityId, details) =>
+          ctx.audit.record('danger-gate', action, 'approval', entityId, details),
+      });
+      const gate = checkDangerExec({
+        manager: dangerManager,
+        actor,
+        command: `terminal session (${shell})`,
+        allowDanger: resolved.allowDanger,
+        approvalPolicy: resolved.approvalPolicy,
+        dangerApprovalId:
+          typeof body['dangerApprovalId'] === 'string' ? body['dangerApprovalId'] : undefined,
+      });
+      if (!gate.ok) {
+        const auditAction =
+          gate.code === DANGER_APPROVAL_REQUIRED_CODE ? 'DANGER_APPROVAL_REQUESTED' : 'SESSION_DENIED';
+        ctx.audit.record(actor, auditAction, 'terminal', '(session create)', {
+          reason: gate.code,
+          sandbox: 'danger-full-access',
+          ...(gate.approvalId ? { approvalId: gate.approvalId } : {}),
+        });
+        ctx.json(res, 403, {
+          error: gate.message,
+          code: gate.code,
+          ...(gate.approvalId ? { approvalId: gate.approvalId } : {}),
+          ...(gate.candidateDigest ? { candidateDigest: gate.candidateDigest } : {}),
+        });
+        return true;
+      }
+      ctx.audit.record(actor, 'DANGER_EXEC_CONSUMED', 'terminal', '(session create)', {
+        approvalId: gate.approvalId,
+        sandbox: 'danger-full-access',
+      });
+      sb = {
+        mode: 'danger-full-access',
+        prefix: [],
+        reason: null,
+        sandboxed: false,
+        refused: false,
+        refuseCode: null,
+      };
+    } else {
+      const sandboxCfg = execSandboxConfigFromEnv();
+      sandboxCfg.mode = effMode;
+      if (offline) sandboxCfg.network = false;
+      sb = await decideExecSandbox(cwd, sandboxCfg);
+    }
+    // Refusal precedence: offline mode's NETWORK_OFFLINE first (it
+    // names the operator's own intent); SANDBOX_UNAVAILABLE when
+    // online. Both fail closed — never create the session unisolated.
+    if (offline && !sb.sandboxed) {
       const detail = sb.reason ? ` (${sb.reason})` : '';
       ctx.audit.record(actor, 'SESSION_DENIED', 'terminal', '(session create)', {
         reason: NETWORK_OFFLINE_CODE,
@@ -232,6 +294,22 @@ export async function handleTerminalRoutes(
           `${NETWORK_OFFLINE_CODE}: offline mode requires bwrap network isolation, ` +
           `but the sandbox is '${sb.mode}'${detail} — refusing to run unisolated`,
         code: NETWORK_OFFLINE_CODE,
+      });
+      return true;
+    }
+    if (sb.refused) {
+      const detail = sb.reason ? ` (${sb.reason})` : '';
+      ctx.audit.record(actor, 'SESSION_DENIED', 'terminal', '(session create)', {
+        reason: sb.refuseCode,
+        sandbox: sb.mode,
+        sandboxReason: sb.reason,
+      });
+      ctx.json(res, 403, {
+        error:
+          `${sb.refuseCode}: tier '${sb.mode}' requires OS-enforced isolation (bwrap), ` +
+          `but no working bwrap was found${detail} — refusing to create the session unisolated`,
+        code: sb.refuseCode,
+        sandbox: sb.mode,
       });
       return true;
     }

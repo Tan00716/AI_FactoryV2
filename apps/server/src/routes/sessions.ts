@@ -33,11 +33,31 @@ import {
   type RunResumePoint,
   type Session,
 } from '../session-store';
+import { existsSync } from 'node:fs';
+import {
+  sessionWorktrees,
+  setSessionWorktreePathResolver,
+} from '../worktrees';
 
 const PREFIX = '/api/sessions';
 
 const sessionStore = new SessionStore();
 const checkpointStore = new SessionCheckpointStore();
+
+/**
+ * Task 3 (session worktrees): sessionId → bound worktree absolute path.
+ * Returns null when the session has no binding or the worktree is gone
+ * (deleted/pruned) — callers fail closed on null, never on a stale path.
+ * Injected into the worktree module so routes/exec.ts can resolve
+ * POST /api/exec {sessionId} without an explicit cwd.
+ */
+setSessionWorktreePathResolver((sessionId: string): string | null => {
+  const s = sessionStore.get(sessionId);
+  if (!s || !s.worktreeId) return null;
+  const wt = sessionWorktrees().get(s.worktreeId);
+  if (!wt || !existsSync(wt.worktreePath)) return null;
+  return wt.worktreePath;
+});
 
 function actorOf(body: Record<string, unknown>): string {
   const c = body['createdBy'];
@@ -209,9 +229,57 @@ export async function handleSessionRoutes(
     return true;
   }
 
-  // POST /api/sessions/:id/resume — the resume bundle.
-  if (method === 'POST' && seg2 === 'resume' && seg3 === undefined) {
+  // Task 3 — POST /api/sessions/:id/worktree {worktreeId} → bind a
+  // session worktree. The worktree must exist (404 otherwise); its path
+  // becomes the default cwd for POST /api/exec {sessionId} and the
+  // default codeRoot for session checkpoints.
+  if (method === 'POST' && seg2 === 'worktree' && seg3 === undefined) {
     const s = sessionStore.get(id);
+    if (!s) return notFound('session'), true;
+    const body = await ctx.readBody(req);
+    const worktreeId = body['worktreeId'];
+    if (typeof worktreeId !== 'string' || !worktreeId.trim()) {
+      ctx.json(res, 400, { error: 'worktreeId is required' });
+      return true;
+    }
+    const wt = sessionWorktrees().get(worktreeId.trim());
+    if (!wt || !existsSync(wt.worktreePath)) {
+      ctx.json(res, 404, { error: `session worktree not found: ${worktreeId}` });
+      return true;
+    }
+    try {
+      const updated = sessionStore.bindWorktree(id, wt.id);
+      ctx.audit.record(actorOf(body), 'SESSION_WORKTREE_BOUND', 'session', id, {
+        worktree_id: wt.id,
+        worktree_path: wt.worktreePath,
+      });
+      ctx.json(res, 200, { session: updated });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      ctx.json(res, msg.includes('not found') ? 404 : 400, { error: msg });
+    }
+    return true;
+  }
+
+  // Task 3 — DELETE /api/sessions/:id/worktree → unbind (the worktree
+  // itself is untouched; delete it via DELETE /api/session-worktrees/:id).
+  if (method === 'DELETE' && seg2 === 'worktree' && seg3 === undefined) {
+    const s = sessionStore.get(id);
+    if (!s) return notFound('session'), true;
+    const body = await ctx.readBody(req).catch(() => ({} as Record<string, unknown>));
+    try {
+      const updated = sessionStore.bindWorktree(id, null);
+      ctx.audit.record(actorOf(body), 'SESSION_WORKTREE_UNBOUND', 'session', id, {});
+      ctx.json(res, 200, { session: updated });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      ctx.json(res, msg.includes('not found') ? 404 : 400, { error: msg });
+    }
+    return true;
+  }
+
+  // POST /api/sessions/:id/resume — the resume bundle.
+  if (method === 'POST' && seg2 === 'resume' && seg3 === undefined) {    const s = sessionStore.get(id);
     if (!s) return notFound('session'), true;
     const body = await ctx.readBody(req).catch(() => ({} as Record<string, unknown>));
     const tasks: Array<Record<string, unknown>> = [];
@@ -261,6 +329,11 @@ export async function handleSessionRoutes(
         ctx.json(res, 403, { error: 'codeRoot must not point inside the server data dir', code: 'SESSION_CODE_ROOT_DENIED' });
         return true;
       }
+    } else if (s.worktreeId) {
+      // Task 3: a bound session worktree is the default code root —
+      // checkpoints capture the isolated checkout, not the main tree.
+      const wt = sessionWorktrees().get(s.worktreeId);
+      if (wt && existsSync(wt.worktreePath)) codeRoot = wt.worktreePath;
     }
     try {
       const cp = checkpointStore.create({

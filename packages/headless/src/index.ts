@@ -32,7 +32,7 @@ export interface ParsedCli {
   error?: string;
 }
 
-const BOOLEAN_FLAGS = new Set(['json', 'help', 'h']);
+const BOOLEAN_FLAGS = new Set(['json', 'help', 'h', 'ask-for-approval']);
 
 export function parseArgs(argv: string[]): ParsedCli {
   const opts: Record<string, string | boolean> = {};
@@ -79,7 +79,10 @@ export function usage(): string {
     'ai-factory — headless CLI for the AI Factory API',
     '',
     '  exec [--prompt TEXT | stdin] [--project ID] [--agent ID] [--image a.png,b.jpg] [--timeout-ms N] [--poll-ms N]',
+    '      [--sandbox read-only|workspace-write|danger-full-access] [--ask-for-approval]',
     '      Create a task from the prompt, dispatch an agent run, wait, print the result.',
+    '      --sandbox sets the server sandbox tier first (audited, server-wide);',
+    '      danger-full-access additionally requires --ask-for-approval.',
     '  sessions list',
     '  sessions create --title TEXT [--project ID]',
     '  sessions attach --session ID [--run RUN-ID] [--task TASK-ID]',
@@ -123,6 +126,19 @@ export interface ExecRequest {
   agentId?: string;
   /** W-E: local image paths to attach to the task (comma-separated at the CLI). */
   images?: string[];
+  /**
+   * Sandbox tier (read-only | workspace-write | danger-full-access):
+   * sets the SERVER's tier via POST /api/sandbox/mode (audited,
+   * server-wide) before the run starts, so the run's tool calls are
+   * confined to the requested tier.
+   */
+  sandboxMode?: string;
+  /**
+   * Explicit human confirmation for --sandbox danger-full-access.
+   * Danger runs directly on the host with no OS isolation; the flag
+   * is the CLI's equivalent of the desktop confirm dialog.
+   */
+  askForApproval?: boolean;
   json: boolean;
   timeoutMs: number;
   pollMs: number;
@@ -167,6 +183,36 @@ export async function uploadTaskImage(
 export async function execCommand(req: ExecRequest, http: HttpClient): Promise<CommandResult> {
   const prompt = req.prompt.trim();
   if (!prompt) return { exitCode: EXIT_USAGE, output: ['error: empty prompt — pass --prompt or pipe via stdin'] };
+
+  // Sandbox tier: set the server's tier first (audited, server-wide),
+  // so this run's tool calls are confined to the requested tier.
+  if (req.sandboxMode !== undefined) {
+    const valid = ['read-only', 'workspace-write', 'danger-full-access'];
+    if (!valid.includes(req.sandboxMode)) {
+      return { exitCode: EXIT_USAGE, output: [`error: --sandbox must be one of: ${valid.join(', ')}`] };
+    }
+    if (req.sandboxMode === 'danger-full-access' && !req.askForApproval) {
+      return {
+        exitCode: EXIT_USAGE,
+        output: [
+          'error: --sandbox danger-full-access requires --ask-for-approval: the danger tier runs',
+          'commands directly on the host with no OS isolation (use only in disposable CI containers).',
+        ],
+      };
+    }
+    const sr = await http.request('POST', '/api/sandbox/mode', { mode: req.sandboxMode }).catch(() => null);
+    if (!sr || sr.status !== 200) {
+      return sr
+        ? err(sr.status, sr.body, 'failed to set sandbox mode')
+        : { exitCode: EXIT_FAILED, output: ['error: request failed'] };
+    }
+    if (req.sandboxMode === 'danger-full-access') {
+      process.stderr.write(
+        'warning: sandbox tier is danger-full-access — commands run directly on the host ' +
+          'with no OS isolation; every run needs a human approval.\n',
+      );
+    }
+  }
 
   // Project: explicit, else the first active project.
   let projectId = req.projectId;

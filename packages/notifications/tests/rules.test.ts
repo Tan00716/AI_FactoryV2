@@ -33,6 +33,16 @@ test('approval pending maps to MEDIUM', () => {
   assert.match(o.body, /HIGH/);
 });
 
+test('quality gate failure maps to HIGH priority', () => {
+  const matched = matchRules({ type: 'QUALITY_GATE_FAILED', entity: { kind: 'project', id: 'p1', label: 'lint gate failed' }, detail: { kind: 'lint', exitCode: '1' } });
+  assert.equal(matched.length, 1);
+  assert.equal(matched[0].id, 'quality-gate-failed');
+  const o = matched[0].build({ type: 'QUALITY_GATE_FAILED', entity: { kind: 'project', id: 'p1', label: 'lint gate failed' }, detail: { kind: 'lint', exitCode: '1' } });
+  assert.equal(o.priority, 'HIGH');
+  assert.match(o.title, /lint gate failed/);
+  assert.match(o.body, /exit code 1/);
+});
+
 test('unknown event falls back to INFO (never dropped)', () => {
   const matched = matchRules({ type: 'GENERIC' });
   assert.equal(matched.length, 1);

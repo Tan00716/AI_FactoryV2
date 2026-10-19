@@ -86,6 +86,8 @@ async function main(): Promise<number> {
             projectId: opt(opts, 'project'),
             agentId: opt(opts, 'agent'),
             images: imageOpt ? imageOpt.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
+            sandboxMode: opt(opts, 'sandbox'),
+            askForApproval: opts['ask-for-approval'] === true,
             json: asJson,
             timeoutMs: num('timeout-ms', DEFAULT_TIMEOUT_MS),
             pollMs: num('poll-ms', DEFAULT_POLL_MS),

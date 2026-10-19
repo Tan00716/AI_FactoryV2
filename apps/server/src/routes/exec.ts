@@ -36,16 +36,29 @@ import { promisify } from 'util';
 import { dirname, relative, resolve, sep } from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
+import { resolveSessionWorktreePath } from '../worktrees';
 import { UnverifiedBackend } from '@ai-factory/security';
 import { PtyUnavailableError, runCommandPty, scrubCredentialEnv } from '@ai-factory/runtime';
 import { SecretNotFoundError, redactSecretValues, redactSecretValuesCounted } from '@ai-factory/secrets';
 import { recordRedactionHit } from '../redaction-monitor';
 import { evaluateHooks } from '../hooks';
+import { maybeFireEditGate } from './quality';
 import {
   decideExecSandbox,
   execSandboxConfigFromEnv,
   type ExecSandboxDecision,
 } from '../exec-sandbox';
+import {
+  DANGER_APPROVAL_REQUIRED_CODE,
+  SANDBOX_MODE_ESCALATION_CODE,
+  SANDBOX_UNAVAILABLE_CODE,
+  checkDangerExec,
+  isSandboxMode,
+  resolveSandboxMode,
+  sandboxModeStrictness,
+  type SandboxMode,
+} from '../sandbox-modes';
+import { ApprovalManager } from '@ai-factory/approvals';
 import { NETWORK_OFFLINE_CODE, networkMode } from '../network-mode';
 
 const execFileAsync = promisify(execFile);
@@ -54,11 +67,17 @@ const execFileAsync = promisify(execFile);
  * PostToolUse hooks (W-B): best-effort, never fatal. A hook failure is
  * audited but never changes the exec response — PostToolUse is an
  * observation point, not a gate (only PreToolUse vetoes).
+ *
+ * Quality gate runOnEdit rides the same observation point: when the
+ * caller passes projectId and that project enabled runOnEdit, a lint
+ * gate fires fire-and-forget. It never throws and never delays the
+ * exec response — the audit trail is the durable record.
  */
 async function firePostToolUse(
   ctx: RouteContext,
   actor: string,
   payload: { command: string; cwd: string; exitCode: number; timedOut: boolean },
+  projectId?: string | null,
 ): Promise<void> {
   try {
     await evaluateHooks('PostToolUse', { tool: 'exec', actor, ...payload });
@@ -71,6 +90,17 @@ async function firePostToolUse(
       /* audit itself failed — nothing left to do */
     }
   }
+  try {
+    maybeFireEditGate(ctx, projectId ?? null);
+  } catch {
+    /* the gate is an observer — it must never break exec */
+  }
+}
+
+/** Optional projectId passthrough for the quality-gate runOnEdit trigger. */
+function execProjectId(body: Record<string, unknown>): string | null {
+  const v = body['projectId'];
+  return typeof v === 'string' && v.trim() ? v.trim().slice(0, 128) : null;
 }
 
 /**
@@ -604,9 +634,26 @@ export async function handleExecRoutes(
     return true;
   }
   // 3) cwd confinement
+  // Task 3: POST /api/exec {sessionId} with no explicit cwd resolves to
+  // the session's bound worktree path (fail-closed 404 when the session
+  // has no live worktree binding). An explicit cwd always wins.
   let cwd: string;
   try {
-    cwd = resolveExecCwd(body['cwd'] as string | undefined);
+    let rawCwd = body['cwd'] as string | undefined;
+    const sessionId = body['sessionId'];
+    if ((rawCwd === undefined || rawCwd === null || rawCwd === '') &&
+        typeof sessionId === 'string' && sessionId.trim()) {
+      const wtPath = resolveSessionWorktreePath(sessionId.trim());
+      if (!wtPath) {
+        ctx.json(res, 404, {
+          error: `session has no bound worktree: ${sessionId.trim()}`,
+          code: 'EXEC_NO_SESSION_WORKTREE',
+        });
+        return true;
+      }
+      rawCwd = wtPath;
+    }
+    cwd = resolveExecCwd(rawCwd);
   } catch (err) {
     ctx.json(res, 403, { error: (err as Error).message });
     return true;
@@ -692,23 +739,148 @@ export async function handleExecRoutes(
   const outputValues: readonly string[] =
     redactionValues.length > 0 ? redactionValues : injectedValues;
 
-  // 3db) OS sandbox (exec-sandbox.ts): when bwrap works on the host the
-  // command runs inside a user-namespace sandbox (read-only /usr//opt,
-  // tmpfs /tmp, exactly one writable bind — the cwd at its real path,
-  // fresh pid/ipc/uts namespaces). When bwrap is unavailable the
-  // command runs directly as before, but the run is marked
-  // `sandbox: 'none (fallback)'` with the probe's reason in the audit
-  // record and the response — never a silent downgrade. The policy
-  // above is unchanged: the sandbox confines, it never permits.
+  // 3db) OS sandbox tiers (exec-sandbox.ts + sandbox-modes.ts):
+  // read-only / workspace-write confine the command inside a bwrap
+  // user namespace (read-only /usr//opt, tmpfs /tmp; read-only binds
+  // the cwd --ro-bind, workspace-write binds it writable at its real
+  // path; fresh pid/ipc/uts namespaces). danger-full-access runs
+  // directly on the host BY DESIGN — it requires the project config
+  // `.ai-factory/sandbox.json` to set "allowDanger": true AND a
+  // per-run human approval (ApprovalManager, bound to the command).
   //
-  // Offline mode: force --unshare-net. And no fake offline — when bwrap
-  // is unavailable (or disabled) there is no provable network isolation,
-  // so the call is refused outright instead of running on the host.
+  // Fail-closed: read-only/workspace-write REQUIRE a working bwrap.
+  // When the probe fails the call is REFUSED (403 SANDBOX_UNAVAILABLE)
+  // — never run unisolated, never a "fallback". The `sandbox` audit/
+  // response field reports the actual tier: 'read-only' |
+  // 'workspace-write' | 'danger-full-access' | 'disabled'.
+  //
+  // Offline mode: force --unshare-net. And no fake offline — without a
+  // real bwrap prefix there is no provable network isolation, so the
+  // call is refused outright instead of running on the host.
+  //
+  // The policy above is unchanged: the sandbox confines, it never
+  // permits.
   const offline = networkMode().isOffline();
-  const sandboxCfg = execSandboxConfigFromEnv();
-  if (offline) sandboxCfg.network = false;
-  const sb: ExecSandboxDecision = await decideExecSandbox(cwd, sandboxCfg);
-  if (offline && sb.mode !== 'bwrap') {
+  const resolved = resolveSandboxMode(cwd);
+  // Per-request tightening hint: body.sandboxMode may only move to a
+  // STRICTER tier than the resolved one — never looser (400 otherwise).
+  let effMode: SandboxMode = resolved.mode;
+  const modeHint = body['sandboxMode'];
+  if (typeof modeHint === 'string' && modeHint.length > 0) {
+    if (!isSandboxMode(modeHint)) {
+      ctx.audit.record(actor, 'EXEC_DENIED', 'exec', displayCommand.slice(0, 80), {
+        reason: 'invalid sandboxMode hint',
+        hint: String(modeHint).slice(0, 32),
+      });
+      ctx.json(res, 400, {
+        error: 'sandboxMode must be one of: read-only, workspace-write, danger-full-access',
+        code: 'INVALID_SANDBOX_MODE',
+      });
+      return true;
+    }
+    if (sandboxModeStrictness(modeHint) > sandboxModeStrictness(effMode)) {
+      ctx.audit.record(actor, 'EXEC_DENIED', 'exec', displayCommand.slice(0, 80), {
+        reason: SANDBOX_MODE_ESCALATION_CODE,
+        resolved: effMode,
+        hint: modeHint,
+      });
+      ctx.json(res, 400, {
+        error:
+          `${SANDBOX_MODE_ESCALATION_CODE}: requested tier '${modeHint}' is looser than ` +
+          `the resolved tier '${effMode}' (source: ${resolved.source}) — refusing to loosen`,
+        code: SANDBOX_MODE_ESCALATION_CODE,
+      });
+      return true;
+    }
+    effMode = modeHint;
+  }
+
+  let sb: ExecSandboxDecision;
+  if (effMode === 'danger-full-access') {
+    // Danger gate: project allowDanger + approval policy + per-run
+    // human approval (ApprovalManager). A missing ticket mints a
+    // PENDING one so the human sees it in the Approvals tab — but the
+    // ticket must be task-bound (approvals.task_id FK), so minting
+    // needs an anchor task. We create one per mint, clearly labeled,
+    // in the caller's project when one was supplied and exists;
+    // otherwise the gate returns the manual-mint instructions (with
+    // candidateDigest) instead of a fake/unsavable ticket.
+    const dangerManager = new ApprovalManager(ctx.fdb.approvals, {
+      audit: (action, entityId, details) =>
+        ctx.audit.record('danger-gate', action, 'approval', entityId, details),
+    });
+    let anchorTaskId: string | undefined;
+    const anchorProjectId = execProjectId(body);
+    if (anchorProjectId) {
+      try {
+        if (ctx.fdb.getProject(anchorProjectId)) {
+          const anchor = ctx.tasks.create({
+            projectId: anchorProjectId,
+            title: `[danger-approval] ${displayCommand.slice(0, 80)}`,
+            description:
+              'Anchor task for a danger-full-access sandbox approval (auto-created; ' +
+              'the approval ticket must be task-bound).',
+            creator: actor,
+            risk: 'CRITICAL',
+          });
+          anchorTaskId = anchor.id;
+        }
+      } catch {
+        // Anchor creation failed — fall through to manual-mint.
+        anchorTaskId = undefined;
+      }
+    }
+    const gate = checkDangerExec({
+      manager: dangerManager,
+      actor,
+      command: displayCommand,
+      allowDanger: resolved.allowDanger,
+      approvalPolicy: resolved.approvalPolicy,
+      dangerApprovalId:
+        typeof body['dangerApprovalId'] === 'string' ? body['dangerApprovalId'] : undefined,
+      taskId: anchorTaskId,
+    });
+    if (!gate.ok) {
+      const auditAction =
+        gate.code === DANGER_APPROVAL_REQUIRED_CODE ? 'DANGER_APPROVAL_REQUESTED' : 'EXEC_DENIED';
+      ctx.audit.record(actor, auditAction, 'exec', displayCommand.slice(0, 80), {
+        reason: gate.code,
+        sandbox: 'danger-full-access',
+        ...(gate.approvalId ? { approvalId: gate.approvalId } : {}),
+        ...(anchorTaskId ? { anchorTaskId } : {}),
+      });
+      ctx.json(res, 403, {
+        error: gate.message,
+        code: gate.code,
+        ...(gate.approvalId ? { approvalId: gate.approvalId } : {}),
+        ...(gate.candidateDigest ? { candidateDigest: gate.candidateDigest } : {}),
+        ...(anchorTaskId ? { anchorTaskId } : {}),
+      });
+      return true;
+    }
+    ctx.audit.record(actor, 'DANGER_EXEC_CONSUMED', 'exec', displayCommand.slice(0, 80), {
+      approvalId: gate.approvalId,
+      sandbox: 'danger-full-access',
+    });
+    sb = {
+      mode: 'danger-full-access',
+      prefix: [],
+      reason: null,
+      sandboxed: false,
+      refused: false,
+      refuseCode: null,
+    };
+  } else {
+    const sandboxCfg = execSandboxConfigFromEnv();
+    sandboxCfg.mode = effMode;
+    if (offline) sandboxCfg.network = false;
+    sb = await decideExecSandbox(cwd, sandboxCfg);
+  }
+  // Refusal precedence: when the operator explicitly enabled offline
+  // mode, NETWORK_OFFLINE is the most actionable reason (it names the
+  // operator's own intent); SANDBOX_UNAVAILABLE stays the reason when
+  // online. Both are fail-closed refusals — never run unisolated.
+  if (offline && !sb.sandboxed) {
     const detail = sb.reason ? ` (${sb.reason})` : '';
     ctx.audit.record(actor, 'EXEC_DENIED', 'exec', displayCommand.slice(0, 80), {
       reason: NETWORK_OFFLINE_CODE,
@@ -720,6 +892,22 @@ export async function handleExecRoutes(
         `${NETWORK_OFFLINE_CODE}: offline mode requires bwrap network isolation, ` +
         `but the sandbox is '${sb.mode}'${detail} — refusing to run unisolated`,
       code: NETWORK_OFFLINE_CODE,
+    });
+    return true;
+  }
+  if (sb.refused) {
+    const detail = sb.reason ? ` (${sb.reason})` : '';
+    ctx.audit.record(actor, 'EXEC_DENIED', 'exec', displayCommand.slice(0, 80), {
+      reason: sb.refuseCode,
+      sandbox: sb.mode,
+      sandboxReason: sb.reason,
+    });
+    ctx.json(res, 403, {
+      error:
+        `${sb.refuseCode}: tier '${sb.mode}' requires OS-enforced isolation (bwrap), ` +
+        `but no working bwrap was found${detail} — refusing to run unisolated`,
+      code: sb.refuseCode,
+      sandbox: sb.mode,
     });
     return true;
   }
@@ -783,7 +971,7 @@ export async function handleExecRoutes(
         cwd,
         exitCode: r.exitCode ?? -1,
         timedOut: r.timedOut,
-      });
+      }, execProjectId(body));
       return true;
     } catch (err) {
       if (err instanceof PtyUnavailableError) {
@@ -840,7 +1028,7 @@ export async function handleExecRoutes(
         : {}),
     });
     ctx.json(res, 200, { ok: true, command: displayCommand, cwd, output: text, truncated, exitCode: 0, sandbox: sb.mode });
-    await firePostToolUse(ctx, actor, { command: displayCommand, cwd, exitCode: 0, timedOut: false });
+    await firePostToolUse(ctx, actor, { command: displayCommand, cwd, exitCode: 0, timedOut: false }, execProjectId(body));
     return true;
   } catch (err) {
     const e = err as {
@@ -881,7 +1069,7 @@ export async function handleExecRoutes(
       cwd,
       exitCode: e.code ?? -1,
       timedOut,
-    });
+    }, execProjectId(body));
     return true;
   }
 }

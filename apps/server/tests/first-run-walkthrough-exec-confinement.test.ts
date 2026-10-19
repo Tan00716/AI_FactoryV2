@@ -179,7 +179,14 @@ describe('exec confinement (G8 / INV-15)', () => {
     }
   });
 
-  it('B: the human path is unaffected by the confinement refusal', async () => {
+  it('B: the human path is ALSO refused fail-closed without bwrap (no silent fallback)', async () => {
+    // Sandbox tiers (sandbox-modes.ts): read-only / workspace-write
+    // REQUIRE a working bwrap. The old 'none (fallback)' behavior
+    // (run anyway, marked) is gone — without bwrap the human path is
+    // refused with 403 SANDBOX_UNAVAILABLE, never run unisolated.
+    // (An operator who explicitly opts out via FACTORY_EXEC_SANDBOX=0
+    // gets tier 'disabled' and direct execution — that is a separate,
+    // explicit choice, not a fallback.)
     const dir = mkdtempSync(join(homedir(), 'exec-confine-b-'));
     const { child, port } = await bootServer(dir, join(dir, 'factory.db'));
     try {
@@ -187,9 +194,20 @@ describe('exec confinement (G8 / INV-15)', () => {
         command: 'echo human-still-runs',
         actor: 'human',
       });
-      assert.equal(r.status, 200, 'human /api/exec must keep working');
-      assert.equal(r.json['ok'], true);
-      assert.match(String(r.json['output']), /human-still-runs/);
+      assert.equal(r.status, 403, 'human /api/exec without bwrap must be 403 fail-closed');
+      assert.equal(r.json['code'], 'SANDBOX_UNAVAILABLE');
+      assert.match(String(r.json['error']), /SANDBOX_UNAVAILABLE/);
+
+      const records = await auditRecords(port);
+      const denied = records.find(
+        (rec) =>
+          rec.action === 'EXEC_DENIED' &&
+          rec.actor === 'human' &&
+          rec.entityType === 'exec',
+      );
+      assert.ok(denied, 'an EXEC_DENIED audit record must exist for the human too');
+      assert.equal(denied.details?.['reason'], 'SANDBOX_UNAVAILABLE');
+      assert.equal(denied.details?.['sandbox'], 'workspace-write');
     } finally {
       await stopServer(child);
     }

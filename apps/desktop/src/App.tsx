@@ -203,6 +203,7 @@ function IdeShell() {
         identityLabel={apiIdentityLabel || undefined}
         notificationsBase={API_BASE}
         networkBase={API_BASE}
+        sandboxBase={API_BASE}
         onOpenProjectSettings={() => setCenterTab('Project')}
         onCommandNavigate={(tab) => setCenterTab(tab as typeof centerTab)}
       />

@@ -26,6 +26,19 @@ export interface TierPolicyDto {
   deny: string[];
 }
 
+export interface PermissionRuleDto {
+  tool: string;
+  pattern: string;
+  effect: 'allow' | 'ask' | 'deny';
+}
+
+export interface RuleLayerDto {
+  name: string;
+  path: string;
+  rules: PermissionRuleDto[];
+  corrupt: boolean;
+}
+
 export interface PermissionsApi {
   tiers(): Promise<{ tiers: TierPolicyDto[]; defaultAgentTier: TierName }>;
   saveTier(tier: TierName, policy: { auto: string[]; ask: string[]; deny: string[] }): Promise<TierPolicyDto>;
@@ -38,6 +51,8 @@ export interface PermissionsApi {
     requiresApproval: boolean;
     reasons: string[];
   }>;
+  rules(): Promise<{ layers: RuleLayerDto[]; layerNames: string[] }>;
+  saveRules(layer: string, rules: PermissionRuleDto[]): Promise<{ layer: string; saved: number; warnings: string[] }>;
 }
 
 const DEFAULT_BASE = defaultApiBase();
@@ -67,6 +82,9 @@ export function createPermissionsApi(base: string = DEFAULT_BASE): PermissionsAp
         body: JSON.stringify({ tier }),
       }),
     evaluate: (input) => req(base, '/permissions/evaluate', { method: 'POST', body: JSON.stringify(input) }),
+    rules: () => req(base, '/permissions/rules'),
+    saveRules: (layer, rules) =>
+      req(base, '/permissions/rules', { method: 'PUT', body: JSON.stringify({ layer, rules }) }),
   };
 }
 
@@ -140,6 +158,174 @@ function TierCard(props: {
         <button disabled={busy} onClick={save}>{t('permissions.save')}</button>
         {saved && <span className="muted">✓ {t('permissions.saved')}</span>}
         {error && <span className="banner err">{error}</span>}
+      </div>
+    </div>
+  );
+}
+
+const RULE_EFFECTS: Array<'allow' | 'ask' | 'deny'> = ['allow', 'ask', 'deny'];
+
+/**
+ * Section 4 — declarative allow/ask/deny tool rules.
+ *
+ * Three layers (project / personal / global) merge with later layers
+ * overriding identical (tool, pattern) pairs, but deny always wins.
+ * Rules are enforced at the server tool-runner choke point, even when
+ * approval is bypassed upstream.
+ */
+function RulesSection(props: { api: PermissionsApi }): JSX.Element {
+  const { t } = useLang();
+  const { api: papi } = props;
+  const [layers, setLayers] = useState<RuleLayerDto[]>([]);
+  const [search, setSearch] = useState('');
+  const [newTool, setNewTool] = useState('Bash');
+  const [newPattern, setNewPattern] = useState('');
+  const [newEffect, setNewEffect] = useState<'allow' | 'ask' | 'deny'>('deny');
+  const [newLayer, setNewLayer] = useState('project');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await papi.rules();
+      setLayers(r.layers);
+      if (r.layerNames.length > 0 && !r.layerNames.includes(newLayer)) {
+        setNewLayer(r.layerNames[0] as string);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, [papi, newLayer]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const persist = useCallback(async (layerName: string, rules: PermissionRuleDto[]) => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await papi.saveRules(layerName, rules);
+      if (r.warnings.length > 0) {
+        setNotice(r.warnings.join('\n'));
+      }
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [papi, refresh]);
+
+  const addRule = useCallback(() => {
+    if (!newTool.trim() || !newPattern.trim()) {
+      setError(t('permissions.rules.required'));
+      return;
+    }
+    const layer = layers.find((l) => l.name === newLayer);
+    if (!layer) return;
+    void persist(newLayer, [...layer.rules, {
+      tool: newTool.trim(),
+      pattern: newPattern.trim(),
+      effect: newEffect,
+    }]);
+    setNewPattern('');
+  }, [layers, newLayer, newTool, newPattern, newEffect, persist, t]);
+
+  const removeRule = useCallback((layerName: string, idx: number) => {
+    const layer = layers.find((l) => l.name === layerName);
+    if (!layer) return;
+    void persist(layerName, layer.rules.filter((_, i) => i !== idx));
+  }, [layers, persist]);
+
+  const q = search.trim().toLowerCase();
+  const visible = (r: PermissionRuleDto): boolean =>
+    q === '' || r.tool.toLowerCase().includes(q) || r.pattern.toLowerCase().includes(q);
+
+  return (
+    <div>
+      <h4 style={{ margin: '12px 0 4px' }}>{t('permissions.rules.title')}</h4>
+      <p className="muted">{t('permissions.rules.desc')}</p>
+      <p className="muted" style={{ fontSize: 12 }}>{t('permissions.rules.globNote')}</p>
+      <p className="muted" style={{ fontSize: 12 }}>{t('permissions.rules.scopeNote')}</p>
+      {error && <div className="banner err">{error}</div>}
+      {notice && <div className="banner warn" style={{ whiteSpace: 'pre-wrap' }}>{notice}</div>}
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '8px 0', flexWrap: 'wrap' }}>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={t('permissions.rules.searchPh')}
+          style={{ width: 240 }}
+        />
+        <span className="muted" style={{ fontSize: 12 }}>
+          {t('permissions.rules.denyWins')}
+        </span>
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        {RULE_EFFECTS.map((effect) => (
+          <div key={effect} className="card" style={{ flex: '1 1 220px', minWidth: 220 }}>
+            <h5 style={{ margin: '4px 0' }}>{t(`permissions.rules.${effect}` as const)}</h5>
+            {layers.map((layer) =>
+              layer.rules.map((r, i) =>
+                r.effect === effect && visible(r) ? (
+                  <div
+                    key={`${layer.name}:${i}`}
+                    style={{ display: 'flex', gap: 6, alignItems: 'center', margin: '4px 0', fontSize: 12 }}
+                  >
+                    <code style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }} title={`${r.tool}(${r.pattern})`}>
+                      {r.tool}({r.pattern})
+                    </code>
+                    <span className="muted" title={layer.path}>{layer.name}</span>
+                    <button disabled={busy} onClick={() => removeRule(layer.name, i)} title={t('permissions.rules.delete')}>
+                      ✕
+                    </button>
+                  </div>
+                ) : null,
+              ),
+            )}
+          </div>
+        ))}
+      </div>
+
+      {layers.some((l) => l.corrupt) && (
+        <div className="banner warn" style={{ marginTop: 8 }}>
+          {t('permissions.rules.corrupt')}: {layers.filter((l) => l.corrupt).map((l) => l.name).join(', ')}
+        </div>
+      )}
+
+      <div className="card" style={{ marginTop: 12 }}>
+        <h5 style={{ margin: '4px 0' }}>{t('permissions.rules.add')}</h5>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label>
+            <span className="muted">{t('permissions.rules.tool')} </span>
+            <input value={newTool} onChange={(e) => setNewTool(e.target.value)} placeholder={t('permissions.rules.toolPh')} style={{ width: 130 }} />
+          </label>
+          <label>
+            <span className="muted">{t('permissions.rules.pattern')} </span>
+            <input value={newPattern} onChange={(e) => setNewPattern(e.target.value)} placeholder={t('permissions.rules.patternPh')} style={{ width: 180 }} />
+          </label>
+          <label>
+            <span className="muted">{t('permissions.rules.effect')} </span>
+            <select value={newEffect} onChange={(e) => setNewEffect(e.target.value as 'allow' | 'ask' | 'deny')}>
+              {RULE_EFFECTS.map((e) => (
+                <option key={e} value={e}>{t(`permissions.rules.${e}` as const)}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span className="muted">{t('permissions.rules.layer')} </span>
+            <select value={newLayer} onChange={(e) => setNewLayer(e.target.value)}>
+              {layers.map((l) => (
+                <option key={l.name} value={l.name} title={l.path}>
+                  {t(`permissions.rules.layer.${l.name}` as const)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button disabled={busy} onClick={addRule}>{t('permissions.rules.add')}</button>
+        </div>
       </div>
     </div>
   );
@@ -270,6 +456,8 @@ export function PermissionsPanel(props: { perms?: PermissionsApi }): JSX.Element
           </ul>
         </div>
       )}
+
+      <RulesSection api={papi} />
     </div>
   );
 }

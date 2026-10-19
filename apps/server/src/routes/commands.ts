@@ -11,6 +11,12 @@
  *                    needs files/diff, which a one-line command cannot
  *                    provide — this command is discoverability, not a
  *                    fake review)
+ *   /lint            run the project's lint quality gate (needs
+ *                    projectId in the request body)
+ *   /test            run the project's test quality gate (needs
+ *                    projectId in the request body)
+ *   /run             run lint then test quality gates (needs
+ *                    projectId in the request body)
  *
  * Custom commands: AI_FACTORY_DATA_DIR/slash-commands.json —
  *   [{ "name": "deploy-note", "description": "…",
@@ -28,6 +34,9 @@ import type { RouteContext } from './context';
 import { PlanStore } from '../plan-store';
 import { ApprovalManager } from '@ai-factory/approvals';
 import { planContentDigest } from '../plan-store';
+import { executeQualityGate, type QualityGateKind } from './quality';
+import { getRepoMapService } from './repomap';
+import { RepoMapError } from '@ai-factory/repomap';
 
 const PREFIX = '/api/commands';
 
@@ -74,6 +83,11 @@ export const BUILTINS: BuiltinCommand[] = [
   { name: 'help', description: 'List available commands', usage: '/help' },
   { name: 'plan', description: 'Create a PENDING plan-mode plan for a task', usage: '/plan <taskId> <goal>' },
   { name: 'review', description: 'Show review dimensions and usage', usage: '/review' },
+  { name: 'lint', description: "Run the project's lint quality gate", usage: '/lint (projectId in body)' },
+  { name: 'test', description: "Run the project's test quality gate", usage: '/test (projectId in body)' },
+  { name: 'run', description: 'Run the lint gate, then the test gate', usage: '/run (projectId in body)' },
+  { name: 'map', description: 'Show the importance-ranked repo map for a root', usage: '/map [root] [maxTokens]' },
+  { name: 'map-refresh', description: 'Force a full repo map rebuild for a root', usage: '/map-refresh [root]' },
 ];
 
 /** Parse "/name arg1 arg2" → { name, args } or an error string. */
@@ -242,6 +256,78 @@ export async function handleCommandRoutes(
         dimensionsEndpoint: '/api/review/dimensions',
         reviewEndpoint: '/api/review',
       });
+      return true;
+    }
+
+    if (name === 'lint' || name === 'test' || name === 'run') {
+      // Deterministic quality gates (quality-gate.ts): run the project's
+      // configured lint/test commands and report. No fixing happens here —
+      // the gate only runs, judges, and reports.
+      const projectId = typeof body['projectId'] === 'string' ? body['projectId'].trim() : '';
+      if (!projectId) {
+        ctx.json(res, 400, { error: `/${name} needs projectId in the request body` });
+        return true;
+      }
+      const kinds: QualityGateKind[] = name === 'run' ? ['lint', 'test'] : [name];
+      const results: unknown[] = [];
+      for (const kind of kinds) {
+        try {
+          const { result, blocked } = await executeQualityGate(ctx, projectId, kind, {
+            actor,
+            trigger: 'slash',
+          });
+          results.push({ ...result, blocked });
+        } catch (e) {
+          ctx.json(res, 500, { error: (e as Error).message });
+          return true;
+        }
+      }
+      ctx.audit.record(actor, 'COMMAND_EXECUTED', 'command', name, { projectId });
+      ctx.json(res, 200, { type: 'quality-gate', results });
+      return true;
+    }
+
+    if (name === 'map' || name === 'map-refresh') {
+      // Deterministic repo map (@ai-factory/repomap): importance-ranked
+      // structural summary. /map rebuilds incrementally (unchanged
+      // files reused); /map-refresh forces a full re-walk.
+      const parts = args.split(/\s+/).filter(Boolean);
+      let root = parts[0] ?? '';
+      if (!root) {
+        const envRoots = (process.env.FACTORY_CODEINDEX_ROOTS ?? '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        root = envRoots[0] ?? '';
+      }
+      if (!root) {
+        ctx.json(res, 400, { error: 'usage: /map [root] [maxTokens] (or set FACTORY_CODEINDEX_ROOTS)' });
+        return true;
+      }
+      const maxTokens = Math.min(
+        100000,
+        Math.max(100, Math.floor(Number(parts[1])) || 20000),
+      );
+      try {
+        const { markdown, stats } = await getRepoMapService().buildMap(root, {
+          maxTokens,
+          full: name === 'map-refresh',
+        });
+        ctx.audit.record(actor, 'COMMAND_EXECUTED', 'command', name, {
+          root: stats.root,
+          files: stats.files,
+          symbols: stats.symbols,
+          truncated: stats.truncated,
+        });
+        ctx.json(res, 200, { type: 'map', command: name, root: stats.root, markdown, stats });
+      } catch (e) {
+        if (e instanceof RepoMapError) {
+          const status = e.code === 'ROOT_DENIED' ? 403 : 400;
+          ctx.json(res, status, { error: e.code, detail: e.message });
+          return true;
+        }
+        ctx.json(res, 500, { error: (e as Error).message });
+      }
       return true;
     }
 

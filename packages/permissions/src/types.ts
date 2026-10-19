@@ -52,3 +52,20 @@ export interface TierEvaluation {
 export function isPermissionTier(v: unknown): v is PermissionTier {
   return (PERMISSION_TIERS as readonly unknown[]).includes(v);
 }
+
+/**
+ * Declarative allow/ask/deny tool rule (Claude Code-style).
+ *
+ * A rule names a tool (exact name or glob: 'Bash', 'shell.execute',
+ * 'mcp__*') and a glob pattern over that tool's target string (the
+ * command line for shell tools, the path for file tools), with an
+ * effect. See rules.ts for evaluation order (deny > ask > allow) and
+ * glob semantics.
+ */
+export type RuleEffect = 'allow' | 'ask' | 'deny';
+
+export interface PermissionRule {
+  tool: string;
+  pattern: string;
+  effect: RuleEffect;
+}

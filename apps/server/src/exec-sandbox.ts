@@ -15,11 +15,14 @@
  *
  *  Inside the sandbox the command sees:
  *   - a fresh root with /usr, /opt (+/bin//lib//lib64 via --ro-bind-try)
- *     mounted READ-ONLY, a tmpfs /tmp, /dev, and exactly one writable
- *     bind — the request's cwd, mounted AT ITS REAL PATH (so absolute
- *     paths keep working, unlike the build sandbox's /work). The
- *     server's home directory, /etc (except DNS/certs when the network
- *     is shared), and every other host path are simply not there.
+ *     mounted READ-ONLY, a tmpfs /tmp, /dev, and — in workspace-write
+ *     mode — exactly one writable bind: the request's cwd, mounted AT
+ *     ITS REAL PATH (so absolute paths keep working, unlike the build
+ *     sandbox's /work). In read-only mode (sandbox-modes.ts) the cwd
+ *     is bound READ-ONLY instead: the only writable path is /tmp.
+ *     The server's home directory, /etc (except DNS/certs when the
+ *     network is shared), and every other host path are simply not
+ *     there.
  *   - HOME is a fresh empty tmpfs (/tmp), not the server's real home:
  *     dotfiles (~/.gitconfig, ~/.npmrc, …) are neither read nor
  *     written.
@@ -29,16 +32,35 @@
  *     interactive terminals legitimately use the network, e.g. npm).
  *     Set FACTORY_EXEC_SANDBOX_NETWORK=0 for --unshare-net.
  *
+ *  Sandbox modes (see sandbox-modes.ts for resolution):
+ *
+ *   - 'workspace-write' (default): the behavior above.
+ *   - 'read-only': cwd bound --ro-bind; writes outside /tmp are
+ *     refused by the kernel. Network follows the offline switch.
+ *   - 'danger-full-access': handled by the caller (no sandbox at all);
+ *     decideExecSandbox reports it directly and NEVER probes.
+ *
+ *  Fail-closed (no fake isolation): read-only and workspace-write
+ *  REQUIRE a working bwrap. When the probe fails (non-Linux, bwrap
+ *  missing, user namespaces disabled) the decision is
+ *  refused=true / SANDBOX_UNAVAILABLE — the caller MUST refuse the
+ *  run (403), never run it unisolated. The old 'none (fallback)'
+ *  behavior (run anyway, marked) is gone: there is no fallback, only
+ *  refusal. The audit/response `sandbox` field reports the actual
+ *  tier — 'read-only' | 'workspace-write' | 'danger-full-access' |
+ *  'disabled' (explicit operator opt-out) — never a vague 'bwrap',
+ *  never a fake claim.
+ *
  *  What this is NOT:
  *
  *   - Not a guarantee on machines without a working bwrap. Availability
  *     is PROBED at runtime (the shared probeSandbox from
  *     build-sandbox.ts — a real bwrap invocation, not a version
- *     string). When the probe fails the caller runs the command
- *     exactly as before and MUST mark the run `sandbox: 'none
- *     (fallback)'` with the probe's reason in the audit record and the
- *     response — never a silent downgrade, never a claim of isolation
- *     that isn't there.
+ *     string). When the probe fails, read-only and workspace-write
+ *     runs are REFUSED (fail-closed): the caller must answer 403
+ *     SANDBOX_UNAVAILABLE with the probe's reason in the audit record
+ *     and the response — never a silent downgrade, never a claim of
+ *     isolation that isn't there, never "run anyway and mark it".
  *   - Not a confinement proof for §7.5: agent (non-human) one-shot
  *     exec stays refused by routes/exec.ts's gate regardless of this
  *     module. A bwrap-backed IsolationBackend that would let §7.5 pass
@@ -46,8 +68,8 @@
  *     here.
  *   - bwrap is looked up as `bwrap` on PATH (override with
  *     FACTORY_BWRAP_BIN, shared with the build sandbox). Linux-only in
- *     practice; on other platforms the probe fails and every run is
- *     honestly marked as fallback.
+ *     practice; on other platforms the probe fails and every
+ *     read-only/workspace-write run is honestly refused.
  */
 
 import {
@@ -56,6 +78,7 @@ import {
   sandboxRoBindArgs,
   BWRAP_BIN_ENV,
 } from './build-sandbox';
+import type { SandboxMode } from './sandbox-modes';
 
 /** Re-exported for tests: drop the cached probe so the next call re-probes. */
 export { resetSandboxProbeCache as resetExecSandboxProbeCacheForTests };
@@ -67,6 +90,13 @@ export const EXEC_SANDBOX_RO_BINDS_ENV = 'FACTORY_EXEC_SANDBOX_RO_BINDS';
 export interface ExecSandboxConfig {
   /** Master switch. Default true; '0'/'false'/'no'/'off' disables. */
   enabled: boolean;
+  /**
+   * The OS-enforced tier (sandbox-modes.ts). Default 'workspace-write'.
+   * 'danger-full-access' is resolved by the caller before this module
+   * is consulted — decideExecSandbox reports it directly and never
+   * probes for it.
+   */
+  mode: SandboxMode;
   /**
    * Share the host network inside the sandbox. Default TRUE (unlike the
    * build sandbox: exec/terminal legitimately use the network);
@@ -98,6 +128,7 @@ export function execSandboxConfigFromEnv(
   return {
     enabled,
     network,
+    mode: 'workspace-write',
     bwrapBin: (env[BWRAP_BIN_ENV] ?? '').trim() || 'bwrap',
     extraRoBinds,
   };
@@ -152,53 +183,124 @@ export function buildExecSandboxPrefix(
 }
 
 /**
- * The sandbox mode reported for a run. 'bwrap' = the command ran (or
- * the session was created) inside the sandbox; 'none (fallback)' =
- * bwrap was unavailable and the command ran directly on the host —
- * callers MUST surface this in audit records and responses, never
- * silently; 'disabled' = the operator turned the sandbox off
- * (FACTORY_EXEC_SANDBOX=0).
+ * Build the bwrap argv PREFIX for the read-only tier: identical to
+ * buildExecSandboxPrefix except the cwd is bound READ-ONLY
+ * (--ro-bind) instead of writable. The only writable path inside is
+ * the tmpfs /tmp (HOME=/tmp) — any write outside it is refused by the
+ * kernel, not by policy text.
  */
-export type ExecSandboxMode = 'bwrap' | 'none (fallback)' | 'disabled';
+export function buildReadOnlySandboxPrefix(
+  cwd: string,
+  opts: { network: boolean; bwrapBin: string; extraRoBinds: string[] },
+): string[] {
+  if (!cwd || !cwd.startsWith('/')) {
+    throw new Error('buildReadOnlySandboxPrefix: cwd must be an absolute path');
+  }
+  const a: string[] = [opts.bwrapBin];
+  a.push(
+    '--unshare-user',
+    '--unshare-ipc',
+    '--unshare-pid',
+    '--unshare-uts',
+    '--unshare-cgroup-try',
+  );
+  if (!opts.network) a.push('--unshare-net');
+  a.push('--die-with-parent');
+  a.push(...sandboxRoBindArgs(opts.extraRoBinds));
+  a.push('--dev', '/dev', '--tmpfs', '/tmp');
+  a.push('--setenv', 'HOME', '/tmp');
+  if (opts.network) {
+    a.push(
+      '--ro-bind-try',
+      '/etc/resolv.conf',
+      '/etc/resolv.conf',
+      '--ro-bind-try',
+      '/etc/ssl',
+      '/etc/ssl',
+    );
+  }
+  // The cwd, READ-ONLY, at its real path. No writable bind at all.
+  a.push('--ro-bind', cwd, cwd, '--chdir', cwd);
+  a.push('--');
+  return a;
+}
+
+/**
+ * The sandbox tier reported for a run. This is the ACTUAL tier that
+ * applied — 'read-only' | 'workspace-write' | 'danger-full-access' —
+ * or 'disabled' when the operator explicitly turned the sandbox off
+ * (FACTORY_EXEC_SANDBOX=0). It is never 'bwrap' (vague) and never a
+ * faked tier: callers MUST surface this value in audit records and
+ * responses, and must refuse (not downgrade) when refused=true.
+ */
+export type ExecSandboxReport =
+  | 'read-only'
+  | 'workspace-write'
+  | 'danger-full-access'
+  | 'disabled';
 
 export interface ExecSandboxDecision {
-  mode: ExecSandboxMode;
+  mode: ExecSandboxReport;
   /** Argv prefix to prepend to the command (empty when not sandboxed). */
   prefix: string[];
-  /** Human-readable reason when mode is 'none (fallback)'. */
+  /** Human-readable reason when refused (the probe's reason). */
   reason: string | null;
+  /** True when a bwrap prefix is actually applied to the command. */
+  sandboxed: boolean;
+  /**
+   * Fail-closed: OS isolation is required by the tier but bwrap is
+   * unavailable. The caller MUST refuse the run (403
+   * SANDBOX_UNAVAILABLE) — never run it unisolated.
+   */
+  refused: boolean;
+  refuseCode: 'SANDBOX_UNAVAILABLE' | null;
 }
 
 /**
  * The decision tree for one exec/terminal run:
  *
- *  - sandbox disabled in config → direct execution, no probe, no audit
- *    either way (the operator chose this explicitly; the mode is still
- *    reported as 'disabled' so responses stay honest).
- *  - probe says bwrap works → prefix for sandboxed execution.
- *  - probe fails → empty prefix (direct execution, exactly as before)
- *    with mode 'none (fallback)' and the probe's reason — the caller
- *    MUST mark the run with both, in the audit record and the
- *    response.
+ *  - sandbox disabled in config → direct execution, no probe, reported
+ *    as 'disabled' (the operator chose this explicitly).
+ *  - mode 'danger-full-access' → direct execution by design (the tier
+ *    IS "no sandbox"); reported as 'danger-full-access'. The caller
+ *    must have passed the danger approval gate first.
+ *  - mode 'read-only' / 'workspace-write' → probe bwrap:
+ *      available → sandboxed prefix for the tier;
+ *      unavailable → refused=true, SANDBOX_UNAVAILABLE. No fallback.
  */
 export async function decideExecSandbox(
   cwd: string,
   config: ExecSandboxConfig,
 ): Promise<ExecSandboxDecision> {
   if (!config.enabled) {
-    return { mode: 'disabled', prefix: [], reason: null };
+    return { mode: 'disabled', prefix: [], reason: null, sandboxed: false, refused: false, refuseCode: null };
+  }
+  if (config.mode === 'danger-full-access') {
+    // By design: no sandbox. The danger approval gate (sandbox-modes.ts)
+    // runs in the route before this is consulted.
+    return {
+      mode: 'danger-full-access',
+      prefix: [],
+      reason: null,
+      sandboxed: false,
+      refused: false,
+      refuseCode: null,
+    };
   }
   const probe = await probeSandbox(config.bwrapBin);
   if (probe.available) {
-    return {
-      mode: 'bwrap',
-      prefix: buildExecSandboxPrefix(cwd, config),
-      reason: null,
-    };
+    const prefix =
+      config.mode === 'read-only'
+        ? buildReadOnlySandboxPrefix(cwd, config)
+        : buildExecSandboxPrefix(cwd, config);
+    return { mode: config.mode, prefix, reason: null, sandboxed: true, refused: false, refuseCode: null };
   }
   return {
-    mode: 'none (fallback)',
+    mode: config.mode,
     prefix: [],
     reason: probe.reason ?? 'bwrap probe failed',
+    sandboxed: false,
+    refused: true,
+    refuseCode: 'SANDBOX_UNAVAILABLE',
   };
 }

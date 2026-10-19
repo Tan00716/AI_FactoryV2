@@ -484,6 +484,45 @@ export interface AutoBackupPolicyInput {
   retainCount?: number;
   healthCheck?: boolean;
 }
+/** 质量闸门配置（GET/PUT /api/quality）：确定性 lint/test 门禁，零模型。 */
+export interface QualityGateConfig {
+  lintCmd: string;
+  testCmd: string;
+  timeoutMs: number;
+  runOnEdit: boolean;
+  blockOnFailure: boolean;
+}
+export interface QualityGateConfigInput {
+  lintCmd?: string;
+  testCmd?: string;
+  timeoutMs?: number;
+  runOnEdit?: boolean;
+  blockOnFailure?: boolean;
+}
+export interface QualityGateLastRun {
+  kind: 'lint' | 'test';
+  ok: boolean;
+  timedOut: boolean;
+  exitCode: number | null;
+  truncated: boolean;
+  durationMs: number;
+  at: string;
+}
+export interface QualityGateRunResult {
+  kind: 'lint' | 'test';
+  projectId: string;
+  skipped: boolean;
+  skipReason: string | null;
+  ok: boolean;
+  timedOut: boolean;
+  exitCode: number | null;
+  truncated: boolean;
+  durationMs: number;
+  startedAt: string;
+  stdoutTail: string;
+  stderrTail: string;
+  blocked: boolean;
+}
 /** §28.3 checkpoint（runtime CheckpointV2 的线上形状；capturedAt 为 epoch ms）。 */
 export interface CheckpointV2 {
   schemaVersion: '2.0';
@@ -819,6 +858,21 @@ export const api = {
   runAutoBackupNow: () =>
     req<{ backupId: string; pruned: string[] }>(
       '/auto-backup/run', { method: 'POST', body: JSON.stringify({}) },
+    ),
+  /** 质量闸门配置（GET /api/quality?projectId=）：读 viewer。 */
+  qualityGate: (projectId: string) =>
+    req<{ config: QualityGateConfig; lastRun: Record<'lint' | 'test', QualityGateLastRun | null> }>(
+      `/quality?projectId=${encodeURIComponent(projectId)}`,
+    ),
+  /** 更新质量闸门配置（PUT /api/quality）：写 operator。 */
+  updateQualityGate: (projectId: string, p: QualityGateConfigInput) =>
+    req<{ config: QualityGateConfig }>(
+      '/quality', { method: 'PUT', body: JSON.stringify({ projectId, ...p }) },
+    ),
+  /** 立即跑一次闸门（POST /api/quality/run）：operator。 */
+  runQualityGate: (projectId: string, kind: 'lint' | 'test') =>
+    req<QualityGateRunResult>(
+      '/quality/run', { method: 'POST', body: JSON.stringify({ projectId, kind }) },
     ),
   /** Batch 50：§81 needs-human 升级记录（只读 viewer，NeedsHumanPanel 用）。
    *  默认列 OPEN；status 可为 open|acknowledged|resolved（非法值服务端 400）。
