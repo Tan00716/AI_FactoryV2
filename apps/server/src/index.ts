@@ -142,7 +142,7 @@ import { ApprovalManager } from '@ai-factory/approvals';
 import { handleReleaseRoutes } from './routes/releases';
 import { handlePolicyRoutes } from './routes/policy';
 import { handleExecRoutes } from './routes/exec';
-import { handleTerminalRoutes } from './routes/terminal';
+import { handleTerminalRoutes, getTerminalTailForContext } from './routes/terminal';
 import { handleSecretRoutes } from './routes/secrets';
 import { handleFileRoutes } from './routes/files';
 import { handleChangesRoutes } from './routes/changes';
@@ -187,12 +187,16 @@ import {
   listBackupManifests,
   resolveBackupConfig,
   resolveProjectsRoot,
+  setBackupIgnoreCheck,
   stagedRestoreBackupId,
   validateProjectPath,
 } from './routes/backup';
 import { handleRetentionRoutes } from './routes/retention';
 import { handleAutoBackupRoutes, syncAutoBackupPolicy } from './routes/auto-backup';
 import { handleQualityRoutes } from './routes/quality';
+import { handleIgnoresRoutes } from './routes/ignores';
+import { setIgnoreGateAuditHook, isIgnoredSync } from './ignore-gate';
+import { handleCoverageRoutes } from './routes/coverage';
 import { handleContextProviderRoutes, initRuntimeContextResolution } from './routes/context-providers';
 import { handleCollabRoutes, handleCollabUpgrade, initCollabService } from './routes/collab';
 import {
@@ -202,6 +206,13 @@ import {
 } from './routes/shadow';
 import { handleInspectionRoutes } from './routes/inspections';
 import { handleBatchChangesRoutes } from './routes/batch-changes';
+import { handleRecipesRoutes } from './routes/recipes';
+import {
+  handleProblemMatcherRoutes,
+  setProblemMatcherDeps,
+  qualityGateOutputSink,
+} from './routes/problem-matchers';
+import { setQualityGateOutputSink } from './routes/quality';
 import { initMcpPersistence } from './routes/mcp';
 import {
   backupScheduler,
@@ -209,7 +220,7 @@ import {
   initBackupScheduler,
   TICK_MS,
 } from './routes/backup-scheduler';
-import { handleScheduleRoutes, initTaskScheduler, taskScheduler } from './routes/schedules';
+import { handleScheduleRoutes, initTaskScheduler, taskScheduler, scheduleStore } from './routes/schedules';
 import { SCHEDULER_TICK_MS } from './scheduler';
 import { handleAuthorizationTicketRoutes } from './routes/authorization-tickets';
 import { handleDbRoutes } from './routes/db';
@@ -546,6 +557,22 @@ setRuntimeCheckpointLog(checkpointLog);
 setRuntimeCodeIndexService(getCodeIndexService());
 
 /**
+ * Two-tier ignore gate (task ②) — loud layer skips (a corrupt
+ * .ai-factory/ignore or indexing-ignore) land in the process audit chain
+ * as IGNORE_LAYER_SKIPPED instead of being silent.
+ */
+setIgnoreGateAuditHook((root, layer, message) =>
+  audit.record('server', 'IGNORE_LAYER_SKIPPED', 'ignores', root, { layer, message }),
+);
+
+/**
+ * Two-tier ignore gate → backup project-file collector (task ②): the
+ * backup route module is src-imported by tests, so the predicate arrives
+ * via setter injection instead of a direct sibling import.
+ */
+setBackupIgnoreCheck((root, abs) => isIgnoredSync(root, abs, false));
+
+/**
  * Repo map (deterministic structural summary for agents) — the
  * runtime route's code_search tool (map:true) and the /api/repomap
  * route share one service. Same install pattern as the code index.
@@ -559,6 +586,26 @@ setRuntimeRepoMapService(getRepoMapService());
  * pattern as the code index / repo map above.
  */
 initRuntimeContextResolution();
+
+/**
+ * Problem matchers (task ③) — installs the ingestion readers and the
+ * quality-gate auto-parse sink. Same setter-injection pattern as the
+ * shadow checkpoints above: terminal/scheduler state lives in route
+ * modules that must not be value-imported from routes/problem-matchers.
+ */
+setProblemMatcherDeps({
+  terminalTail: getTerminalTailForContext,
+  schedulerOutputs: () =>
+    scheduleStore()
+      .list()
+      .map((s) => ({
+        scheduleId: s.id,
+        title: s.name,
+        lastOutput: s.lastOutput,
+        lastRunAt: s.lastRunAt,
+      })),
+});
+setQualityGateOutputSink(qualityGateOutputSink);
 
 /**
  * Shadow checkpoints (third-wave task ⑦) — installs the two observer
@@ -1228,11 +1275,15 @@ const server = createServer(async (req, res) => {
     if (await handleBackupScheduleRoutes(req, res, url, routeCtx)) return;
     if (await handleAutoBackupRoutes(req, res, url, routeCtx)) return;
     if (await handleQualityRoutes(req, res, url, routeCtx)) return;
+    if (await handleIgnoresRoutes(req, res, url, routeCtx)) return;
+    if (await handleCoverageRoutes(req, res, url, routeCtx)) return;
     if (await handleContextProviderRoutes(req, res, url, routeCtx)) return;
     if (await handleCollabRoutes(req, res, url, routeCtx)) return;
     if (await handleShadowRoutes(req, res, url, routeCtx)) return;
     if (await handleInspectionRoutes(req, res, url, routeCtx)) return;
     if (await handleBatchChangesRoutes(req, res, url, routeCtx)) return;
+    if (await handleRecipesRoutes(req, res, url, routeCtx)) return;
+    if (await handleProblemMatcherRoutes(req, res, url, routeCtx)) return;
     if (await handleRetentionRoutes(req, res, url, routeCtx)) return;
     if (await handleAuthorizationTicketRoutes(req, res, url, routeCtx)) return;
     if (await handleDbRoutes(req, res, url, routeCtx)) return;

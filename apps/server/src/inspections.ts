@@ -284,6 +284,246 @@ export const consoleLogChecker: Checker = {
   },
 };
 
+/**
+ * `nosec` exemption: a trailing `// nosec` (any comment style) suppresses
+ * the security findings on that line. `// nosec:<rule-id>` scopes the
+ * exemption to one rule, e.g. `// nosec:eval-call`. Plain `nosec`
+ * suppresses every security rule on the line. This is a human-readable
+ * annotation, not a signature — the line and file are still scanned.
+ */
+export function nosecKinds(line: string): Set<string> | 'all' | null {
+  const m = /\bnosec\b(?::\s*([A-Za-z0-9_][A-Za-z0-9_,\- ]*))?/.exec(line);
+  if (!m) return null;
+  if (!m[1]) return 'all';
+  return new Set(m[1].split(/[,\s]+/).filter(Boolean));
+}
+
+function suppressedByNosec(line: string, kind: string): boolean {
+  const n = nosecKinds(line);
+  return n === 'all' || (n instanceof Set && n.has(kind));
+}
+
+// ---------------------------------------------------------------------------
+// secret-scan checker (gitleaks-style, deterministic pattern set)
+// ---------------------------------------------------------------------------
+
+export interface SecretPattern {
+  /** Stable rule id, e.g. 'aws-access-key'. */
+  name: string;
+  re: RegExp;
+  /**
+   * 'specific': unambiguous token shape (fires even in test files — a real
+   * AWS key in a fixture is still a leak if the repo is real).
+   * 'generic': assignment-shaped heuristics (skipped in test files and
+   * when the value looks like a placeholder; too noisy otherwise).
+   */
+  kind: 'specific' | 'generic';
+}
+
+/**
+ * ~20 pattern families. No entropy scoring: entropy finds too many false
+ * positives to be useful without a model to arbitrate.
+ */
+export const SECRET_PATTERNS: SecretPattern[] = [
+  { name: 'aws-access-key', kind: 'specific', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
+  { name: 'aws-secret-key', kind: 'specific', re: /aws_secret_access_key\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}["']?/ },
+  { name: 'github-pat-classic', kind: 'specific', re: /\bghp_[A-Za-z0-9]{36}\b/ },
+  { name: 'github-pat-fine-grained', kind: 'specific', re: /\bgithub_pat_[A-Za-z0-9_]{82}\b/ },
+  { name: 'github-token', kind: 'specific', re: /\b(?:gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b/ },
+  { name: 'private-key', kind: 'specific', re: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/ },
+  { name: 'slack-token', kind: 'specific', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
+  { name: 'slack-webhook', kind: 'specific', re: /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]{8,}\/B[A-Z0-9]{8,}\/[A-Za-z0-9]{24,}/ },
+  { name: 'stripe-live-key', kind: 'specific', re: /\bsk_live_[A-Za-z0-9]{16,}\b/ },
+  { name: 'google-api-key', kind: 'specific', re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
+  { name: 'jwt-token', kind: 'specific', re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/ },
+  { name: 'sendgrid-key', kind: 'specific', re: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/ },
+  { name: 'npm-token', kind: 'specific', re: /\bnpm_[A-Za-z0-9]{36}\b/ },
+  { name: 'pypi-token', kind: 'specific', re: /\bpypi-[A-Za-z0-9_-]{40,}\b/ },
+  { name: 'telegram-bot-token', kind: 'specific', re: /\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b/ },
+  { name: 'openai-key', kind: 'specific', re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/ },
+  { name: 'generic-api-key', kind: 'generic', re: /\b(api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key)\s*[:=]\s*["']?([^"'\s]{8,})["']?/i },
+  { name: 'generic-password', kind: 'generic', re: /\b(password|passwd|pwd)\s*[:=]\s*["']([^"'\s]{8,})["']/i },
+  { name: 'bearer-token', kind: 'generic', re: /\bAuthorization\s*[:=]\s*["']Bearer\s+[A-Za-z0-9._~-]{16,}["']/i },
+  { name: 'basic-auth-url', kind: 'generic', re: /:\/\/[^/\s:@]+:[^/\s:@]{4,}@/ },
+  { name: 'db-connection-string', kind: 'generic', re: /\b(?:mongodb|postgres|mysql|redis):\/\/[^/\s:@]+:[^/\s:@]{4,}@/i },
+];
+
+const PLACEHOLDER_RE =
+  /example|sample|placeholder|dummy|xxx|\.\.\.|<[^>]*>|\$\{|process\.env|your[_-]|changeme|redacted|\*\*\*/i;
+
+/** True when the matched text looks like documentation, not a real secret. */
+export function isPlaceholderValue(s: string): boolean {
+  return PLACEHOLDER_RE.test(s);
+}
+
+/** Mask a matched secret for safe display/audit: first 4 + last 2 only. */
+export function maskSecret(s: string): string {
+  if (s.length <= 8) return s.slice(0, 2) + '…' + s.slice(-1);
+  return s.slice(0, 4) + '…' + s.slice(-2);
+}
+
+/** secret-scan: hardcoded secrets, severity always 'error' (a match is definite enough to block on). */
+export const secretScanChecker: Checker = {
+  name: 'secret-scan',
+  description: 'Flags hardcoded secrets and credentials (pattern-based; heuristic, not proof).',
+  run({ file, lines }) {
+    const out: Finding[] = [];
+    const testFile = isTestFile(file);
+    lines.forEach((ln, i) => {
+      for (const p of SECRET_PATTERNS) {
+        // Generic heuristics are skipped in test files — fixtures are
+        // noisy; an explicit // nosec annotation is still honored below.
+        if (p.kind === 'generic' && testFile) continue;
+        if (suppressedByNosec(ln, p.name)) continue;
+        const m = p.re.exec(ln);
+        if (!m) continue;
+        if (p.kind === 'generic' && isPlaceholderValue(m[0])) continue;
+        const body = {
+          checker: 'secret-scan',
+          file,
+          line: i + 1,
+          message: `possible hardcoded secret (${p.name}): ${maskSecret(m[0])} — pattern match, verify manually`,
+        };
+        out.push({ ...body, id: findingId(body), severity: 'error', detail: p.name });
+      }
+    });
+    return out;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// sast-patterns checker (deterministic dangerous-pattern SAST)
+// ---------------------------------------------------------------------------
+
+export interface SastRule {
+  id: string;
+  severity: InspectionSeverity;
+  message: string;
+  test: (line: string) => boolean;
+}
+
+/** One-line-at-a-time rules — line-local by design (documented as heuristic). */
+export const SAST_RULES: SastRule[] = [
+  {
+    id: 'eval-call',
+    severity: 'error',
+    message: 'eval() executes a string as code — a classic injection sink',
+    test: (l) => /\beval\s*\(/.test(l),
+  },
+  {
+    id: 'function-constructor',
+    severity: 'error',
+    message: 'new Function() builds code from a string — injection sink',
+    test: (l) => /\bnew\s+Function\s*\(/.test(l),
+  },
+  {
+    id: 'vm-context-execution',
+    severity: 'warning',
+    message: 'vm.runIn*Context() executes untrusted code when the context is tainted',
+    test: (l) => /\bvm\.runIn\w*Context\s*\(/.test(l),
+  },
+  {
+    id: 'sql-string-injection',
+    severity: 'error',
+    message: 'SQL query built by string interpolation/concatenation — use parameterized queries',
+    test: (l) =>
+      /\b(?:query|execute|raw)\s*\(/.test(l) && (/\$\{/.test(l) || /["'`]\s*\+/.test(l) || /\+\s*["'`]/.test(l)),
+  },
+  {
+    id: 'sql-keyword-concat',
+    severity: 'warning',
+    message: 'SQL keyword with interpolated input nearby — check for string-built queries',
+    test: (l) => /\b(?:SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\b/i.test(l) && (/\+\s*\w/.test(l) || /\$\{/.test(l)),
+  },
+  {
+    id: 'shell-string-injection',
+    severity: 'error',
+    message: 'shell command built by string interpolation/concatenation — use argument arrays',
+    test: (l) => {
+      const m = /\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*\(/.exec(l);
+      if (!m) return false;
+      let arg = l.slice(m.index + m[0].length);
+      const cut = arg.search(/[,)]/);
+      if (cut >= 0) arg = arg.slice(0, cut);
+      return /`[^`]*\$\{/.test(arg) || /\+/.test(arg);
+    },
+  },
+  {
+    id: 'child-process-shell-true',
+    severity: 'warning',
+    message: 'child_process with shell:true — metacharacters in arguments become shell syntax',
+    test: (l) => /\bshell\s*:\s*true\b/.test(l),
+  },
+  {
+    id: 'unsafe-deserialization',
+    severity: 'warning',
+    message: 'unserialize()/pickle.loads() on untrusted data can execute code',
+    test: (l) => /\b(?:unserialize|pickle\.loads?)\s*\(/.test(l),
+  },
+  {
+    id: 'yaml-unsafe-load',
+    severity: 'warning',
+    message: 'yaml.load() without a safe loader can deserialize to arbitrary objects',
+    test: (l) => /\byaml\.load\s*\(/.test(l) && !/SafeLoader|safe_load/i.test(l),
+  },
+  {
+    id: 'dom-xss-sink',
+    severity: 'warning',
+    message: 'innerHTML=/document.write() with dynamic content is an XSS sink',
+    test: (l) => /\.innerHTML\s*=[^=]/.test(l) || /\bdocument\.write(?:ln)?\s*\(/.test(l),
+  },
+  {
+    id: 'tls-verification-disabled',
+    severity: 'error',
+    message: 'TLS verification disabled — man-in-the-middle becomes trivial',
+    test: (l) => /rejectUnauthorized\s*:\s*false/.test(l) || /NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*["']?0\b/.test(l),
+  },
+  {
+    id: 'weak-crypto-hash',
+    severity: 'warning',
+    message: 'md5/sha1 used in a credential context — use a password-hashing function instead',
+    test: (l) =>
+      /\bcreateHash\s*\(\s*['"](?:md5|sha1)['"]\s*\)/i.test(l) &&
+      /(?:password|secret|token|auth|credential)/i.test(l),
+  },
+  {
+    id: 'insecure-randomness',
+    severity: 'warning',
+    message: 'Math.random() used in a security context — use crypto.randomBytes/randomUUID',
+    test: (l) => /\bMath\.random\s*\(\s*\)/.test(l) && /(?:token|password|secret|otp|session|nonce|auth)/i.test(l),
+  },
+  {
+    id: 'cors-wildcard',
+    severity: 'warning',
+    message: 'Access-Control-Allow-Origin: * — any site can read the response',
+    test: (l) => /Access-Control-Allow-Origin['"]?\s*[:,]\s*['"]\*['"]/.test(l),
+  },
+];
+
+/** sast-patterns: deterministic dangerous-code-pattern scan. */
+export const sastPatternsChecker: Checker = {
+  name: 'sast-patterns',
+  description: 'Flags dangerous code patterns (injection sinks, weak crypto, disabled TLS) — pattern-based, advisory.',
+  run({ file, lines }) {
+    const out: Finding[] = [];
+    lines.forEach((ln, i) => {
+      for (const r of SAST_RULES) {
+        if (suppressedByNosec(ln, r.id)) continue;
+        let hit = false;
+        try {
+          hit = r.test(ln);
+        } catch {
+          hit = false;
+        }
+        if (!hit) continue;
+        const body = { checker: 'sast-patterns', file, line: i + 1, message: `SAST ${r.id}: ${r.message}` };
+        out.push({ ...body, id: findingId(body), severity: r.severity, detail: r.id });
+      }
+    });
+    return out;
+  },
+};
+
 /** All built-in checkers by name (the extensible registry). */
 export function builtinCheckers(profile: InspectionProfile): Checker[] {
   const enabled = (name: string): boolean => profile.checkers[name] !== false;
@@ -292,6 +532,9 @@ export function builtinCheckers(profile: InspectionProfile): Checker[] {
   if (enabled('long-file')) out.push(makeLongFileChecker(profile.maxFileLines));
   if (enabled('long-function')) out.push(makeLongFunctionChecker(profile.maxFunctionLines));
   if (enabled('console-log')) out.push(consoleLogChecker);
+  // Security checkers (task wave2-④): appended, existing checkers untouched.
+  if (enabled('secret-scan')) out.push(secretScanChecker);
+  if (enabled('sast-patterns')) out.push(sastPatternsChecker);
   return out;
 }
 
@@ -306,9 +549,11 @@ export interface InspectionProfile {
   maxFunctionLines: number;
   checkers: Record<string, boolean>;
   licenseAudit: boolean;
+  /** When true, the run also audits lockfile dependencies against the vulnerable-version blacklist. */
+  dependencyAudit: boolean;
 }
 
-export const KNOWN_CHECKERS = ['todo-fixme', 'long-file', 'long-function', 'console-log'] as const;
+export const KNOWN_CHECKERS = ['todo-fixme', 'long-file', 'long-function', 'console-log', 'secret-scan', 'sast-patterns'] as const;
 
 export function defaultInspectionProfile(): InspectionProfile {
   return {
@@ -316,8 +561,9 @@ export function defaultInspectionProfile(): InspectionProfile {
     name: 'default',
     maxFileLines: 1000,
     maxFunctionLines: 150,
-    checkers: { 'todo-fixme': true, 'long-file': true, 'long-function': true, 'console-log': true },
+    checkers: { 'todo-fixme': true, 'long-file': true, 'long-function': true, 'console-log': true, 'secret-scan': true, 'sast-patterns': true },
     licenseAudit: true,
+    dependencyAudit: true,
   };
 }
 
@@ -327,6 +573,7 @@ export interface InspectionProfileInput {
   maxFunctionLines?: unknown;
   checkers?: unknown;
   licenseAudit?: unknown;
+  dependencyAudit?: unknown;
 }
 
 function intInRange(v: unknown, min: number, max: number): number | null {
@@ -375,6 +622,10 @@ export function validateInspectionProfile(input: InspectionProfileInput): { prof
   if (input.licenseAudit !== undefined) {
     if (typeof input.licenseAudit !== 'boolean') errors.push('licenseAudit must be a boolean');
     else p.licenseAudit = input.licenseAudit;
+  }
+  if (input.dependencyAudit !== undefined) {
+    if (typeof input.dependencyAudit !== 'boolean') errors.push('dependencyAudit must be a boolean');
+    else p.dependencyAudit = input.dependencyAudit;
   }
   return { profile: p, errors };
 }
@@ -614,6 +865,514 @@ export function auditLicenses(root: string): LicenseAudit {
 }
 
 // ---------------------------------------------------------------------------
+// Security rules file (.ai-factory/security-rules.json)
+// ---------------------------------------------------------------------------
+
+export interface VulnerableRule {
+  /** npm package name. */
+  package: string;
+  /** Version range, e.g. "<4.17.21" or ">=1.0.0 <1.2.8". */
+  range: string;
+  severity: InspectionSeverity;
+  /** Advisory id, e.g. 'CVE-2020-8203' or 'CUSTOM'. */
+  id: string;
+  note?: string;
+}
+
+/**
+ * Hand-maintained blacklist snapshot from public CVE advisories
+ * (mitre.org / GitHub Security Advisories).
+ *
+ * HONEST BOUNDARY: this is a snapshot, not a live feed. It lags the real
+ * advisory stream, it covers only a handful of high-profile npm packages,
+ * and it is NOT a substitute for a live advisory database (e.g. OSV).
+ * The snapshot date is disclosed in every report; custom rules can be
+ * appended per-project in .ai-factory/security-rules.json.
+ */
+export const SECURITY_BLACKLIST_SNAPSHOT = '2026-10-20';
+export const SECURITY_BLACKLIST_SOURCE =
+  'Hand-maintained snapshot of public CVE advisories (mitre.org / GitHub Security Advisories); not a live feed.';
+
+export const BUILTIN_VULNERABLE: VulnerableRule[] = [
+  { package: 'lodash', range: '<4.17.21', severity: 'error', id: 'CVE-2020-8203', note: 'Prototype pollution' },
+  { package: 'minimist', range: '<1.2.8', severity: 'error', id: 'CVE-2021-44906', note: 'Prototype pollution' },
+  { package: 'node-fetch', range: '<2.6.7', severity: 'error', id: 'CVE-2022-0235', note: 'Exposure of sensitive information' },
+  { package: 'axios', range: '<0.21.2', severity: 'error', id: 'CVE-2020-28168', note: 'Credential leakage on redirect' },
+  { package: 'glob-parent', range: '<5.1.2', severity: 'error', id: 'CVE-2020-28469', note: 'Regular expression denial of service' },
+  { package: 'handlebars', range: '<4.7.7', severity: 'error', id: 'CVE-2021-20922', note: 'Remote code execution via template' },
+  { package: 'yargs-parser', range: '<5.0.1', severity: 'error', id: 'CVE-2020-7608', note: 'Prototype pollution' },
+  { package: 'json5', range: '<2.2.2', severity: 'error', id: 'CVE-2022-46175', note: 'Prototype pollution in parse' },
+  { package: 'semver', range: '<7.5.2', severity: 'error', id: 'CVE-2022-25883', note: 'Regular expression denial of service' },
+  { package: 'word-wrap', range: '<1.2.4', severity: 'error', id: 'CVE-2023-26115', note: 'Regular expression denial of service' },
+  { package: 'tar', range: '<6.1.9', severity: 'warning', id: 'CVE-2021-37713', note: 'Arbitrary file creation/overwrite' },
+  { package: 'qs', range: '<6.10.3', severity: 'warning', id: 'CVE-2022-24999', note: 'Prototype poisoning' },
+  { package: 'async', range: '<2.6.4', severity: 'warning', id: 'CVE-2021-43138', note: 'Regular expression denial of service' },
+  { package: 'follow-redirects', range: '<1.14.8', severity: 'warning', id: 'CVE-2022-0155', note: 'Header leak on cross-domain redirect' },
+  { package: 'moment', range: '<2.29.4', severity: 'warning', id: 'CVE-2022-24785', note: 'Path traversal via locale' },
+];
+
+function parseVersionParts(v: string): { nums: number[]; prerelease: boolean } | null {
+  const m = /^v?(\d+(?:\.\d+){0,3})(?:[-+].*)?$/.exec(v.trim());
+  if (!m) return null;
+  return { nums: m[1].split('.').map(Number), prerelease: /[-]/.test(v.trim()) };
+}
+
+/** Compare two versions; NaN when either is unparseable. */
+export function compareVersions(a: string, b: string): number {
+  const pa = parseVersionParts(a);
+  const pb = parseVersionParts(b);
+  if (!pa || !pb) return Number.NaN;
+  const n = Math.max(pa.nums.length, pb.nums.length);
+  for (let i = 0; i < n; i++) {
+    const x = pa.nums[i] ?? 0;
+    const y = pb.nums[i] ?? 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  if (pa.prerelease !== pb.prerelease) return pa.prerelease ? -1 : 1;
+  return 0;
+}
+
+const RANGE_ATOM_RE = /^(<=|>=|<|>|=)?(\d+(?:\.\d+){0,3})$/;
+const RANGE_WILDCARD_RE = /^(\d+(?:\.\d+){0,2})\.x$/i;
+
+/** Validate a range string without evaluating it. */
+export function isValidRange(range: string): boolean {
+  const atoms = range.trim().split(/\s+/).filter(Boolean);
+  if (atoms.length === 0) return false;
+  return atoms.every((a) => RANGE_ATOM_RE.test(a) || RANGE_WILDCARD_RE.test(a));
+}
+
+/**
+ * Space-separated atoms are ANDed: "<4.17.21" or ">=1.0.0 <1.2.8".
+ * Unparseable versions / invalid ranges return false (never throw).
+ */
+export function versionInRange(version: string, range: string): boolean {
+  if (!isValidRange(range)) return false;
+  const atoms = range.trim().split(/\s+/).filter(Boolean);
+  for (const atom of atoms) {
+    const wc = RANGE_WILDCARD_RE.exec(atom);
+    let op: string;
+    let ref: string;
+    let prefixMatch = false;
+    if (wc) {
+      op = 'wildcard';
+      ref = wc[1];
+    } else {
+      const m = RANGE_ATOM_RE.exec(atom)!;
+      op = m[1] || '=';
+      ref = m[2];
+    }
+    if (op === 'wildcard') {
+      const vp = version.trim().split('.');
+      const rp = ref.split('.');
+      prefixMatch = rp.every((p, i) => vp[i] === p);
+      if (!prefixMatch) return false;
+      continue;
+    }
+    const cmp = compareVersions(version, ref);
+    if (Number.isNaN(cmp)) return false;
+    const ok = op === '<' ? cmp < 0 : op === '<=' ? cmp <= 0 : op === '>' ? cmp > 0 : op === '>=' ? cmp >= 0 : cmp === 0;
+    if (!ok) return false;
+  }
+  return true;
+}
+
+export interface SecuritySuppression {
+  checker: string;
+  /** Exact relative file path, or a prefix with a trailing '*' (e.g. "vendor/*"). */
+  file?: string;
+  note?: string;
+}
+
+export interface SecurityRules {
+  version: 1;
+  additionalVulnerable: VulnerableRule[];
+  suppress: SecuritySuppression[];
+}
+
+export function securityRulesFilePath(root: string): string {
+  return join(root, '.ai-factory', 'security-rules.json');
+}
+
+export function defaultSecurityRules(): SecurityRules {
+  return { version: 1, additionalVulnerable: [], suppress: [] };
+}
+
+export function validateSecurityRules(input: unknown): { rules: SecurityRules; errors: string[] } {
+  const errors: string[] = [];
+  const rules = defaultSecurityRules();
+  if (input === undefined || input === null) return { rules, errors };
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    return { rules, errors: ['security rules must be an object'] };
+  }
+  const obj = input as Record<string, unknown>;
+  const add = obj['additionalVulnerable'];
+  if (add !== undefined) {
+    if (!Array.isArray(add)) {
+      errors.push('additionalVulnerable must be an array');
+    } else {
+      add.forEach((r, i) => {
+        const label = `additionalVulnerable[${i}]`;
+        if (!r || typeof r !== 'object') {
+          errors.push(`${label} must be an object`);
+          return;
+        }
+        const rec = r as Record<string, unknown>;
+        const pkg = rec['package'];
+        const range = rec['range'];
+        const severity = rec['severity'];
+        if (typeof pkg !== 'string' || !pkg.trim() || pkg.trim().length > 214) {
+          errors.push(`${label}.package must be a non-empty string (max 214 chars)`);
+          return;
+        }
+        if (typeof range !== 'string' || !isValidRange(range)) {
+          errors.push(`${label}.range must be a valid range like "<4.17.21" or ">=1.0.0 <1.2.8"`);
+          return;
+        }
+        let sev: InspectionSeverity = 'warning';
+        if (severity !== undefined) {
+          if (severity !== 'info' && severity !== 'warning' && severity !== 'error') {
+            errors.push(`${label}.severity must be info|warning|error`);
+            return;
+          }
+          sev = severity;
+        }
+        const id = typeof rec['id'] === 'string' && rec['id'].trim() ? rec['id'].trim().slice(0, 120) : 'CUSTOM';
+        const note = typeof rec['note'] === 'string' ? rec['note'].slice(0, 500) : undefined;
+        rules.additionalVulnerable.push({ package: pkg.trim(), range: range.trim(), severity: sev, id, ...(note ? { note } : {}) });
+      });
+    }
+  }
+  const sup = obj['suppress'];
+  if (sup !== undefined) {
+    if (!Array.isArray(sup)) {
+      errors.push('suppress must be an array');
+    } else {
+      sup.forEach((s, i) => {
+        const label = `suppress[${i}]`;
+        if (!s || typeof s !== 'object') {
+          errors.push(`${label} must be an object`);
+          return;
+        }
+        const rec = s as Record<string, unknown>;
+        if (typeof rec['checker'] !== 'string' || !rec['checker'].trim() || rec['checker'].trim().length > 60) {
+          errors.push(`${label}.checker must be a non-empty string (max 60 chars)`);
+          return;
+        }
+        const out: SecuritySuppression = { checker: rec['checker'].trim() };
+        if (rec['file'] !== undefined) {
+          if (typeof rec['file'] !== 'string' || !rec['file'].trim() || rec['file'].trim().length > 500) {
+            errors.push(`${label}.file must be a non-empty string (max 500 chars)`);
+            return;
+          }
+          out.file = rec['file'].trim().replace(/\\/g, '/');
+        }
+        if (typeof rec['note'] === 'string' && rec['note'].trim()) {
+          out.note = rec['note'].trim().slice(0, 500);
+        }
+        rules.suppress.push(out);
+      });
+    }
+  }
+  return { rules, errors };
+}
+
+export type SecurityRulesSource = 'file' | 'default-missing' | 'default-corrupt';
+
+/**
+ * Load the project's security rules. Missing file → empty defaults
+ * (source 'default-missing'). Unparseable/invalid → empty defaults with
+ * a loud note (source 'default-corrupt') — never silent, never a 500.
+ */
+export function loadSecurityRules(root: string): { rules: SecurityRules; source: SecurityRulesSource; note: string } {
+  const fp = securityRulesFilePath(root);
+  if (!existsSync(fp)) {
+    return { rules: defaultSecurityRules(), source: 'default-missing', note: 'no .ai-factory/security-rules.json; no custom rules or exemptions' };
+  }
+  try {
+    const raw = JSON.parse(readFileSync(fp, 'utf8')) as unknown;
+    const { rules, errors } = validateSecurityRules(raw);
+    if (errors.length > 0) {
+      return {
+        rules: defaultSecurityRules(),
+        source: 'default-corrupt',
+        note: `security rules file invalid (${errors.join('; ')}); using empty defaults`,
+      };
+    }
+    return {
+      rules,
+      source: 'file',
+      note: `custom security rules from .ai-factory/security-rules.json (${rules.additionalVulnerable.length} custom rules, ${rules.suppress.length} exemptions)`,
+    };
+  } catch (e) {
+    return {
+      rules: defaultSecurityRules(),
+      source: 'default-corrupt',
+      note: `security rules file unreadable (${(e as Error).message}); using empty defaults`,
+    };
+  }
+}
+
+export function saveSecurityRules(root: string, input: unknown): SecurityRules {
+  const { rules, errors } = validateSecurityRules(input);
+  if (errors.length > 0) throw new InspectionConfigError(`invalid security rules: ${errors.join('; ')}`);
+  atomicWriteJson(securityRulesFilePath(root), rules);
+  return rules;
+}
+
+/** Drop security findings covered by the project's exemptions. */
+export function applySecuritySuppressions(findings: Finding[], rules: SecurityRules): Finding[] {
+  if (rules.suppress.length === 0) return findings;
+  return findings.filter((f) => {
+    if (f.checker !== 'secret-scan' && f.checker !== 'sast-patterns') return true;
+    return !rules.suppress.some((s) => {
+      if (s.checker !== f.checker) return false;
+      if (!s.file) return true;
+      if (s.file.endsWith('*')) return f.file.startsWith(s.file.slice(0, -1));
+      return s.file === f.file;
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// SCA — lockfile parsing + vulnerable-version matching
+// ---------------------------------------------------------------------------
+
+interface LockDep {
+  name: string;
+  version: string;
+}
+
+function parsePackageLockText(text: string): LockDep[] {
+  const data = JSON.parse(text) as Record<string, unknown>;
+  const out: LockDep[] = [];
+  const seen = new Set<string>();
+  const add = (name: string, version: unknown): void => {
+    if (typeof name !== 'string' || typeof version !== 'string' || !version) return;
+    const key = `${name}@${version}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ name, version });
+  };
+  const pkgs = data['packages'];
+  if (pkgs && typeof pkgs === 'object' && !Array.isArray(pkgs)) {
+    for (const [key, entry] of Object.entries(pkgs as Record<string, Record<string, unknown>>)) {
+      if (!key || !key.startsWith('node_modules/')) continue;
+      const name = key.split('node_modules/').pop() ?? '';
+      add(name, entry?.version);
+    }
+    return out;
+  }
+  // lockfileVersion 1: nested "dependencies".
+  const walk = (deps: unknown): void => {
+    if (!deps || typeof deps !== 'object' || Array.isArray(deps)) return;
+    for (const [name, entry] of Object.entries(deps as Record<string, Record<string, unknown>>)) {
+      add(name, entry?.version);
+      walk(entry?.dependencies);
+    }
+  };
+  walk(data['dependencies']);
+  return out;
+}
+
+/**
+ * Minimal pnpm-lock reader (line-based, only the `packages:` section).
+ * Understands v5 `/name/version:` and v6+/v9 `name@version:` (and the
+ * `/`-prefixed v6 form). Anything fancier falls back to "not matched" —
+ * the finding is then simply absent, and the skipped lockfile is disclosed.
+ */
+function parsePnpmLockText(text: string): LockDep[] {
+  const out: LockDep[] = [];
+  const seen = new Set<string>();
+  let inPackages = false;
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    if (/^packages:\s*$/.test(line)) {
+      inPackages = true;
+      continue;
+    }
+    if (inPackages && /^[^ \t#]/.test(line)) break; // next top-level section
+    if (!inPackages) continue;
+    if (/^\s*#/.test(line)) continue;
+    const m = /^  ([^ \t][^:]*):\s*$/.exec(line);
+    if (!m) continue;
+    let key = m[1].trim();
+    const paren = key.indexOf('(');
+    if (paren >= 0) key = key.slice(0, paren).trim();
+    if (key.endsWith('/')) key = key.slice(0, -1);
+    if (key.startsWith('/')) key = key.slice(1);
+    let name = '';
+    let version = '';
+    const at = key.lastIndexOf('@');
+    if (at > 0) {
+      name = key.slice(0, at);
+      version = key.slice(at + 1);
+    } else {
+      // v5 style: name/version
+      const slash = key.lastIndexOf('/');
+      if (slash > 0) {
+        name = key.slice(0, slash);
+        version = key.slice(slash + 1);
+      }
+    }
+    if (name && /^\d/.test(version)) {
+      const k = `${name}@${version}`;
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push({ name, version });
+      }
+    }
+  }
+  return out;
+}
+
+export interface VulnerableDependency {
+  name: string;
+  version: string;
+  /** Which lockfile declared it. */
+  source: string;
+  ruleId: string;
+  range: string;
+  severity: InspectionSeverity;
+  /** False for project-custom rules from security-rules.json. */
+  builtin: boolean;
+  note?: string;
+}
+
+export interface DependencyAudit {
+  scanned: boolean;
+  lockfiles: string[];
+  skipped: string[];
+  /** Unique name@version pairs across all lockfiles. */
+  total: number;
+  vulnerable: VulnerableDependency[];
+  /** Builtin blacklist snapshot date. */
+  snapshot: string;
+  snapshotNote: string;
+  note: string;
+}
+
+/**
+ * Audit declared dependencies against the vulnerable-version blacklist.
+ * Mirrors the license audit's honest posture: lockfile-declared versions
+ * only; no network; snapshot coverage lags the real advisory stream.
+ */
+export function auditDependencies(root: string, extraRules: VulnerableRule[] = []): DependencyAudit {
+  const deps: Array<LockDep & { source: string }> = [];
+  const lockfiles: string[] = [];
+  const skipped: string[] = [];
+  const seen = new Set<string>();
+  const consider = (file: string, parse: (text: string) => LockDep[]): void => {
+    const fp = join(root, file);
+    if (!existsSync(fp)) return;
+    let st: ReturnType<typeof statSync> | null = null;
+    try {
+      st = statSync(fp);
+    } catch {
+      /* ignore */
+    }
+    if (!st || !st.isFile() || st.size > 20 * 1024 * 1024) {
+      skipped.push(`${file}: too large or unreadable`);
+      return;
+    }
+    try {
+      for (const d of parse(readFileSync(fp, 'utf8'))) {
+        const k = `${d.name}@${d.version}`;
+        if (!seen.has(k)) {
+          seen.add(k);
+          deps.push({ ...d, source: file });
+        }
+      }
+      lockfiles.push(file);
+    } catch (e) {
+      skipped.push(`${file}: ${(e as Error).message}`);
+    }
+  };
+  consider('package-lock.json', parsePackageLockText);
+  consider('npm-shrinkwrap.json', parsePackageLockText);
+  consider('pnpm-lock.yaml', parsePnpmLockText);
+  const rules: Array<VulnerableRule & { builtin: boolean }> = [
+    ...BUILTIN_VULNERABLE.map((r) => ({ ...r, builtin: true })),
+    ...extraRules.map((r) => ({ ...r, builtin: false })),
+  ];
+  const vulnerable: VulnerableDependency[] = [];
+  for (const d of deps) {
+    for (const r of rules) {
+      if (r.package !== d.name) continue;
+      let hit = false;
+      try {
+        hit = versionInRange(d.version, r.range);
+      } catch {
+        hit = false;
+      }
+      if (hit) {
+        vulnerable.push({
+          name: d.name,
+          version: d.version,
+          source: d.source,
+          ruleId: r.id,
+          range: r.range,
+          severity: r.severity,
+          builtin: r.builtin,
+          ...(r.note ? { note: r.note } : {}),
+        });
+      }
+    }
+  }
+  vulnerable.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return {
+    scanned: true,
+    lockfiles,
+    skipped,
+    total: deps.length,
+    vulnerable,
+    snapshot: SECURITY_BLACKLIST_SNAPSHOT,
+    snapshotNote: SECURITY_BLACKLIST_SOURCE,
+    note: 'Lockfile-declared versions matched against a hand-maintained blacklist snapshot; coverage lags the real advisory stream — not a substitute for a live feed.',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Security scan entry point (no baseline / history side effects)
+// ---------------------------------------------------------------------------
+
+export interface SecurityScanResult {
+  filesScanned: number;
+  findings: Finding[];
+  dependencies: DependencyAudit;
+  rulesSource: SecurityRulesSource;
+  rulesNote: string;
+}
+
+/**
+ * Run the security scanners over a root without writing anything:
+ * no baseline file, no history — safe to call from the quality gate.
+ * Findings are baseline-independent (a secret is never "baselined away"
+ * for triage purposes); the full inspection's baseline machinery still
+ * applies to how they are counted as "new".
+ */
+export function runSecurityScan(root: string): SecurityScanResult {
+  const { rules, source, note } = loadSecurityRules(root);
+  const files = collectSourceFiles(root);
+  const checkers: Checker[] = [secretScanChecker, sastPatternsChecker];
+  const raw: Finding[] = [];
+  for (const f of files) {
+    const lines = readLines(f.abs);
+    if (!lines) continue;
+    for (const c of checkers) {
+      try {
+        raw.push(...c.run({ file: f.rel, lines }));
+      } catch {
+        // One bad checker/file must not abort the scan; mirrors runInspection.
+      }
+    }
+  }
+  const findings = sortFindings(applySecuritySuppressions(raw, rules));
+  const dependencies = auditDependencies(root, rules.additionalVulnerable);
+  return { filesScanned: files.length, findings, dependencies, rulesSource: source, rulesNote: note };
+}
+
+// ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
 
@@ -644,6 +1403,8 @@ export interface InspectionRunResult {
   baselineEstablished: boolean;
   baselineExists: boolean;
   licenses: LicenseAudit | null;
+  /** Dependency vulnerability audit (null when profile.dependencyAudit is off). */
+  dependencies: DependencyAudit | null;
 }
 
 export interface BaselineData {
@@ -682,20 +1443,23 @@ export function runInspection(root: string, projectId: string): InspectionRunRes
   const { profile, source, note } = loadInspectionProfile(root);
   const checkers = builtinCheckers(profile);
   const files = collectSourceFiles(root);
-  const findings: Finding[] = [];
+  const collected: Finding[] = [];
   for (const f of files) {
     const lines = readLines(f.abs);
     if (!lines) continue;
     for (const c of checkers) {
       try {
-        findings.push(...c.run({ file: f.rel, lines }));
+        collected.push(...c.run({ file: f.rel, lines }));
       } catch {
         // One bad checker/file must not abort the run; it just yields
         // nothing for that file. Documented, deterministic.
       }
     }
   }
-  const sorted = sortFindings(findings);
+  // Security findings additionally honor the project's exemption list
+  // (security-rules.json). Other checkers are unaffected.
+  const secRules = loadSecurityRules(root).rules;
+  const sorted = sortFindings(applySecuritySuppressions(collected, secRules));
   const byChecker: Record<string, number> = {};
   let info = 0;
   let warning = 0;
@@ -707,6 +1471,7 @@ export function runInspection(root: string, projectId: string): InspectionRunRes
     else error++;
   }
   const licenses = profile.licenseAudit ? auditLicenses(root) : null;
+  const dependencies = profile.dependencyAudit ? auditDependencies(root, secRules.additionalVulnerable) : null;
 
   const baseline = loadBaseline(root);
   let newFindings: Finding[] = [];
@@ -736,6 +1501,7 @@ export function runInspection(root: string, projectId: string): InspectionRunRes
     baselineEstablished,
     baselineExists: baseline !== null || baselineEstablished,
     licenses,
+    dependencies,
   };
 }
 
@@ -761,6 +1527,8 @@ export interface InspectionHistoryEntry {
   licenseTotal: number | null;
   licenseCopyleft: number | null;
   licenseUnknown: number | null;
+  /** error-severity security findings + error-severity vulnerable deps; null when the dependency audit is off. */
+  securityError: number | null;
 }
 
 const MAX_HISTORY = 60;
@@ -803,6 +1571,10 @@ export class InspectionHistoryStore {
 }
 
 export function historyEntryOf(r: InspectionRunResult): InspectionHistoryEntry {
+  const secFindings = r.findings.filter(
+    (f) => (f.checker === 'secret-scan' || f.checker === 'sast-patterns') && f.severity === 'error',
+  );
+  const depVuln = r.dependencies?.vulnerable.filter((v) => v.severity === 'error').length ?? 0;
   return {
     runId: r.runId,
     projectId: r.projectId,
@@ -821,5 +1593,6 @@ export function historyEntryOf(r: InspectionRunResult): InspectionHistoryEntry {
     licenseTotal: r.licenses ? r.licenses.total : null,
     licenseCopyleft: r.licenses ? r.licenses.copyleft.length : null,
     licenseUnknown: r.licenses ? r.licenses.unknown.length : null,
+    securityError: secFindings.length + depVuln,
   };
 }

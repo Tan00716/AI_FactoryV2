@@ -23,6 +23,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { RepoMapError, RepoMapService } from '@ai-factory/repomap';
 import type { RouteContext } from './context';
+import { isIgnoredSync } from '../ignore-gate';
 
 const PREFIX = '/api/repomap';
 
@@ -30,7 +31,13 @@ const PREFIX = '/api/repomap';
 let service: RepoMapService | null = null;
 
 export function getRepoMapService(): RepoMapService {
-  if (!service) service = new RepoMapService();
+  // Task ②: the two-tier ignore gate (forIndex=true) — the map is built
+  // on the code index, so ignored files never enter it.
+  if (!service) {
+    service = new RepoMapService({
+      ignoreCheck: (root, abs, isDir) => isIgnoredSync(root, abs, true, isDir),
+    });
+  }
   return service;
 }
 

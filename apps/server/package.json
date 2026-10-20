@@ -3,7 +3,7 @@
   "main": "dist/index.js",
   "name": "@ai-factory/server",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && rm -rf dist/recipes/builtin && mkdir -p dist/recipes/builtin && cp src/recipes/builtin/*.json dist/recipes/builtin/",
     "start": "node dist/index.js"
   },
   "version": "0.1.0",
@@ -40,6 +40,7 @@
     "@ai-factory/runtime": "0.1.0",
     "@ai-factory/search": "0.1.0",
     "@ai-factory/codeindex": "0.1.0",
+    "@ai-factory/ignores": "0.1.0",
     "@ai-factory/collab": "0.1.0",
     "@ai-factory/repomap": "0.1.0",
     "@ai-factory/plugins": "0.1.0",

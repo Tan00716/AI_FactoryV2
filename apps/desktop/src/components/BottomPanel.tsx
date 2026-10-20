@@ -1,20 +1,22 @@
 import { useEffect, useState } from 'react';
 import { api, AuditRecord } from '../api';
 import { useLang } from '../i18n';
+import { ProblemsPanel } from './ProblemsPanel';
 
-const TABS = ['AI Activity', 'Terminal', 'Tests', 'Logs', 'Evidence'] as const;
+const TABS = ['AI Activity', 'Terminal', 'Tests', 'Problems', 'Logs', 'Evidence'] as const;
 
 /** Tab 标题 i18n：内部标识保持英文原值，展示层翻译。 */
 const TAB_TITLE_KEYS: Record<string, string> = {
   'AI Activity': 'bottom.tab.activity',
   Terminal: 'bottom.tab.terminal',
   Tests: 'bottom.tab.tests',
+  Problems: 'bottom.tab.problems',
   Logs: 'bottom.tab.logs',
   Evidence: 'bottom.tab.evidence',
 };
 
 /** §3 bottom panel. AI Activity streams the immutable audit log (§70). */
-export function BottomPanel() {
+export function BottomPanel({ projectId }: { projectId: string }) {
   const { t } = useLang();
   const tabTitle = (name: string): string => t(TAB_TITLE_KEYS[name] ?? name);
   const [tab, setTab] = useState<(typeof TABS)[number]>('AI Activity');
@@ -143,6 +145,7 @@ export function BottomPanel() {
           </div>
         )}
         {tab === 'Tests' && <div className="muted">{t('bottom.testsEmpty')} <span className="pill">{t('bottom.stubBadge')}</span></div>}
+        {tab === 'Problems' && <ProblemsPanel projectId={projectId} />}
         {tab === 'Logs' && <div className="muted">{t('bottom.logsEmpty')} <span className="pill">{t('bottom.stubBadge')}</span></div>}
         {tab === 'Evidence' && <div className="muted">{t('bottom.evidenceEmpty')}</div>}
       </div>

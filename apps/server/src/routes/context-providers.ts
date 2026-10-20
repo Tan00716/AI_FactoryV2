@@ -36,6 +36,8 @@ export { CONTEXT_PROVIDER_METAS };
 import { setRuntimeContextResolver } from './runtime';
 import { getTerminalTailForContext } from './terminal';
 import { qualityGateStore } from './quality';
+import { isIgnoredSync } from '../ignore-gate';
+import { problemDiagnosticsStore } from '../problem-matchers';
 
 const PREFIX = '/api/context-providers';
 
@@ -80,9 +82,38 @@ function defaultDeps(): ProviderDeps {
           at: r.at,
         });
       }
+      // Problem-matcher diagnostics (task ③): structured file:line:col
+      // items parsed from terminal / quality-gate / scheduler output.
+      // Same honesty rule: only what was actually parsed — never invented.
+      try {
+        for (const d of problemDiagnosticsStore.all(projectId).slice(-50)) {
+          out.push({
+            source: 'problem-matcher',
+            kind: `${d.source}:${d.matcher}`,
+            ok: d.severity !== 'error',
+            detail:
+              `${d.file}:${d.line}${d.column ? `:${d.column}` : ''} [${d.severity}] ${d.message}`.slice(0, 500),
+            at: d.at,
+          });
+        }
+      } catch {
+        /* matcher store is best-effort context, never blocks @problems */
+      }
       return out;
     },
     openFiles: () => [...registeredOpenFiles],
+    isIgnored: (absPath: string) => {
+      // Resolve the jailed workspace root lazily per call (roots come
+      // from env and never change mid-process); a path outside the root
+      // is answered by the gate itself (not its jurisdiction → false).
+      let root: string | null;
+      try {
+        root = resolveJailedRoot(null);
+      } catch {
+        return false;
+      }
+      return isIgnoredSync(root, absPath, false);
+    },
   };
 }
 

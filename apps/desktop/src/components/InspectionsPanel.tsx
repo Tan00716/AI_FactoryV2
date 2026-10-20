@@ -19,6 +19,7 @@ export interface InspectionProfile {
   maxFunctionLines: number;
   checkers: Record<string, boolean>;
   licenseAudit: boolean;
+  dependencyAudit: boolean;
 }
 
 export interface InspectionTotals {
@@ -53,6 +54,50 @@ export interface InspectionRunView {
   newFindings: InspectionFinding[];
   baselineEstablished: boolean;
   licenses: LicenseAuditView | null;
+  securityFindings: InspectionFinding[];
+  dependencies: DependencyAuditView | null;
+}
+
+export interface VulnerableDepView {
+  name: string;
+  version: string;
+  source: string;
+  ruleId: string;
+  range: string;
+  severity: 'info' | 'warning' | 'error';
+  builtin: boolean;
+  note?: string;
+}
+
+export interface DependencyAuditView {
+  scanned: boolean;
+  lockfiles: string[];
+  skipped: string[];
+  total: number;
+  vulnerable: VulnerableDepView[];
+  snapshot: string;
+  snapshotNote: string;
+  note: string;
+}
+
+export interface VulnerableRuleView {
+  package: string;
+  range: string;
+  severity: 'info' | 'warning' | 'error';
+  id: string;
+  note?: string;
+}
+
+export interface SecuritySuppressionView {
+  checker: string;
+  file?: string;
+  note?: string;
+}
+
+export interface SecurityRulesView {
+  version: 1;
+  additionalVulnerable: VulnerableRuleView[];
+  suppress: SecuritySuppressionView[];
 }
 
 export interface InspectionHistoryEntry {
@@ -77,6 +122,14 @@ export interface InspectionsApi {
   run(projectId: string, root?: string): Promise<InspectionRunView>;
   history(projectId: string): Promise<InspectionHistoryEntry[]>;
   rebaseline(projectId: string, root?: string): Promise<{ baseline: { exists: boolean; establishedAt?: string; signatures?: number } }>;
+  securityRules(projectId: string, root?: string): Promise<{
+    root: string;
+    rules: SecurityRulesView;
+    rulesSource: string;
+    rulesNote: string;
+    builtIn: { snapshot: string; count: number };
+  }>;
+  saveSecurityRules(projectId: string, root: string, rules: SecurityRulesView): Promise<SecurityRulesView>;
 }
 
 export function createInspectionsApi(base: string): InspectionsApi {
@@ -118,6 +171,16 @@ export function createInspectionsApi(base: string): InspectionsApi {
           body: JSON.stringify({ projectId, ...(root ? { root } : {}) }),
         },
       ).then((r) => ({ baseline: r.baseline })),
+    securityRules: (projectId, root) =>
+      req<{ projectId: string; root: string; rules: SecurityRulesView; rulesSource: string; rulesNote: string; builtIn: { snapshot: string; count: number } }>(
+        `/inspections/security-rules${q(projectId, root)}`,
+      ),
+    saveSecurityRules: (projectId, root, rules) =>
+      req<{ projectId: string; root: string; rules: SecurityRulesView }>('/inspections/security-rules', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, root, rules }),
+      }).then((r) => r.rules),
   };
 }
 
@@ -169,7 +232,13 @@ function LineChart(props: { series: Array<{ label: string; color: string; points
   );
 }
 
-const CHECKER_IDS = ['todo-fixme', 'long-file', 'long-function', 'console-log'];
+const CHECKER_IDS = ['todo-fixme', 'long-file', 'long-function', 'console-log', 'secret-scan', 'sast-patterns'];
+
+const SEV_COLOR: Record<'info' | 'warning' | 'error', string> = {
+  error: '#f85149',
+  warning: '#d29922',
+  info: '#58a6ff',
+};
 
 export function InspectionsPanel({ api, projectId }: { api: InspectionsApi; projectId: string }) {
   const { t } = useLang();
@@ -184,19 +253,27 @@ export function InspectionsPanel({ api, projectId }: { api: InspectionsApi; proj
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [secRules, setSecRules] = useState<SecurityRulesView | null>(null);
+  const [secRulesNote, setSecRulesNote] = useState('');
+  const [secBuiltin, setSecBuiltin] = useState<{ snapshot: string; count: number }>({ snapshot: '', count: 0 });
+  const [newRule, setNewRule] = useState({ package: '', range: '', id: '', severity: 'warning' as 'info' | 'warning' | 'error' });
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [ov, hist] = await Promise.all([
+      const [ov, hist, sec] = await Promise.all([
         api.overview(projectId, root.trim() || undefined),
         api.history(projectId),
+        api.securityRules(projectId, root.trim() || undefined),
       ]);
       setProfile(ov.profile);
       setProfileSource(ov.profileSource);
       setProfileNote(ov.profileNote);
       setBaseline(ov.baseline);
       setHistory(hist);
+      setSecRules(sec.rules);
+      setSecRulesNote(sec.rulesNote);
+      setSecBuiltin(sec.builtIn);
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : t('inspections.loadFailed'));
@@ -273,6 +350,99 @@ export function InspectionsPanel({ api, projectId }: { api: InspectionsApi; proj
     return [...map.entries()];
   }, [run]);
 
+  /** Security findings grouped by severity (error first), stable for the Security section. */
+  const secBySeverity = useMemo(() => {
+    const findings = run?.securityFindings ?? [];
+    const order: Array<'error' | 'warning' | 'info'> = ['error', 'warning', 'info'];
+    return order
+      .map((sev) => [sev, findings.filter((f) => f.severity === sev)] as const)
+      .filter(([, list]) => list.length > 0);
+  }, [run]);
+
+  const secErrCount = useMemo(
+    () => (run?.securityFindings ?? []).filter((f) => f.severity === 'error').length,
+    [run],
+  );
+  const secWarnCount = useMemo(
+    () => (run?.securityFindings ?? []).filter((f) => f.severity === 'warning').length,
+    [run],
+  );
+
+  /** Add a project exemption for one finding, then re-run to refresh the list. */
+  const suppressFinding = useCallback(
+    async (f: InspectionFinding) => {
+      if (!secRules) return;
+      try {
+        const rules: SecurityRulesView = {
+          version: 1,
+          additionalVulnerable: secRules.additionalVulnerable,
+          suppress: [...secRules.suppress, { checker: f.checker, file: f.file }],
+        };
+        const saved = await api.saveSecurityRules(projectId, root.trim() || '', rules);
+        setSecRules(saved);
+        setMsg(t('inspections.secSuppressed'));
+      } catch (e) {
+        setMsg(t('inspections.saveFailed', { message: e instanceof Error ? e.message : String(e) }));
+      }
+    },
+    [api, projectId, root, secRules, t],
+  );
+
+  const removeSuppression = useCallback(
+    async (idx: number) => {
+      if (!secRules) return;
+      try {
+        const rules: SecurityRulesView = {
+          version: 1,
+          additionalVulnerable: secRules.additionalVulnerable,
+          suppress: secRules.suppress.filter((_, i) => i !== idx),
+        };
+        setSecRules(await api.saveSecurityRules(projectId, root.trim() || '', rules));
+      } catch (e) {
+        setMsg(t('inspections.saveFailed', { message: e instanceof Error ? e.message : String(e) }));
+      }
+    },
+    [api, projectId, root, secRules, t],
+  );
+
+  const addCustomRule = useCallback(async () => {
+    if (!secRules || !newRule.package.trim() || !newRule.range.trim()) return;
+    try {
+      const rule: VulnerableRuleView = {
+        package: newRule.package.trim(),
+        range: newRule.range.trim(),
+        id: newRule.id.trim() || 'CUSTOM',
+        severity: newRule.severity,
+      };
+      const rules: SecurityRulesView = {
+        version: 1,
+        additionalVulnerable: [...secRules.additionalVulnerable, rule],
+        suppress: secRules.suppress,
+      };
+      setSecRules(await api.saveSecurityRules(projectId, root.trim() || '', rules));
+      setNewRule({ package: '', range: '', id: '', severity: 'warning' });
+    } catch (e) {
+      setMsg(t('inspections.saveFailed', { message: e instanceof Error ? e.message : String(e) }));
+    }
+  }, [api, projectId, root, secRules, newRule, t]);
+
+  const removeCustomRule = useCallback(
+    async (idx: number) => {
+      if (!secRules) return;
+      try {
+        const rules: SecurityRulesView = {
+          version: 1,
+          additionalVulnerable: secRules.additionalVulnerable.filter((_, i) => i !== idx),
+          suppress: secRules.suppress,
+        };
+        setSecRules(await api.saveSecurityRules(projectId, root.trim() || '', rules));
+      } catch (e) {
+        setMsg(t('inspections.saveFailed', { message: e instanceof Error ? e.message : String(e) }));
+      }
+    },
+    [api, projectId, root, secRules, t],
+  );
+
   const card = (label: string, value: string, sub?: string) => (
     <div className="card" style={{ padding: '10px 12px', minWidth: 0 }}>
       <div className="muted" style={{ fontSize: 11 }}>{label}</div>
@@ -347,6 +517,14 @@ export function InspectionsPanel({ api, projectId }: { api: InspectionsApi; proj
                 onChange={(e) => setProfile({ ...profile, licenseAudit: e.target.checked })}
               />{' '}
               {t('inspections.licenseAudit')}
+            </label>
+            <label style={{ fontSize: 12 }}>
+              <input
+                type="checkbox"
+                checked={profile.dependencyAudit !== false}
+                onChange={(e) => setProfile({ ...profile, dependencyAudit: e.target.checked })}
+              />{' '}
+              {t('inspections.dependencyAudit')}
             </label>
           </div>
           <div style={{ display: 'flex', gap: 12, marginTop: 8, flexWrap: 'wrap' }}>
@@ -438,8 +616,152 @@ export function InspectionsPanel({ api, projectId }: { api: InspectionsApi; proj
               <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>{run.licenses.note}</div>
             </>
           )}
+
+          {/* Security section (wave2-④): severity-grouped findings + dependency audit. */}
+          <div className="muted" style={{ fontSize: 12, margin: '12px 0 6px' }}>{t('inspections.securityTitle')}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 8 }}>
+            {card(t('inspections.secErrors'), String(secErrCount))}
+            {card(t('inspections.secWarnings'), String(secWarnCount))}
+            {card(
+              t('inspections.secVulnTitle'),
+              run.dependencies ? String(run.dependencies.vulnerable.length) : '—',
+              run.dependencies ? t('inspections.secDepsScanned', { n: run.dependencies.total }) : t('inspections.secAuditOff'),
+            )}
+          </div>
+          {secBySeverity.length === 0 ? (
+            <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>{t('inspections.secNoFindings')}</div>
+          ) : (
+            secBySeverity.map(([sev, findings]) => (
+              <details key={sev} className="card" style={{ padding: '8px 12px', marginBottom: 6, marginTop: 6 }} open={sev === 'error'}>
+                <summary style={{ cursor: 'pointer', fontSize: 13 }}>
+                  <span style={{ color: SEV_COLOR[sev], fontWeight: 600 }}>{sev.toUpperCase()}</span>{' '}
+                  <span className="muted">({findings.length})</span>
+                </summary>
+                <ul style={{ fontSize: 12, margin: '6px 0 0', paddingLeft: 18 }}>
+                  {findings.slice(0, 60).map((f) => (
+                    <li key={f.id} style={{ marginBottom: 4 }}>
+                      <span className="muted">{f.file}{f.line ? `:${f.line}` : ''}</span> — {f.message}{' '}
+                      <button
+                        onClick={() => void suppressFinding(f)}
+                        title={t('inspections.secSuppressHint')}
+                        style={{ fontSize: 11, marginLeft: 4 }}
+                      >
+                        {t('inspections.secSuppress')}
+                      </button>
+                    </li>
+                  ))}
+                  {findings.length > 60 && <li className="muted">…{t('inspections.more', { n: findings.length - 60 })}</li>}
+                </ul>
+              </details>
+            ))
+          )}
+          {run.dependencies && (
+            <div className="card" style={{ padding: '8px 12px', marginTop: 6, fontSize: 12 }}>
+              <div>
+                <strong>{t('inspections.secVulnTitle')}:</strong>{' '}
+                <span className="muted">{t('inspections.secSnapshot', { date: run.dependencies.snapshot, n: secBuiltin.count })}</span>
+              </div>
+              {run.dependencies.vulnerable.length === 0 ? (
+                <div className="muted" style={{ marginTop: 4 }}>{t('inspections.secVulnNone')}</div>
+              ) : (
+                <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                  {run.dependencies.vulnerable.slice(0, 40).map((v) => (
+                    <li key={`${v.name}@${v.version}`}>
+                      <span style={{ color: SEV_COLOR[v.severity] }}>●</span>{' '}
+                      {v.name}@{v.version} — {v.ruleId} ({v.range}){' '}
+                      <span className="muted">
+                        {v.builtin ? t('inspections.secBuiltin') : t('inspections.secCustom')}
+                        {v.note ? ` — ${v.note}` : ''}
+                      </span>
+                    </li>
+                  ))}
+                  {run.dependencies.vulnerable.length > 40 && (
+                    <li className="muted">…{t('inspections.more', { n: run.dependencies.vulnerable.length - 40 })}</li>
+                  )}
+                </ul>
+              )}
+              {run.dependencies.skipped.length > 0 && (
+                <div className="muted" style={{ marginTop: 4 }}>
+                  {t('inspections.secSkipped', { files: run.dependencies.skipped.join('; ') })}
+                </div>
+              )}
+              <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>{run.dependencies.note}</div>
+            </div>
+          )}
         </>
       )}
+
+      {/* Rules & exemptions management (works without a run). */}
+      <div className="muted" style={{ fontSize: 12, margin: '16px 0 6px' }}>{t('inspections.secRulesTitle')}</div>
+      <div className="card" style={{ padding: '10px 12px', marginBottom: 12, fontSize: 12 }}>
+        <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>{secRulesNote || t('inspections.secRulesNote')}</div>
+        <div style={{ marginBottom: 8 }}>
+          <strong>{t('inspections.secSuppressions')}</strong>
+          {secRules && secRules.suppress.length === 0 ? (
+            <span className="muted"> — {t('inspections.secNoSuppressions')}</span>
+          ) : (
+            <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {(secRules?.suppress ?? []).map((s, i) => (
+                <li key={i}>
+                  <span className="muted">{s.checker}</span>{s.file ? ` · ${s.file}` : ''}{s.note ? ` — ${s.note}` : ''}{' '}
+                  <button onClick={() => void removeSuppression(i)} style={{ fontSize: 11 }}>
+                    {t('inspections.secRemove')}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div>
+          <strong>{t('inspections.secCustomRules')}</strong>
+          {secRules && secRules.additionalVulnerable.length === 0 ? (
+            <span className="muted"> — {t('inspections.secNoCustomRules')}</span>
+          ) : (
+            <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {(secRules?.additionalVulnerable ?? []).map((r, i) => (
+                <li key={i}>
+                  {r.package} <span className="muted">{r.range}</span> — {r.id}{' '}
+                  <button onClick={() => void removeCustomRule(i)} style={{ fontSize: 11 }}>
+                    {t('inspections.secRemove')}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+          <input
+            placeholder={t('inspections.secPkg')}
+            value={newRule.package}
+            onChange={(e) => setNewRule({ ...newRule, package: e.target.value })}
+            style={{ width: 140 }}
+          />
+          <input
+            placeholder={t('inspections.secRange')}
+            value={newRule.range}
+            onChange={(e) => setNewRule({ ...newRule, range: e.target.value })}
+            style={{ width: 130 }}
+          />
+          <input
+            placeholder={t('inspections.secId')}
+            value={newRule.id}
+            onChange={(e) => setNewRule({ ...newRule, id: e.target.value })}
+            style={{ width: 110 }}
+          />
+          <select
+            value={newRule.severity}
+            onChange={(e) => setNewRule({ ...newRule, severity: e.target.value as 'info' | 'warning' | 'error' })}
+          >
+            <option value="info">info</option>
+            <option value="warning">warning</option>
+            <option value="error">error</option>
+          </select>
+          <button onClick={() => void addCustomRule()}>{t('inspections.secAddRule')}</button>
+        </div>
+        <div className="muted" style={{ fontSize: 11, marginTop: 8, lineHeight: 1.6 }}>
+          {t('inspections.securityNote')}
+        </div>
+      </div>
 
       <div className="muted" style={{ fontSize: 12, margin: '16px 0 6px' }}>{t('inspections.trend')}</div>
       <div className="card" style={{ padding: 8 }}>

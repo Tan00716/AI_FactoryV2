@@ -32,6 +32,12 @@
  *
  * This module is pure node builtins (+ type-only imports): tests may
  * import it straight from src under node's type-stripping ESM loader.
+ *
+ * Coverage linkage (task ①, second strengthening round): the config
+ * carries an optional `coverage` field ({ report, failOnDropBelow }).
+ * Only the shape lives here; parsing/storage live in coverage.ts and
+ * the run-time linkage in routes/quality.ts (they are dist-only
+ * modules, so this src-importable module stays import-free).
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -40,6 +46,27 @@ import { resolve } from 'node:path';
 export type QualityGateKind = 'lint' | 'test';
 
 export const QUALITY_GATE_KINDS: QualityGateKind[] = ['lint', 'test'];
+
+/** Coverage linkage (Coverage Gutters-style; see coverage.ts). */
+export interface QualityGateCoverageConfig {
+  /** Report file path (lcov/cobertura/v8); '' = coverage linkage disabled. */
+  report: string;
+  /** 0..1 — after a successful test run, line coverage below this blocks
+   * the run (rides the existing blockOnFailure flag). 0 = never blocks. */
+  failOnDropBelow: number;
+}
+
+/** Security-scan categories that can block a gate run (wave2-④). */
+export type SecurityFailOnCategory = 'secret' | 'sast' | 'sca';
+
+export const SECURITY_FAIL_ON_CATEGORIES: SecurityFailOnCategory[] = ['secret', 'sast', 'sca'];
+
+/** Security scan linkage (deterministic scanners in inspections.ts). */
+export interface QualityGateSecurityConfig {
+  /** Categories whose error-severity findings block the run.
+   * Empty array = security scan not run by the gate. */
+  failOn: SecurityFailOnCategory[];
+}
 
 /** Per-project gate configuration. */
 export interface QualityGateConfig {
@@ -53,6 +80,14 @@ export interface QualityGateConfig {
   runOnEdit: boolean;
   /** When true, a failing gate emits a HIGH notification + marks the API response blocked. */
   blockOnFailure: boolean;
+  /** Test coverage report linkage; null = no coverage parsing after runs.
+   * Validated inline here (not via coverage.ts) so this module stays
+   * free of value imports — tests import it from src under node's
+   * type-stripping loader (AGENTS.md dual-mode import rule). */
+  coverage: QualityGateCoverageConfig | null;
+  /** Security scan linkage; failOn empty = no security gate. Same
+   * inline-validation + import-free rationale as coverage above. */
+  security: QualityGateSecurityConfig;
 }
 
 export interface QualityGateConfigInput {
@@ -61,6 +96,8 @@ export interface QualityGateConfigInput {
   timeoutMs?: unknown;
   runOnEdit?: unknown;
   blockOnFailure?: unknown;
+  coverage?: unknown;
+  security?: unknown;
 }
 
 export const DEFAULT_QUALITY_TIMEOUT_MS = 120_000;
@@ -90,7 +127,67 @@ export function defaultQualityGateConfig(): QualityGateConfig {
     timeoutMs: DEFAULT_QUALITY_TIMEOUT_MS,
     runOnEdit: false,
     blockOnFailure: false,
+    coverage: null,
+    security: { failOn: [] },
   };
+}
+
+/** Structural validation for the coverage linkage (kept inline: no imports). */
+function checkCoverageConfig(input: unknown, errors: string[]): QualityGateCoverageConfig | null {
+  if (input === undefined || input === null) return null;
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    errors.push('coverage must be an object');
+    return null;
+  }
+  const raw = input as { report?: unknown; failOnDropBelow?: unknown };
+  let report = '';
+  if (raw.report !== undefined && raw.report !== null) {
+    if (typeof raw.report !== 'string') {
+      errors.push('coverage.report must be a string');
+    } else {
+      report = raw.report.trim();
+      if (report.length > 4096) errors.push('coverage.report too long (max 4096 chars)');
+    }
+  }
+  let failOnDropBelow = 0;
+  if (raw.failOnDropBelow !== undefined && raw.failOnDropBelow !== null) {
+    if (
+      typeof raw.failOnDropBelow !== 'number' ||
+      !Number.isFinite(raw.failOnDropBelow) ||
+      raw.failOnDropBelow < 0 ||
+      raw.failOnDropBelow > 1
+    ) {
+      errors.push('coverage.failOnDropBelow must be a number between 0 and 1');
+    } else {
+      failOnDropBelow = raw.failOnDropBelow;
+    }
+  }
+  return errors.length > 0 ? null : { report, failOnDropBelow };
+}
+
+/** Structural validation for the security linkage (kept inline: no imports). */
+function checkSecurityConfig(input: unknown, errors: string[]): QualityGateSecurityConfig {
+  if (input === undefined || input === null) return { failOn: [] };
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    errors.push('security must be an object');
+    return { failOn: [] };
+  }
+  const raw = input as { failOn?: unknown };
+  const fo = raw.failOn;
+  if (fo === undefined || fo === null) return { failOn: [] };
+  if (!Array.isArray(fo)) {
+    errors.push('security.failOn must be an array');
+    return { failOn: [] };
+  }
+  const out: SecurityFailOnCategory[] = [];
+  for (const c of fo) {
+    if (typeof c !== 'string' || !SECURITY_FAIL_ON_CATEGORIES.includes(c as SecurityFailOnCategory)) {
+      errors.push(`security.failOn entries must be one of ${SECURITY_FAIL_ON_CATEGORIES.join('|')}`);
+      return { failOn: [] };
+    }
+    if (!out.includes(c as SecurityFailOnCategory)) out.push(c as SecurityFailOnCategory);
+  }
+  return { failOn: out };
 }
 
 function checkCommand(label: string, v: unknown, errors: string[]): string {
@@ -135,6 +232,8 @@ export function validateQualityGateConfig(input: QualityGateConfigInput): {
   for (const [label, v] of [['runOnEdit', input.runOnEdit], ['blockOnFailure', input.blockOnFailure]] as const) {
     if (v !== undefined && typeof v !== 'boolean') errors.push(`${label} must be a boolean`);
   }
+  const coverage = checkCoverageConfig(input.coverage, errors);
+  const security = checkSecurityConfig(input.security, errors);
   return {
     config: {
       lintCmd,
@@ -142,6 +241,8 @@ export function validateQualityGateConfig(input: QualityGateConfigInput): {
       timeoutMs,
       runOnEdit: input.runOnEdit === true,
       blockOnFailure: input.blockOnFailure === true,
+      coverage,
+      security,
     },
     errors,
   };
@@ -176,13 +277,29 @@ function isValidRecord(r: unknown): r is ProjectQualityRecord {
   const rec = r as { config?: unknown; lastRun?: unknown };
   if (!rec.config || typeof rec.config !== 'object') return false;
   const c = rec.config as Record<string, unknown>;
-  return (
-    typeof c.lintCmd === 'string' &&
-    typeof c.testCmd === 'string' &&
-    typeof c.timeoutMs === 'number' &&
-    typeof c.runOnEdit === 'boolean' &&
-    typeof c.blockOnFailure === 'boolean'
-  );
+  if (
+    typeof c.lintCmd !== 'string' ||
+    typeof c.testCmd !== 'string' ||
+    typeof c.timeoutMs !== 'number' ||
+    typeof c.runOnEdit !== 'boolean' ||
+    typeof c.blockOnFailure !== 'boolean'
+  ) {
+    return false;
+  }
+  const cov = c.coverage;
+  if (cov !== null && cov !== undefined) {
+    if (typeof cov !== 'object') return false;
+    const o = cov as Record<string, unknown>;
+    if (
+      typeof o.report !== 'string' ||
+      typeof o.failOnDropBelow !== 'number' ||
+      o.failOnDropBelow < 0 ||
+      o.failOnDropBelow > 1
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export class QualityGateStore {
@@ -221,7 +338,13 @@ export class QualityGateStore {
 
   /** Config for a project; defaults (everything disabled) when unset. */
   get(projectId: string): QualityGateConfig {
-    return this.load().projects[projectId]?.config ?? defaultQualityGateConfig();
+    const config = this.load().projects[projectId]?.config;
+    if (!config) return defaultQualityGateConfig();
+    // Backward compatibility: stores written before the coverage/security
+    // fields existed have no keys for them — normalize to disabled.
+    if (config.coverage === undefined) config.coverage = null;
+    if (config.security === undefined) config.security = { failOn: [] };
+    return config;
   }
 
   getLastRun(projectId: string): Record<QualityGateKind, QualityGateLastRun | null> {

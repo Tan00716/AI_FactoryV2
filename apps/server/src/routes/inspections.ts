@@ -7,13 +7,16 @@
  *   POST /api/inspections/run                  {projectId, root?} — run now (operator)
  *   GET  /api/inspections/history?projectId=   run history for the trend board (viewer)
  *   POST /api/inspections/baseline             {projectId, root?} — re-baseline to current findings (operator)
+ *   GET  /api/inspections/security-rules?projectId=&root=   security rules + exemptions (viewer)
+ *   PUT  /api/inspections/security-rules       {projectId, root?, rules} — save (operator)
  *
  * RBAC: the centralized gate (auth.ts requiredRoleFor) gives GET → viewer
  * and every other method → operator for this prefix — no auth.ts change
  * needed.
  *
  * Audit: INSPECTION_PROFILE_UPDATED / INSPECTION_RUN /
- * INSPECTION_BASELINE_UPDATED. The first-ever run for a root establishes
+ * INSPECTION_BASELINE_UPDATED / SECURITY_SCAN_RUN /
+ * SECURITY_RULES_UPDATED. The first-ever run for a root establishes
  * the baseline automatically and records INSPECTION_BASELINE_UPDATED.
  *
  * Honest boundary (mirrors inspections.ts): a passing gate means
@@ -23,6 +26,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RouteContext } from './context';
 import {
   baselineFilePath,
+  BUILTIN_VULNERABLE,
   findingSignature,
   historyEntryOf,
   InspectionConfigError,
@@ -30,10 +34,13 @@ import {
   InspectionRootError,
   loadBaseline,
   loadInspectionProfile,
+  loadSecurityRules,
   resolveInspectionRoot,
   runInspection,
   saveBaseline,
   saveInspectionProfile,
+  saveSecurityRules,
+  SECURITY_BLACKLIST_SNAPSHOT,
   type InspectionRunResult,
 } from '../inspections';
 
@@ -77,6 +84,22 @@ function summarizeRun(r: InspectionRunResult): Record<string, unknown> {
     totals: r.totals,
     newCount: r.newFindings.length,
     newFindings: r.newFindings,
+    // Security scan view: ALL security findings (not just new ones — a
+    // leaked key must stay visible even after it entered the baseline),
+    // plus the lockfile dependency audit.
+    securityFindings: r.findings.filter((f) => f.checker === 'secret-scan' || f.checker === 'sast-patterns'),
+    dependencies: r.dependencies
+      ? {
+          scanned: r.dependencies.scanned,
+          lockfiles: r.dependencies.lockfiles,
+          skipped: r.dependencies.skipped,
+          total: r.dependencies.total,
+          vulnerable: r.dependencies.vulnerable,
+          snapshot: r.dependencies.snapshot,
+          snapshotNote: r.dependencies.snapshotNote,
+          note: r.dependencies.note,
+        }
+      : null,
     baselineEstablished: r.baselineEstablished,
     licenses: r.licenses
       ? {
@@ -224,6 +247,26 @@ export async function handleInspectionRoutes(
         signatures: result.findings.length,
       });
     }
+    // Security scan audit trail (wave2-④): counts per category, even
+    // when the gate did not block — the audit chain is the durable
+    // record of every scan.
+    const secErr = result.findings.filter(
+      (f) => (f.checker === 'secret-scan' || f.checker === 'sast-patterns') && f.severity === 'error',
+    ).length;
+    const secWarn = result.findings.filter(
+      (f) => (f.checker === 'secret-scan' || f.checker === 'sast-patterns') && f.severity === 'warning',
+    ).length;
+    const vulnErr = result.dependencies?.vulnerable.filter((v) => v.severity === 'error').length ?? 0;
+    ctx.audit.record('human', 'SECURITY_SCAN_RUN', 'security-scan', projectId, {
+      root,
+      runId: result.runId,
+      securityErrors: secErr,
+      securityWarnings: secWarn,
+      vulnerableDeps: result.dependencies?.vulnerable.length ?? 0,
+      vulnerableErrorDeps: vulnErr,
+      lockfiles: result.dependencies?.lockfiles ?? [],
+      rulesSource: loadSecurityRules(root).source,
+    });
     ctx.json(res, 200, summarizeRun(result));
     return true;
   }
@@ -260,6 +303,72 @@ export async function handleInspectionRoutes(
       root,
       baseline: { exists: true, establishedAt: baseline.establishedAt, signatures: baseline.signatures.length },
     });
+    return true;
+  }
+
+  // GET /api/inspections/security-rules?projectId=&root= — custom rules + exemptions (viewer).
+  if (method === 'GET' && path === `${PREFIX}/security-rules`) {
+    const projectId = projectIdOf(url.searchParams.get('projectId'));
+    if (!projectId) {
+      ctx.json(res, 400, { error: 'projectId query parameter is required' });
+      return true;
+    }
+    let root: string;
+    try {
+      root = resolveInspectionRoot(rootOf(url.searchParams.get('root')));
+    } catch (e) {
+      if (e instanceof InspectionRootError) {
+        ctx.json(res, 403, { error: (e as Error).message, code: 'INSPECTION_ROOT_DENIED' });
+        return true;
+      }
+      throw e;
+    }
+    const { rules, source, note } = loadSecurityRules(root);
+    ctx.json(res, 200, {
+      projectId,
+      root,
+      rules,
+      rulesSource: source,
+      rulesNote: note,
+      builtIn: { snapshot: SECURITY_BLACKLIST_SNAPSHOT, count: BUILTIN_VULNERABLE.length },
+    });
+    return true;
+  }
+
+  // PUT /api/inspections/security-rules — replace the project's custom
+  // security rules + exemptions (operator).
+  if (method === 'PUT' && path === `${PREFIX}/security-rules`) {
+    const body = await ctx.readBody(req);
+    const projectId = projectIdOf(body['projectId']);
+    if (!projectId) {
+      ctx.json(res, 400, { error: 'projectId is required' });
+      return true;
+    }
+    let root: string;
+    try {
+      root = resolveInspectionRoot(rootOf(body['root']));
+    } catch (e) {
+      if (e instanceof InspectionRootError) {
+        ctx.json(res, 403, { error: (e as Error).message, code: 'INSPECTION_ROOT_DENIED' });
+        return true;
+      }
+      throw e;
+    }
+    try {
+      const rules = saveSecurityRules(root, body['rules']);
+      ctx.audit.record('human', 'SECURITY_RULES_UPDATED', 'security-scan', projectId, {
+        root,
+        customRules: rules.additionalVulnerable.length,
+        suppressions: rules.suppress.length,
+      });
+      ctx.json(res, 200, { projectId, root, rules });
+    } catch (e) {
+      if (e instanceof InspectionConfigError) {
+        ctx.json(res, 400, { error: (e as Error).message, code: 'SECURITY_RULES_INVALID' });
+        return true;
+      }
+      throw e;
+    }
     return true;
   }
 

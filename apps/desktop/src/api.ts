@@ -492,6 +492,32 @@ export interface AutoBackupPolicyInput {
   retainCount?: number;
   healthCheck?: boolean;
 }
+/** 两级忽略文件（GET/PUT /api/ignores）：Cursor 式 .ai-factory/ignore / .ai-factory/indexing-ignore，零模型。 */
+export interface IgnoreFilesState {
+  projectId: string;
+  projectPath: string;
+  hard: string;
+  indexing: string;
+  hardPatterns: number;
+  indexingPatterns: number;
+  errors: { layer: string; file: string; message: string }[];
+  template: string;
+}
+export interface IgnorePreviewEntry {
+  rel: string;
+  pattern: string;
+  line: number;
+}
+export interface IgnorePreview {
+  projectId: string;
+  projectPath: string;
+  total: number;
+  visited: number;
+  truncated: boolean;
+  hardIgnored: IgnorePreviewEntry[];
+  indexingIgnored: IgnorePreviewEntry[];
+  note: string;
+}
 /** 质量闸门配置（GET/PUT /api/quality）：确定性 lint/test 门禁，零模型。 */
 export interface QualityGateConfig {
   lintCmd: string;
@@ -499,6 +525,8 @@ export interface QualityGateConfig {
   timeoutMs: number;
   runOnEdit: boolean;
   blockOnFailure: boolean;
+  /** 安全扫描阻断配置（wave2-④；缺失 = 未配置，兼容旧服务）。 */
+  security?: { failOn: string[] };
 }
 export interface QualityGateConfigInput {
   lintCmd?: string;
@@ -506,6 +534,7 @@ export interface QualityGateConfigInput {
   timeoutMs?: number;
   runOnEdit?: boolean;
   blockOnFailure?: boolean;
+  security?: { failOn: string[] };
 }
 export interface QualityGateLastRun {
   kind: 'lint' | 'test';
@@ -530,6 +559,15 @@ export interface QualityGateRunResult {
   stdoutTail: string;
   stderrTail: string;
   blocked: boolean;
+  /** 安全扫描联动结果（wave2-④；仅当 security.failOn 已配置时返回）。 */
+  security?: {
+    failOn: string[];
+    secret: number;
+    sast: number;
+    sca: number;
+    blocked: boolean;
+    note?: string;
+  } | null;
 }
 /** §28.3 checkpoint（runtime CheckpointV2 的线上形状；capturedAt 为 epoch ms）。 */
 export interface CheckpointV2 {
@@ -881,6 +919,19 @@ export const api = {
   runQualityGate: (projectId: string, kind: 'lint' | 'test') =>
     req<QualityGateRunResult>(
       '/quality/run', { method: 'POST', body: JSON.stringify({ projectId, kind }) },
+    ),
+  /** 两层忽略文件状态（GET /api/ignores?projectId=）：读 viewer。 */
+  ignores: (projectId: string) =>
+    req<IgnoreFilesState>(`/ignores?projectId=${encodeURIComponent(projectId)}`),
+  /** 保存两层忽略文件（PUT /api/ignores）：写 operator。 */
+  updateIgnores: (projectId: string, p: { hard?: string; indexing?: string }) =>
+    req<IgnoreFilesState>(
+      '/ignores', { method: 'PUT', body: JSON.stringify({ projectId, ...p }) },
+    ),
+  /** 忽略命中预览（GET /api/ignores/preview）：读 viewer。 */
+  previewIgnores: (projectId: string, limit = 200) =>
+    req<IgnorePreview>(
+      `/ignores/preview?projectId=${encodeURIComponent(projectId)}&limit=${limit}`,
     ),
   /** Batch 50：§81 needs-human 升级记录（只读 viewer，NeedsHumanPanel 用）。
    *  默认列 OPEN；status 可为 open|acknowledged|resolved（非法值服务端 400）。

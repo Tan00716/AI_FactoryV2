@@ -20,6 +20,7 @@ export type NotificationEventType =
   | 'RUN_COMPLETED'
   | 'NEEDS_HUMAN_RAISED'
   | 'QUALITY_GATE_FAILED'
+  | 'SECURITY_SCAN_BLOCKED'
   | 'GENERIC';
 
 /** Notification priority (drives the UI badge + ordering). */

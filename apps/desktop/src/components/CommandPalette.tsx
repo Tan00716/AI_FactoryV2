@@ -15,7 +15,7 @@ export const PALETTE_TABS = [
   'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge',
   'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor',
   'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models',
-  'Plan', 'Hooks', 'Session', 'Plugins', 'Batch', 'Collab',
+  'Plan', 'Hooks', 'Session', 'Plugins', 'Batch', 'Collab', 'Coverage', 'Recipes',
 ] as const;
 export type PaletteTab = (typeof PALETTE_TABS)[number];
 

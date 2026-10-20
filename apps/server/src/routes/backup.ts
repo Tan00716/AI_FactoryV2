@@ -83,6 +83,20 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import type { FactoryDatabase } from '@ai-factory/db';
 import type { RouteContext } from './context';
 
+/**
+ * Two-tier ignore gate predicate (task ②), installed by the coordinator
+ * (index.ts) via setter injection: this module is imported straight from
+ * src by server tests (node type-stripping), so it must NOT value-import
+ * the ../ignore-gate sibling (dual-mode import rule — see AGENTS.md).
+ * When unset (unit tests), nothing is ignored.
+ */
+let backupIgnoreCheck: ((root: string, abs: string) => boolean) | null = null;
+export function setBackupIgnoreCheck(
+  fn: ((root: string, abs: string) => boolean) | null,
+): void {
+  backupIgnoreCheck = fn;
+}
+
 export const BACKUP_FORMAT = 'ai-factory-backup/1';
 export const BACKUP_DB_FILE = 'factory.db';
 export const RESTORE_PENDING_SUFFIX = '.restore-pending';
@@ -488,6 +502,7 @@ export type ProjectFileSkipReason =
   | 'symlink'
   | 'excluded-dir'
   | 'excluded-suffix'
+  | 'ignore-file'
   | 'over-file-limit'
   | 'over-total-limit'
   | 'unreadable';
@@ -516,6 +531,13 @@ export function collectProjectFiles(
   projectDir: string,
   cfg: ProjectFilesConfig,
   excludePaths: string[] = [],
+  /**
+   * Two-tier ignore gate predicate (task ②): (absPath) → true for
+   * hard-excluded paths. Directories are pruned before descent and the
+   * skip is RECORDED in `skipped` with reason 'ignore-file' — a backup
+   * must never silently omit a file the operator expects inside.
+   */
+  isIgnored?: (absPath: string) => boolean,
 ): ProjectFilesCollectResult {
   const root = path.resolve(projectDir);
   const excluded = excludePaths.map((p) => path.resolve(p));
@@ -552,6 +574,10 @@ export function collectProjectFiles(
       }
       if (st.isSymbolicLink()) {
         skipped.push({ rel, reason: 'symlink' });
+        continue;
+      }
+      if (isIgnored?.(full)) {
+        skipped.push({ rel, reason: 'ignore-file' });
         continue;
       }
       if (st.isDirectory()) {
@@ -784,7 +810,7 @@ export function createBackup(
       }
       const collected = collectProjectFiles(abs, cfg.projectFiles, [
         cfg.backupDir,
-      ]);
+      ], backupIgnoreCheck ? (p) => backupIgnoreCheck!(abs, p) : undefined);
       copyProjectFiles(abs, projectsRoot, p.id, collected.files);
       for (const f of collected.files) {
         files.push({

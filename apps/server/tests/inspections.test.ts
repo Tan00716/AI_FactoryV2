@@ -173,9 +173,10 @@ test('runInspection: profile disables a checker', () => {
 
 test('builtinCheckers honors enabled flags', () => {
   const p = defaultInspectionProfile();
-  assert.equal(builtinCheckers(p).length, 4);
+  // 6 built-ins: the 4 original style checkers + secret-scan + sast-patterns (wave2-④).
+  assert.equal(builtinCheckers(p).length, 6);
   p.checkers['todo-fixme'] = false;
-  assert.equal(builtinCheckers(p).length, 3);
+  assert.equal(builtinCheckers(p).length, 5);
 });
 
 test('license audit: no node_modules → present=false', () => {

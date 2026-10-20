@@ -99,8 +99,19 @@ async function isBinary(filePath: string): Promise<boolean> {
   }
 }
 
-/** Walk `root` (absolute). Returns absolute file paths. */
-export async function walkRepo(root: string): Promise<WalkResult> {
+/**
+ * Walk `root` (absolute). Returns absolute file paths.
+ *
+ * `opts.ignore` (optional): an additional exclusion predicate over the
+ * absolute path (second arg: true for directories). Directories for
+ * which it returns true are PRUNED (never descended into) — this is
+ * where the two-tier ignore gate (task ②, @ai-factory/ignores) plugs
+ * in: hard-excluded paths never enter the index at all.
+ */
+export async function walkRepo(
+  root: string,
+  opts: { ignore?: (abs: string, isDir: boolean) => boolean } = {},
+): Promise<WalkResult> {
   const result: WalkResult = { files: [], ignored: 0, skippedBinary: 0, truncated: false };
   let ignoreRules: IgnoreRule[] = [];
   try {
@@ -126,6 +137,12 @@ export async function walkRepo(root: string): Promise<WalkResult> {
       if (e.isSymbolicLink()) continue; // Never follow symlinks.
       if (isDir && ALWAYS_SKIP_DIRS.has(e.name)) continue;
       if (matchesIgnore(rel, e.name, isDir, ignoreRules)) {
+        result.ignored++;
+        continue;
+      }
+      if (opts.ignore?.(abs, isDir)) {
+        // Two-tier ignore gate (task ②): excluded dirs are pruned,
+        // excluded files never enter the index. Counted, never silent.
         result.ignored++;
         continue;
       }

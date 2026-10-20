@@ -19,6 +19,8 @@ import { MetricsPanel, createMetricsApi } from './components/MetricsPanel';
 import { BatchChangesPanel, createBatchChangesApi } from './components/BatchChangesPanel';
 import { InspectionsPanel, createInspectionsApi } from './components/InspectionsPanel';
 import { CollabPanel } from './components/CollabPanel';
+import { RecipesPanel, createRecipesApi } from './components/RecipesPanel';
+import { CoveragePanel, createCoverageApi } from './components/CoveragePanel';
 import { CommandPalette } from './components/CommandPalette';
 import { DispatchPanel } from './components/DispatchPanel';
 import { CicdPanel, createCicdApi } from './components/CicdPanel';
@@ -76,7 +78,7 @@ function IdeShell() {
   /** Batch 15: API identity label for the top bar (role / local mode /
    *  unknown when whoami cannot be fetched — displayed as-is, never guessed). */
   const [apiIdentityLabel, setApiIdentityLabel] = useState('');
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   const [bootError, setBootError] = useState('');
   const [qaTaskId, setQaTaskId] = useState<string | null>(null);
@@ -99,7 +101,9 @@ function IdeShell() {
   const pluginsApi = useMemo(() => createPluginsApi(API_BASE), []);
   const metricsApi = useMemo(() => createMetricsApi(API_BASE), []);
   const batchChangesApi = useMemo(() => createBatchChangesApi(API_BASE), []);
+  const recipesApi = useMemo(() => createRecipesApi(API_BASE), []);
   const inspectionsApi = useMemo(() => createInspectionsApi(API_BASE), []);
+  const coverageApi = useMemo(() => createCoverageApi(API_BASE), []);
   const changesApi = useMemo(() => createChangesApi(API_BASE), []);
   const dashboardApi = useMemo(() => createDashboardApi(API_BASE), []);
   // Flatten board cards for the QA task picker.
@@ -217,7 +221,7 @@ function IdeShell() {
         <main className="center">
           {bootError && <div className="banner err">{bootError}</div>}
           <div className="center-tabs">
-            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab'] as const).map((name) => (
+            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab', 'Coverage', 'Recipes'] as const).map((name) => (
               <button key={name} className={centerTab === name ? 'active' : ''} onClick={() => setCenterTab(name)}>{t(`tab.${name.toLowerCase().replace('/', '')}` as const)}</button>
             ))}
           </div>
@@ -315,6 +319,8 @@ function IdeShell() {
             <MetricsPanel api={metricsApi} />
           ) : centerTab === 'Inspections' ? (
             <InspectionsPanel api={inspectionsApi} projectId={projectId} />
+          ) : centerTab === 'Coverage' ? (
+            <CoveragePanel api={coverageApi} projectId={projectId} />
           ) : centerTab === 'Batch' ? (
             <BatchChangesPanel api={batchChangesApi} />
           ) : centerTab === 'Collab' ? (
@@ -323,12 +329,14 @@ function IdeShell() {
               currentTab={centerTab}
               onFollowPanel={(tab) => setCenterTab(tab as typeof centerTab)}
             />
+          ) : centerTab === 'Recipes' ? (
+            <RecipesPanel api={recipesApi} />
           ) : (
             <EditorPanel />
           )}
         </main>
       </div>
-      <BottomPanel />
+      <BottomPanel projectId={projectId} />
       {showCreate && (
         <CreateTaskModal projectId={projectId} onClose={() => setShowCreate(false)} onCreated={refresh} />
       )}

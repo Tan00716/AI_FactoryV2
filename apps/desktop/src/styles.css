@@ -420,3 +420,19 @@ button.ghost:hover { background: rgba(88,166,255,.12); }
 .row input[type="text"], .row input:not([type]) { flex: 1; min-width: 120px; }
 .muted.small { font-size: 12px; }
 .link { background: none; border: none; color: #58a6ff; cursor: pointer; padding: 0; }
+
+/* Problem matchers (task ③, second wave) */
+.problems-panel { padding: 4px 2px; }
+.problems-list { margin-top: 6px; }
+.problem-row { border-bottom: 1px solid var(--border); padding: 3px 0; }
+.problem-head { display: flex; gap: 8px; align-items: center; background: none; border: none; color: inherit; cursor: pointer; width: 100%; text-align: left; padding: 2px 0; font: inherit; }
+.problem-head .mono { font-family: monospace; font-size: 12px; }
+.problem-msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pill.sev-error { color: var(--red, #e5534b); border-color: var(--red, #e5534b); }
+.pill.sev-warning { color: var(--yellow); border-color: var(--yellow); }
+.pill.sev-info { color: var(--accent-text); border-color: var(--accent-text); }
+.pill.active { background: var(--accent, #1f6feb); color: #fff; }
+.problem-detail { padding: 6px 0 6px 12px; }
+.problem-code { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 12px; overflow-x: auto; margin: 4px 0; }
+.problem-matchers-box { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 8px; }
+.matcher-row { padding: 4px 0; border-bottom: 1px dashed var(--border); }

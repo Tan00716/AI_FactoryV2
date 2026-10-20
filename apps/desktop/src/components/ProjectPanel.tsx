@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, type QualityGateConfig, type QualityGateLastRun } from '../api';
+import { api, type IgnorePreview, type QualityGateConfig, type QualityGateLastRun } from '../api';
 import { useLang } from '../i18n';
 
 interface Issue { file: string; message: string }
@@ -46,6 +46,7 @@ function QualityGateSection({ projectId }: { projectId: string }) {
   const [timeoutMs, setTimeoutMs] = useState('120000');
   const [runOnEdit, setRunOnEdit] = useState(false);
   const [blockOnFailure, setBlockOnFailure] = useState(false);
+  const [secFailOn, setSecFailOn] = useState<string[]>([]);
   const [lastResult, setLastResult] = useState<string | null>(null);
 
   useEffect(() => {
@@ -61,6 +62,7 @@ function QualityGateSection({ projectId }: { projectId: string }) {
         setTimeoutMs(String(res.config.timeoutMs));
         setRunOnEdit(res.config.runOnEdit);
         setBlockOnFailure(res.config.blockOnFailure);
+        setSecFailOn(res.config.security?.failOn ?? []);
         setLoaded(true);
       } catch (e) {
         if (!cancelled) setMsg({ kind: 'err', text: t('quality.loadFailed', { message: (e as Error).message }) });
@@ -80,6 +82,7 @@ function QualityGateSection({ projectId }: { projectId: string }) {
         timeoutMs: Number(timeoutMs) || 120000,
         runOnEdit,
         blockOnFailure,
+        security: { failOn: secFailOn },
       });
       setConfig(res.config);
       setMsg({ kind: 'ok', text: t('quality.saved') });
@@ -106,7 +109,15 @@ function QualityGateSection({ projectId }: { projectId: string }) {
               verdict: r.ok ? t('quality.pass') : t('quality.fail'),
               ms: r.durationMs,
               blocked: r.blocked ? t('quality.blockedNote') : '',
-            }),
+            }) +
+            (r.security
+              ? t('quality.securityRunNote', {
+                  secret: r.security.secret,
+                  sast: r.security.sast,
+                  sca: r.security.sca,
+                  blocked: r.security.blocked ? t('quality.blockedNote') : '',
+                })
+              : ''),
       );
     } catch (e) {
       setMsg({ kind: 'err', text: t('quality.runFailed', { message: (e as Error).message }) });
@@ -158,6 +169,22 @@ function QualityGateSection({ projectId }: { projectId: string }) {
             </label>
           </div>
           <div className="row">
+            <span className="muted">{t('quality.securityFailOn')}</span>
+            {(['secret', 'sast', 'sca'] as const).map((cat) => (
+              <label className="check" key={cat}>
+                <input
+                  type="checkbox"
+                  checked={secFailOn.includes(cat)}
+                  onChange={(e) =>
+                    setSecFailOn(e.target.checked ? [...secFailOn, cat] : secFailOn.filter((c) => c !== cat))
+                  }
+                />
+                {t(`quality.secCat.${cat}`)}
+              </label>
+            ))}
+          </div>
+          <p className="muted" style={{ fontSize: 11 }}>{t('quality.securityNote')}</p>
+          <div className="row">
             <button onClick={onSave} disabled={saving}>{t('quality.save')}</button>
             <button onClick={() => void onRun('lint')} disabled={running !== null}>
               {running === 'lint' ? t('quality.running') : t('quality.runLint')}
@@ -176,6 +203,185 @@ function QualityGateSection({ projectId }: { projectId: string }) {
       {lastResult && <p className="muted">{lastResult}</p>}
       {msg && <p className={msg.kind === 'ok' ? 'ok' : 'err'}>{msg.text}</p>}
     </div>
+  );
+}
+
+/**
+ * 两级忽略文件（Cursor 式，不依赖模型）：项目级 `.ai-factory/ignore`
+ *（硬排除：索引、@ 提供器、搜索、repo 地图、备份全部不可见）+
+ * `.ai-factory/indexing-ignore`（只排除索引/repomap，仍可显式引用）。
+ * 可视化编辑 + 排除命中预览（dry-run）。
+ */
+function IgnoresSection({ projectId }: { projectId: string }) {
+  const { t } = useLang();
+  const [hard, setHard] = useState('');
+  const [indexing, setIndexing] = useState('');
+  const [template, setTemplate] = useState('');
+  const [projectPath, setProjectPath] = useState('');
+  const [hardPatterns, setHardPatterns] = useState(0);
+  const [indexingPatterns, setIndexingPatterns] = useState(0);
+  const [errors, setErrors] = useState<{ layer: string; file: string; message: string }[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [preview, setPreview] = useState<IgnorePreview | null>(null);
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  const load = async () => {
+    setMsg(null);
+    try {
+      const res = await api.ignores(projectId);
+      setHard(res.hard);
+      setIndexing(res.indexing);
+      setTemplate(res.template);
+      setProjectPath(res.projectPath);
+      setHardPatterns(res.hardPatterns);
+      setIndexingPatterns(res.indexingPatterns);
+      setErrors(res.errors);
+      setLoaded(true);
+    } catch (e) {
+      setMsg({ kind: 'err', text: t('ignores.loadFailed', { message: (e as Error).message }) });
+      setLoaded(true);
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (cancelled) return;
+      await load();
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  const onSave = async () => {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const res = await api.updateIgnores(projectId, { hard, indexing });
+      setHardPatterns(res.hardPatterns);
+      setIndexingPatterns(res.indexingPatterns);
+      setErrors(res.errors);
+      setMsg({ kind: 'ok', text: t('ignores.saved') });
+    } catch (e) {
+      setMsg({ kind: 'err', text: t('ignores.saveFailed', { message: (e as Error).message }) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onPreview = async () => {
+    setPreviewing(true);
+    setMsg(null);
+    try {
+      const res = await api.previewIgnores(projectId, 200);
+      setPreview(res);
+    } catch (e) {
+      setMsg({ kind: 'err', text: t('ignores.previewFailed', { message: (e as Error).message }) });
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  return (
+    <section className="sub-panel">
+      <h4>{t('ignores.title')}</h4>
+      <p className="muted">{t('ignores.desc')}</p>
+      {!loaded ? (
+        <p className="muted">{t('ignores.loading')}</p>
+      ) : (
+        <>
+          <p className="muted">
+            <code>{projectPath}/.ai-factory/ignore</code> · {t('ignores.hardPatterns', { count: hardPatterns })}
+          </p>
+          <label>
+            {t('ignores.hardLabel')}
+            <textarea
+              rows={7}
+              value={hard}
+              onChange={(e) => setHard(e.target.value)}
+              placeholder={t('ignores.hardPlaceholder')}
+              spellCheck={false}
+              style={{ width: '100%', fontFamily: 'monospace' }}
+            />
+          </label>
+          <p className="muted">
+            <code>{projectPath}/.ai-factory/indexing-ignore</code> · {t('ignores.indexingPatterns', { count: indexingPatterns })}
+          </p>
+          <label>
+            {t('ignores.indexingLabel')}
+            <textarea
+              rows={5}
+              value={indexing}
+              onChange={(e) => setIndexing(e.target.value)}
+              placeholder={t('ignores.indexingPlaceholder')}
+              spellCheck={false}
+              style={{ width: '100%', fontFamily: 'monospace' }}
+            />
+          </label>
+          <div className="row">
+            <button disabled={saving} onClick={() => void onSave()}>
+              {saving ? t('ignores.saving') : t('ignores.saveBtn')}
+            </button>
+            <button disabled={!template} onClick={() => setHard(template)}>
+              {t('ignores.templateBtn')}
+            </button>
+            <button disabled={previewing} onClick={() => void onPreview()}>
+              {previewing ? t('ignores.previewing') : t('ignores.previewBtn')}
+            </button>
+          </div>
+          {errors.length > 0 && (
+            <div>
+              {errors.map((e, i) => (
+                <p key={i} className="err">
+                  {t('ignores.layerSkipped', { layer: e.layer, message: e.message })}
+                </p>
+              ))}
+            </div>
+          )}
+          {preview && (
+            <div>
+              <p>
+                {t('ignores.previewSummary', {
+                  hard: preview.hardIgnored.length,
+                  indexing: preview.indexingIgnored.length,
+                  visited: preview.visited,
+                })}
+                {preview.truncated && ` · ${t('ignores.truncated')}`}
+              </p>
+              {preview.hardIgnored.length > 0 && (
+                <>
+                  <p className="muted">{t('ignores.hardHits')}</p>
+                  <ul className="file-list">
+                    {preview.hardIgnored.map((f) => (
+                      <li key={f.rel}>
+                        <code>{f.rel}</code> <span className="muted">← {f.pattern}:{f.line}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {preview.indexingIgnored.length > 0 && (
+                <>
+                  <p className="muted">{t('ignores.indexingHits')}</p>
+                  <ul className="file-list">
+                    {preview.indexingIgnored.map((f) => (
+                      <li key={f.rel}>
+                        <code>{f.rel}</code> <span className="muted">← {f.pattern}:{f.line}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              <p className="muted">{preview.note}</p>
+            </div>
+          )}
+          {msg && <p className={msg.kind === 'ok' ? 'ok' : 'err'}>{msg.text}</p>}
+          <p className="muted">{t('ignores.honest')}</p>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -268,6 +474,7 @@ export function ProjectPanel({ projectId, projectName }: { projectId: string; pr
         </div>
       )}
       <QualityGateSection projectId={projectId} />
+      <IgnoresSection projectId={projectId} />
     </div>
   );
 }

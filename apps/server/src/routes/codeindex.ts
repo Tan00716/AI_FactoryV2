@@ -27,6 +27,7 @@ import {
   CodeIndexService,
 } from '@ai-factory/codeindex';
 import type { RouteContext } from './context';
+import { isIgnoredSync } from '../ignore-gate';
 
 const PREFIX = '/api/codeindex';
 
@@ -34,7 +35,15 @@ const PREFIX = '/api/codeindex';
 let service: CodeIndexService | null = null;
 
 export function getCodeIndexService(): CodeIndexService {
-  if (!service) service = new CodeIndexService();
+  // Task ②: the two-tier ignore gate is installed on the shared service
+  // (forIndex=true — both the hard and the indexing tier keep a file out
+  // of the index). The runtime code_search tool shares this singleton via
+  // setRuntimeCodeIndexService, so it is gated too.
+  if (!service) {
+    service = new CodeIndexService({
+      ignoreCheck: (root, abs, isDir) => isIgnoredSync(root, abs, true, isDir),
+    });
+  }
   return service;
 }
 

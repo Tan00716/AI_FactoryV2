@@ -1,0 +1,1 @@
+{"description":"Two-tier ignore files for AI Factory: gitignore-style matcher + .ai-factory/ignore (hard exclusion) and .ai-factory/indexing-ignore (indexing exclusion). Zero external dependencies.","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/ignores","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

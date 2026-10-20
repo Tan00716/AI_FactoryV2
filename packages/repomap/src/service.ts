@@ -36,6 +36,12 @@ export interface RepoMapServiceOptions {
   cacheDir?: string;
   /** Absolute allowed roots. Defaults to FACTORY_CODEINDEX_ROOTS. */
   roots?: string[];
+  /**
+   * Two-tier ignore gate predicate (task ②), consulted when the map's
+   * underlying code index is built (forIndex=true so the indexing tier
+   * also applies).
+   */
+  ignoreCheck?: (root: string, abs: string, isDir: boolean) => boolean;
 }
 
 export function defaultMapCacheDir(): string {
@@ -57,6 +63,7 @@ export class RepoMapService {
   private readonly cacheDir: string;
   private readonly codeIndexCacheDir: string;
   private readonly roots: string[];
+  private readonly ignoreCheck?: (root: string, abs: string, isDir: boolean) => boolean;
 
   constructor(opts: RepoMapServiceOptions = {}) {
     this.cacheDir = opts.cacheDir ?? defaultMapCacheDir();
@@ -69,6 +76,7 @@ export class RepoMapService {
       .map((s) => s.trim())
       .filter(Boolean);
     this.roots = (opts.roots ?? envRoots).map((r) => path.resolve(r));
+    this.ignoreCheck = opts.ignoreCheck;
   }
 
   /** Realpath-resolve + jail check. Throws RepoMapError('ROOT_DENIED'). */
@@ -107,7 +115,10 @@ export class RepoMapService {
     const t0 = Date.now();
     const real = await this.resolveRoot(root);
     const previous = opts.full ? undefined : (await loadIndex(this.codeIndexCacheDir, real)) ?? undefined;
-    const { index, stats: indexStats } = await buildIndex(real, { previous });
+    const { index, stats: indexStats } = await buildIndex(real, {
+      previous,
+      ignore: this.ignoreCheck ? (abs, isDir) => this.ignoreCheck!(real, abs, isDir) : undefined,
+    });
     await saveIndex(this.codeIndexCacheDir, index);
     const { map, markdown, totals } = buildRepoMap(index, { maxTokens: opts.maxTokens });
     await this.saveMap(map);

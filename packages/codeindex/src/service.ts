@@ -43,12 +43,20 @@ export interface CodeIndexServiceOptions {
   cacheDir?: string;
   /** Absolute allowed roots. Defaults to FACTORY_CODEINDEX_ROOTS. */
   roots?: string[];
+  /**
+   * Two-tier ignore gate predicate (task ②): consulted at index-build
+   * time AND at query time. The query-time post-filter keeps a stale
+   * on-disk index from leaking a file that was ignored after it was
+   * indexed (the build-time gate covers the next rebuild).
+   */
+  ignoreCheck?: (root: string, abs: string, isDir: boolean) => boolean;
 }
 
 export class CodeIndexService {
   private readonly cacheDir: string;
   private readonly roots: string[];
   private readonly loaded = new Map<string, IndexData>();
+  private readonly ignoreCheck?: (root: string, abs: string, isDir: boolean) => boolean;
 
   constructor(opts: CodeIndexServiceOptions = {}) {
     this.cacheDir = opts.cacheDir ?? defaultCacheDir();
@@ -57,6 +65,7 @@ export class CodeIndexService {
       .map((s) => s.trim())
       .filter(Boolean);
     this.roots = (opts.roots ?? envRoots).map((r) => path.resolve(r));
+    this.ignoreCheck = opts.ignoreCheck;
   }
 
   /** Realpath-resolve + jail check. Throws CodeIndexError('ROOT_DENIED'). */
@@ -88,7 +97,10 @@ export class CodeIndexService {
   async buildIndex(root: string): Promise<IndexStats> {
     const real = await this.resolveRoot(root);
     const previous = (await loadIndex(this.cacheDir, real)) ?? undefined;
-    const { index, stats } = await buildIndex(real, { previous });
+    const { index, stats } = await buildIndex(real, {
+      previous,
+      ignore: this.ignoreCheck ? (abs, isDir) => this.ignoreCheck!(real, abs, isDir) : undefined,
+    });
     await saveIndex(this.cacheDir, index);
     this.loaded.set(real, index);
     return stats;
@@ -107,16 +119,24 @@ export class CodeIndexService {
     return disk;
   }
 
+  /** Query-time ignore post-filter (task ②): drop hits on ignored files. */
+  private filterHits(real: string, hits: SearchHit[]): SearchHit[] {
+    if (!this.ignoreCheck) return hits;
+    return hits.filter((h) => !this.ignoreCheck!(real, path.join(real, h.file), false));
+  }
+
   async search(
     root: string,
     query: string,
     mode: 'symbols' | 'text' = 'symbols',
     opts: QueryOptions = {},
   ): Promise<SearchHit[]> {
+    const real = await this.resolveRoot(root);
     const index = await this.getIndex(root);
-    const hits = mode === 'text'
+    const raw = mode === 'text'
       ? searchText(index, query, opts)
       : searchSymbols(index, query, opts);
+    const hits = this.filterHits(real, raw);
     if (opts.contextLines && opts.contextLines > 0) {
       return withContext(index.root, hits, opts.contextLines);
     }
@@ -124,8 +144,9 @@ export class CodeIndexService {
   }
 
   async getDefinition(root: string, name: string): Promise<SearchHit[]> {
+    const real = await this.resolveRoot(root);
     const index = await this.getIndex(root);
-    return getDefinition(index, name);
+    return this.filterHits(real, getDefinition(index, name));
   }
 
   /** For tests: clear the in-memory registry. */

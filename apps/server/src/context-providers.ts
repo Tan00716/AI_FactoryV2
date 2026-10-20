@@ -25,6 +25,10 @@
  *  6. @open only lists files the desktop client registered via
  *     POST /api/context-providers/open-files. When nothing is
  *     registered it says so; it does NOT guess from mtime.
+ *  7. (Task ②) @tree/@diff/@open consult deps.isIgnored (the two-tier
+ *     ignore gate): hard-ignored paths are hidden with an explicit
+ *     notice/count, never silently. The gate constrains only these AI
+ *     surfaces — the operator's own exec/terminal/editor is ungated.
  *
  * This module is pure node builtins (+ @ai-factory/security, a real
  * package dep) with type-only sibling imports, so server tests may
@@ -55,9 +59,9 @@ export interface ProviderMeta {
   argHint?: string;
 }
 
-/** One deterministic problem item (quality-gate history). */
+/** One deterministic problem item (quality-gate history or matcher-parsed output). */
 export interface QualityProblem {
-  source: 'quality-gate';
+  source: 'quality-gate' | 'problem-matcher';
   kind: string;
   ok: boolean;
   detail: string;
@@ -94,6 +98,15 @@ export interface ProviderDeps {
   qualityProblems(projectId: string | null): QualityProblem[];
   /** Files the desktop client registered as open (may be empty). */
   openFiles(): string[];
+  /**
+   * Two-tier ignore gate (task ②), optional: (absPath) → true when the
+   * path is hard-excluded by `.ai-factory/ignore` and must not enter
+   * provider output. The indexing tier does NOT apply here (an
+   * indexing-ignored file may still be explicitly referenced — that is
+   * the documented two-tier semantics). Callers that omit this dep get
+   * the pre-gate behavior (nothing is hidden).
+   */
+  isIgnored?: (absPath: string) => boolean;
 }
 
 export type ContextProviderErrorCode =
@@ -131,7 +144,8 @@ export const CONTEXT_PROVIDER_METAS: ProviderMeta[] = [
   },
   {
     name: 'problems',
-    description: 'Last quality-gate lint/test results for the project (deterministic history only)',
+    description:
+      'Last quality-gate lint/test results plus problem-matcher diagnostics parsed from terminal/gate/scheduler output (deterministic history only)',
     usage: '@problems',
     takesArg: false,
   },
@@ -260,6 +274,21 @@ function resolveDiff(ref: ContextRef, deps: ProviderDeps): ResolvedContext {
   let paths: string[] = [];
   if (ref.arg !== null && ref.arg.trim() !== '') {
     const f = resolveJailedPath(root, ref.arg.trim());
+    // Explicit file reference to a hard-ignored file: refuse with an
+    // explicit notice instead of silently serving the content or
+    // silently dropping it. (Cursor's .cursorignore semantics: the file
+    // is invisible to every AI surface.)
+    if (deps.isIgnored?.(f)) {
+      return finish(
+        'diff',
+        ref.arg,
+        `git diff HEAD in ${root} (file: ${relative(root, f) || '.'})`,
+        `(refused: ${relative(root, f) || '.'} is excluded by .ai-factory/ignore — ` +
+          'hard-ignored files are invisible to AI surfaces; the ignore gate ' +
+          'cannot stop your own exec/terminal from reading it)',
+        DIFF_MAX_BYTES,
+      );
+    }
     paths = [relative(root, f) || '.'];
   }
   const args = ['-C', root, 'diff', 'HEAD', '--', ...paths];
@@ -286,7 +315,32 @@ function resolveDiff(ref: ContextRef, deps: ProviderDeps): ResolvedContext {
     );
   }
   const out = String(r.stdout ?? '');
-  const body = out.trim() === '' ? '(no changes: working tree is clean)' : out;
+  let body = out.trim() === '' ? '(no changes: working tree is clean)' : out;
+  // Whole-tree diff: drop per-file sections for hard-ignored files
+  // (task ②). Section headers are `diff --git a/x b/y`; a section whose
+  // a- or b-side path is hard-ignored is removed and its removal is
+  // counted in an explicit trailer — never silent.
+  if (paths.length === 0 && deps.isIgnored && out.trim() !== '') {
+    const kept: string[] = [];
+    let dropped = 0;
+    const sections = body.split(/(?=^diff --git )/m);
+    for (const sec of sections) {
+      const m = /^diff --git a\/(.+) b\/(.+)$/m.exec(sec);
+      if (!m) {
+        kept.push(sec);
+        continue;
+      }
+      const a = join(root, (m[1] as string).trim());
+      const b = join(root, (m[2] as string).trim());
+      if (deps.isIgnored(a) || deps.isIgnored(b)) dropped += 1;
+      else kept.push(sec);
+    }
+    if (dropped > 0) {
+      body =
+        kept.join('').trimEnd() +
+        `\n… [${dropped} changed file(s) hidden by .ai-factory/ignore]`;
+    }
+  }
   return finish(
     'diff',
     ref.arg,
@@ -393,7 +447,9 @@ function resolveTree(ref: ContextRef, deps: ProviderDeps): ResolvedContext {
     } catch {
       return;
     }
-    const visible = names.filter((n) => !TREE_EXCLUDES.has(n) && !n.startsWith('.'));
+    const visible = names.filter(
+      (n) => !TREE_EXCLUDES.has(n) && !n.startsWith('.') && !deps.isIgnored?.(join(dir, n)),
+    );
     for (let i = 0; i < visible.length; i++) {
       if (hitCap) return;
       const n = visible[i];
@@ -417,6 +473,17 @@ function resolveTree(ref: ContextRef, deps: ProviderDeps): ResolvedContext {
   if (!existsSync(startDir)) {
     throw new ContextProviderError('ROOT_DENIED', `directory does not exist: ${arg}`);
   }
+  // @tree of a hard-ignored directory: an explicit notice, not an empty
+  // lie (the listing is hidden by the gate on purpose).
+  if (arg !== '' && !/^\d+$/.test(arg) && deps.isIgnored?.(startDir)) {
+    return finish(
+      'tree',
+      ref.arg,
+      source,
+      '(directory excluded by .ai-factory/ignore — hard-ignored paths are not listed)',
+      TREE_MAX_BYTES,
+    );
+  }
   walk(startDir, 1, '');
   if (hitCap) lines.push(`… [truncated: more than ${MAX_ENTRIES} entries]`);
   return finish('tree', ref.arg, source, lines.join('\n') || '(empty directory)', TREE_MAX_BYTES);
@@ -424,15 +491,22 @@ function resolveTree(ref: ContextRef, deps: ProviderDeps): ResolvedContext {
 
 function resolveOpen(ref: ContextRef, deps: ProviderDeps): ResolvedContext {
   const files = deps.openFiles();
-  const body =
+  // Hard-ignored registered files are hidden with an explicit count
+  // (task ②) — the registration may name them, the context must not.
+  const visible = deps.isIgnored ? files.filter((f) => !deps.isIgnored!(f)) : files;
+  const hidden = files.length - visible.length;
+  let body =
     files.length === 0
       ? '(no open files registered — the desktop client registers them via ' +
         'POST /api/context-providers/open-files; @open never guesses)'
-      : files.join('\n');
+      : visible.join('\n');
+  if (hidden > 0) {
+    body += `\n(${hidden} registered file(s) hidden by .ai-factory/ignore)`;
+  }
   return finish(
     'open',
     ref.arg,
-    `open files registered by the desktop client (${files.length})`,
+    `open files registered by the desktop client (${visible.length})`,
     body,
     OPEN_MAX_BYTES,
   );

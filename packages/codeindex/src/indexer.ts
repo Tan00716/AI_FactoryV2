@@ -66,12 +66,26 @@ async function readTextSafe(abs: string): Promise<string | null> {
  */
 export async function buildIndex(
   root: string,
-  opts: { cacheDir?: string; previous?: IndexData } = {},
+  opts: {
+    cacheDir?: string;
+    previous?: IndexData;
+    /**
+     * Two-tier ignore gate predicate (task ②): (absPath, isDir) → true
+     * when the path must be excluded. Enforced twice: the walk skips the
+     * path, and records from a PREVIOUS index that now match are dropped
+     * (so a file ignored after it was indexed leaves the index on the
+     * next build instead of lingering until its mtime changes).
+     */
+    ignore?: (abs: string, isDir: boolean) => boolean;
+  } = {},
 ): Promise<{ index: IndexData; stats: IndexStats }> {
-  const walk = await walkRepo(root);
+  const walk = await walkRepo(root, { ignore: opts.ignore });
   const prevByRel = new Map<string, FileRecord>();
   if (opts.previous) {
-    for (const f of opts.previous.files) prevByRel.set(f.rel, f);
+    for (const f of opts.previous.files) {
+      if (opts.ignore?.(path.join(root, f.rel), false)) continue; // drop: now ignored
+      prevByRel.set(f.rel, f);
+    }
   }
 
   const files: FileRecord[] = [];

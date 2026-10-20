@@ -142,6 +142,16 @@ export const DEFAULT_RULES: NotificationRule[] = [
       )(e),
   },
   {
+    id: 'security-scan-blocked',
+    eventTypes: ['SECURITY_SCAN_BLOCKED'],
+    build: (e) =>
+      outcome(
+        `Security scan blocked: ${label(e)}`,
+        `Error-severity security findings: ${detail(e, 'secret') || '0'} secret(s), ${detail(e, 'sast') || '0'} pattern(s), ${detail(e, 'sca') || '0'} vulnerable dependenc(ies). Review the findings in the Security section and fix or exempt them.`,
+        'HIGH',
+      )(e),
+  },
+  {
     id: 'needs-human-raised',
     eventTypes: ['NEEDS_HUMAN_RAISED'],
     build: (e) =>
