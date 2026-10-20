@@ -95,6 +95,30 @@ async function firePostToolUse(
   } catch {
     /* the gate is an observer — it must never break exec */
   }
+  // Shadow checkpoint (third-wave task 7): installed by the coordinator
+  // (index.ts) via setShadowToolUseHook. Setter injection — this module
+  // must not value-import siblings (dual-mode import rule).
+  try {
+    shadowToolUseHook?.(ctx, payload.cwd);
+  } catch {
+    /* the shadow checkpoint is an observer — it must never break exec */
+  }
+}
+
+/**
+ * Shadow-checkpoint hook (third-wave task ⑦), installed once by the
+ * coordinator at boot. Setter injection following the setRuntimeXxxService
+ * precedent: route modules imported straight from src by server tests must
+ * not value-import sibling route modules (node type-stripping cannot
+ * resolve extensionless sibling imports).
+ */
+let shadowToolUseHook: ((ctx: RouteContext, cwd: string) => void) | null = null;
+
+/** Install the shadow-checkpoint PostToolUse hook (coordinator wiring, once at boot). */
+export function setShadowToolUseHook(
+  fn: ((ctx: RouteContext, cwd: string) => void) | null,
+): void {
+  shadowToolUseHook = fn;
 }
 
 /** Optional projectId passthrough for the quality-gate runOnEdit trigger. */

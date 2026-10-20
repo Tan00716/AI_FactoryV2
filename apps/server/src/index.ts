@@ -101,8 +101,10 @@ import {
   setRuntimeRepoMapService,
   setRuntimeManifestStore,
   setRuntimeRunStore,
+  setShadowRunStartHook,
   setTaskAttachmentLister,
 } from './routes/runtime';
+import { setShadowToolUseHook } from './routes/exec';
 import { listTaskAttachments } from './attachment-store';
 import { handleOrchestratorRoutes } from './routes/orchestrator';
 import { handleDelegationRoutes, initDelegationRoutes } from './routes/delegations';
@@ -191,6 +193,15 @@ import {
 import { handleRetentionRoutes } from './routes/retention';
 import { handleAutoBackupRoutes, syncAutoBackupPolicy } from './routes/auto-backup';
 import { handleQualityRoutes } from './routes/quality';
+import { handleContextProviderRoutes, initRuntimeContextResolution } from './routes/context-providers';
+import { handleCollabRoutes, handleCollabUpgrade, initCollabService } from './routes/collab';
+import {
+  handleShadowRoutes,
+  maybeFireShadowCheckpoint,
+  maybeShadowCheckpointOnRunStart,
+} from './routes/shadow';
+import { handleInspectionRoutes } from './routes/inspections';
+import { handleBatchChangesRoutes } from './routes/batch-changes';
 import { initMcpPersistence } from './routes/mcp';
 import {
   backupScheduler,
@@ -540,6 +551,29 @@ setRuntimeCodeIndexService(getCodeIndexService());
  * route share one service. Same install pattern as the code index.
  */
 setRuntimeRepoMapService(getRepoMapService());
+
+/**
+ * Deterministic @-context providers (task ⑥) — installs the resolver
+ * that POST /api/runtime/runs uses to expand @diff/@terminal/@problems/
+ * @tree/@open references in caller-supplied script text. Same install
+ * pattern as the code index / repo map above.
+ */
+initRuntimeContextResolution();
+
+/**
+ * Shadow checkpoints (third-wave task ⑦) — installs the two observer
+ * hooks: auto snapshot before a run starts, and auto snapshot after a
+ * tool (exec) runs. Same setter-injection pattern as the code index /
+ * repo map / @-context resolver above: the runtime and exec route
+ * modules are imported straight from src by server tests, so they must
+ * not value-import sibling route modules (dual-mode import rule).
+ * Both hooks are fire-and-forget observers — they never throw into the
+ * run/exec path.
+ */
+setShadowRunStartHook((ctx, taskId, runId) =>
+  maybeShadowCheckpointOnRunStart(ctx, taskId, runId),
+);
+setShadowToolUseHook((ctx, cwd) => maybeFireShadowCheckpoint(ctx, cwd));
 
 /**
  * Offline mode — the web_search runtime tool checks the file-backed
@@ -1194,6 +1228,11 @@ const server = createServer(async (req, res) => {
     if (await handleBackupScheduleRoutes(req, res, url, routeCtx)) return;
     if (await handleAutoBackupRoutes(req, res, url, routeCtx)) return;
     if (await handleQualityRoutes(req, res, url, routeCtx)) return;
+    if (await handleContextProviderRoutes(req, res, url, routeCtx)) return;
+    if (await handleCollabRoutes(req, res, url, routeCtx)) return;
+    if (await handleShadowRoutes(req, res, url, routeCtx)) return;
+    if (await handleInspectionRoutes(req, res, url, routeCtx)) return;
+    if (await handleBatchChangesRoutes(req, res, url, routeCtx)) return;
     if (await handleRetentionRoutes(req, res, url, routeCtx)) return;
     if (await handleAuthorizationTicketRoutes(req, res, url, routeCtx)) return;
     if (await handleDbRoutes(req, res, url, routeCtx)) return;
@@ -1905,6 +1944,28 @@ const server = createServer(async (req, res) => {
     return json(res, 404, { error: 'Not found' });
   } catch (e) {
     return json(res, 500, { error: (e as Error).message });
+  }
+});
+
+/**
+ * 第三波任务⑩ 实时协同：WS upgrade 分发。upgrade 不经过上面的 request
+ * 分发（node:http 对 Upgrade 请求只发 'upgrade' 事件），鉴权在
+ * handleCollabUpgrade 内完整执行（中央门禁不覆盖 upgrade）。
+ */
+initCollabService(makeRouteCtx(), AUTH_CONFIG);
+server.on('upgrade', (req, socket, head) => {
+  try {
+    if (!handleCollabUpgrade(req, socket, head)) {
+      try {
+        socket.write('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n');
+      } catch { /* ignore */ }
+      socket.destroy();
+    }
+  } catch (e) {
+    console.error('[collab] upgrade handler failed:', (e as Error).message);
+    try {
+      socket.destroy();
+    } catch { /* ignore */ }
   }
 });
 

@@ -20,6 +20,7 @@ import {
   checkpointCreate,
   checkpointList,
   checkpointRestore,
+  inspectCommand,
   DEFAULT_API,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_POLL_MS,
@@ -146,6 +147,25 @@ async function main(): Promise<number> {
         }
         process.stderr.write(`error: unknown checkpoint subcommand "${sub}"\n\n${usage()}\n`);
         return EXIT_USAGE;
+      }
+      case 'inspect': {
+        const failOn = opt(opts, 'fail-on');
+        if (failOn !== undefined && failOn !== 'new' && failOn !== 'any') {
+          process.stderr.write(`error: --fail-on must be "new" or "any"\n\n${usage()}\n`);
+          return EXIT_USAGE;
+        }
+        const r = await inspectCommand(
+          {
+            projectId: opt(opts, 'project') ?? '',
+            root: opt(opts, 'root'),
+            profilePath: opt(opts, 'profile'),
+            failOn: failOn === 'any' ? 'any' : 'new',
+            json: asJson,
+          },
+          http,
+        );
+        print(r, asJson);
+        return r.exitCode;
       }
       default:
         process.stderr.write(`error: unknown command "${command}"\n\n${usage()}\n`);

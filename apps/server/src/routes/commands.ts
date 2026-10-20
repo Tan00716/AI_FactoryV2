@@ -37,6 +37,7 @@ import { planContentDigest } from '../plan-store';
 import { executeQualityGate, type QualityGateKind } from './quality';
 import { getRepoMapService } from './repomap';
 import { RepoMapError } from '@ai-factory/repomap';
+import { CONTEXT_PROVIDER_METAS } from './context-providers';
 
 const PREFIX = '/api/commands';
 
@@ -88,6 +89,7 @@ export const BUILTINS: BuiltinCommand[] = [
   { name: 'run', description: 'Run the lint gate, then the test gate', usage: '/run (projectId in body)' },
   { name: 'map', description: 'Show the importance-ranked repo map for a root', usage: '/map [root] [maxTokens]' },
   { name: 'map-refresh', description: 'Force a full repo map rebuild for a root', usage: '/map-refresh [root]' },
+  { name: 'providers', description: 'List deterministic @-context providers for run prompts', usage: '/providers' },
 ];
 
 /** Parse "/name arg1 arg2" → { name, args } or an error string. */
@@ -328,6 +330,15 @@ export async function handleCommandRoutes(
         }
         ctx.json(res, 500, { error: (e as Error).message });
       }
+      return true;
+    }
+
+    if (name === 'providers') {
+      // Deterministic @-context providers (task ⑥): the same providers
+      // run creation resolves in script text (@diff/@terminal/@problems/
+      // @tree/@open). Listing is read-only metadata — no resolution runs.
+      ctx.audit.record(actor, 'COMMAND_EXECUTED', 'command', 'providers', {});
+      ctx.json(res, 200, { type: 'providers', providers: CONTEXT_PROVIDER_METAS });
       return true;
     }
 

@@ -175,6 +175,7 @@ import {
   type RuntimeRunStore,
 } from '@ai-factory/db';
 import type { RouteContext } from './context';
+import type { ResolvedContext } from '../context-providers';
 
 /**
  * Offline-mode checker for the web_search tool. Wired by the
@@ -445,6 +446,49 @@ export function setRuntimeRepoMapService(svc: RepoMapService | null): void {
 function runtimeRepoMapService(): RepoMapService {
   if (!runtimeRepoMap) runtimeRepoMap = new RepoMapService();
   return runtimeRepoMap;
+}
+
+/**
+ * Deterministic @-context providers (task ⑥) — installed by the
+ * coordinator (routes/context-providers.ts initRuntimeContextResolution,
+ * called from index.ts). The resolver parses @name/@name(arg) references
+ * out of caller-supplied run script text and returns the text with
+ * resolved <context> blocks injected. Type-only sibling import (erased):
+ * this module is imported straight from src by server tests, so it must
+ * not value-import siblings (dual-mode import rule).
+ */
+export type RuntimeContextResolver = (input: {
+  texts: string[];
+  projectId: string | null;
+}) => Promise<
+  | { ok: true; texts: string[]; resolved: ResolvedContext[] }
+  | { ok: false; error: string; code: string }
+>;
+
+let runtimeContextResolver: RuntimeContextResolver | null = null;
+
+/** Install the @-context resolver (coordinator wiring, once at boot). */
+export function setRuntimeContextResolver(fn: RuntimeContextResolver | null): void {
+  runtimeContextResolver = fn;
+}
+
+/**
+ * Shadow-checkpoint hook (third-wave task ⑦): opt-in auto snapshot before
+ * a run starts. Installed once by the coordinator at boot. Setter
+ * injection following the setRuntimeContextResolver precedent — this
+ * module is imported straight from src by server tests, so it must not
+ * value-import sibling route modules (dual-mode import rule: node
+ * type-stripping cannot resolve extensionless sibling imports).
+ */
+let shadowRunStartHook:
+  | ((ctx: RouteContext, taskId: string, runId: string) => void)
+  | null = null;
+
+/** Install the shadow-checkpoint run-start hook (coordinator wiring, once at boot). */
+export function setShadowRunStartHook(
+  fn: ((ctx: RouteContext, taskId: string, runId: string) => void) | null,
+): void {
+  shadowRunStartHook = fn;
 }
 
 /**
@@ -1579,6 +1623,18 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
   const agentId = rec.agentId;
   const taskId = rec.taskId;
   liveRunIds.add(id);
+  // Shadow checkpoint (third-wave task 7): opt-in auto snapshot before the
+  // run starts. Fires only when a shadow config exists whose workspaceId
+  // equals this run's taskId with autoOnRunStart enabled. Fire-and-forget
+  // observer — never throws into run startup. The hook is installed by the
+  // coordinator (index.ts) via setShadowRunStartHook — setter injection, so
+  // this module never value-imports sibling route modules (dual-mode
+  // import rule: server tests import this module straight from src).
+  try {
+    shadowRunStartHook?.(ctx, taskId, id);
+  } catch {
+    /* observer must never break run start */
+  }
   // Run async; the record is updated on completion. Prototype only.
   void (async () => {
     try {
@@ -2629,6 +2685,27 @@ export async function handleRuntimeRoutes(
           toolCalls: Array<{ tool: string; args: unknown }>;
         }>)
       : DEFAULT_SCRIPT;
+    // Task ⑥ — deterministic @-context providers. Caller-supplied script
+    // text may reference @diff/@terminal/@problems/@tree/@open; resolve
+    // them BEFORE the adapter snapshots the script AND before the run
+    // record exists, so an unknown provider name or a jailed-path
+    // violation fails the request (400) — never a half-created run.
+    // The default script carries no references.
+    let attachedContexts: ResolvedContext[] = [];
+    if (scriptProvided && runtimeContextResolver) {
+      const outcome = await runtimeContextResolver({
+        texts: script.map((s) => s.text),
+        projectId: typeof task.projectId === 'string' ? task.projectId : null,
+      });
+      if (!outcome.ok) {
+        ctx.json(res, 400, { error: outcome.error, code: outcome.code });
+        return true;
+      }
+      for (let i = 0; i < script.length; i++) {
+        script[i] = { ...script[i], text: outcome.texts[i] };
+      }
+      attachedContexts = outcome.resolved;
+    }
     const adapter = new StubAdapter(script);
 
     const id = randomUUID();
@@ -2744,6 +2821,42 @@ export async function handleRuntimeRoutes(
       taskId,
       grantedTools,
     });
+    // Task ⑥ — the @-context providers attached above are first-class
+    // audit facts: which providers resolved, what they labeled their
+    // source, and whether output was truncated. The full (sanitized)
+    // text goes to the run's evidence list so GET /runs/:id shows what
+    // the run was created with.
+    if (attachedContexts.length > 0) {
+      const summary = attachedContexts.map((c) => ({
+        provider: c.provider,
+        arg: c.arg,
+        source: c.source,
+        truncated: c.truncated,
+        estimatedTokens: c.estimatedTokens,
+      }));
+      ctx.audit.record(agentId, 'CONTEXT_PROVIDER_USED', 'runtime_run', id, {
+        runId: id,
+        actor: agentId,
+        agentId,
+        taskId,
+        contexts: summary,
+      });
+      rec.evidence.push({
+        type: 'context_provider',
+        title: 'deterministic @-context attached at run creation',
+        payload: {
+          contexts: attachedContexts.map((c) => ({
+            provider: c.provider,
+            arg: c.arg,
+            source: c.source,
+            truncated: c.truncated,
+            estimatedTokens: c.estimatedTokens,
+            text: c.text,
+          })),
+        },
+      });
+      persistRun();
+    }
     // Batch 75 (F28) — the env-error signal is a declared footgun: audit
     // every use so the declaration is always traceable to the request
     // that made it (the emitted §81 record cross-references this too).

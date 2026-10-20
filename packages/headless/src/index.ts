@@ -19,6 +19,13 @@ import { basename, extname } from 'node:path';
 export const EXIT_OK = 0;
 export const EXIT_FAILED = 1;
 export const EXIT_USAGE = 2;
+/**
+ * Inspection gate verdict (task ⑧): the run succeeded but findings are
+ * over the --fail-on threshold. Kept at 2 per the documented `inspect`
+ * contract (0 = pass, 2 = new/excess findings) so CI can do
+ * `ai-factory inspect ... || exit $?`.
+ */
+export const EXIT_INSPECT_VIOLATIONS = 2;
 
 export const DEFAULT_API = 'http://127.0.0.1:3100';
 export const DEFAULT_TIMEOUT_MS = 10 * 60_000;
@@ -90,11 +97,16 @@ export function usage(): string {
     '  checkpoint create --session ID [--label TEXT] [--code-root DIR]',
     '  checkpoint list --session ID',
     '  checkpoint restore --session ID --id CHECKPOINT-ID',
+    '  inspect --project ID [--root DIR] [--profile FILE] [--fail-on new|any]',
+    '      Run the team inspection gate (deterministic static checks + license audit),',
+    '      print the verdict. Exits 0 = pass, 2 = new/excess findings over --fail-on,',
+    '      1 = operation failed. --profile applies a profile JSON first.',
     '',
     'Global flags: --api URL (default http://127.0.0.1:3100) --token TOKEN',
     '  (or FACTORY_API_TOKEN env) --json  -h/--help',
     '',
     'Exit codes: 0 success · 1 operation failed · 2 usage/timeout/interrupted',
+    '            (for `inspect`, 2 also means findings over the --fail-on threshold)',
   ].join('\n');
 }
 
@@ -447,6 +459,83 @@ export async function checkpointRestore(
           `  pre-restore safety checkpoint: ${b['preRestoreCheckpointId']}`,
         ],
   };
+}
+
+export interface InspectRequest {
+  projectId: string;
+  /** Inspected root (server-side jail applies). */
+  root?: string;
+  /** Local path to a profile JSON to apply before running (optional). */
+  profilePath?: string;
+  /** 'new' (default): fail on findings not in the baseline; 'any': fail on any findings. */
+  failOn: 'new' | 'any';
+  json: boolean;
+}
+
+/**
+ * Run the team inspection gate against the server and judge the verdict.
+ * Exit codes: 0 = pass, 2 = findings over the --fail-on threshold
+ * (EXIT_INSPECT_VIOLATIONS), 1 = operation failed (bad profile file,
+ * HTTP error, usage). Output is the full server payload with --json,
+ * human-readable summary lines otherwise.
+ *
+ * Honest boundary: pass means "nothing over the fail-on threshold", not
+ * "no problems" — the gate only reports findings newer than the baseline
+ * (fail-on=new), which itself is an explicit, audited snapshot.
+ */
+export async function inspectCommand(req: InspectRequest, http: HttpClient): Promise<CommandResult> {
+  if (!req.projectId.trim()) return { exitCode: EXIT_USAGE, output: ['error: --project is required'] };
+  const projectId = req.projectId.trim();
+
+  // Optional: apply a profile file first (the committable team contract).
+  if (req.profilePath) {
+    let raw: string;
+    try {
+      raw = readFileSync(req.profilePath, 'utf8');
+    } catch (e) {
+      return { exitCode: EXIT_FAILED, output: [`error: cannot read profile file: ${(e as Error).message}`] };
+    }
+    let profile: unknown;
+    try {
+      profile = JSON.parse(raw);
+    } catch {
+      return { exitCode: EXIT_FAILED, output: ['error: profile file is not valid JSON'] };
+    }
+    const pr = await http
+      .request('PUT', '/api/inspections/profile', { projectId, ...(req.root ? { root: req.root } : {}), profile })
+      .catch(() => null);
+    if (!pr || pr.status !== 200) {
+      return pr ? err(pr.status, pr.body, 'profile rejected') : { exitCode: EXIT_FAILED, output: ['error: request failed'] };
+    }
+  }
+
+  const r = await http
+    .request('POST', '/api/inspections/run', { projectId, ...(req.root ? { root: req.root } : {}) })
+    .catch(() => null);
+  if (!r || r.status !== 200) {
+    return r ? err(r.status, r.body, 'inspection failed') : { exitCode: EXIT_FAILED, output: ['error: request failed'] };
+  }
+  const b = r.body as Record<string, unknown>;
+  const totals = (b['totals'] as Record<string, number>) ?? { total: 0, info: 0, warning: 0, error: 0 };
+  const newCount = typeof b['newCount'] === 'number' ? (b['newCount'] as number) : 0;
+  const violations = req.failOn === 'any' ? totals.total : newCount;
+  const passed = violations === 0;
+  if (req.json) {
+    return { exitCode: passed ? EXIT_OK : EXIT_INSPECT_VIOLATIONS, output: b };
+  }
+  const byChecker = (totals['byChecker'] as unknown as Record<string, number> | undefined) ?? {};
+  const checkerBits = Object.entries(byChecker)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' ');
+  const lines = [
+    `${passed ? 'PASS' : 'VIOLATIONS'}  project=${projectId}  root=${String(b['root'] ?? '')}`,
+    `  findings: total=${totals.total} new=${newCount} (fail-on=${req.failOn}) info=${totals.info} warning=${totals.warning} error=${totals.error}`,
+    ...(checkerBits ? [`  by checker: ${checkerBits}`] : []),
+    `  profile: ${String(b['profileName'] ?? '')} (${String(b['profileSource'] ?? '')})`,
+    ...(b['baselineEstablished'] ? ['  baseline: established by this run'] : []),
+    '  (pass = nothing over the fail-on threshold, not "no problems")',
+  ];
+  return { exitCode: passed ? EXIT_OK : EXIT_INSPECT_VIOLATIONS, output: lines };
 }
 
 export { createHttpClient, resolveToken };

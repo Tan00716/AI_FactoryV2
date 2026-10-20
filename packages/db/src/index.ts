@@ -33,3 +33,4 @@ export * from './seed';
 export * from './schema';
 export * from './constraints';
 export * from './transactions';
+export * from './collab-chat';

@@ -38,6 +38,7 @@ import { SqlitePipelineRecordStore } from './pipelines';
 import { SqliteWorktreeStore } from './worktrees';
 import { SqliteMcpServerStore } from './mcp-servers';
 import { SqlitePermissionTierStore } from './permission-tiers';
+import { SqliteCollabChatStore } from './collab-chat';
 import { SqliteGateStore } from './gates';
 import { SqliteDelegationStore } from './delegations';
 import { SqliteProjectKnowledgeStore } from './project-knowledge';
@@ -1111,6 +1112,8 @@ export class FactoryDatabase {
   readonly mcpServers: SqliteMcpServerStore;
   /** W-C permission tiers: per-tier policies + agent→tier assignment. */
   readonly permissionTiers: SqlitePermissionTierStore;
+  /** 第三波任务⑩：协同房间聊天持久化。 */
+  readonly collabChat: SqliteCollabChatStore;
   /**
    * §39.3 (Batch 32) — durable gate definitions + append-only
    * evaluation log. Verdicts are computed by the deterministic
@@ -1248,6 +1251,7 @@ export class FactoryDatabase {
     );
     this.mcpServers = new SqliteMcpServerStore(this.db);
     this.permissionTiers = new SqlitePermissionTierStore(this.db);
+    this.collabChat = new SqliteCollabChatStore(this.db);
     this.gates = new SqliteGateStore(this.db);
     this.delegations = new SqliteDelegationStore(this.db);
     this.projectKnowledge = new SqliteProjectKnowledgeStore(this.db);

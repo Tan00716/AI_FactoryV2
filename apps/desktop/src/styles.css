@@ -397,3 +397,26 @@ button.ghost:hover { background: rgba(88,166,255,.12); }
   .cmdk-overlay { animation: r2-fade .12s ease; }
   .cmdk-panel { animation: r2-fade .14s ease; }
 }
+
+/* 第三波任务⑩ 实时协同面板 */
+.collab-connectbar { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+.collab-connectbar .dot { width: 10px; height: 10px; border-radius: 50%; background: #888; display: inline-block; }
+.collab-connectbar .dot.connected { background: #3cb44b; }
+.collab-connectbar .dot.connecting { background: #ffe119; }
+.collab-connectbar .dot.disconnected { background: #e6194b; }
+.collab-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+.collab-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-width: 0; }
+.collab-card.wide { grid-column: 1 / -1; }
+.collab-card h3 { margin: 0 0 8px; font-size: 14px; }
+.collab-members { list-style: none; margin: 8px 0 0; padding: 0; }
+.collab-members li { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.avatar-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.collab-chatbox { height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+.chat-msg { margin-bottom: 6px; }
+.chat-user { font-weight: 600; margin-right: 8px; }
+.collab-doc { width: 100%; height: 260px; font-family: monospace; font-size: 13px; resize: vertical; }
+.collab-term { height: 220px; overflow-y: auto; background: #0d1117; color: #c9d1d9; border-radius: 6px; padding: 8px; font-size: 12px; white-space: pre-wrap; }
+.row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.row input[type="text"], .row input:not([type]) { flex: 1; min-width: 120px; }
+.muted.small { font-size: 12px; }
+.link { background: none; border: none; color: #58a6ff; cursor: pointer; padding: 0; }

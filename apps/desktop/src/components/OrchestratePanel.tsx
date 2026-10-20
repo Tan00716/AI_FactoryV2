@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { defaultApiBase, authHeaders, type CheckpointV2 } from '../api';
 import { RunCheckpointsSection } from './RunCheckpointsView';
+import { ContextMentionInput } from './ContextMentionInput';
 import { useLang } from '../i18n';
 
 /** Typed client for orchestrator + model-router + runtime endpoints. */
@@ -21,6 +22,12 @@ export interface OrchestrateApi {
   }): Promise<RouteDecision>;
   account(): Promise<unknown>;
   runAgent(input: { agentId: string; taskId: string }): Promise<{ id: string; status: string }>;
+  /** Task ⑥ — start a run with caller-supplied script text (may contain @-refs). */
+  runWithScript(input: {
+    agentId: string;
+    taskId: string;
+    script: Array<{ text: string; toolCalls: Array<{ tool: string; args: unknown }> }>;
+  }): Promise<{ id: string; status: string }>;
   runStatus(id: string): Promise<RuntimeRun>;
   /** §28.3 — the run's captured checkpoints, first-capture order. */
   runCheckpoints(id: string): Promise<{ runId: string; checkpoints: CheckpointV2[] }>;
@@ -78,6 +85,8 @@ export function createOrchestrateApi(base: string = DEFAULT_BASE): OrchestrateAp
       req(base, '/router/route', { method: 'POST', body: JSON.stringify(input) }),
     account: () => req(base, '/router/account'),
     runAgent: (input) =>
+      req(base, '/runtime/runs', { method: 'POST', body: JSON.stringify(input) }),
+    runWithScript: (input) =>
       req(base, '/runtime/runs', { method: 'POST', body: JSON.stringify(input) }),
     runStatus: (id) => req(base, `/runtime/runs/${encodeURIComponent(id)}`),
     runCheckpoints: (id) =>
@@ -232,6 +241,42 @@ export function OrchestratePanel({
     }
   };
 
+  // Task ⑥ — custom run whose script text may carry @-context references
+  // (@diff/@terminal/@problems/@tree/@open); the server resolves them at
+  // creation and refuses unknown providers with a 400 (surfaced here).
+  const [customPrompt, setCustomPrompt] = useState('');
+  const doCustomRun = async () => {
+    if (!takeBusy('run')) return;
+    setErr('');
+    if (!agentId || !taskId) {
+      setErr(t('orchestrate.needAgentTask'));
+      releaseBusy();
+      return;
+    }
+    if (!customPrompt.trim()) {
+      setErr(t('ctx.emptyPrompt'));
+      releaseBusy();
+      return;
+    }
+    try {
+      const started = await client.runWithScript({
+        agentId,
+        taskId,
+        script: [{ text: customPrompt, toolCalls: [] }],
+      });
+      for (let i = 0; i < 10; i++) {
+        await new Promise((r) => setTimeout(r, 600));
+        const s = await client.runStatus(started.id);
+        setRun(s);
+        if (s.status !== 'RUNNING') break;
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      releaseBusy();
+    }
+  };
+
   return (
     <div className="panel">
       <h2>{t('orchestrate.title')} <span className="muted">§92–95 · §30 router · §24–27 runtime</span></h2>
@@ -298,6 +343,22 @@ export function OrchestratePanel({
             onRefresh={() => void loadCheckpoints(run.id)}
           />
         )}
+      </section>
+
+      <section>
+        <h3>{t('ctx.customRun')}</h3>
+        <p className="muted">{t('ctx.customRunDesc')}</p>
+        <ContextMentionInput
+          value={customPrompt}
+          onChange={setCustomPrompt}
+          placeholder={t('ctx.promptPlaceholder')}
+        />
+        <div className="row" style={{ marginTop: 8 }}>
+          <button onClick={doCustomRun} disabled={!agentId || !taskId || busy !== '' || !customPrompt.trim()}>
+            {busy === 'run' ? t('orchestrate.running') : t('ctx.startRun')}
+          </button>
+          <span className="muted">{t('ctx.unknownProviderNote')}</span>
+        </div>
       </section>
     </div>
   );

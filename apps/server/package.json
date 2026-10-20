@@ -40,6 +40,7 @@
     "@ai-factory/runtime": "0.1.0",
     "@ai-factory/search": "0.1.0",
     "@ai-factory/codeindex": "0.1.0",
+    "@ai-factory/collab": "0.1.0",
     "@ai-factory/repomap": "0.1.0",
     "@ai-factory/plugins": "0.1.0",
     "@ai-factory/secrets": "0.1.0",

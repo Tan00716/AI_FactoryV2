@@ -44,6 +44,14 @@ function apiToken(): string | null {
 }
 
 /**
+ * 第三波任务⑩：协同 WS 需要把 token 放进 query（浏览器 WebSocket 发不出
+ * Authorization 头）。与 authHeaders() 同源（localStorage factory.apiToken）。
+ */
+export function getApiToken(): string | null {
+  return apiToken();
+}
+
+/**
  * Authorization header for the operator API token, or an empty object when
  * no token is stored. Shared by the panel-local `req` copies (GitPanel,
  * QaPanel, TerminalPanel, …) so every request to the local server carries

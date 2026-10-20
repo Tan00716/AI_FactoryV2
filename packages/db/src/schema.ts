@@ -1124,4 +1124,16 @@ CREATE TABLE IF NOT EXISTS agent_tiers (
   tier TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- 第三波任务⑩ 实时协同：房间聊天持久化。CREATE TABLE IF NOT EXISTS
+-- covers old databases on open. 内容已过 sanitizeUntrusted；审计只记
+-- 元数据（msg id/长度），不记正文。
+CREATE TABLE IF NOT EXISTS collab_chat (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL,
+  user_name TEXT NOT NULL,
+  text TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_collab_chat_room ON collab_chat (room_id, created_at);
 `

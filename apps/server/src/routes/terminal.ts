@@ -84,6 +84,15 @@ import { ApprovalManager } from '@ai-factory/approvals';
 import { NETWORK_OFFLINE_CODE, networkMode } from '../network-mode';
 
 const manager = new PtySessionManager({ maxSessions: 16, archiveDepth: 50 });
+
+/**
+ * 协同只读终端流（第三波任务⑩）：暴露同一 manager 实例，collab 只订阅
+ * onOutput（只读），永远不写 stdin。session 的 createStreamRedactor
+ * hook（创建时安装）保证与 SSE 流同一脱敏。
+ */
+export function terminalSessionManager(): PtySessionManager {
+  return manager;
+}
 const IDLE_REAP_MS = 30 * 60 * 1000;
 const MAX_INPUT_BYTES = 64 * 1024;
 
@@ -592,4 +601,37 @@ export async function handleTerminalRoutes(
   }
 
   return false;
+}
+
+/**
+ * Task ⑥ seam — tail of a terminal session's transcript for the
+ * @terminal context provider. Pure read: never creates a session.
+ * Returns found:false with a note when there is nothing to attach —
+ * an honest "nothing available", never an invented transcript.
+ * Terminal sessions are process-local; closed sessions are gone.
+ */
+export function getTerminalTailForContext(
+  sessionId: string | null,
+  maxLines: number,
+): { found: boolean; sessionId?: string; text?: string; note?: string } {
+  const lines = Math.min(2000, Math.max(1, Math.floor(maxLines) || 200));
+  try {
+    let session;
+    if (sessionId) {
+      session = manager.get(sessionId); // throws PtySessionError on unknown id
+    } else {
+      const live = manager
+        .list()
+        .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+      if (live.length === 0) {
+        return { found: false, note: 'no live terminal sessions' };
+      }
+      session = manager.get(live[0].id);
+    }
+    const all = session.transcriptText().split('\n');
+    const tail = all.slice(-lines).join('\n');
+    return { found: true, sessionId: session.id, text: tail };
+  } catch (e) {
+    return { found: false, note: (e as Error).message };
+  }
 }
