@@ -10,7 +10,9 @@
 > shadow checkpoints, team inspections, batch changes, realtime collab,
 > coverage visualization, ignore files, problem matchers, security scan,
 > migration recipes, impact analysis, egress firewall, scope lock,
-> design mode, DB time travel.
+> design mode, DB time travel, auto-update, flaky-test detection,
+> benchmark regression stats, Local History, devcontainer, mutation
+> testing, sweep.yaml, editor/terminal widgets.
 > Quick start: [USER_GUIDE.md](USER_GUIDE.md);
 > known limitations: [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 > 中文版：[ADVANCED_FEATURES.md](ADVANCED_FEATURES.md).
@@ -637,8 +639,172 @@ promote is the *only* prod write path (explicit + confirmed +
 100MB by default — oversize/symlink cases record a skip reason,
 never silently.
 
+## 42. Auto-update + changelog (third round, part 1)
+
+**What**: like VS Code's auto-update. The server-side `updates.ts` is the
+deterministic core: it parses the update feed, compares versions, and
+decides "is there a newer release" — the actual download/install goes
+through `electron-updater` 6.8.9 in the desktop main process
+(`autoDownload=false`: nothing downloads until you click it).
+
+**How**: the center "Updates" tab (UpdatePanel): view version status and
+trigger a manual check; the feed URL comes from `FACTORY_UPDATE_FEED_URL`
+(empty by default = no checks, and the UI says so plainly — "update
+source not configured"); `FACTORY_UPDATE_CHECK_INTERVAL_MS` defaults
+to 6 hours (min 1 minute), `FACTORY_UPDATE_AUTO_CHECK=false` disables
+automatic checks. A new release writes an `UPDATE_AVAILABLE` audit entry
+and pushes a notification-center alert. Checks go through the egress
+firewall (a blocked feed fails loudly as `egress-blocked`).
+
+**Honest boundaries**: the server only *checks* — it never downloads or
+installs binaries; hosting the update feed is a Tan-side deployment
+decision, and by default there is none.
+
+## 43. Flaky-test detection (third round, part 1)
+
+**What**: like Google Test's flaky labels: `flaky.ts` parses TAP and
+`FlakyHistoryStore` (`flaky-history.json`) accumulates per-test history;
+within the lookback window (default last 10 runs, minimum 3 data points)
+a pass/fail mix marks the test flaky; a test that always fails is
+always-failing.
+
+**How**: `POST /api/flaky/record` posts TAP text to record;
+`POST /api/flaky/runs` runs the given test files on the server
+(TMPDIR wrapper + `--test-reporter=tap`, files jailed); the Problems
+panel has a flaky-failures section; the quality gate offers
+`rerunFlakyOnce` (default off): when on, a failed test gets one extra
+run for quarantine annotation — but **the original verdict never
+flips**, and a flaky test is never auto-passed.
+
+**Honest boundaries**: a short window can mislabel, so `minRuns`
+floors it at 3; skips count as neither pass nor fail; the gate linkage
+is annotation-only.
+
+## 44. Benchmark regression statistics (third round, part 1)
+
+**What**: Criterion.rs-style statistics: mean/median/approx 95% CI
+(z=1.96) — "sample set vs sample set", where only non-overlapping
+confidence intervals count as a significant regression (conservative
+`significantSlowdown`). `--runs n` (default 1) repeats each case n
+times and aggregates: latencies are statistically merged, and a pass
+requires every run to pass.
+
+**How**: `npm run benchmark -- --runs n`; in regression reports, a
+latency regression is only a warning (wall-clock timings are
+environment-sensitive) — only a success regression (pass→fail) fails
+the CI gate.
+
+**Honest boundaries**: latency detection is conservative, so minor
+regressions can slip through; the success criterion is strict —
+one failed run is a regression.
+
+## 45. Local History: snapshot on every save (third round, part 1)
+
+**What**: like JetBrains Local History: a save hook in `routes/files.ts`
+writes a timestamped snapshot on every save, under
+`AI_FACTORY_DATA_DIR/local-history/<workspace>/<file>/`.
+Configurable caps: 50 snapshots per file by default
+(`FACTORY_LOCAL_HISTORY_MAX_SNAPSHOTS_PER_FILE`), 1MB per snapshot
+(`FACTORY_LOCAL_HISTORY_MAX_SNAPSHOT_BYTES`), 100MB per workspace
+(`FACTORY_LOCAL_HISTORY_MAX_WORKSPACE_BYTES`); over-limit saves get an
+explicit `skipped-*` status (too-large/unchanged/disabled/error) —
+never silent; `FACTORY_LOCAL_HISTORY_DISABLED=1` turns it off entirely.
+
+**How**: browse and restore from the history drawer in the editor;
+restore needs explicit confirmation, and the current content is saved
+as a `pre-restore` snapshot first — so a restore is itself undoable.
+
+**Honest boundaries**: only saves through the file API are covered;
+identical content isn't re-snapshotted (`skipped-unchanged`); trimmed
+snapshots say why.
+
+## 46. Reproducible dev environment: devcontainer (third round, part 1)
+
+**What**: `DevEnvSpec` in `packages/qa/src/devenv.ts` is the single
+source of truth with two derived renderings: `renderDevcontainer()` →
+`devcontainer.json`, `renderSetupStepsYaml()` → the Copilot Setup Steps
+YAML — unit-tested byte-identical so the two never drift. Templates live
+in `.devcontainer/`, not in `.github/workflows/` (deliberate, matching
+the current no-`.github/`-in-commit policy).
+
+**How**: `docs/dev-environment.md` documents the full contract (schema
+shape, extension-id format, `npm run` script existence, fail-closed on
+unparseable input); to enable Copilot cloud agents, copy the yml to
+`.github/workflows/`.
+
+**Honest boundaries**: file correctness is verified, but no real
+container pull-up was run; enabling Copilot Setup Steps is Tan's call
+(the template is ready whenever he wants it).
+
+## 47. Mutation testing (third round, part 2)
+
+**What**: like StrykerJS: the layer beneath coverage — "are your
+assertions strong enough?" The new `@ai-factory/mutation` package has
+7 text-level mutation operators (arithmetic/comparison/boundary/
+boolean-flip/logic) with a tokenizer that skips strings, comments, and
+template literals; mulberry32 seeded sampling is fully reproducible
+(default 50 mutants, per-file cap 10, hard cap 200 per run); mutants
+execute in a scratch copy and **never touch the real tree**, with
+per-mutant timeouts; verdicts are killed/survived/timeout/invalid,
+score = killed/(killed+survived).
+
+**How**: `POST /api/mutation/run` (background, 202) →
+`GET /api/mutation/runs/:id` to poll → `GET /api/mutation/latest`;
+the quality gate offers `mutation.report` (default off): it attaches
+the report summary as an annotation only — never triggers a run, never
+blocks; the Problems panel has a mutation-testing section.
+
+**Honest boundaries**: whole-repo exhaustive mutation isn't supported —
+sampling only; template-literal interpolation is out of scope in v1;
+syntactically invalid mutants count as `invalid` and don't pollute the
+score; generics like `<T>` can legitimately produce invalid mutants.
+
+## 48. sweep.yaml automation convention (third round, part 2)
+
+**What**: like Sweep: a `.ai-factory/sweep.yaml` in the project
+declaratively maps external events (issues, alerts…) to task templates.
+`loadSweepConfig`: a missing file is not an error; bad YAML/bad version
+fails the whole file closed with line numbers; a single bad rule lands
+in `invalidRules` while the rest keep working. `matchSweepRules` is
+fully deterministic: priority descending, then document order.
+`buildLaunch` passes every event value through
+`sanitizeUntrusted(declared external)`.
+
+**How**: `GET /api/sweep/config` shows rule summary + validation status;
+`POST /api/sweep/dry-run` matches without creating anything;
+`POST /api/sweep/ingest` proposes a task:
+`authorizationStatus=WAITING_HUMAN_DISPATCH`, creator=`sweep`,
+audit `SWEEP_TASK_PROPOSED` — it lands in the Dispatch panel for a
+human to confirm or reject (a sweep badge marks its creator column).
+
+**Honest boundaries**: it's a convention, not a live integration —
+there is no webhook receiver; direct GitHub webhook wiring is a
+Tan-side networking decision and is deliberately not built; proposed
+tasks never auto-run — a human always signs off.
+
+## 49. Editor/terminal experience widgets (third round, part 2)
+
+**What**: R3-T9 editor widgets: Monaco's built-in stickyScroll
+(`enabled` + `maxLineCount: 10`) with a header checkbox switch
+persisted in localStorage (`ai-factory.editor.stickyScroll`, on by
+default); `FILE_NESTING_RULES` file nesting (`package.json`→lock
+files, `*.ts`→`.d.ts`/`.test.ts`/`.spec.ts`/`.stories.ts`…) grouped in
+the same directory with chevron expand/collapse. R3-T10 terminal widget:
+a DOM status bar under xterm — short session id, working directory,
+exit code, connection state; polled every 5 seconds, with one-click
+reconnect when disconnected/closed.
+
+**How**: toggle sticky scroll in the editor header; expand nesting
+groups in the file tree; glance at the terminal status bar, and hit
+reconnect when it drops.
+
+**Honest boundaries**: a PTY can't report per-command exit codes, so a
+live session honestly shows "—" for exit code (never faked) — the real
+exit code appears only when the session ends.
+
 ---
 
 *Version 0.2.0 (2026-10-18). Supplemented 2026-10-21: hardening waves
-(1/2), third wave (parts 1/2), second round (parts 1/2) — §12–§41.
+(1/2), third wave (parts 1/2), second round (parts 1/2) — §12–§41;
+supplemented 2026-10-21: third round (parts 1/2) — §42–§49.
 中文版见 ADVANCED_FEATURES.md。*

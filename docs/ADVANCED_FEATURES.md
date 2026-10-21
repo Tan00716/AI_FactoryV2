@@ -7,7 +7,9 @@
 > 多项目、质量闸门、仓库地图、会话隔离、OS 沙盒、权限规则、
 > @ 上下文提供器、影子检查点、团队门禁、批量变更、实时协同、
 > 覆盖率可视化、忽略文件、问题匹配器、安全扫描、配方迁移、
-> 影响分析、出站防火墙、范围锁定、设计模式、DB 时间旅行。
+> 影响分析、出站防火墙、范围锁定、设计模式、DB 时间旅行、
+> 自动更新、Flaky 检测、基准回归统计、Local History、devcontainer、
+> 变异测试、sweep.yaml、编辑器/终端小件。
 > 快速上手见 [USER_GUIDE.md](USER_GUIDE.md)；
 > 已知限制见 [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)。
 > 英文版：[ADVANCED_FEATURES.en.md](ADVANCED_FEATURES.en.md)。
@@ -566,8 +568,151 @@ dev==prod 的配置直接拒绝。
 **诚实边界**：第一阶段只做 SQLite；快照默认 100MB 上限，
 超限/过大/软链会记 skip 原因，不静默。
 
+## 42. 自动更新 + 变更日志（第三轮一）
+
+**是什么**：对标 VS Code 自动更新。服务端 `updates.ts` 是确定性核心：
+解析更新 feed、比对版本、决定"有没有新版本"；真正的下载和安装
+走桌面主进程的 `electron-updater` 6.8.9（`autoDownload=false`，
+只有你点了"下载并安装"才会动）。
+
+**怎么用**：中间栏「Updates」tab（UpdatePanel）：看版本状态、
+手动检查更新；更新源由环境变量 `FACTORY_UPDATE_FEED_URL` 配置
+（默认留空=不检查，界面诚实标注"未配置更新源"；
+`FACTORY_UPDATE_CHECK_INTERVAL_MS` 默认 6 小时、最小 1 分钟，
+`FACTORY_UPDATE_AUTO_CHECK=false` 可关闭自动检查）。
+有新版本时记审计 `UPDATE_AVAILABLE` + 通知中心推送。
+检查请求走出站防火墙（被拦会明确报错 `egress-blocked`）。
+
+**诚实边界**：服务端只做"检查"，从不下载/安装二进制；
+更新源的托管是 Tan 侧部署决策，默认没有，不假装能更新。
+
+## 43. Flaky 间歇失败检测（第三轮一）
+
+**是什么**：对标 Google Test 的 flaky 标注：`flaky.ts` 解析 TAP，
+`FlakyHistoryStore`（`flaky-history.json`）按测试累积历史；
+窗口内（默认看最近 10 次、最少 3 次数据）pass/fail 混合出现
+就标 flaky，一直挂的就是 always-failing。
+
+**怎么用**：`POST /api/flaky/record` 贴 TAP 文本记录；
+`POST /api/flaky/runs` 让服务端直接跑指定测试文件
+（走 TMPDIR wrapper + `--test-reporter=tap`，文件被 jail 限制）；
+ProblemsPanel 有"间歇失败"分区；质量闸门可开 `rerunFlakyOnce`
+（默认关）：开了之后失败的测试会多跑一轮做隔离标注——
+但**原结论永不翻转**，flaky 测试永远不会被自动放行。
+
+**诚实边界**：窗口太短会误标，`minRuns` 保底 3；
+skip 既不算 pass 也不算 fail；门禁联动只是注解，不改结论。
+
+## 44. 基准回归统计（第三轮一）
+
+**是什么**：Criterion.rs 式统计判定：mean/median/近似 95% CI
+（z=1.96），"样本集 vs 样本集"——两边 CI 不重叠才算显著回归
+（`significantSlowdown` 保守判定）。`--runs n`（默认 1）让每个
+case 重复 n 次再聚合：延迟取统计聚合，pass 要求每轮全过。
+
+**怎么用**：`npm run benchmark -- --runs n`；回归报告里，
+延迟回归只记 warning（wall-clock 时间对环境敏感），
+成功率回归（pass→fail）才会 fail 掉 CI 门。
+
+**诚实边界**：延迟判定是保守的，轻微回归可能漏报；
+成功率标准是严格的——一轮失败就判回归。
+
+## 45. Local History 每次保存快照（第三轮一）
+
+**是什么**：对标 JetBrains Local History：`routes/files.ts` 的保存钩子
+每次保存都写一个时间戳快照，落在
+`AI_FACTORY_DATA_DIR/local-history/<workspace>/<file>/`。
+上限可配：每文件默认 50 个快照
+（`FACTORY_LOCAL_HISTORY_MAX_SNAPSHOTS_PER_FILE`）、
+单快照默认 1MB（`FACTORY_LOCAL_HISTORY_MAX_SNAPSHOT_BYTES`）、
+工作区默认 100MB（`FACTORY_LOCAL_HISTORY_MAX_WORKSPACE_BYTES`）；
+超限显式 `skipped-*`（too-large/unchanged/disabled/error）不静默；
+`FACTORY_LOCAL_HISTORY_DISABLED=1` 可整体关闭。
+
+**怎么用**：编辑器里的历史抽屉浏览/恢复；恢复需要显式确认，
+且会先把当前内容存成 `pre-restore` 快照——恢复本身可撤销。
+
+**诚实边界**：只覆盖经文件 API 的保存；内容没变的不重复存
+（`skipped-unchanged`）；被剪掉的快照会显式说明原因。
+
+## 46. 可复现开发环境 devcontainer（第三轮一）
+
+**是什么**：`packages/qa/src/devenv.ts` 的 `DevEnvSpec` 是单一数据源，
+双渲染同源生成：`renderDevcontainer()` → `devcontainer.json`，
+`renderSetupStepsYaml()` → Copilot Setup Steps 的 yml，
+单测保证两者字节一致不漂移。
+模板放在 `.devcontainer/` 下，不进 `.github/workflows/`
+（配合 `.github/` 不进本地 commit 的现状）。
+
+**怎么用**：`docs/dev-environment.md` 有完整说明和校验规则
+（schema 形状、扩展 ID 格式、`npm run` 脚本存在性，
+不可解析 fail-closed）；启用 Copilot 云端 agent 时，
+把 yml 拷到 `.github/workflows/` 即可。
+
+**诚实边界**：只验证文件正确性，没有真实容器拉起验证；
+启用 Copilot Setup Steps 是 Tan 侧决策（模板已就绪，随时可用）。
+
+## 47. 变异测试（第三轮二）
+
+**是什么**：对标 StrykerJS：覆盖率的下一层，测"断言够不够狠"。
+新包 `@ai-factory/mutation`：7 个文本级变异算子
+（算术/比较/关系边界/布尔翻转/逻辑），分词器跳过字符串、
+注释和模板字面量；mulberry32 种子抽样完全可复现
+（默认抽 50 个、每文件上限 10、单次硬上限 200）；
+变异体在 scratch 拷贝里执行，**永不碰真实树**，超时熔断；
+verdict 四态 killed/survived/timeout/invalid，
+得分 = killed/(killed+survived)。
+
+**怎么用**：`POST /api/mutation/run`（后台执行，202 返回）→
+`GET /api/mutation/runs/:id` 轮询 → `GET /api/mutation/latest` 看最新；
+质量闸门可配 `mutation.report`（默认关）：只把报告摘要做
+annotation 挂到门上，不触发运行、不阻断；
+ProblemsPanel 有变异测试分区。
+
+**诚实边界**：全仓库全量变异不支持，只做抽样；
+模板字面量插值 v1 不变异；语法无效的变异计 `invalid`，
+不污染得分；泛型 `<T>` 可能产出语法无效变异（正常现象）。
+
+## 48. sweep.yaml 自动化约定（第三轮二）
+
+**是什么**：对标 Sweep：项目里放一个 `.ai-factory/sweep.yaml`，
+把外部事件（issue、告警……）声明式映射到任务模板。
+`loadSweepConfig`：文件缺失≠错误；坏 YAML/坏 version 整文件
+fail-closed 并带行号；单个坏规则进 `invalidRules`，其余照常工作。
+`matchSweepRules`：priority 降序 + 文档顺序，完全确定性。
+`buildLaunch`：事件值一律经 `sanitizeUntrusted(declared external)`。
+
+**怎么用**：`GET /api/sweep/config` 看规则摘要+校验状态；
+`POST /api/sweep/dry-run` 只匹配不建单；
+`POST /api/sweep/ingest` 建单：`authorizationStatus=WAITING_HUMAN_DISPATCH`、
+creator=`sweep`、审计 `SWEEP_TASK_PROPOSED`，任务落进 Dispatch 面板
+等人工确认/驳回（创建者列有 sweep 徽章）。
+
+**诚实边界**：它是约定，不是实时集成——没有 webhook 接收器，
+GitHub webhook 直连是 Tan 侧网络决策，故意不做；
+发起的任务永不自动执行，永远等人工拍板。
+
+## 49. 编辑器/终端体验小件（第三轮二）
+
+**是什么**：R3-T9 编辑器小件：Monaco 内置 stickyScroll
+（`enabled` + `maxLineCount: 10`），表头 checkbox 开关
++ localStorage（`ai-factory.editor.stickyScroll`，默认开）持久化；
+`FILE_NESTING_RULES` 文件嵌套（`package.json`→lock 文件、
+`*.ts`→`.d.ts`/`.test.ts`/`.spec.ts`/`.stories.ts`……）
+同目录分组，chevron 展开/收起。
+R3-T10 终端小件：xterm 下方 DOM 状态条——
+会话短 id、工作目录、退出码、连接状态；每 5 秒轮询，
+断开/关闭态可一键重连。
+
+**怎么用**：编辑器表头开关粘性滚动；文件树里展开嵌套看关联文件；
+终端状态条随时看连接态，断了点重连继续用。
+
+**诚实边界**：PTY 取不到逐命令退出码，活会话的退出码诚实显示
+"—"（不伪造），只在会话结束时显示它真正的 exit code。
+
 ---
 
 *版本 0.2.0（2026-10-18）。2026-10-21 补录：加强波（一/二）、
-第三波（一/二）、第二轮（一/二）功能（§12–§41）。
+第三波（一/二）、第二轮（一/二）功能（§12–§41）；
+2026-10-21 补录：第三轮（一/二）功能（§42–§49）。
 英文版见 ADVANCED_FEATURES.en.md。*
