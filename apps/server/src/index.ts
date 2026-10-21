@@ -101,6 +101,7 @@ import {
   setRuntimeRepoMapService,
   setRuntimeManifestStore,
   setRuntimeRunStore,
+  setScopeRunCompleteHook,
   setShadowRunStartHook,
   setTaskAttachmentLister,
 } from './routes/runtime';
@@ -144,7 +145,7 @@ import { handlePolicyRoutes } from './routes/policy';
 import { handleExecRoutes } from './routes/exec';
 import { handleTerminalRoutes, getTerminalTailForContext } from './routes/terminal';
 import { handleSecretRoutes } from './routes/secrets';
-import { handleFileRoutes } from './routes/files';
+import { handleFileRoutes, setFileScopeLookup } from './routes/files';
 import { handleChangesRoutes } from './routes/changes';
 import { handleSecurityRoutes } from './routes/security';
 import { handleRecoveryRoutes } from './routes/recovery';
@@ -193,8 +194,13 @@ import {
 } from './routes/backup';
 import { handleRetentionRoutes } from './routes/retention';
 import { handleAutoBackupRoutes, syncAutoBackupPolicy } from './routes/auto-backup';
-import { handleQualityRoutes } from './routes/quality';
+import { handleQualityRoutes, setImpactGateAnalyzer } from './routes/quality';
+import { handleImpactRoutes, analyzeGateWorkingTree } from './routes/impact';
 import { handleIgnoresRoutes } from './routes/ignores';
+import { handleEgressRoutes } from './routes/egress';
+import { assertEgressAllowed, setEgressBlockSinks } from './egress';
+import { setFetchTextGuard } from '@ai-factory/search';
+import { setMcpHttpGuard } from '@ai-factory/mcp';
 import { setIgnoreGateAuditHook, isIgnoredSync } from './ignore-gate';
 import { handleCoverageRoutes } from './routes/coverage';
 import { handleContextProviderRoutes, initRuntimeContextResolution } from './routes/context-providers';
@@ -204,14 +210,18 @@ import {
   maybeFireShadowCheckpoint,
   maybeShadowCheckpointOnRunStart,
 } from './routes/shadow';
+import { handleDbTimeTravelRoutes } from './routes/db-time-travel';
 import { handleInspectionRoutes } from './routes/inspections';
 import { handleBatchChangesRoutes } from './routes/batch-changes';
 import { handleRecipesRoutes } from './routes/recipes';
+import { handleScopeRoutes, scopeRunCompleteCheck } from './routes/scope';
+import { validateScopeInput } from './scope-lock';
 import {
   handleProblemMatcherRoutes,
   setProblemMatcherDeps,
   qualityGateOutputSink,
 } from './routes/problem-matchers';
+import { handleDesignRoutes } from './routes/design';
 import { setQualityGateOutputSink } from './routes/quality';
 import { initMcpPersistence } from './routes/mcp';
 import {
@@ -608,6 +618,14 @@ setProblemMatcherDeps({
 setQualityGateOutputSink(qualityGateOutputSink);
 
 /**
+ * Change-impact gate linkage (second-round ⑥) — installs the analyzer
+ * the quality gate consults when a project enables
+ * impact.failOnBreaking. Same setter-injection pattern: routes/quality
+ * must not value-import routes/impact.
+ */
+setImpactGateAnalyzer((root) => analyzeGateWorkingTree(root));
+
+/**
  * Shadow checkpoints (third-wave task ⑦) — installs the two observer
  * hooks: auto snapshot before a run starts, and auto snapshot after a
  * tool (exec) runs. Same setter-injection pattern as the code index /
@@ -621,6 +639,23 @@ setShadowRunStartHook((ctx, taskId, runId) =>
   maybeShadowCheckpointOnRunStart(ctx, taskId, runId),
 );
 setShadowToolUseHook((ctx, cwd) => maybeFireShadowCheckpoint(ctx, cwd));
+
+/**
+ * Scope Lock （二轮加强 8) — installs the task-attribution lookup for
+ * the file-write gate and the run-completion detection hook. The file
+ * lookup is a closure over TaskManager: a write attributed (taskId) to
+ * a scoped task is refused before landing. The run hook fires at every
+ * run's terminal write and audits out-of-scope changes found
+ * post-hoc in the shadow diff — it never touches run bookkeeping.
+ */
+setFileScopeLookup((taskId) => {
+  // tasks.get throws TaskNotFoundError for an unknown id — routes/files
+  // translates that into 404 (attribution must be honest, fail-closed).
+  return tasks.get(taskId).scope ?? null;
+});
+setScopeRunCompleteHook((ctx, taskId, runId) =>
+  scopeRunCompleteCheck(ctx, taskId, runId),
+);
 
 /**
  * Offline mode — the web_search runtime tool checks the file-backed
@@ -1047,6 +1082,29 @@ function makeRouteCtx(): RouteContext {
   };
 }
 
+/**
+ * Egress firewall (second-round task ⑦) — install the block sinks
+ * (durable EGRESS_BLOCKED audit + HIGH notification fan-out) and the
+ * process-wide guards on the two low-level HTTP helpers the server's
+ * tool surfaces dial out through:
+ *   - @ai-factory/search fetchText → web_search tool + /api/search
+ *     provider calls (global layer; the /api/search route additionally
+ *     pre-checks provider endpoints with project-layer context).
+ *   - @ai-factory/mcp doHttpRequest → remote MCP Streamable HTTP AND
+ *     the OAuth 2.1 discovery/metadata/token fetches (global layer;
+ *     POST /api/mcp/remote/connect additionally pre-checks).
+ * When the firewall is disabled (factory default) the guard is a
+ * no-op — nothing is audited, nothing is blocked.
+ */
+setEgressBlockSinks({
+  audit: (actor, action, entity, entityId, details) => audit.record(actor, action, entity, entityId, details),
+  notify: (event) => {
+    notify.emit(event);
+  },
+});
+setFetchTextGuard((url) => assertEgressAllowed(url, { source: 'web-search' }));
+setMcpHttpGuard((url) => assertEgressAllowed(url, { source: 'mcp-http' }));
+
 const server = createServer(async (req, res) => {
   try {
     if (req.method === 'OPTIONS') {
@@ -1275,15 +1333,20 @@ const server = createServer(async (req, res) => {
     if (await handleBackupScheduleRoutes(req, res, url, routeCtx)) return;
     if (await handleAutoBackupRoutes(req, res, url, routeCtx)) return;
     if (await handleQualityRoutes(req, res, url, routeCtx)) return;
+    if (await handleImpactRoutes(req, res, url, routeCtx)) return;
     if (await handleIgnoresRoutes(req, res, url, routeCtx)) return;
     if (await handleCoverageRoutes(req, res, url, routeCtx)) return;
     if (await handleContextProviderRoutes(req, res, url, routeCtx)) return;
     if (await handleCollabRoutes(req, res, url, routeCtx)) return;
     if (await handleShadowRoutes(req, res, url, routeCtx)) return;
+    if (await handleScopeRoutes(req, res, url, routeCtx)) return;
+    if (await handleDbTimeTravelRoutes(req, res, url, routeCtx)) return;
     if (await handleInspectionRoutes(req, res, url, routeCtx)) return;
     if (await handleBatchChangesRoutes(req, res, url, routeCtx)) return;
     if (await handleRecipesRoutes(req, res, url, routeCtx)) return;
     if (await handleProblemMatcherRoutes(req, res, url, routeCtx)) return;
+    if (await handleEgressRoutes(req, res, url, routeCtx)) return;
+    if (await handleDesignRoutes(req, res, url, routeCtx)) return;
     if (await handleRetentionRoutes(req, res, url, routeCtx)) return;
     if (await handleAuthorizationTicketRoutes(req, res, url, routeCtx)) return;
     if (await handleDbRoutes(req, res, url, routeCtx)) return;
@@ -1457,6 +1520,19 @@ const server = createServer(async (req, res) => {
         });
       }
       const initialAuthorization = b['authorizationStatus'] as InitialTaskAuthorizationStatus | undefined;
+      // Scope Lock （二轮加强 8) — optional task edit scope {include,
+      // exclude} of globs relative to the workspace root. Unlike the
+      // §17.4 carriers above, a malformed scope is a 400, not silently
+      // dropped: a caller who asked for a lock must never believe one
+      // exists when it does not (fail-closed honesty).
+      let createScope: Task['scope'];
+      if (b['scope'] !== undefined) {
+        const v = validateScopeInput(b['scope']);
+        if (v.error) {
+          return json(res, 400, { error: `invalid scope: ${v.error}`, code: 'INVALID_SCOPE' });
+        }
+        createScope = v.scope;
+      }
       const t = tasks.create({
         projectId: String(b['projectId']),
         title: String(b['title']),
@@ -1489,8 +1565,15 @@ const server = createServer(async (req, res) => {
         )
           ? { budgetEnvelope: b['budgetEnvelope'] as Record<string, number> }
           : {}),
+        ...(createScope !== undefined ? { scope: createScope } : {}),
       });
       audit.record('human', 'TASK_CREATED', 'task', t.id, { title: t.title });
+      if (createScope !== undefined) {
+        audit.record('human', 'TASK_SCOPE_UPDATED', 'task', t.id, {
+          scope: createScope,
+          via: 'CREATE',
+        });
+      }
       // §17.2 — a task created straight into AUTHORIZED at the caller's
       // explicit request is the create-and-dispatch case, and the spec
       // wants the dispatch itself on the audit record. (No field = the
@@ -1511,6 +1594,33 @@ const server = createServer(async (req, res) => {
       const suffix = taskMatch[2] ?? '';
       if (method === 'GET' && suffix === '') {
         return json(res, 200, taskView(id));
+      }
+      if (method === 'PATCH' && suffix === '') {
+        // Scope Lock （二轮加强 8) — PATCH /api/tasks/:id {scope}.
+        // scope is the only field this endpoint patches; `null` clears
+        // the lock. Malformed scope → 400 INVALID_SCOPE (never silently
+        // dropped — see the POST /api/tasks note).
+        const b = await readBody(req);
+        if (!('scope' in b)) {
+          return json(res, 400, { error: 'scope is required (object, or null to clear)' });
+        }
+        const v = validateScopeInput(b['scope']);
+        if (v.error) {
+          return json(res, 400, { error: `invalid scope: ${v.error}`, code: 'INVALID_SCOPE' });
+        }
+        try {
+          const cleared = b['scope'] === null;
+          const updated = tasks.setScope(id, cleared ? undefined : v.scope);
+          audit.record('human', 'TASK_SCOPE_UPDATED', 'task', id, {
+            scope: cleared ? null : updated.scope ?? null,
+            via: 'PATCH',
+          });
+          return json(res, 200, taskView(id));
+        } catch (e) {
+          const msg = (e as Error).message;
+          const status = msg.includes('not found') ? 404 : 400;
+          return json(res, status, { error: msg });
+        }
       }
       if (method === 'POST' && suffix === '/transition') {
         if (isTaskProjectArchived(fdb, id)) {

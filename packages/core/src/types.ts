@@ -103,6 +103,21 @@ export type TaskAuthorizationStatus =
   | 'REVOKED'
   | 'EXPIRED';
 
+/**
+ * 第二轮加强（item 8）—— task-level edit scope （bolt.new
+ * "Limit editing to specific files" 式）: glob patterns relative to the
+ * task's workspace root. Absent/empty = unrestricted (the behaviour
+ * every pre-existing task had). include non-empty restricts edits to
+ * the matched set; exclude always wins. Matching semantics live in
+ * apps/server/src/scope-lock.ts (the server's scope-lock module); this
+ * shape is intentionally serializer-neutral so the SQLite store can
+ * persist it as JSON text.
+ */
+export interface TaskEditScope {
+  include?: string[];
+  exclude?: string[];
+}
+
 /** §8 — Task object (prototype subset of the full field list). */
 export interface Task {
   id: string;
@@ -170,6 +185,13 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  /**
+   * 第二轮加强（item 8）—— optional per-task edit scope. Absent = no
+   * lock recorded (every pre-existing task reads this way); an empty
+   * object = unrestricted. Never invented by the store — the DB
+   * migration and rowToTask surface NULL rows as "absent".
+   */
+  scope?: TaskEditScope;
   /**
    * §17.2 — evidence backing a discovery-filed ticket ("附证据").
    * Recorded when supplied (reportFinding requires at least one);

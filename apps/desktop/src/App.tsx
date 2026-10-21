@@ -20,6 +20,7 @@ import { BatchChangesPanel, createBatchChangesApi } from './components/BatchChan
 import { InspectionsPanel, createInspectionsApi } from './components/InspectionsPanel';
 import { CollabPanel } from './components/CollabPanel';
 import { RecipesPanel, createRecipesApi } from './components/RecipesPanel';
+import { DesignPanel, createDesignApi } from './components/DesignPanel';
 import { CoveragePanel, createCoverageApi } from './components/CoveragePanel';
 import { CommandPalette } from './components/CommandPalette';
 import { DispatchPanel } from './components/DispatchPanel';
@@ -78,8 +79,26 @@ function IdeShell() {
   /** Batch 15: API identity label for the top bar (role / local mode /
    *  unknown when whoami cannot be fetched — displayed as-is, never guessed). */
   const [apiIdentityLabel, setApiIdentityLabel] = useState('');
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
+  /**
+   * Design panel → editor jump (task ⑨): the Design panel dispatches an
+   * 'ai-factory:open-file' CustomEvent with {path, line}; we hand it to
+   * the Editor as a prop (the Editor tab is conditionally rendered, so
+   * an event alone could fire while it is unmounted and be lost).
+   */
+  const [editorOpenRequest, setEditorOpenRequest] = useState<{ path: string; line: number; nonce: number } | null>(null);
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const d = (e as CustomEvent<{ path: string; line: number }>).detail;
+      if (d && typeof d.path === 'string' && typeof d.line === 'number') {
+        setEditorOpenRequest({ path: d.path, line: d.line, nonce: Date.now() });
+        setCenterTab('Editor');
+      }
+    };
+    window.addEventListener('ai-factory:open-file', onOpen);
+    return () => window.removeEventListener('ai-factory:open-file', onOpen);
+  }, []);
   const [bootError, setBootError] = useState('');
   const [qaTaskId, setQaTaskId] = useState<string | null>(null);
   const [firstAgentId, setFirstAgentId] = useState<string | null>(null);
@@ -104,6 +123,7 @@ function IdeShell() {
   const recipesApi = useMemo(() => createRecipesApi(API_BASE), []);
   const inspectionsApi = useMemo(() => createInspectionsApi(API_BASE), []);
   const coverageApi = useMemo(() => createCoverageApi(API_BASE), []);
+  const designApi = useMemo(() => createDesignApi(API_BASE), []);
   const changesApi = useMemo(() => createChangesApi(API_BASE), []);
   const dashboardApi = useMemo(() => createDashboardApi(API_BASE), []);
   // Flatten board cards for the QA task picker.
@@ -221,7 +241,7 @@ function IdeShell() {
         <main className="center">
           {bootError && <div className="banner err">{bootError}</div>}
           <div className="center-tabs">
-            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab', 'Coverage', 'Recipes'] as const).map((name) => (
+            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab', 'Coverage', 'Recipes', 'Design'] as const).map((name) => (
               <button key={name} className={centerTab === name ? 'active' : ''} onClick={() => setCenterTab(name)}>{t(`tab.${name.toLowerCase().replace('/', '')}` as const)}</button>
             ))}
           </div>
@@ -331,8 +351,10 @@ function IdeShell() {
             />
           ) : centerTab === 'Recipes' ? (
             <RecipesPanel api={recipesApi} />
+          ) : centerTab === 'Design' ? (
+            <DesignPanel api={designApi} />
           ) : (
-            <EditorPanel />
+            <EditorPanel openRequest={editorOpenRequest} />
           )}
         </main>
       </div>

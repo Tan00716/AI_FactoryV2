@@ -35,6 +35,24 @@ export interface HttpRequestOptions {
   maxBytes: number;
 }
 
+/**
+ * Process-wide egress guard for doHttpRequest (second-round task ⑦).
+ * The server installs one via setMcpHttpGuard (see
+ * apps/server/src/egress.ts + index.ts wiring); the guard may throw to
+ * refuse an outbound call (e.g. an EGRESS_BLOCKED error). This single
+ * helper backs every remote-MCP Streamable HTTP call AND the OAuth 2.1
+ * fetches (discovery, Client ID Metadata Document, token endpoint), so
+ * one guard covers the whole MCP remote egress surface. Default: none
+ * — standalone package behavior is unchanged.
+ */
+export type McpHttpGuard = (url: string) => void;
+let mcpHttpGuard: McpHttpGuard | null = null;
+
+/** Install (or clear with null) the process-wide doHttpRequest egress guard. */
+export function setMcpHttpGuard(fn: McpHttpGuard | null): void {
+  mcpHttpGuard = fn;
+}
+
 export interface HttpResponse {
   status: number;
   headers: Record<string, string>;
@@ -135,6 +153,17 @@ export function applyRedirectPolicy(
 
 export function doHttpRequest(url: string, opts: HttpRequestOptions): Promise<HttpResponse> {
   return new Promise<HttpResponse>((resolve, reject) => {
+    // Egress firewall (global layer): a throwing guard rejects this call
+    // before any socket is opened — covers remote-MCP Streamable HTTP and
+    // the OAuth 2.1 discovery/token fetches that share this helper.
+    if (mcpHttpGuard) {
+      try {
+        mcpHttpGuard(url);
+      } catch (err) {
+        reject(err);
+        return;
+      }
+    }
     let parsed: URL;
     try {
       parsed = new URL(url);

@@ -6,7 +6,8 @@
  *   PUT  /api/quality                 {projectId, lintCmd, testCmd,
  *                                     timeoutMs, runOnEdit, blockOnFailure,
  *                                     coverage?: {report, failOnDropBelow},
- *                                     security?: {failOn: ['secret'|'sast'|'sca']}}
+ *                                     security?: {failOn: ['secret'|'sast'|'sca']},
+ *                                     impact?: {failOnBreaking: boolean}}
  *                                     (operator; invalid input → 400)
  *   POST /api/quality/run            {projectId, kind: 'lint'|'test',
  *                                     runId?} — run one gate step now
@@ -41,6 +42,15 @@
  * that cannot run (root jail refusal) is audited but never blocks —
  * blocking on an absent scan would misreport findings that were never
  * looked for.
+ *
+ * Change-impact linkage (second-round ⑥): when impact.failOnBreaking
+ * is on, the gate also runs change-impact analysis over the working
+ * tree vs HEAD (deterministic reverse-reference graph + export
+ * contract diff in ../impact.ts, served by routes/impact.ts). Any
+ * breaking contract change blocks with IMPACT_GATE_BLOCKED. An
+ * analysis that cannot run (root jail refusal, not a git repo) is
+ * audited and disclosed but never blocks — blocking on unexamined
+ * changes would be a false report, same rule as the security linkage.
  *
  * Honest boundary — "needs-fix" semantics: the gate never mutates run
  * state. There is no "needs-fix" run state in the run state machine, and
@@ -114,6 +124,30 @@ export function setQualityGateOutputSink(
   fn: ((projectId: string, kind: QualityGateKind, stdout: string, stderr: string) => void) | null,
 ): void {
   qualityGateOutputSink = fn;
+}
+
+/**
+ * Change-impact analyzer (second-round ⑥): installed once by index.ts
+ * (backed by routes/impact.ts). Setter injection (not a direct import)
+ * because route modules must not value-import siblings (dual-mode
+ * import rule). The analyzer answers the gate's working-tree-vs-HEAD
+ * question and never throws for infrastructure failures — it reports
+ * them as { error }, and the linkage never blocks on unexamined
+ * changes (same honest posture as the security linkage).
+ */
+export interface ImpactGateSummary {
+  changedFiles: number;
+  affected: number;
+  breaking: number;
+  error?: string;
+}
+
+let impactGateAnalyzer: ((root: string) => Promise<ImpactGateSummary>) | null = null;
+
+export function setImpactGateAnalyzer(
+  fn: ((root: string) => Promise<ImpactGateSummary>) | null,
+): void {
+  impactGateAnalyzer = fn;
 }
 
 function summarize(result: QualityGateRunResult): Record<string, unknown> {
@@ -317,6 +351,108 @@ function runSecurityLinkage(
   };
 }
 
+/**
+ * Change-impact linkage (second-round ⑥): when the project opted in via
+ * impact.failOnBreaking, analyze the working tree vs HEAD (inside the
+ * inspection root jail) after the gate step and block on breaking
+ * API-contract changes (removed/renamed/signature-changed exports).
+ * The analysis is heuristic and advisory — but it only ever blocks on
+ * something it actually examined: an analysis that could not run (not a
+ * git repo, jail refusal) is audited and disclosed, never a block.
+ */
+async function runImpactLinkage(
+  ctx: RouteContext,
+  projectId: string,
+  actor: string,
+  opts: { runId?: string; trigger?: string },
+): Promise<{ impact: Record<string, unknown> | null; blocked: boolean }> {
+  const config = qualityGateStore().get(projectId);
+  const failOnBreaking = config.impact?.failOnBreaking === true;
+  if (!failOnBreaking) return { impact: null, blocked: false };
+  if (!impactGateAnalyzer) {
+    return {
+      impact: {
+        failOnBreaking: true,
+        blocked: false,
+        note: 'impact analyzer is not wired in this server build — blocking disabled',
+      },
+      blocked: false,
+    };
+  }
+  let root: string;
+  try {
+    root = resolveInspectionRoot();
+  } catch (e) {
+    ctx.audit.record(actor, 'IMPACT_ANALYZED', 'impact', projectId, {
+      runId: opts.runId ?? null,
+      trigger: opts.trigger ?? 'manual',
+      error: (e as Error).message,
+      blocked: false,
+    });
+    return {
+      impact: {
+        failOnBreaking: true,
+        blocked: false,
+        error: (e as Error).message,
+        note: 'impact analysis could not run — never blocking on unexamined changes',
+      },
+      blocked: false,
+    };
+  }
+  const summary = await impactGateAnalyzer(root);
+  if (summary.error) {
+    ctx.audit.record(actor, 'IMPACT_ANALYZED', 'impact', projectId, {
+      runId: opts.runId ?? null,
+      trigger: opts.trigger ?? 'manual',
+      root,
+      error: summary.error,
+      blocked: false,
+    });
+    return {
+      impact: {
+        failOnBreaking: true,
+        root,
+        blocked: false,
+        error: summary.error,
+        note: 'impact analysis could not run — never blocking on unexamined changes',
+      },
+      blocked: false,
+    };
+  }
+  const blocked = summary.breaking > 0;
+  ctx.audit.record(actor, 'IMPACT_ANALYZED', 'impact', projectId, {
+    runId: opts.runId ?? null,
+    trigger: opts.trigger ?? 'manual',
+    root,
+    changedFiles: summary.changedFiles,
+    affected: summary.affected,
+    breaking: summary.breaking,
+    blocked,
+  });
+  if (blocked) {
+    ctx.audit.record(actor, 'IMPACT_GATE_BLOCKED', 'impact', projectId, {
+      runId: opts.runId ?? null,
+      trigger: opts.trigger ?? 'manual',
+      root,
+      changedFiles: summary.changedFiles,
+      affected: summary.affected,
+      breaking: summary.breaking,
+    });
+  }
+  return {
+    impact: {
+      failOnBreaking: true,
+      root,
+      changedFiles: summary.changedFiles,
+      affected: summary.affected,
+      breaking: summary.breaking,
+      blocked,
+      note: 'advisory heuristic analysis — breaking = removed/renamed/signature-changed exports vs HEAD',
+    },
+    blocked,
+  };
+}
+
 export async function executeQualityGate(
   ctx: RouteContext,
   projectId: string,
@@ -358,7 +494,32 @@ export async function executeQualityGate(
     security = link.security;
     securityBlocked = link.blocked;
   }
-  const blocked = exitBlocked || coverageBlocked || securityBlocked;
+  // Change-impact linkage (second-round ⑥): only when the project
+  // opted in via impact.failOnBreaking. Independent of blockOnFailure
+  // for the same reason as the security linkage — the opt-in itself
+  // is the blocking switch.
+  let impact: Record<string, unknown> | null = null;
+  let impactBlocked = false;
+  if (config.impact?.failOnBreaking) {
+    try {
+      const link = await runImpactLinkage(ctx, projectId, actor, {
+        runId: opts.runId,
+        trigger: opts.trigger,
+      });
+      impact = link.impact;
+      impactBlocked = link.blocked;
+    } catch (e) {
+      // Analyzer failures must never crash the gate itself.
+      console.error('[quality-gate] impact linkage failed:', (e as Error).message);
+      impact = {
+        failOnBreaking: true,
+        blocked: false,
+        error: (e as Error).message,
+        note: 'impact analysis could not run — never blocking on unexamined changes',
+      };
+    }
+  }
+  const blocked = exitBlocked || coverageBlocked || securityBlocked || impactBlocked;
   // Problem matchers (task ③): turn gate output into structured
   // diagnostics automatically. Observer — must never affect the gate.
   if (qualityGateOutputSink && !result.skipped) {
@@ -385,14 +546,18 @@ export async function executeQualityGate(
       blocked,
       coverageBlocked,
       securityBlocked,
+      impactBlocked,
     },
   );
   if (blocked) {
-    const label = securityBlocked && !exitBlocked && !coverageBlocked
-      ? 'security scan blocked'
-      : coverageBlocked && !exitBlocked
-        ? 'coverage below threshold'
-        : `${kind} gate failed`;
+    const label =
+      impactBlocked && !exitBlocked && !coverageBlocked && !securityBlocked
+        ? 'breaking API contract change'
+        : securityBlocked && !exitBlocked && !coverageBlocked
+          ? 'security scan blocked'
+          : coverageBlocked && !exitBlocked
+            ? 'coverage below threshold'
+            : `${kind} gate failed`;
     try {
       ctx.notify.emit({
         type: 'QUALITY_GATE_FAILED',
@@ -408,6 +573,7 @@ export async function executeQualityGate(
           trigger: opts.trigger ?? 'manual',
           coverageBlocked,
           securityBlocked,
+          impactBlocked,
           coverage: coverage && typeof coverage['coverage'] === 'number' ? coverage['coverage'] : null,
         },
       });
@@ -417,7 +583,12 @@ export async function executeQualityGate(
       console.error('[quality-gate] notification fan-out failed:', (e as Error).message);
     }
   }
-  const payload = { ...summarize(result), ...(coverage ? { coverage } : {}), ...(security ? { security } : {}) };
+  const payload = {
+    ...summarize(result),
+    ...(coverage ? { coverage } : {}),
+    ...(security ? { security } : {}),
+    ...(impact ? { impact } : {}),
+  };
   return { result: payload, blocked };
 }
 
@@ -495,6 +666,7 @@ export async function handleQualityRoutes(
         coverageReportConfigured: config.coverage !== null && config.coverage.report !== '',
         coverageFailOnDropBelow: config.coverage?.failOnDropBelow ?? 0,
         securityFailOn: [...config.security.failOn],
+        impactFailOnBreaking: config.impact?.failOnBreaking === true,
         timeoutMs: config.timeoutMs,
         runOnEdit: config.runOnEdit,
         blockOnFailure: config.blockOnFailure,

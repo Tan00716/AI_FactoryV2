@@ -66,6 +66,30 @@ const J = {
   },
 };
 
+/** 第二轮加强（item 8）—— parse the tasks.edit_scope JSON column.
+ *  Shape-validated fail-closed: anything that is not an object with
+ *  string-array include/exclude reads as "no lock recorded" (absent),
+ *  never as a half-parsed lock — a corrupt lock column must not crash
+ *  task reads nor silently become a restriction nobody set. */
+function parseTaskEditScope(raw: string): Task['scope'] | undefined {
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const obj = v as Record<string, unknown>;
+  const out: NonNullable<Task['scope']> = {};
+  for (const key of ['include', 'exclude'] as const) {
+    const list = obj[key];
+    if (list === undefined) continue;
+    if (!Array.isArray(list) || !list.every((e) => typeof e === 'string')) return undefined;
+    if (list.length > 0) out[key] = list as string[];
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- tasks ---
 function rowToTask(r: Record<string, unknown>): Task {
   const s = (k: string) => r[k] as string;
@@ -108,6 +132,10 @@ function rowToTask(r: Record<string, unknown>): Task {
     ...(typeof r['parent_relation'] === 'string'
       ? { parentRelation: r['parent_relation'] as string }
       : {}),
+    // 第二轮加强（item 8）—— edit scope; NULL/invalid = field absent.
+    ...(typeof r['edit_scope'] === 'string' && parseTaskEditScope(r['edit_scope']) !== undefined
+      ? { scope: parseTaskEditScope(r['edit_scope']) }
+      : {}),
     status: s('status') as Task['status'],
     currentAgentId: (r['current_agent_id'] as string) ?? null,
     assignedAgentIds: J.parse<string[]>(r['assigned_agents'] as string, []),
@@ -127,9 +155,9 @@ export class SqliteTaskStore implements TaskStore {
       `INSERT INTO tasks (id, project_id, parent_task_id, title, goal, description,
         priority, severity, acceptance_criteria, constraints, workspace, creator,
         authorization_status, requirement_ref, policy_ceiling, budget_envelope,
-        parent_relation, status, current_agent_id, assigned_agents, subtask_ids,
+        parent_relation, edit_scope, status, current_agent_id, assigned_agents, subtask_ids,
         dependencies, risk, created_at, updated_at, completed_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET
         parent_task_id=excluded.parent_task_id, title=excluded.title, goal=excluded.goal,
         description=excluded.description, priority=excluded.priority, severity=excluded.severity,
@@ -138,6 +166,7 @@ export class SqliteTaskStore implements TaskStore {
         authorization_status=excluded.authorization_status,
         requirement_ref=excluded.requirement_ref, policy_ceiling=excluded.policy_ceiling,
         budget_envelope=excluded.budget_envelope, parent_relation=excluded.parent_relation,
+        edit_scope=excluded.edit_scope,
         status=excluded.status,
         current_agent_id=excluded.current_agent_id, assigned_agents=excluded.assigned_agents,
         subtask_ids=excluded.subtask_ids, dependencies=excluded.dependencies,
@@ -150,6 +179,7 @@ export class SqliteTaskStore implements TaskStore {
       t.policyCeiling !== undefined ? J.stringify(t.policyCeiling) : null,
       t.budgetEnvelope !== undefined ? J.stringify(t.budgetEnvelope) : null,
       t.parentRelation ?? null,
+      t.scope !== undefined ? J.stringify(t.scope) : null,
       t.status, t.currentAgentId,
       J.stringify(t.assignedAgentIds),
       J.stringify(t.subtaskIds), J.stringify(t.dependencies), t.risk,
@@ -946,6 +976,13 @@ export function migrateTasksTable(db: DatabaseSync): void {
   }
   if (!cols.has('parent_relation')) {
     db.exec(`ALTER TABLE tasks ADD COLUMN parent_relation TEXT`);
+  }
+  // 第二轮加强（item 8）—— task edit scope (JSON text). Plain
+  // nullable column, no default: existing rows read NULL = "never
+  // recorded", surfaced by rowToTask as the field being absent — an
+  // upgrade must not fabricate a lock on work that never had one.
+  if (!cols.has('edit_scope')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN edit_scope TEXT`);
   }
 }
 

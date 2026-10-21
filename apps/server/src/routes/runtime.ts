@@ -492,6 +492,26 @@ export function setShadowRunStartHook(
 }
 
 /**
+ * Scope-lock run-completion hook （二轮加强 8): fired at a run's
+ * terminal write (both the success and the failure path) so the
+ * post-hoc shadow-diff scope check runs when work finishes, not only
+ * when somebody polls the scope report. Same setter-injection pattern
+ * as the shadow hook above — this module must not value-import sibling
+ * route modules (dual-mode import rule). The installed observer is
+ * fire-and-forget and never throws into run bookkeeping.
+ */
+let scopeRunCompleteHook:
+  | ((ctx: RouteContext, taskId: string, runId: string) => void)
+  | null = null;
+
+/** Install the scope-lock run-completion hook (coordinator wiring, once at boot). */
+export function setScopeRunCompleteHook(
+  fn: ((ctx: RouteContext, taskId: string, runId: string) => void) | null,
+): void {
+  scopeRunCompleteHook = fn;
+}
+
+/**
  * Parse FACTORY_RUNTIME_TOOLS: comma-separated tool names, whitespace
  * tolerated, duplicates collapsed. Unset/empty/blank = empty allowlist
  * = no tool is granted (the pre-allowlist behavior, fail-closed).
@@ -1861,6 +1881,13 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
         status: rec.status,
         steps: rec.steps,
       });
+      // Scope lock （二轮加强 8): post-hoc out-of-scope detection at
+      // the terminal write — fire-and-forget observer, never throws.
+      try {
+        scopeRunCompleteHook?.(ctx, taskId, id);
+      } catch {
+        /* observer must never break run bookkeeping */
+      }
     } catch (e) {
       rec.status = 'FAILED';
       rec.error = e instanceof Error ? e.message : String(e);
@@ -1895,6 +1922,13 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
         status: rec.status,
         steps: rec.steps,
       });
+      // Scope lock （二轮加强 8): same terminal-write observer on the
+      // failure path — a failed run may still have written files.
+      try {
+        scopeRunCompleteHook?.(ctx, taskId, id);
+      } catch {
+        /* observer must never break run bookkeeping */
+      }
     } finally {
       liveRunIds.delete(id);
     }

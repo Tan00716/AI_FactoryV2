@@ -43,6 +43,25 @@ test('quality gate failure maps to HIGH priority', () => {
   assert.match(o.body, /exit code 1/);
 });
 
+test('egress blocked maps to HIGH priority and names the matched rule', () => {
+  const matched = matchRules({ type: 'EGRESS_BLOCKED', entity: { kind: 'egress', id: 'www.bing.com', label: 'egress to www.bing.com' } });
+  assert.equal(matched.length, 1);
+  assert.equal(matched[0].id, 'egress-blocked');
+  const o = matched[0].build({
+    type: 'EGRESS_BLOCKED',
+    entity: { kind: 'egress', id: 'www.bing.com', label: 'egress to www.bing.com' },
+    detail: { host: 'www.bing.com', source: 'web-search', reason: 'deny-rule', matchedLayer: 'global', matchedRule: 'deny www.bing.com' },
+  });
+  assert.equal(o.priority, 'HIGH');
+  assert.match(o.body, /www\.bing\.com/);
+  assert.match(o.body, /deny www\.bing\.com/);
+  const o2 = matched[0].build({
+    type: 'EGRESS_BLOCKED',
+    detail: { host: 'api.x.com', source: 'mcp-http', reason: 'default-deny' },
+  });
+  assert.match(o2.body, /default-deny policy/);
+});
+
 test('unknown event falls back to INFO (never dropped)', () => {
   const matched = matchRules({ type: 'GENERIC' });
   assert.equal(matched.length, 1);

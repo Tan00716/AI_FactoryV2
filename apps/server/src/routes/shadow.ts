@@ -33,6 +33,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
 import type { RouteContext } from './context';
 import {
+  restoreDbFromSnapshot,
+  snapshotDbForCheckpoint,
+  type DbSnapshotMeta,
+} from '../db-time-travel';
+import { dbTimeTravelStore, summarizeDbSnapshot } from './db-time-travel';
+import {
   createShadowCheckpoint,
   diffShadowCheckpoints,
   restoreShadowCheckpoint,
@@ -83,6 +89,65 @@ function toErrorBody(e: unknown): { status: number; body: { error: string; code:
   throw e;
 }
 
+function dbSnapshotSummary(checkpointId: string): Record<string, unknown> | null {
+  try {
+    const meta = dbTimeTravelStore().latestForCheckpoint(checkpointId);
+    return meta ? summarizeDbSnapshot(meta) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Snapshot the dev db for a fresh shadow checkpoint; audit the outcome.
+ *  Never throws into the caller (observer posture) — failures become a
+ *  SKIPPED audit entry, exactly like the skip statuses themselves. */
+function snapshotDbForShadowCheckpoint(
+  ctx: RouteContext,
+  actor: 'human' | 'system',
+  workspaceId: string,
+  workspacePath: string,
+  checkpointId: string,
+  trigger: string,
+): DbSnapshotMeta | null {
+  try {
+    const meta = snapshotDbForCheckpoint(dbTimeTravelStore(), {
+      workspaceId,
+      workspacePath,
+      checkpointId,
+      kind: 'checkpoint',
+    });
+    if (meta.status === 'ok') {
+      ctx.audit.record(actor, 'DB_SNAPSHOT_CREATED', 'db-snapshot', checkpointId, {
+        workspaceId,
+        trigger,
+        relPath: meta.relPath,
+        size: meta.size,
+        sha256: meta.sha256,
+      });
+    } else {
+      ctx.audit.record(actor, 'DB_SNAPSHOT_SKIPPED', 'db-snapshot', checkpointId, {
+        workspaceId,
+        trigger,
+        status: meta.status,
+        reason: meta.reason,
+      });
+    }
+    return meta;
+  } catch (e) {
+    try {
+      ctx.audit.record(actor, 'DB_SNAPSHOT_SKIPPED', 'db-snapshot', checkpointId, {
+        workspaceId,
+        trigger,
+        status: 'skipped-error',
+        reason: (e as Error).message,
+      });
+    } catch {
+      /* audit itself failed — nothing left to do */
+    }
+    return null;
+  }
+}
+
 function summarize(cp: ShadowCheckpoint): Record<string, unknown> {
   return {
     id: cp.id,
@@ -100,6 +165,8 @@ function summarize(cp: ShadowCheckpoint): Record<string, unknown> {
     empty: cp.empty,
     skipped: cp.skipped,
     skippedTotal: cp.skippedTotal,
+    /** Latest db snapshot metadata for this checkpoint (same checkpoint id), or null. */
+    db: dbSnapshotSummary(cp.id),
   };
 }
 
@@ -130,6 +197,7 @@ export function maybeFireShadowCheckpoint(ctx: RouteContext, cwd: string): void 
           trigger: 'post-tool-use',
           empty: cp.empty,
         });
+        snapshotDbForShadowCheckpoint(ctx, 'system', cfg.workspaceId, cfg.workspacePath, cp.id, 'post-tool-use');
       }
     } catch (e) {
       try {
@@ -172,6 +240,7 @@ export function maybeShadowCheckpointOnRunStart(
         taskId,
         empty: cp.empty,
       });
+      snapshotDbForShadowCheckpoint(ctx, 'system', cfg.workspaceId, cfg.workspacePath, cp.id, 'run-start');
     } catch (e) {
       try {
         ctx.audit.record('system', 'SHADOW_CHECKPOINT_FAILED', 'shadow-checkpoint', runId, {
@@ -307,7 +376,8 @@ export async function handleShadowRoutes(
         empty: cp.empty,
         fileCount: cp.fileCount,
       });
-      ctx.json(res, 201, { checkpoint: summarize(cp) });
+      const dbMeta = snapshotDbForShadowCheckpoint(ctx, 'human', workspaceId, workspacePath, cp.id, 'manual');
+      ctx.json(res, 201, { checkpoint: summarize(cp), dbSnapshot: dbMeta ? summarizeDbSnapshot(dbMeta) : null });
     } catch (e) {
       const eb = toErrorBody(e);
       ctx.json(res, eb.status, eb.body);
@@ -316,6 +386,9 @@ export async function handleShadowRoutes(
   }
 
   // POST /api/shadow-checkpoints/:id/restore — one-click undo.
+  // Optional data restore: body.restoreDb=true (default OFF) + confirm=true
+  // restores the checkpoint's dev-db snapshot too. Restore only ever writes
+  // the DEV path (see db-time-travel.ts); prod is unreachable from here.
   const restoreMatch = rest.match(/^\/([^/]+)\/restore$/);
   if (method === 'POST' && restoreMatch) {
     const body = await ctx.readBody(req);
@@ -324,21 +397,67 @@ export async function handleShadowRoutes(
       ctx.json(res, 400, { error: 'workspaceId is required', code: 'SHADOW_BAD_WORKSPACE_ID' });
       return true;
     }
+    const wantDb = body['restoreDb'] === true;
+    if (wantDb && body['confirm'] !== true) {
+      // Fail fast BEFORE touching code or data: data restore is a
+      // deliberate, separately-confirmed decision.
+      ctx.json(res, 400, {
+        error: 'restoreDb requires explicit confirmation (confirm: true)',
+        code: 'DB_CONFIRM_REQUIRED',
+      });
+      return true;
+    }
     try {
       const st = shadowCheckpointStore();
       const workspacePath = resolveWorkspacePath(body['workspacePath']);
+      if (wantDb) {
+        // Pre-validate the db side before modifying anything.
+        const dbSt = dbTimeTravelStore();
+        if (!dbSt.latestOkForCheckpoint(restoreMatch[1])) {
+          ctx.json(res, 404, {
+            error: 'checkpoint has no usable db snapshot — code restore aborted, nothing modified',
+            code: 'DB_NO_SNAPSHOT',
+          });
+          return true;
+        }
+      }
       const r = restoreShadowCheckpoint(st, { workspaceId, workspacePath, checkpointId: restoreMatch[1] });
       ctx.audit.record('human', 'SHADOW_CHECKPOINT_RESTORED', 'shadow-checkpoint', r.restoredId, {
         workspaceId,
         sha: r.sha,
         backupId: r.backup?.id ?? null,
         leftInPlace: r.leftInPlace.length,
+        restoreDb: wantDb,
       });
+      let dbRestore: Record<string, unknown> | null = null;
+      if (wantDb) {
+        const dr = restoreDbFromSnapshot(dbTimeTravelStore(), {
+          workspaceId,
+          workspacePath,
+          checkpointId: restoreMatch[1],
+          confirm: true,
+        });
+        ctx.audit.record('human', 'DB_RESTORED', 'db-snapshot', restoreMatch[1], {
+          workspaceId,
+          relPath: dr.relPath,
+          size: dr.size,
+          sha256: dr.sha256,
+          preRestoreId: dr.preRestore?.id ?? null,
+          via: 'shadow-checkpoint-restore',
+        });
+        dbRestore = {
+          relPath: dr.relPath,
+          size: dr.size,
+          sha256: dr.sha256,
+          preRestore: dr.preRestore ? summarizeDbSnapshot(dr.preRestore) : null,
+        };
+      }
       ctx.json(res, 200, {
         restoredId: r.restoredId,
         sha: r.sha,
         backup: r.backup ? summarize(r.backup) : null,
         leftInPlace: r.leftInPlace,
+        dbRestore,
       });
     } catch (e) {
       const eb = toErrorBody(e);

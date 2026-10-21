@@ -232,11 +232,28 @@ export interface EvidenceItem {
   status: 'DRAFT' | 'SEALED'; createdBy: string; createdAt: string;
 }
 export interface NextState { to: string; note: string; requires: string[] }
+/** 第二轮加强 8 — 任务级编辑范围锁定（Task.scope 的镜像形状）。 */
+export interface TaskEditScope { include?: string[]; exclude?: string[] }
+/** 第二轮加强 8 — GET /api/tasks/:id/scope 的范围报告。 */
+export interface TaskScopeReport {
+  taskId: string;
+  scope: TaskEditScope | null;
+  locked: boolean;
+  checkedAt: string;
+  shadow: { workspaceId: string; workspacePath: string; tip: string | null } | null;
+  changedFiles: string[];
+  outOfScope: { path: string; reason: 'not-included' | 'excluded' | 'escape' }[];
+  notes: string[];
+  newlyAudited: number;
+}
+
 export interface TaskDetail {
   id: string; title: string; goal: string; description: string; priority: string;
   status: string; risk: string; currentAgentId: string | null;
   assignedAgentIds: string[]; subtaskIds: string[]; dependencies: unknown[];
   acceptanceCriteria: string[]; constraints: string[]; workspace?: string;
+  /** 第二轮加强 8 — 编辑范围锁定；缺失 = 未记录（不限制）。 */
+  scope?: TaskEditScope;
   createdAt: string; updatedAt: string;
   completedAt: string | null; evidence: EvidenceItem[]; nextStates: NextState[];
 }
@@ -518,6 +535,48 @@ export interface IgnorePreview {
   indexingIgnored: IgnorePreviewEntry[];
   note: string;
 }
+/** 出站防火墙（三层 allowlist：global / project / task）。 */
+export interface EgressRule {
+  domain: string;
+  pathPrefix?: string;
+  action: 'allow' | 'deny';
+  note?: string;
+}
+export interface EgressGlobalConfig {
+  enabled: boolean;
+  defaultPolicy: 'allow' | 'deny';
+  rules: EgressRule[];
+  updatedAt: string;
+  updatedBy: string;
+  loadError?: string;
+}
+export interface EgressConfigState {
+  global: EgressGlobalConfig;
+  project: { rules: EgressRule[]; taskIds: string[]; loadError?: string } | null;
+  task: { rules: EgressRule[] } | null;
+  projectPath: string | null;
+  limits: { maxRulesPerLayer: number };
+}
+export interface EgressBlockEntry {
+  at: string;
+  url: string;
+  hostname: string | null;
+  source: string;
+  reason: string;
+  matchedLayer?: string;
+  matchedRule?: string;
+}
+export interface EgressTestResult {
+  url: string;
+  allowed: boolean;
+  reason: string;
+  hostname: string | null;
+  matchedLayer: string | null;
+  matchedRule: string | null;
+  enabled: boolean;
+  defaultPolicy: 'allow' | 'deny';
+  projectPath: string | null;
+}
 /** 质量闸门配置（GET/PUT /api/quality）：确定性 lint/test 门禁，零模型。 */
 export interface QualityGateConfig {
   lintCmd: string;
@@ -527,6 +586,8 @@ export interface QualityGateConfig {
   blockOnFailure: boolean;
   /** 安全扫描阻断配置（wave2-④；缺失 = 未配置，兼容旧服务）。 */
   security?: { failOn: string[] };
+  /** 变更影响阻断配置（第二轮⑥；缺失 = 未配置，兼容旧服务）。 */
+  impact?: { failOnBreaking: boolean };
 }
 export interface QualityGateConfigInput {
   lintCmd?: string;
@@ -535,6 +596,7 @@ export interface QualityGateConfigInput {
   runOnEdit?: boolean;
   blockOnFailure?: boolean;
   security?: { failOn: string[] };
+  impact?: { failOnBreaking: boolean };
 }
 export interface QualityGateLastRun {
   kind: 'lint' | 'test';
@@ -566,6 +628,17 @@ export interface QualityGateRunResult {
     sast: number;
     sca: number;
     blocked: boolean;
+    note?: string;
+  } | null;
+  /** 变更影响联动结果（第二轮⑥；仅当 impact.failOnBreaking 已配置时返回）。 */
+  impact?: {
+    failOnBreaking: boolean;
+    root?: string;
+    changedFiles?: number;
+    affected?: number;
+    breaking?: number;
+    blocked: boolean;
+    error?: string;
     note?: string;
   } | null;
 }
@@ -715,8 +788,14 @@ export const api = {
   /** §85 full-board source: all tasks of a project, grouped client-side. */
   tasks: (projectId?: string) =>
     req<TaskSummary[]>(`/tasks${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`),
-  createTask: (input: { projectId: string; title: string; goal?: string; priority?: string }) =>
+  createTask: (input: { projectId: string; title: string; goal?: string; priority?: string; scope?: TaskEditScope }) =>
     req<TaskDetail>('/tasks', { method: 'POST', body: JSON.stringify(input) }),
+  /** 第二轮加强 8 — 更新/清除任务编辑范围（scope=null 清除）。 */
+  updateTaskScope: (id: string, scope: TaskEditScope | null) =>
+    req<TaskDetail>(`/tasks/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ scope }) }),
+  /** 第二轮加强 8 — 事后越界报告（影子检查点 diff 对照 scope）。 */
+  taskScopeReport: (id: string) =>
+    req<TaskScopeReport>(`/tasks/${encodeURIComponent(id)}/scope`),
   /** 任务模板库：CRUD + 从模板发起（建任务并启动 run）。 */
   listTaskTemplates: () =>
     req<{ templates: TaskTemplate[] }>('/task-templates'),
@@ -905,6 +984,32 @@ export const api = {
     req<{ backupId: string; pruned: string[] }>(
       '/auto-backup/run', { method: 'POST', body: JSON.stringify({}) },
     ),
+  /** 出站防火墙三层配置（GET /api/egress/config?projectId=&taskId=）：读 viewer。 */
+  egressConfig: (projectId: string, taskId?: string) =>
+    req<EgressConfigState>(
+      `/egress/config?projectId=${encodeURIComponent(projectId)}${taskId ? `&taskId=${encodeURIComponent(taskId)}` : ''}`,
+    ),
+  /** 保存出站防火墙全局层（PUT /api/egress/config，scope=global）：写 operator。 */
+  updateEgressGlobal: (p: { enabled: boolean; defaultPolicy: 'allow' | 'deny'; rules: EgressRule[] }) =>
+    req<{ global: EgressGlobalConfig }>(
+      '/egress/config', { method: 'PUT', body: JSON.stringify({ scope: 'global', ...p }) },
+    ),
+  /** 保存出站防火墙项目层（PUT /api/egress/config，scope=project）：写 operator。 */
+  updateEgressProject: (projectId: string, rules: EgressRule[]) =>
+    req<{ rules: EgressRule[]; taskIds: string[] }>(
+      '/egress/config', { method: 'PUT', body: JSON.stringify({ scope: 'project', projectId, rules }) },
+    ),
+  /** 保存出站防火墙任务层（PUT /api/egress/config，scope=task）：写 operator。 */
+  updateEgressTask: (projectId: string, taskId: string, taskRules: EgressRule[]) =>
+    req<{ rules: EgressRule[]; taskIds: string[] }>(
+      '/egress/config', { method: 'PUT', body: JSON.stringify({ scope: 'task', projectId, taskId, taskRules }) },
+    ),
+  /** 出站防火墙最近拦截记录（GET /api/egress/log）：读 viewer。 */
+  egressLog: (limit = 50) =>
+    req<{ entries: EgressBlockEntry[] }>(`/egress/log?limit=${limit}`),
+  /** 出站防火墙干跑判定（POST /api/egress/test）：写 operator。 */
+  egressTest: (p: { url: string; projectId?: string; taskId?: string }) =>
+    req<EgressTestResult>('/egress/test', { method: 'POST', body: JSON.stringify(p) }),
   /** 质量闸门配置（GET /api/quality?projectId=）：读 viewer。 */
   qualityGate: (projectId: string) =>
     req<{ config: QualityGateConfig; lastRun: Record<'lint' | 'test', QualityGateLastRun | null> }>(

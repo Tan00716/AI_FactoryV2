@@ -19,6 +19,10 @@ export {
   cleanText,
   fetchText,
   parseBingRss,
+  setFetchTextGuard,
+  SEARCH_PROVIDER_BASE_URLS,
+  SEARCH_PROVIDER_ENDPOINT_URLS,
+  type FetchTextGuard,
 } from './providers';
 export {
   createSearchClient,

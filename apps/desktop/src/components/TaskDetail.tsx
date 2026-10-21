@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  api, TaskDetail, EvidenceItem, AgentFull, AuditRecord, MemoryEntry,
+  api, TaskDetail, TaskScopeReport, EvidenceItem, AgentFull, AuditRecord, MemoryEntry,
   FileEntry, DeploymentRecord,
 } from '../api';
 import { QaPanel, createQaApi, QaRun } from './QaPanel';
@@ -55,6 +55,121 @@ function useTaskAudit(taskId: string): AuditRecord[] | null {
   return records;
 }
 
+// -------------------------------------------------------- 范围锁定 ----
+
+/** 第二轮加强 8 — 任务级编辑范围锁定卡片：徽标 + 规则 + 越界报告 + 编辑。 */
+function ScopeSection({ task, onChanged }: { task: TaskDetail; onChanged: () => void }) {
+  const { t } = useLang();
+  const scope = task.scope;
+  const locked = !!scope && (((scope.include?.length ?? 0) > 0) || ((scope.exclude?.length ?? 0) > 0));
+  const [report, setReport] = useState<TaskScopeReport | null>(null);
+  const [reportErr, setReportErr] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [include, setInclude] = useState('');
+  const [exclude, setExclude] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState('');
+
+  useEffect(() => {
+    let dead = false;
+    setReport(null);
+    setReportErr('');
+    if (!locked) return;
+    api.taskScopeReport(task.id)
+      .then((r) => { if (!dead) setReport(r); })
+      .catch((e) => { if (!dead) setReportErr((e as Error).message); });
+    return () => { dead = true; };
+  }, [task.id, locked]);
+
+  const startEdit = () => {
+    setInclude((scope?.include ?? []).join('\n'));
+    setExclude((scope?.exclude ?? []).join('\n'));
+    setSaveErr('');
+    setEditing(true);
+  };
+  const save = async (clear: boolean) => {
+    setSaving(true);
+    setSaveErr('');
+    try {
+      const payload = clear
+        ? null
+        : (() => {
+            const inc = include.split('\n').map((s) => s.trim()).filter(Boolean);
+            const exc = exclude.split('\n').map((s) => s.trim()).filter(Boolean);
+            return inc.length > 0 || exc.length > 0
+              ? { ...(inc.length > 0 ? { include: inc } : {}), ...(exc.length > 0 ? { exclude: exc } : {}) }
+              : null; // 全空 = 清除
+          })();
+      await api.updateTaskScope(task.id, payload);
+      setEditing(false);
+      onChanged();
+    } catch (e) {
+      setSaveErr((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="scope-section">
+      <h4>{t('scope.title')}</h4>
+      <p>
+        <span className={`pill ${locked ? 'warn' : ''}`}>
+          {locked ? t('scope.locked') : t('scope.unlimited')}
+        </span>
+        <button type="button" className="ghost" onClick={startEdit}>
+          {locked ? t('scope.edit') : t('scope.add')}
+        </button>
+      </p>
+      {locked && (
+        <>
+          {(scope?.include?.length ?? 0) > 0 && (
+            <p><b>{t('scope.includeLabel')}</b> <code>{scope!.include!.join(', ')}</code></p>
+          )}
+          {(scope?.exclude?.length ?? 0) > 0 && (
+            <p><b>{t('scope.excludeLabel')}</b> <code>{scope!.exclude!.join(', ')}</code></p>
+          )}
+          {reportErr && <p className="pill warn">{t('scope.reportFailed', { message: reportErr })}</p>}
+          {report && report.outOfScope.length > 0 && (
+            <div className="banner warn">
+              <b>{t('scope.violationsTitle', { count: report.outOfScope.length })}</b>
+              <ul>
+                {report.outOfScope.map((v) => (
+                  <li key={v.path}><code>{v.path}</code> <span className="muted">{t(`scope.reason.${v.reason}`)}</span></li>
+                ))}
+              </ul>
+              <p className="muted">{t('scope.violationsHint')}</p>
+            </div>
+          )}
+          {report && report.outOfScope.length === 0 && !reportErr && (
+            <p className="muted">{t('scope.noViolations', { count: report.changedFiles.length })}</p>
+          )}
+          {report && !report.shadow && (
+            <p className="muted">{t('scope.noShadowNote')}</p>
+          )}
+        </>
+      )}
+      <p className="hint">{t('scope.honestNote')}</p>
+      {editing && (
+        <div className="scope-block">
+          <label>{t('scope.includeLabel')}
+            <textarea value={include} onChange={(e) => setInclude(e.target.value)} rows={2} placeholder={t('scope.includePlaceholder')} />
+          </label>
+          <label>{t('scope.excludeLabel')}
+            <textarea value={exclude} onChange={(e) => setExclude(e.target.value)} rows={2} placeholder={t('scope.excludePlaceholder')} />
+          </label>
+          {saveErr && <p className="err">{saveErr}</p>}
+          <div className="btn-row">
+            <button className="primary" onClick={() => void save(false)} disabled={saving}>{t('scope.save')}</button>
+            {locked && <button onClick={() => void save(true)} disabled={saving}>{t('scope.clear')}</button>}
+            <button onClick={() => setEditing(false)} disabled={saving}>{t('scope.cancel')}</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- 概览 --
 function OverviewTab({ task, onMoved }: { task: TaskDetail; onMoved: () => void }) {
   const { t } = useLang();
@@ -101,6 +216,7 @@ function OverviewTab({ task, onMoved }: { task: TaskDetail; onMoved: () => void 
       </p>
 
       <h4>{t('taskdetail.transitionTitle')}</h4>
+      <ScopeSection task={task} onChanged={onMoved} />
       {task.nextStates.length === 0 && <p className="muted">{t('taskdetail.noTransitions')}</p>}
       <div className="btn-row">
         {task.nextStates.map((n) => (

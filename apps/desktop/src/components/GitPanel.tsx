@@ -99,6 +99,55 @@ export interface PrDiff {
   files: PrDiffFile[];
 }
 
+// ----------------------------------------- second-round ⑥ impact ----
+
+export interface ImpactEdge {
+  changedFile: string;
+  fromFile: string;
+  symbol: string;
+  line: number | null;
+  hop: number;
+}
+
+export interface ImpactLayer {
+  hop: number;
+  files: string[];
+}
+
+export interface ContractChange {
+  name: string;
+  kind: string;
+  change: 'removed' | 'added' | 'signature-changed' | 'kind-changed';
+  breaking: boolean;
+  before: string | null;
+  after: string | null;
+  reason: string;
+}
+
+export interface FileContractReport {
+  file: string;
+  supported: boolean;
+  baselineMissing: boolean;
+  beforeCount: number;
+  afterCount: number;
+  changes: ContractChange[];
+  note?: string;
+}
+
+export interface ImpactReport {
+  root: string;
+  source: 'files' | 'pr' | 'working-tree';
+  changedFiles: string[];
+  affectedFiles: string[];
+  layers: ImpactLayer[];
+  edges: ImpactEdge[];
+  contracts: FileContractReport[];
+  breakingCount: number;
+  nonBreakingCount: number;
+  truncated: boolean;
+  notes: string[];
+}
+
 /** Typed client for the /api/git routes. */
 export interface GitApi {
   status(repo: string): Promise<GitStatus>;
@@ -143,6 +192,8 @@ export interface GitApi {
     prId: string,
     input: { decision: PrReview['decision']; summary?: string },
   ): Promise<PrReview>;
+  // Second-round ⑥ — change impact analysis
+  analyzeImpact(prId: string, repo: string): Promise<{ report: ImpactReport }>;
 }
 
 /** Local copy of the `req` helper pattern from apps/desktop/src/api.ts. */
@@ -220,6 +271,11 @@ export function createGitApi(base: string): GitApi {
       req<PrReview>(`/git/pr/${encodeURIComponent(prId)}/review`, {
         method: 'POST',
         body: JSON.stringify(input),
+      }),
+    analyzeImpact: (prId, repo) =>
+      req<{ report: ImpactReport }>('/impact/analyze', {
+        method: 'POST',
+        body: JSON.stringify({ prId, repo }),
       }),
   };
 }
@@ -413,6 +469,9 @@ function PrReviewSection({ api, repo }: { api: GitApi; repo: string }) {
   const [summary, setSummary] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [impact, setImpact] = useState<ImpactReport | null>(null);
+  const [impactErr, setImpactErr] = useState<string | null>(null);
+  const [impactBusy, setImpactBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -441,6 +500,8 @@ function PrReviewSection({ api, repo }: { api: GitApi; repo: string }) {
       setOpenFile(null);
       setCFile('');
       setCLine('');
+      setImpact(null);
+      setImpactErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : t('git.opFailed'));
     } finally {
@@ -491,6 +552,21 @@ function PrReviewSection({ api, repo }: { api: GitApi; repo: string }) {
   const targetLine = (file: string, l: PrDiffLine) => {
     setCFile(file);
     setCLine(l.type === 'del' ? String(l.oldNo ?? '') : String(l.newNo ?? ''));
+  };
+
+  /** Second-round ⑥ — run the change impact analysis for this PR. */
+  const runImpact = async () => {
+    if (!sel || !repo) return;
+    setImpactErr(null);
+    setImpactBusy(true);
+    try {
+      const r = await api.analyzeImpact(sel, repo);
+      setImpact(r.report);
+    } catch (e) {
+      setImpactErr(e instanceof Error ? e.message : t('git.review.impactFailed'));
+    } finally {
+      setImpactBusy(false);
+    }
   };
 
   return (
@@ -591,6 +667,87 @@ function PrReviewSection({ api, repo }: { api: GitApi; repo: string }) {
             </div>
           ) : (
             <div className="muted" style={{ fontSize: 12 }}>{t('git.review.needRepo')}</div>
+          )}
+
+          {/* 第二轮⑥ 变更影响分析（启发式建议，不是证明） */}
+          <h5 style={{ margin: '10px 0 4px' }}>{t('git.review.impactTitle')}</h5>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
+            {t('git.review.impactNote')}
+          </div>
+          <button
+            disabled={impactBusy || !repo}
+            onClick={() => void runImpact()}
+            style={{ marginBottom: 6 }}
+          >
+            {impactBusy ? t('git.review.impactRunning') : t('git.review.impactRun')}
+          </button>
+          {impactErr && <div className="banner err">{impactErr}</div>}
+          {impact && (
+            <div className="impact-report" style={{ fontSize: 12 }}>
+              <div style={{ marginBottom: 4 }}>
+                <span className="pill">{t('git.review.impactChanged')} {impact.changedFiles.length}</span>{' '}
+                <span className="pill">{t('git.review.impactAffected')} {impact.affectedFiles.length}</span>{' '}
+                {impact.breakingCount > 0 ? (
+                  <span className="pill" style={{ background: 'rgba(248,81,73,0.25)', color: '#f85149' }}>
+                    ⚠ {t('git.review.impactBreaking')} {impact.breakingCount}
+                  </span>
+                ) : (
+                  <span className="pill">{t('git.review.impactBreaking')} 0</span>
+                )}{' '}
+                <span className="pill">{t('git.review.impactNonBreaking')} {impact.nonBreakingCount}</span>
+                {impact.truncated && <span className="muted"> · {t('git.review.impactTruncated')}</span>}
+              </div>
+              {impact.layers.map((layer) => (
+                <div key={layer.hop} style={{ marginBottom: 2 }}>
+                  <span className="muted">{t('git.review.impactHop', { hop: layer.hop })}</span>{' '}
+                  {layer.files.map((f) => {
+                    const edge = impact.edges.find((e) => e.fromFile === f && e.hop === layer.hop);
+                    return (
+                      <div key={f} style={{ fontFamily: 'monospace', fontSize: 11, paddingLeft: 12 }}>
+                        {f}
+                        {edge && (
+                          <span className="muted" style={{ fontFamily: 'inherit' }}>
+                            {' '}← {edge.changedFile} · {edge.symbol}
+                            {edge.line !== null ? `:${edge.line}` : ''}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+              {impact.affectedFiles.length === 0 && (
+                <div className="muted">{t('git.review.impactNone')}</div>
+              )}
+              {impact.contracts.map((fc) => (
+                <div key={fc.file} style={{ marginTop: 6 }}>
+                  <div style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                    {fc.file}
+                    {!fc.supported && <span className="muted"> — {t('git.review.impactUnsupported')}</span>}
+                    {fc.baselineMissing && <span className="muted"> — {t('git.review.impactNoBaseline')}</span>}
+                  </div>
+                  {fc.changes.map((ch, ci) => (
+                    <div
+                      key={ci}
+                      style={{
+                        paddingLeft: 12,
+                        fontSize: 11,
+                        color: ch.breaking ? '#f85149' : 'var(--text-muted, #8b949e)',
+                      }}
+                    >
+                      {ch.breaking ? '✗' : '＋'} {ch.name} ({ch.kind}) — {ch.change}
+                      <span style={{ color: 'var(--text-muted, #8b949e)' }}>: {ch.reason}</span>
+                      {(ch.before || ch.after) && (
+                        <div style={{ fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                          {ch.before && <div>- {ch.before}</div>}
+                          {ch.after && <div>+ {ch.after}</div>}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
           )}
 
           <h5 style={{ margin: '8px 0 4px' }}>{t('git.review.comments')} ({detail.comments.length})</h5>

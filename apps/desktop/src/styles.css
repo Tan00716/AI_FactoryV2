@@ -139,6 +139,14 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 sys
 .center-tabs button.active::after, .bottom-tabs button.active::after { transform: scaleX(1); }
 .banner { margin: 8px 12px; padding: 8px 12px; border-radius: 4px; }
 .banner.err, .err { color: var(--red); }
+.banner.warn { background: rgba(255, 190, 60, .12); border: 1px solid rgba(255, 190, 60, .45); color: var(--text); margin: 8px 0; }
+
+/* scope lock （二轮加强 8) */
+.scope-block { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.scope-block textarea { width: 100%; font-family: var(--mono, monospace); font-size: 12px; }
+.scope-section { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; }
+.scope-section h4 { margin: 0 0 6px; }
+.scope-section .pill { margin-right: 8px; }
 
 /* board */
 .board-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 12px; }
@@ -436,3 +444,19 @@ button.ghost:hover { background: rgba(88,166,255,.12); }
 .problem-code { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 12px; overflow-x: auto; margin: 4px 0; }
 .problem-matchers-box { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 8px; }
 .matcher-row { padding: 4px 0; border-bottom: 1px dashed var(--border); }
+
+/* Design mode (task ⑨, second wave) */
+.design-panel { padding: 8px 4px; }
+.design-note { font-size: 12px; color: var(--text-dim, #8b949e); margin: 4px 0; }
+.design-warn { color: var(--yellow, #d29922); font-size: 12px; }
+.design-toolbar { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+.design-main { display: flex; gap: 12px; min-height: 480px; }
+.design-frame { flex: 1; min-height: 480px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+.design-side { width: 300px; min-width: 260px; }
+.design-fp { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+.design-fp code { font-size: 12px; word-break: break-all; }
+.design-fp-text { font-size: 12px; color: var(--text-dim, #8b949e); margin-top: 4px; }
+.design-loc { margin: 6px 0; width: 100%; }
+.design-form label { display: block; margin: 6px 0; font-size: 12px; }
+.design-form input, .design-form select { width: 100%; margin-top: 2px; }
+.design-status { font-size: 12px; margin-top: 8px; }

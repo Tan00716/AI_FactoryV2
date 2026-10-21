@@ -35,6 +35,7 @@ import { startScheduledRun } from './runtime';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { networkMode } from '../network-mode';
+import { assertEgressAllowed } from '../egress';
 
 const PREFIX = '/api/schedules';
 
@@ -43,6 +44,15 @@ let store: ScheduleStore | null = null;
 
 /** Real webhook fetch: node builtins only, timeout-guarded, no redirects. */
 function fetchWebhookReal(url: string, opts: WebhookFetchOpts): Promise<{ status: number; body: string }> {
+  // Egress firewall (global layer): scheduler webhooks are outbound
+  // calls to operator-declared URLs; a refused URL never gets dialed.
+  // Webhook jobs carry no project/task context, so only the global
+  // layer applies here (documented boundary in egress.ts).
+  try {
+    assertEgressAllowed(url, { source: 'scheduler-webhook' });
+  } catch (err) {
+    return Promise.reject(err);
+  }
   return new Promise((resolve, reject) => {
     let u: URL;
     try {

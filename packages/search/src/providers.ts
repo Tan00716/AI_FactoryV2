@@ -20,6 +20,45 @@ import { normalizeSearchOptions } from './types';
 /** Max response body we'll buffer: 1 MiB. Search feeds are small. */
 const MAX_BODY_BYTES = 1024 * 1024;
 
+/**
+ * Provider endpoint base URLs (second-round task ⑦, egress firewall).
+ * The egress firewall pre-checks these at route boundaries with full
+ * project/task layer context; the low-level fetchText guard (below)
+ * enforces the global layer on every actual outbound call.
+ */
+export const SEARCH_PROVIDER_BASE_URLS = [
+  'https://www.bing.com/search?format=rss',
+  'https://api.search.brave.com/res/v1/web/search',
+  'https://api.tavily.com/search',
+];
+
+/**
+ * Provider name → endpoint base URL (same origin as the base URLs
+ * above). Route boundaries pre-check only the providers that are
+ * actually configured, so a deny for an unused provider cannot block
+ * an otherwise-fine search.
+ */
+export const SEARCH_PROVIDER_ENDPOINT_URLS: Record<string, string> = {
+  'bing-rss': 'https://www.bing.com/search?format=rss',
+  brave: 'https://api.search.brave.com/res/v1/web/search',
+  tavily: 'https://api.tavily.com/search',
+};
+
+/**
+ * Process-wide egress guard for fetchText. The server installs one via
+ * setFetchTextGuard (see apps/server/src/egress.ts + index.ts wiring);
+ * the guard may throw to refuse an outbound call (e.g. an
+ * EGRESS_BLOCKED error). Default: none — standalone package behavior
+ * is unchanged and the guard never affects non-server embedders.
+ */
+export type FetchTextGuard = (url: string) => void;
+let fetchTextGuard: FetchTextGuard | null = null;
+
+/** Install (or clear with null) the process-wide fetchText egress guard. */
+export function setFetchTextGuard(fn: FetchTextGuard | null): void {
+  fetchTextGuard = fn;
+}
+
 export interface FetchTextOptions {
   timeoutMs: number;
   headers?: Record<string, string>;
@@ -29,6 +68,16 @@ export interface FetchTextOptions {
 
 /** Minimal GET/POST with timeout + size cap. Rejects on non-2xx. */
 export function fetchText(url: string, opts: FetchTextOptions): Promise<string> {
+  // Egress firewall (global layer): a throwing guard rejects this call
+  // before any socket is opened. Runs before the Promise body so a
+  // refused call never even constructs a request.
+  if (fetchTextGuard) {
+    try {
+      fetchTextGuard(url);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
   return new Promise((resolve, reject) => {
     const lib = url.startsWith('https:') ? https : http;
     const parsed = new URL(url);

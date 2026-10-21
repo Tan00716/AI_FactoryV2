@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, type IgnorePreview, type QualityGateConfig, type QualityGateLastRun } from '../api';
+import { api, type EgressBlockEntry, type EgressConfigState, type EgressRule, type EgressTestResult, type IgnorePreview, type QualityGateConfig, type QualityGateLastRun } from '../api';
 import { useLang } from '../i18n';
 
 interface Issue { file: string; message: string }
@@ -47,6 +47,7 @@ function QualityGateSection({ projectId }: { projectId: string }) {
   const [runOnEdit, setRunOnEdit] = useState(false);
   const [blockOnFailure, setBlockOnFailure] = useState(false);
   const [secFailOn, setSecFailOn] = useState<string[]>([]);
+  const [impactFailOnBreaking, setImpactFailOnBreaking] = useState(false);
   const [lastResult, setLastResult] = useState<string | null>(null);
 
   useEffect(() => {
@@ -63,6 +64,7 @@ function QualityGateSection({ projectId }: { projectId: string }) {
         setRunOnEdit(res.config.runOnEdit);
         setBlockOnFailure(res.config.blockOnFailure);
         setSecFailOn(res.config.security?.failOn ?? []);
+        setImpactFailOnBreaking(res.config.impact?.failOnBreaking ?? false);
         setLoaded(true);
       } catch (e) {
         if (!cancelled) setMsg({ kind: 'err', text: t('quality.loadFailed', { message: (e as Error).message }) });
@@ -83,6 +85,7 @@ function QualityGateSection({ projectId }: { projectId: string }) {
         runOnEdit,
         blockOnFailure,
         security: { failOn: secFailOn },
+        impact: { failOnBreaking: impactFailOnBreaking },
       });
       setConfig(res.config);
       setMsg({ kind: 'ok', text: t('quality.saved') });
@@ -117,6 +120,16 @@ function QualityGateSection({ projectId }: { projectId: string }) {
                   sca: r.security.sca,
                   blocked: r.security.blocked ? t('quality.blockedNote') : '',
                 })
+              : '') +
+            (r.impact
+              ? r.impact.error
+                ? t('quality.impactErrorNote', { error: r.impact.error })
+                : t('quality.impactRunNote', {
+                    changed: r.impact.changedFiles ?? 0,
+                    affected: r.impact.affected ?? 0,
+                    breaking: r.impact.breaking ?? 0,
+                    blocked: r.impact.blocked ? t('quality.blockedNote') : '',
+                  })
               : ''),
       );
     } catch (e) {
@@ -184,6 +197,17 @@ function QualityGateSection({ projectId }: { projectId: string }) {
             ))}
           </div>
           <p className="muted" style={{ fontSize: 11 }}>{t('quality.securityNote')}</p>
+          <div className="row">
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={impactFailOnBreaking}
+                onChange={(e) => setImpactFailOnBreaking(e.target.checked)}
+              />
+              {t('quality.impactFailOnBreaking')}
+            </label>
+          </div>
+          <p className="muted" style={{ fontSize: 11 }}>{t('quality.impactNote')}</p>
           <div className="row">
             <button onClick={onSave} disabled={saving}>{t('quality.save')}</button>
             <button onClick={() => void onRun('lint')} disabled={running !== null}>
@@ -385,8 +409,283 @@ function IgnoresSection({ projectId }: { projectId: string }) {
   );
 }
 
-export function ProjectPanel({ projectId, projectName }: { projectId: string; projectName: string }) {
+/**
+ * 出站防火墙（细粒度 allowlist，零模型）：global / project / task 三层
+ * 规则编辑、启用开关 + 默认策略、干跑测试框、最近拦截列表。只约束
+ * 服务端自己的工具/代理出站面（web 搜索、远程 MCP、调度器 webhook）；
+ * 不约束 shell、浏览器与系统网络 ——— 文案明说。
+ */
+function EgressRuleRows({
+  rules,
+  onChange,
+}: {
+  rules: EgressRule[];
+  onChange: (rules: EgressRule[]) => void;
+}) {
   const { t } = useLang();
+  const set = (i: number, patch: Partial<EgressRule>) =>
+    onChange(rules.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  return (
+    <div>
+      {rules.map((r, i) => (
+        <div key={i} className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+          <select
+            value={r.action}
+            onChange={(e) => set(i, { action: e.target.value as 'allow' | 'deny' })}
+            aria-label={t('egress.action')}
+          >
+            <option value="allow">{t('egress.allow')}</option>
+            <option value="deny">{t('egress.deny')}</option>
+          </select>
+          <input
+            value={r.domain}
+            onChange={(e) => set(i, { domain: e.target.value })}
+            placeholder={t('egress.domainPlaceholder')}
+            style={{ fontFamily: 'monospace', minWidth: 180 }}
+            spellCheck={false}
+          />
+          <input
+            value={r.pathPrefix ?? ''}
+            onChange={(e) => set(i, { pathPrefix: e.target.value || undefined })}
+            placeholder={t('egress.pathPlaceholder')}
+            style={{ fontFamily: 'monospace', width: 120 }}
+            spellCheck={false}
+          />
+          <input
+            value={r.note ?? ''}
+            onChange={(e) => set(i, { note: e.target.value || undefined })}
+            placeholder={t('egress.note')}
+            style={{ width: 160 }}
+          />
+          <button onClick={() => onChange(rules.filter((_, j) => j !== i))}>
+            {t('egress.removeRule')}
+          </button>
+        </div>
+      ))}
+      <button onClick={() => onChange([...rules, { domain: '', action: 'allow' }])}>
+        {t('egress.addRule')}
+      </button>
+    </div>
+  );
+}
+
+function EgressSection({ projectId }: { projectId: string }) {
+  const { t } = useLang();
+  const [state, setState] = useState<EgressConfigState | null>(null);
+  const [enabled, setEnabled] = useState(false);
+  const [defaultPolicy, setDefaultPolicy] = useState<'allow' | 'deny'>('deny');
+  const [globalRules, setGlobalRules] = useState<EgressRule[]>([]);
+  const [projectRules, setProjectRules] = useState<EgressRule[]>([]);
+  const [taskId, setTaskId] = useState('');
+  const [taskRules, setTaskRules] = useState<EgressRule[]>([]);
+  const [taskLoaded, setTaskLoaded] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState('');
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [testUrl, setTestUrl] = useState('');
+  const [testOut, setTestOut] = useState<EgressTestResult | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [log, setLog] = useState<EgressBlockEntry[]>([]);
+
+  const loadLog = async () => {
+    try {
+      const res = await api.egressLog(50);
+      setLog(res.entries);
+    } catch {
+      /* log is best-effort display */
+    }
+  };
+
+  const load = async (forTaskId?: string) => {
+    setMsg(null);
+    try {
+      const res = await api.egressConfig(projectId, forTaskId || undefined);
+      setState(res);
+      setEnabled(res.global.enabled);
+      setDefaultPolicy(res.global.defaultPolicy);
+      setGlobalRules(res.global.rules);
+      setProjectRules(res.project?.rules ?? []);
+      if (forTaskId) {
+        setTaskRules(res.task?.rules ?? []);
+        setTaskLoaded(true);
+      }
+      setLoaded(true);
+      void loadLog();
+    } catch (e) {
+      setMsg({ kind: 'err', text: t('egress.loadFailed', { message: (e as Error).message }) });
+      setLoaded(true);
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (cancelled) return;
+      await load();
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  const save = async (scope: 'global' | 'project' | 'task') => {
+    setSaving(scope);
+    setMsg(null);
+    try {
+      if (scope === 'global') {
+        await api.updateEgressGlobal({ enabled, defaultPolicy, rules: globalRules });
+      } else if (scope === 'project') {
+        await api.updateEgressProject(projectId, projectRules);
+      } else {
+        await api.updateEgressTask(projectId, taskId.trim(), taskRules);
+      }
+      setMsg({ kind: 'ok', text: t('egress.saved') });
+      await load(taskId.trim() || undefined);
+    } catch (e) {
+      setMsg({ kind: 'err', text: t('egress.saveFailed', { message: (e as Error).message }) });
+    } finally {
+      setSaving('');
+    }
+  };
+
+  const runTest = async () => {
+    setTesting(true);
+    setTestOut(null);
+    try {
+      const res = await api.egressTest({
+        url: testUrl.trim(),
+        projectId,
+        ...(taskId.trim() ? { taskId: taskId.trim() } : {}),
+      });
+      setTestOut(res);
+    } catch (e) {
+      setMsg({ kind: 'err', text: t('egress.testFailed', { message: (e as Error).message }) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <section className="sub-panel">
+      <h4>{t('egress.title')}</h4>
+      <p className="muted">{t('egress.desc')}</p>
+      {!loaded ? (
+        <p className="muted">{t('egress.loading')}</p>
+      ) : (
+        <>
+          <p>
+            <strong>{t('egress.globalTitle')}</strong>
+            {state?.projectPath && (
+              <span className="muted"> · {t('egress.projectPath', { path: state.projectPath })}</span>
+            )}
+          </p>
+          {state?.global.loadError && <p className="err">{state.global.loadError}</p>}
+          {state?.project?.loadError && <p className="err">{state.project.loadError}</p>}
+          <label className="row">
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+            {t('egress.enabled')}
+          </label>
+          <label className="row">
+            {t('egress.defaultPolicy')}
+            <select
+              value={defaultPolicy}
+              onChange={(e) => setDefaultPolicy(e.target.value as 'allow' | 'deny')}
+            >
+              <option value="deny">{t('egress.defaultDeny')}</option>
+              <option value="allow">{t('egress.defaultAllow')}</option>
+            </select>
+          </label>
+          <p className="muted">{t('egress.domainHint')}</p>
+          <EgressRuleRows rules={globalRules} onChange={setGlobalRules} />
+          <div className="row">
+            <button disabled={saving !== ''} onClick={() => void save('global')}>
+              {saving === 'global' ? t('egress.saving') : t('egress.saveBtn')}
+            </button>
+          </div>
+
+          <p><strong>{t('egress.projectTitle')}</strong></p>
+          <p className="muted">{t('egress.projectDesc')}</p>
+          <EgressRuleRows rules={projectRules} onChange={setProjectRules} />
+          <div className="row">
+            <button disabled={saving !== ''} onClick={() => void save('project')}>
+              {saving === 'project' ? t('egress.saving') : t('egress.saveBtn')}
+            </button>
+          </div>
+
+          <p><strong>{t('egress.taskTitle')}</strong></p>
+          <p className="muted">{t('egress.taskDesc')}</p>
+          <div className="row">
+            <input
+              value={taskId}
+              onChange={(e) => { setTaskId(e.target.value); setTaskLoaded(false); }}
+              placeholder={t('egress.taskId')}
+              style={{ fontFamily: 'monospace', minWidth: 220 }}
+              spellCheck={false}
+            />
+            <button disabled={!taskId.trim()} onClick={() => void load(taskId.trim())}>
+              {t('egress.loadTaskRules')}
+            </button>
+          </div>
+          {taskLoaded && (
+            <>
+              <EgressRuleRows rules={taskRules} onChange={setTaskRules} />
+              <div className="row">
+                <button disabled={saving !== ''} onClick={() => void save('task')}>
+                  {saving === 'task' ? t('egress.saving') : t('egress.saveBtn')}
+                </button>
+              </div>
+            </>
+          )}
+
+          <p><strong>{t('egress.testTitle')}</strong></p>
+          <p className="muted">{t('egress.testDesc')}</p>
+          <div className="row">
+            <input
+              value={testUrl}
+              onChange={(e) => setTestUrl(e.target.value)}
+              placeholder="https://api.example.com/v1/models"
+              style={{ fontFamily: 'monospace', minWidth: 320 }}
+              spellCheck={false}
+            />
+            <button disabled={testing || !testUrl.trim()} onClick={() => void runTest()}>
+              {testing ? t('egress.testing') : t('egress.testBtn')}
+            </button>
+          </div>
+          {testOut && (
+            <p className={testOut.allowed ? 'ok' : 'err'}>
+              {testOut.allowed ? t('egress.allowed') : t('egress.denied')}
+              {` · ${testOut.reason}${testOut.matchedRule ? ` · ${testOut.matchedLayer}: ${testOut.matchedRule}` : ''}`}
+            </p>
+          )}
+
+          <p>
+            <strong>{t('egress.logTitle')}</strong>{' '}
+            <button onClick={() => void loadLog()}>{t('egress.refresh')}</button>
+          </p>
+          {log.length === 0 ? (
+            <p className="muted">{t('egress.noBlocks')}</p>
+          ) : (
+            <ul className="file-list">
+              {log.map((e, i) => (
+                <li key={i}>
+                  <code>{e.at}</code> <span className="err">{e.reason}</span>{' '}
+                  <code>{e.url}</code>{' '}
+                  <span className="muted">
+                    {e.source}
+                    {e.matchedRule ? ` ← ${e.matchedLayer}: ${e.matchedRule}` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {msg && <p className={msg.kind === 'ok' ? 'ok' : 'err'}>{msg.text}</p>}
+          <p className="muted">{t('egress.honest')}</p>
+        </>
+      )}
+    </section>
+  );
+}
+
+export function ProjectPanel({ projectId, projectName }: { projectId: string; projectName: string }) {  const { t } = useLang();
   const [state, setState] = useState<ImportState>({ kind: 'idle' });
   const [exported, setExported] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -475,6 +774,7 @@ export function ProjectPanel({ projectId, projectName }: { projectId: string; pr
       )}
       <QualityGateSection projectId={projectId} />
       <IgnoresSection projectId={projectId} />
+      <EgressSection projectId={projectId} />
     </div>
   );
 }

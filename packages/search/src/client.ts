@@ -56,6 +56,10 @@ export function createSearchClient(opts: SearchClientOptions) {
           const results = await p.search(q, searchOpts);
           return { results, provider: p.name };
         } catch (err) {
+          // A firewall refusal is policy, not a provider failure — never
+          // "fail over" to the next provider (that would both retry a
+          // refused call and multiply audit noise). Re-throw immediately.
+          if ((err as { code?: string } | null)?.code === 'EGRESS_BLOCKED') throw err;
           failures.push({
             provider: p.name,
             error: err instanceof Error ? err.message : String(err),

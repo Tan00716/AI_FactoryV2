@@ -16,6 +16,12 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSy
 import { dirname, relative, resolve, sep } from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
+import {
+  ScopeLockDeniedError,
+  checkScopedWrite,
+  hasScope,
+  type TaskEditScope,
+} from '../scope-lock';
 
 const WORKSPACE_ROOT = resolve(process.cwd());
 const MAX_FILE_BYTES = 1024 * 1024; // 1 MiB — prototype cap
@@ -48,6 +54,23 @@ function resolveWorkspacePath(raw: string | undefined | null): string {
 
 function relOf(abs: string): string {
   return relative(WORKSPACE_ROOT, abs) || '.';
+}
+
+/**
+ * Task-attribution scope lookup, installed by the coordinator
+ * (apps/server/src/index.ts) as a closure over RouteContext.tasks.
+ * Setter injection: the module is imported straight from src by some
+ * server tests, and scope-lock.ts is import-safe under node
+ * type-stripping (node builtins + type-only core import), so this
+ * indirection keeps files.ts importable either way — mirroring the
+ * setBackupIgnoreCheck precedent in routes/backup.ts.
+ */
+let fileScopeLookup: ((taskId: string) => TaskEditScope | null | undefined) | null = null;
+
+export function setFileScopeLookup(
+  fn: ((taskId: string) => TaskEditScope | null | undefined) | null,
+): void {
+  fileScopeLookup = fn;
 }
 
 export async function handleFileRoutes(
@@ -121,7 +144,7 @@ export async function handleFileRoutes(
     return true;
   }
 
-  // POST /api/file  {path, content}
+  // POST /api/file  {path, content, taskId?}
   if (path === '/api/file' && method === 'POST') {
     const body = await ctx.readBody(req);
     const rel = body['path'] as string | undefined;
@@ -130,6 +153,27 @@ export async function handleFileRoutes(
     if (!rel || typeof content !== 'string') {
       ctx.json(res, 400, { error: 'path and content are required' });
       return true;
+    }
+    // Scope Lock （二轮加强 8) — a write ATTRIBUTED to a task
+    // (taskId supplied) is checked against that task's edit scope
+    // BEFORE it lands: out-of-scope → 403 SCOPE_LOCKED + SCOPE_VIOLATION
+    // audit, nothing written, the run itself is not otherwise affected.
+    // Manual editing in the editor never carries a taskId, so the
+    // human's own file editing stays unrestricted — by design (the
+    // lock constrains work done *for* a task, not the operator).
+    // An unknown taskId is refused 404: attribution must be honest.
+    const taskId =
+      typeof body['taskId'] === 'string' && body['taskId'].trim()
+        ? body['taskId'].trim()
+        : null;
+    let taskScope: TaskEditScope | null | undefined;
+    if (taskId) {
+      try {
+        taskScope = fileScopeLookup ? fileScopeLookup(taskId) : null;
+      } catch {
+        ctx.json(res, 404, { error: `task not found: ${taskId}`, code: 'TASK_NOT_FOUND' });
+        return true;
+      }
     }
     let file: string;
     try {
@@ -145,6 +189,30 @@ export async function handleFileRoutes(
       });
       ctx.json(res, 403, { error: `path refused: the control-plane data directory (${CONTROL_DATA_DIR}) is off-limits` });
       return true;
+    }
+    if (taskId && taskScope && hasScope(taskScope)) {
+      try {
+        checkScopedWrite(taskScope, WORKSPACE_ROOT, rel);
+      } catch (e) {
+        if (e instanceof ScopeLockDeniedError) {
+          ctx.audit.record(actor, 'SCOPE_VIOLATION', 'file', relOf(file), {
+            taskId,
+            reason: e.reason,
+            path: e.relPath,
+            code: 'SCOPE_LOCKED',
+            note: 'task-attributed write refused before landing (scope lock)',
+          });
+          ctx.json(res, 403, {
+            error: e.message,
+            code: 'SCOPE_LOCKED',
+            reason: e.reason,
+            path: e.relPath,
+            taskId,
+          });
+          return true;
+        }
+        throw e;
+      }
     }
     if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) {
       ctx.json(res, 413, { error: 'content exceeds the 1 MiB prototype cap' });

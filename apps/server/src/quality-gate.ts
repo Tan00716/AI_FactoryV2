@@ -68,6 +68,15 @@ export interface QualityGateSecurityConfig {
   failOn: SecurityFailOnCategory[];
 }
 
+/** Change-impact linkage (deterministic; see impact.ts). */
+export interface QualityGateImpactConfig {
+  /** When true, the gate analyzes working-tree changes vs HEAD after
+   * each run and blocks on breaking API-contract changes
+   * (removed/renamed/signature-changed exports). False = advisory only
+   * via the /api/impact API; the gate never runs the analysis. */
+  failOnBreaking: boolean;
+}
+
 /** Per-project gate configuration. */
 export interface QualityGateConfig {
   /** Shell command for the lint step; '' = disabled. */
@@ -88,6 +97,10 @@ export interface QualityGateConfig {
   /** Security scan linkage; failOn empty = no security gate. Same
    * inline-validation + import-free rationale as coverage above. */
   security: QualityGateSecurityConfig;
+  /** Change-impact linkage; failOnBreaking=false (default) = the gate
+   * never runs impact analysis. Same inline-validation + import-free
+   * rationale as coverage above. */
+  impact: QualityGateImpactConfig;
 }
 
 export interface QualityGateConfigInput {
@@ -98,6 +111,7 @@ export interface QualityGateConfigInput {
   blockOnFailure?: unknown;
   coverage?: unknown;
   security?: unknown;
+  impact?: unknown;
 }
 
 export const DEFAULT_QUALITY_TIMEOUT_MS = 120_000;
@@ -129,6 +143,7 @@ export function defaultQualityGateConfig(): QualityGateConfig {
     blockOnFailure: false,
     coverage: null,
     security: { failOn: [] },
+    impact: { failOnBreaking: false },
   };
 }
 
@@ -190,6 +205,23 @@ function checkSecurityConfig(input: unknown, errors: string[]): QualityGateSecur
   return { failOn: out };
 }
 
+/** Structural validation for the impact linkage (kept inline: no imports). */
+function checkImpactConfig(input: unknown, errors: string[]): QualityGateImpactConfig {
+  if (input === undefined || input === null) return { failOnBreaking: false };
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    errors.push('impact must be an object');
+    return { failOnBreaking: false };
+  }
+  const raw = input as { failOnBreaking?: unknown };
+  const fo = raw.failOnBreaking;
+  if (fo === undefined || fo === null) return { failOnBreaking: false };
+  if (typeof fo !== 'boolean') {
+    errors.push('impact.failOnBreaking must be a boolean');
+    return { failOnBreaking: false };
+  }
+  return { failOnBreaking: fo };
+}
+
 function checkCommand(label: string, v: unknown, errors: string[]): string {
   if (v === undefined || v === null) return '';
   if (typeof v !== 'string') {
@@ -234,6 +266,7 @@ export function validateQualityGateConfig(input: QualityGateConfigInput): {
   }
   const coverage = checkCoverageConfig(input.coverage, errors);
   const security = checkSecurityConfig(input.security, errors);
+  const impact = checkImpactConfig(input.impact, errors);
   return {
     config: {
       lintCmd,
@@ -243,6 +276,7 @@ export function validateQualityGateConfig(input: QualityGateConfigInput): {
       blockOnFailure: input.blockOnFailure === true,
       coverage,
       security,
+      impact,
     },
     errors,
   };
@@ -344,6 +378,9 @@ export class QualityGateStore {
     // fields existed have no keys for them — normalize to disabled.
     if (config.coverage === undefined) config.coverage = null;
     if (config.security === undefined) config.security = { failOn: [] };
+    if (config.impact === undefined || typeof config.impact.failOnBreaking !== 'boolean') {
+      config.impact = { failOnBreaking: false };
+    }
     return config;
   }
 

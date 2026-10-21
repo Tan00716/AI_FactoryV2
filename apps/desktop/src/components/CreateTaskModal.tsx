@@ -1,11 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, type TaskTemplate, type AgentFull } from '../api';
+import { api, type TaskTemplate, type AgentFull, type TaskEditScope } from '../api';
 import { useLang } from '../i18n';
 
 /** W-E multimodal: images the user attached before task creation. */
 interface PendingImage {
   file: File;
   previewUrl: string;
+}
+
+/** 第二轮加强 8 — 范围锁定预设（与服务端 SCOPE_PRESETS 对应）。 */
+const SCOPE_PRESET_PATTERNS: Record<string, { include?: string[]; exclude?: string[] }> = {
+  'src-only': { include: ['src/**'] },
+  'src-and-tests': { include: ['src/**', 'tests/**', 'test/**'] },
+  'docs-only': { include: ['docs/**', '*.md'] },
+  'no-config': { exclude: ['*.json', '*.yaml', '*.yml', '*.toml', 'config/**'] },
+  'no-secrets': { exclude: ['**/.env*', '**/*.pem', '**/*.key', 'secrets/**'] },
+};
+
+function parseGlobLines(text: string): string[] {
+  return text.split('\n').map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
@@ -40,6 +53,10 @@ export function CreateTaskModal({ projectId, onClose, onCreated }: {
   const [tplParams, setTplParams] = useState<Record<string, string>>({});
   const [agents, setAgents] = useState<AgentFull[]>([]);
   const [agentId, setAgentId] = useState('');
+  // 第二轮加强 8 — 编辑范围锁定：未填 = 不限制（现状）。
+  const [scopeInclude, setScopeInclude] = useState('');
+  const [scopeExclude, setScopeExclude] = useState('');
+  const [scopePreset, setScopePreset] = useState('');
   const selectedTemplate = templates.find((x) => x.id === templateId);
   // QA-R1: 连击防护不能只靠 state——setBusy(true) 是异步的，同 tick 内的
   // 连续点击都会看到 busy=false。用 ref 做同步守卫。
@@ -155,7 +172,16 @@ export function CreateTaskModal({ projectId, onClose, onCreated }: {
       return;
     }
     try {
-      const task = await api.createTask({ projectId, title: title.trim(), goal: goal.trim(), priority });
+      const include = parseGlobLines(scopeInclude);
+      const exclude = parseGlobLines(scopeExclude);
+      const scope: TaskEditScope | undefined =
+        include.length > 0 || exclude.length > 0
+          ? {
+              ...(include.length > 0 ? { include } : {}),
+              ...(exclude.length > 0 ? { exclude } : {}),
+            }
+          : undefined;
+      const task = await api.createTask({ projectId, title: title.trim(), goal: goal.trim(), priority, ...(scope ? { scope } : {}) });
       // Upload images after the task exists; a failed upload must not
       // silently vanish — report it and keep the modal open state honest.
       if (images.length > 0) {
@@ -261,6 +287,44 @@ export function CreateTaskModal({ projectId, onClose, onCreated }: {
             {['P0', 'P1', 'P2', 'P3', 'P4'].map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </label>
+        <div className="scope-block">
+          <label>{t('scope.presetLabel')}
+            <select
+              value={scopePreset}
+              onChange={(e) => {
+                const id = e.target.value;
+                setScopePreset(id);
+                const preset = SCOPE_PRESET_PATTERNS[id];
+                if (preset) {
+                  setScopeInclude((preset.include ?? []).join('\n'));
+                  setScopeExclude((preset.exclude ?? []).join('\n'));
+                }
+              }}
+            >
+              <option value="">{t('scope.presetNone')}</option>
+              {Object.keys(SCOPE_PRESET_PATTERNS).map((id) => (
+                <option key={id} value={id}>{t(`scope.preset.${id}`)}</option>
+              ))}
+            </select>
+          </label>
+          <label>{t('scope.includeLabel')}
+            <textarea
+              value={scopeInclude}
+              onChange={(e) => setScopeInclude(e.target.value)}
+              placeholder={t('scope.includePlaceholder')}
+              rows={2}
+            />
+          </label>
+          <label>{t('scope.excludeLabel')}
+            <textarea
+              value={scopeExclude}
+              onChange={(e) => setScopeExclude(e.target.value)}
+              placeholder={t('scope.excludePlaceholder')}
+              rows={2}
+            />
+          </label>
+          <p className="hint">{t('scope.honestNote')}</p>
+        </div>
         <div className="attach-row">
           <button type="button" className="ghost" onClick={() => fileInputRef.current?.click()}>
             {t('createtask.attachImages')}

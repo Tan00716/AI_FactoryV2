@@ -34,6 +34,7 @@ import {
   type RecipeSpec,
   type RecipeRun,
 } from '../recipes';
+import { detectOutOfScopePaths, hasScope } from '../scope-lock';
 
 const PREFIX = '/api/recipes';
 
@@ -168,6 +169,36 @@ export async function handleRecipesRoutes(
         }
       }
       const run = executor.createPlan(str(body['recipeName']) ?? '', str(body['projectPath']) ?? '', actorOf(body), taskId);
+      // Scope Lock （二轮加强 8) — a plan computed ON a scoped task
+      // whose target files escape the task's edit scope is refused
+      // outright (422 SCOPE_LOCKED), never silently trimmed to the
+      // in-scope subset: a migration that quietly skips half its files
+      // is a lie about what will run. The plan is pure (no writes),
+      // so discarding the run record leaves nothing behind.
+      if (taskId) {
+        const taskScope = ctx.tasks.get(taskId).scope;
+        if (taskScope && hasScope(taskScope)) {
+          const plannedPaths = run.plan.files.map((f) => f.file);
+          const violations = detectOutOfScopePaths(taskScope, plannedPaths);
+          if (violations.length > 0) {
+            runStore.remove(run.id);
+            ctx.audit.record(actorOf(body), 'SCOPE_VIOLATION', 'recipe-run', run.id, {
+              taskId,
+              surface: 'recipes.plan',
+              files: violations.map((v) => v.path),
+              reasons: violations.map((v) => `${v.path}:${v.reason}`),
+              code: 'SCOPE_LOCKED',
+              note: 'recipe plan refused: target files outside the task edit scope; plan discarded, nothing written',
+            });
+            return ctx.json(res, 422, {
+              error: 'recipe plan targets files outside the task edit scope',
+              code: 'SCOPE_LOCKED',
+              taskId,
+              violations,
+            }), true;
+          }
+        }
+      }
       return ctx.json(res, 201, { run }), true;
     } catch (e) {
       return ctx.json(res, recipeErrorStatus(e), errBody(e)), true;

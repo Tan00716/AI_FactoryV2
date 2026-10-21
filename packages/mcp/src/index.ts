@@ -30,3 +30,6 @@ export * from './oauth';
 export * from './health';
 export * from './resilience';
 export * from './runtimePolicy';
+// http-transport stays internal except the egress guard setter the
+// server needs (second-round task ⑦): targeted re-export, no `export *`.
+export { setMcpHttpGuard, type McpHttpGuard } from './http-transport';

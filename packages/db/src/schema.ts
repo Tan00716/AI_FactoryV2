@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   policy_ceiling TEXT,
   budget_envelope TEXT,
   parent_relation TEXT,
+  edit_scope TEXT,
   status TEXT DEFAULT 'TODO',
   current_agent_id TEXT REFERENCES agents(id),
   assigned_agents TEXT DEFAULT '[]',

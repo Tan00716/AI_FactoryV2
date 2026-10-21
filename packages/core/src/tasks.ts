@@ -9,6 +9,7 @@ import {
   Task,
   TaskAuthorizationStatus,
   TaskDependency,
+  TaskEditScope,
   TaskStatus,
   nowIso,
 } from './types';
@@ -17,6 +18,7 @@ import {
   budgetOverflow,
   ceilingOverflow,
   resolveInheritedAuthorization,
+  resolveInheritedEditScope,
   rootOfTask,
   type ScopeViolation,
 } from './scope';
@@ -149,6 +151,15 @@ export interface CreateTaskInput {
   /** §17.4 (Batch 18) — how a subtask serves its parent's goal. */
   parentRelation?: string;
   /**
+   * 第二轮加强（item 8）—— task-level edit scope. Recorded verbatim
+   * (defensive copy) when supplied; on createSubtask() it defaults to
+   * the ROOT's scope and a supplied value may only NARROW it at the
+   * pattern-string level (include ⊆ root include, exclude ⊇ root
+   * exclude — a conservative, pattern-set check, not semantic glob
+   * inclusion; see scope.ts resolveInheritedEditScope).
+   */
+  scope?: TaskEditScope;
+  /**
    * §17.2 — evidence refs backing the ticket ("附证据"). Recorded on
    * the task when supplied; absent stays absent.
    */
@@ -192,6 +203,20 @@ export class TaskManager {
         : {}),
       ...(input.parentRelation !== undefined
         ? { parentRelation: input.parentRelation }
+        : {}),
+      // 第二轮加强（item 8）—— edit scope, defensive-copied like the
+      // ceiling/envelope; absent stays absent.
+      ...(input.scope !== undefined
+        ? {
+            scope: {
+              ...(input.scope.include !== undefined
+                ? { include: [...input.scope.include] }
+                : {}),
+              ...(input.scope.exclude !== undefined
+                ? { exclude: [...input.scope.exclude] }
+                : {}),
+            },
+          }
         : {}),
       ...(input.evidenceRefs !== undefined ? { evidenceRefs: [...input.evidenceRefs] } : {}),
       status: 'TODO',
@@ -279,6 +304,13 @@ export class TaskManager {
       }
     }
 
+    // 第二轮加强（item 8）—— the edit scope inherits from the ROOT
+    // like the ceiling/envelope: unspecified → the root's verbatim; a
+    // supplied value may only narrow it (pattern-string level).
+    const scopeResolution = resolveInheritedEditScope(root.scope, input.scope);
+    if ('violation' in scopeResolution) violations.push(scopeResolution.violation);
+    const editScope = 'violation' in scopeResolution ? undefined : scopeResolution.scope;
+
     if (violations.length > 0) throw new ScopeViolationError(root.id, violations);
 
     const inheritedStatus = (
@@ -299,6 +331,7 @@ export class TaskManager {
       acceptanceCriteria: input.acceptanceCriteria ?? [...root.acceptanceCriteria],
       policyCeiling,
       budgetEnvelope,
+      scope: editScope,
     });
     if (inheritedStatus === 'REVOKED' || inheritedStatus === 'EXPIRED') {
       const t = this.get(sub.id);
@@ -472,6 +505,29 @@ export class TaskManager {
     t.status = status;
     t.updatedAt = nowIso();
     if (status === 'DONE') t.completedAt = nowIso();
+    this.store.save(t);
+    return this.get(taskId);
+  }
+
+  /**
+   * 第二轮加强（item 8）—— set or clear the task's edit scope.
+   * `undefined` removes the field entirely (unrestricted, same as a
+   * task that never had one); an object replaces the scope verbatim
+   * (defensive copy). Validation of the glob patterns happens at the
+   * API layer (scope-lock validation) — the manager records what the
+   * route admitted.
+   */
+  setScope(taskId: string, scope: TaskEditScope | undefined): Task {
+    const t = this.get(taskId);
+    if (scope === undefined) {
+      delete t.scope;
+    } else {
+      t.scope = {
+        ...(scope.include !== undefined ? { include: [...scope.include] } : {}),
+        ...(scope.exclude !== undefined ? { exclude: [...scope.exclude] } : {}),
+      };
+    }
+    t.updatedAt = nowIso();
     this.store.save(t);
     return this.get(taskId);
   }

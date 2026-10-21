@@ -21,6 +21,8 @@ export type NotificationEventType =
   | 'NEEDS_HUMAN_RAISED'
   | 'QUALITY_GATE_FAILED'
   | 'SECURITY_SCAN_BLOCKED'
+  | 'SCOPE_VIOLATION_DETECTED'
+  | 'EGRESS_BLOCKED'
   | 'GENERIC';
 
 /** Notification priority (drives the UI badge + ordering). */

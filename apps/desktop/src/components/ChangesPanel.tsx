@@ -328,6 +328,8 @@ interface ShadowCheckpointView {
   empty: boolean;
   skipped: { path: string; reason: string }[];
   skippedTotal: number;
+  /** DB snapshot metadata for this checkpoint (round-2 task 10), or null when never recorded. */
+  db: DbSnapshotView | null;
 }
 
 interface ShadowConfigView {
@@ -335,6 +337,34 @@ interface ShadowConfigView {
   workspacePath: string;
   autoOnToolUse: boolean;
   autoOnRunStart: boolean;
+}
+
+/** DB time-travel metadata attached to a shadow checkpoint (round-2 task 10). */
+interface DbSnapshotView {
+  status: 'ok' | string;
+  relPath: string;
+  env: string;
+  size: number;
+  sha256: string | null;
+  reason: string | null;
+  kind: string;
+}
+
+interface DbConfigView {
+  dev: string;
+  prod?: string;
+  snapshotOnCheckpoint: boolean;
+  maxBytes?: number;
+}
+
+async function dbTtReq<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}/db-time-travel${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(init?.headers ?? {}) },
+  });
+  const body = (await res.json()) as T & { error?: string };
+  if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+  return body as T;
 }
 
 async function shadowReq<T>(path: string, init?: RequestInit): Promise<T> {
@@ -402,6 +432,12 @@ export function ShadowSection() {
   const [diffCache, setDiffCache] = useState<Record<string, { diff: string; truncated: boolean }>>({});
   const [taskDiff, setTaskDiff] = useState<{ diff: string; truncated: boolean } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // DB time travel (round-2 task 10)
+  const [restoreDb, setRestoreDb] = useState(false);
+  const [dbConfig, setDbConfig] = useState<DbConfigView | null>(null);
+  const [dbDev, setDbDev] = useState('');
+  const [dbProd, setDbProd] = useState('');
+  const [dbSnap, setDbSnap] = useState(true);
 
   const refresh = useCallback(async () => {
     if (!workspaceId.trim()) return;
@@ -417,6 +453,23 @@ export function ShadowSection() {
         setWorkspacePath(r.config.workspacePath);
         setAutoTool(r.config.autoOnToolUse);
         setAutoRun(r.config.autoOnRunStart);
+      }
+      // DB time-travel config lives in <workspace>/.ai-factory/db.json.
+      const wp = r.config?.workspacePath ?? (workspacePath.trim() || undefined);
+      if (wp) {
+        try {
+          const d = await dbTtReq<{ config: DbConfigView | null }>(
+            `/config?workspaceId=${encodeURIComponent(workspaceId.trim())}&workspacePath=${encodeURIComponent(wp)}`,
+          );
+          setDbConfig(d.config);
+          if (d.config) {
+            setDbDev(d.config.dev);
+            setDbProd(d.config.prod ?? '');
+            setDbSnap(d.config.snapshotOnCheckpoint);
+          }
+        } catch {
+          setDbConfig(null);
+        }
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : t('shadow.loadFailed'));
@@ -439,6 +492,49 @@ export function ShadowSection() {
       });
       setConfig(r.config);
       setNotice(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t('shadow.actionFailed'));
+    }
+  };
+
+  const saveDbConfig = async () => {
+    setErr(null);
+    try {
+      const r = await dbTtReq<{ config: DbConfigView }>('/config', {
+        method: 'PUT',
+        body: JSON.stringify({
+          workspaceId: workspaceId.trim(),
+          workspacePath: workspacePath.trim() || config?.workspacePath,
+          dev: dbDev.trim(),
+          prod: dbProd.trim() || undefined,
+          snapshotOnCheckpoint: dbSnap,
+        }),
+      });
+      setDbConfig(r.config);
+      setNotice(t('dbtt.configSaved'));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t('shadow.actionFailed'));
+    }
+  };
+
+  /** Promote a checkpoint's db snapshot into PROD — explicit, separately
+   *  confirmed, the only path that ever writes prod. */
+  const promoteDb = async (id: string) => {
+    if (!window.confirm(t('dbtt.promoteConfirm'))) return;
+    setErr(null);
+    setNotice(null);
+    try {
+      const r = await dbTtReq<{ prodRelPath: string }>('/promote', {
+        method: 'POST',
+        body: JSON.stringify({
+          workspaceId: workspaceId.trim(),
+          workspacePath: config?.workspacePath,
+          checkpointId: id,
+          confirm: true,
+        }),
+      });
+      setNotice(`${t('dbtt.promoted')}: ${r.prodRelPath}`);
+      await refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : t('shadow.actionFailed'));
     }
@@ -495,20 +591,35 @@ export function ShadowSection() {
   };
 
   const undo = async (id: string) => {
-    if (!window.confirm(t('shadow.undoConfirm'))) return;
+    if (restoreDb) {
+      // Data restore is a second, separate decision: its own confirm text
+      // states plainly that everything written after the checkpoint is
+      // overwritten (a pre-restore backup is taken first).
+      if (!window.confirm(t('dbtt.confirmRestore'))) return;
+    } else if (!window.confirm(t('shadow.undoConfirm'))) return;
     setErr(null);
     setNotice(null);
     try {
-      const r = await shadowReq<{ restoredId: string; backup: ShadowCheckpointView | null; leftInPlace: string[] }>(
+      const r = await shadowReq<{
+        restoredId: string;
+        backup: ShadowCheckpointView | null;
+        leftInPlace: string[];
+        dbRestore: { relPath: string; preRestore: { id: string } | null } | null;
+      }>(
         `/${id}/restore`,
         {
           method: 'POST',
-          body: JSON.stringify({ workspaceId: workspaceId.trim(), workspacePath: config?.workspacePath }),
+          body: JSON.stringify({
+            workspaceId: workspaceId.trim(),
+            workspacePath: config?.workspacePath,
+            ...(restoreDb ? { restoreDb: true, confirm: true } : {}),
+          }),
         },
       );
       const parts = [t('shadow.restored')];
       if (r.backup) parts.push(`${t('shadow.backupNote')}: ${r.backup.id.slice(0, 12)}`);
       if (r.leftInPlace.length > 0) parts.push(`${t('shadow.leftInPlace')}: ${r.leftInPlace.slice(0, 5).join(', ')}`);
+      if (r.dbRestore) parts.push(`${t('dbtt.dbRestored')}: ${r.dbRestore.relPath}`);
       setNotice(parts.join(' · '));
       await refresh();
     } catch (e) {
@@ -530,6 +641,9 @@ export function ShadowSection() {
       {open && (
         <>
           <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>{t('shadow.desc')}</div>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 8, borderLeft: '3px solid var(--yellow)', paddingLeft: 8 }}>
+            {t('dbtt.note')}
+          </div>
           {err && <div className="banner err">{err}</div>}
           {notice && <div className="banner ok">{notice}</div>}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
@@ -563,6 +677,34 @@ export function ShadowSection() {
             <button style={{ fontSize: 12 }} onClick={() => void saveConfig()} disabled={!workspaceId.trim() || !workspacePath.trim()}>
               {t('shadow.saveConfig')}
             </button>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8, fontSize: 12 }}>
+            <span className="muted">💾 {t('dbtt.title')}</span>
+            <input
+              type="text"
+              placeholder={t('dbtt.devPath')}
+              value={dbDev}
+              onChange={(e) => setDbDev(e.target.value)}
+              style={{ padding: 6, borderRadius: 4, width: 150, fontFamily: 'monospace' }}
+            />
+            <input
+              type="text"
+              placeholder={t('dbtt.prodPath')}
+              value={dbProd}
+              onChange={(e) => setDbProd(e.target.value)}
+              style={{ padding: 6, borderRadius: 4, width: 150, fontFamily: 'monospace' }}
+            />
+            <label style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+              <input type="checkbox" checked={dbSnap} onChange={(e) => setDbSnap(e.target.checked)} />
+              {t('dbtt.snapshotOnCheckpoint')}
+            </label>
+            <button style={{ fontSize: 12 }} onClick={() => void saveDbConfig()} disabled={!workspaceId.trim() || !dbDev.trim()}>
+              {t('dbtt.saveConfig')}
+            </button>
+            <label style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+              <input type="checkbox" checked={restoreDb} onChange={(e) => setRestoreDb(e.target.checked)} />
+              {t('dbtt.restoreAlso')}
+            </label>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
             <input
@@ -617,7 +759,26 @@ export function ShadowSection() {
                 <button style={{ fontSize: 11 }} onClick={() => void undo(c.id)}>
                   {t('shadow.undo')}
                 </button>
+                {c.db && c.db.status === 'ok' && dbConfig?.prod && (
+                  <button style={{ fontSize: 11 }} onClick={() => void promoteDb(c.id)}>
+                    {t('dbtt.promote')}
+                  </button>
+                )}
               </div>
+              {c.db && (
+                <div style={{ marginTop: 6, fontSize: 11 }}>
+                  <span
+                    className="pill"
+                    style={{ borderColor: c.db.status === 'ok' ? 'var(--green)' : 'var(--yellow)' }}
+                  >
+                    💾 {c.db.status === 'ok' ? t('dbtt.badgeOk') : `${t('dbtt.badgeSkipped')}: ${c.db.reason ?? c.db.status}`}
+                  </span>{' '}
+                  <span className="muted" style={{ fontFamily: 'monospace' }}>{c.db.relPath}</span>
+                  {c.db.status === 'ok' && (
+                    <span className="muted"> · {(c.db.size / 1024).toFixed(1)}KB · {c.db.sha256?.slice(0, 8)}</span>
+                  )}
+                </div>
+              )}
               {openDiff === c.id && diffCache[c.id] && (
                 <div style={{ marginTop: 6 }}>
                   <DiffPre text={diffCache[c.id].diff} truncated={diffCache[c.id].truncated} />

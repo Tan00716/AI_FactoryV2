@@ -71,6 +71,7 @@ import {
   newMcpBootId,
 } from '../mcp-persistence';
 import { NETWORK_OFFLINE_CODE, networkMode } from '../network-mode';
+import { assertEgressAllowed, EGRESS_BLOCKED_CODE } from '../egress';
 
 const PREFIX = '/api/mcp';
 
@@ -780,6 +781,24 @@ export async function handleMcpRoutes(
     if (!server) return ctx.json(res, 404, { error: `mcp server ${name}@${version} is not registered` }), true;
     if (server.transport !== 'http') {
       return ctx.json(res, 400, { error: `transport '${server.transport}' is not remote (use /api/mcp/launch for stdio)` }), true;
+    }
+    // Egress firewall: pre-check the server's declared network targets
+    // (registry/source URL + §34.1 networkTargets) with the global layer.
+    // The doHttpRequest guard enforces the actual outbound calls too —
+    // this check fails fast with a clear operator-facing refusal.
+    try {
+      const declared = [server.source, ...(server.networkTargets ?? [])].filter(
+        (t): t is string => typeof t === 'string' && /^https?:\/\//i.test(t),
+      );
+      for (const target of declared) assertEgressAllowed(target, { source: 'mcp-remote' });
+    } catch (e) {
+      if ((e as { code?: string }).code === EGRESS_BLOCKED_CODE) {
+        return ctx.json(res, 403, {
+          error: `refusing to connect ${name}@${version}: outbound blocked by the egress firewall`,
+          code: EGRESS_BLOCKED_CODE,
+        }), true;
+      }
+      throw e;
     }
     if (server.approvalPolicy === 'BLOCKED') {
       return ctx.json(res, 403, { error: `refusing to connect ${name}@${version}: approval policy BLOCKED`, code: 'MCP_TRUST_NOT_APPROVED' }), true;

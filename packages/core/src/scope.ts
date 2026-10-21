@@ -45,7 +45,7 @@
  * creator as before.
  */
 
-import type { Task, TaskAuthorizationStatus } from './types';
+import type { Task, TaskAuthorizationStatus, TaskEditScope } from './types';
 import { effectiveAuthorizationStatus } from './tasks';
 
 /** A subtask creation or scope proposal asked for more than the root holds. */
@@ -67,7 +67,8 @@ export type ScopeViolationKind =
   | 'BUDGET'
   | 'ACCEPTANCE_CRITERIA'
   | 'REQUIREMENT'
-  | 'RELATION';
+  | 'RELATION'
+  | 'EDIT_SCOPE';
 
 export interface ScopeViolation {
   kind: ScopeViolationKind;
@@ -147,6 +148,70 @@ export function ceilingOverflow(
 ): string[] {
   const allowed = new Set(root);
   return child.filter((t) => !allowed.has(t));
+}
+
+/**
+ * 第二轮加强（item 8）—— the edit scope a subtask may hold under a
+ * root, when the caller asked for `requested` (or nothing).
+ *
+ * Unspecified → the root's scope verbatim (absent root scope reads
+ * absent, which create() leaves unrecorded). A supplied scope may only
+ * NARROW the root's: every include pattern must already be in the
+ * root's include set (string equality) and every root exclude pattern
+ * must survive in the child's exclude set. This is deliberately a
+ * conservative pattern-STRING check, not a semantic "this glob is a
+ * subset of that glob" judgement — glob containment is not decidable
+ * with string math, and over-promising would be worse than refusing.
+ * The restriction is stated plainly in the violation detail.
+ */
+export function resolveInheritedEditScope(
+  rootScope: TaskEditScope | undefined,
+  requested: TaskEditScope | undefined,
+): { scope: TaskEditScope | undefined } | { violation: ScopeViolation } {
+  if (requested === undefined) {
+    return {
+      scope: rootScope
+        ? {
+            ...(rootScope.include !== undefined ? { include: [...rootScope.include] } : {}),
+            ...(rootScope.exclude !== undefined ? { exclude: [...rootScope.exclude] } : {}),
+          }
+        : undefined,
+    };
+  }
+  if (!rootScope || ((rootScope.include?.length ?? 0) === 0 && (rootScope.exclude?.length ?? 0) === 0)) {
+    // Root carries no lock — any narrowing request is recorded as given.
+    return { scope: requested };
+  }
+  const rootInclude = new Set(rootScope.include ?? []);
+  const rootExclude = new Set(rootScope.exclude ?? []);
+  const wideIncludes = (requested.include ?? []).filter((p) => !rootInclude.has(p));
+  const droppedExcludes = [...rootExclude].filter(
+    (p) => !(requested.exclude ?? []).includes(p),
+  );
+  if (wideIncludes.length > 0 || droppedExcludes.length > 0) {
+    const details: string[] = [];
+    if (wideIncludes.length > 0) {
+      details.push(
+        `include patterns not present in the root scope: ${wideIncludes.map((p) => `'${p}'`).join(', ')}`,
+      );
+    }
+    if (droppedExcludes.length > 0) {
+      details.push(
+        `root exclude patterns dropped: ${droppedExcludes.map((p) => `'${p}'`).join(', ')}`,
+      );
+    }
+    return {
+      violation: {
+        kind: 'EDIT_SCOPE',
+        detail:
+          'a subtask edit scope may only narrow the root scope (pattern-string level: ' +
+          'include ⊆ root include, exclude ⊇ root exclude) — ' +
+          details.join('; '),
+        item: wideIncludes[0] ?? droppedExcludes[0],
+      },
+    };
+  }
+  return { scope: requested };
 }
 
 export interface BudgetOverflow {

@@ -22,11 +22,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RouteContext } from './context';
 import { NETWORK_OFFLINE_CODE, networkMode } from '../network-mode';
+import { EGRESS_BLOCKED_CODE, checkEgress } from '../egress';
+import { resolveProjectDir } from './egress';
 import {
   BingRssProvider,
   BraveProvider,
   TavilyProvider,
   createSearchClient,
+  SEARCH_PROVIDER_ENDPOINT_URLS,
   type SearchProvider,
 } from '@ai-factory/search';
 
@@ -93,7 +96,39 @@ export async function handleSearchRoutes(
     }
     const count = typeof body['count'] === 'number' ? body['count'] : undefined;
     const lang = typeof body['lang'] === 'string' ? body['lang'] : undefined;
-    const client = createSearchClient({ providers: await buildSearchProviders(ctx) });
+    // Egress firewall: pre-check the configured providers' endpoints
+    // with project-layer context (optional body.projectId). The
+    // low-level fetchText guard additionally enforces the global layer
+    // on every actual outbound call.
+    let projectDir: string | undefined;
+    const projectId = body['projectId'];
+    if (typeof projectId === 'string' && projectId.trim()) {
+      const rd = resolveProjectDir(ctx, projectId);
+      if (!rd.ok) {
+        ctx.json(res, rd.status, { error: rd.error, code: rd.code });
+        return true;
+      }
+      projectDir = rd.dir;
+    }
+    const providers = await buildSearchProviders(ctx);
+    for (const p of providers) {
+      const endpoint = SEARCH_PROVIDER_ENDPOINT_URLS[p.name];
+      if (!endpoint) continue;
+      const verdict = checkEgress(endpoint, {
+        source: 'web-search-route',
+        ...(projectDir ? { projectDir } : {}),
+      });
+      if (!verdict.allowed) {
+        ctx.json(res, 403, {
+          error: `web search to ${verdict.hostname} is blocked by the egress firewall`,
+          code: EGRESS_BLOCKED_CODE,
+          provider: p.name,
+          reason: verdict.reason,
+        });
+        return true;
+      }
+    }
+    const client = createSearchClient({ providers });
     try {
       const outcome = await client.search(query, { count, lang });
       ctx.audit.record('server', 'SEARCH', 'web_search', query.slice(0, 80), {

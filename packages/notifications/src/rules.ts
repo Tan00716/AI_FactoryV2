@@ -152,6 +152,29 @@ export const DEFAULT_RULES: NotificationRule[] = [
       )(e),
   },
   {
+    id: 'scope-violation-detected',
+    eventTypes: ['SCOPE_VIOLATION_DETECTED'],
+    build: (e) =>
+      outcome(
+        `Out-of-scope edits detected: ${label(e)}`,
+        `Task scope lock: ${detail(e, 'count') || 'some'} file(s) were written outside the task's edit scope: ${detail(e, 'files') || ''}. ` +
+          `The writes were NOT rolled back — review them and use the shadow-checkpoint undo if needed.`,
+        'HIGH',
+      )(e),
+  },
+  {
+    id: 'egress-blocked',
+    eventTypes: ['EGRESS_BLOCKED'],
+    build: (e) =>
+      outcome(
+        `Egress blocked: ${label(e)}`,
+        `An outbound request to host ${detail(e, 'host') || '(unknown)'} was refused by the egress firewall` +
+          `${detail(e, 'reason') === 'deny-rule' && detail(e, 'matchedLayer') ? ` — denied by the ${detail(e, 'matchedLayer')} rule "${detail(e, 'matchedRule')}"` : detail(e, 'reason') === 'default-deny' ? ' — no allow rule matched under the default-deny policy' : ''}` +
+          `. Source: ${detail(e, 'source') || 'tool'}. Review the rules in the Egress Firewall section if this call should be allowed.`,
+        'HIGH',
+      )(e),
+  },
+  {
     id: 'needs-human-raised',
     eventTypes: ['NEEDS_HUMAN_RAISED'],
     build: (e) =>

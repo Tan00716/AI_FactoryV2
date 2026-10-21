@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang } from '../i18n';
 import monaco, { languageOf } from '../monacoSetup';
+import { editorCursor } from '../editorCursor';
 
 const API_BASE = defaultApiBase();
 
@@ -30,10 +31,21 @@ function FileIcon({ type }: { type: 'dir' | 'file' }) {
   return <span style={{ marginRight: 6 }}>{type === 'dir' ? '📁' : '📄'}</span>;
 }
 
-export function EditorPanel() {
+/**
+ * Design panel (task ⑨) can ask the editor to open a file at a line via
+ * the `openRequest` prop — App.tsx sets it from the
+ * 'ai-factory:open-file' CustomEvent.
+ */
+export function EditorPanel({
+  openRequest,
+}: {
+  openRequest?: { path: string; line: number; nonce: number } | null;
+}) {
   const { t } = useLang();
   const hostRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const openRequestRef = useRef(openRequest);
+  openRequestRef.current = openRequest;
   const [root, setRoot] = useState('.');
   const [dirs, setDirs] = useState<Record<string, DirCache>>({});
   const [openPath, setOpenPath] = useState<string | null>(null);
@@ -61,6 +73,22 @@ export function EditorPanel() {
     editor.onDidChangeModelContent(() => {
       if (openPathRef.current) setDirty(true);
     });
+    // Task ⑨: feed the Design panel's code→preview lookup (editorCursor.ts).
+    editor.onDidChangeCursorPosition((e) => {
+      if (openPathRef.current) editorCursor.line = e.position.lineNumber;
+    });
+    // An open-request may have arrived while the Editor tab was unmounted.
+    const pending = openRequestRef.current;
+    if (pending) {
+      void (async () => {
+        await openFileRef.current(pending.path);
+        const ed = editorRef.current;
+        if (ed) {
+          ed.revealLineInCenter(pending.line);
+          ed.setPosition({ lineNumber: pending.line, column: 1 });
+        }
+      })();
+    }
     return () => {
       editor.dispose();
       editorRef.current = null;
@@ -104,11 +132,17 @@ export function EditorPanel() {
       if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`);
       const body = (await res.json()) as { content: string };
       const old = editor.getModel();
-      editor.setModel(
-        monaco.editor.createModel(body.content, languageOf(path), monaco.Uri.parse(`inmemory://workspace/${path}`)),
-      );
-      old?.dispose();
+      // Reopening the same path must not throw "Model already exists":
+      // reuse the model registered for the URI and refresh its content.
+      const uri = monaco.Uri.parse(`inmemory://workspace/${path}`);
+      const existing = monaco.editor.getModel(uri);
+      const model = existing ?? monaco.editor.createModel(body.content, languageOf(path), uri);
+      if (existing) existing.setValue(body.content);
+      editor.setModel(model);
+      if (old && old !== model) old.dispose();
       setOpenPath(path);
+      editorCursor.path = path;
+      editorCursor.line = 1;
       setDirty(false);
       setStatus('');
     } catch (e) {
@@ -116,6 +150,24 @@ export function EditorPanel() {
       setStatus('');
     }
   }, []);
+
+  const openFileRef = useRef(openFile);
+  openFileRef.current = openFile;
+
+  // Task ⑨: open-request while already mounted (the Monaco mount effect
+  // covers the request that arrived before the editor existed).
+  useEffect(() => {
+    if (!openRequest || !editorRef.current) return;
+    void (async () => {
+      await openFile(openRequest.path);
+      const ed = editorRef.current;
+      if (ed) {
+        ed.revealLineInCenter(openRequest.line);
+        ed.setPosition({ lineNumber: openRequest.line, column: 1 });
+        ed.focus();
+      }
+    })();
+  }, [openRequest, openFile]);
 
   const saveFile = useCallback(async () => {
     const editor = editorRef.current;

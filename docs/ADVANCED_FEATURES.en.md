@@ -2,7 +2,15 @@
 
 > For users already comfortable with the basic flow: MCP, Plan mode,
 > slash commands, hooks, permission tiers, Headless CLI, session resume
-> & checkpoints, web search, multimodal input, plugins, PR review.
+> & checkpoints, web search, multimodal input, plugins, PR review —
+> plus the hardening waves: command palette, task scheduler, code index,
+> notification center, metrics dashboard, one-tap offline, auto-backup,
+> task templates, audit export, multi-project, quality gates, repo map,
+> session isolation, OS sandbox, permission rules, @ context providers,
+> shadow checkpoints, team inspections, batch changes, realtime collab,
+> coverage visualization, ignore files, problem matchers, security scan,
+> migration recipes, impact analysis, egress firewall, scope lock,
+> design mode, DB time travel.
 > Quick start: [USER_GUIDE.md](USER_GUIDE.md);
 > known limitations: [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 > 中文版：[ADVANCED_FEATURES.md](ADVANCED_FEATURES.md).
@@ -229,6 +237,408 @@ Reviews are **record-only**: the review state shows in the PR detail for
 human judgment and **does not block merge** (changing merge semantics
 was deemed too risky and left alone).
 
+## 12. Command palette: Cmd+K (hardening wave 1)
+
+**What**: a global command palette (like VS Code's Cmd+K / Ctrl+K).
+No mouse needed: fuzzy-type to jump to any tab, task, or agent,
+or create a task outright.
+
+**How**: press Cmd+K (Ctrl+K on Windows/Linux) anywhere, type,
+↑↓ to pick, Enter to run.
+
+**Honest boundaries**: it's just a shortcut — everything you jump to
+still obeys permission tiers and approvals. No bypasses.
+
+## 13. Local task scheduler: self-built 5-field cron (hardening wave 1)
+
+**What**: a self-contained server-side scheduler (zero dependencies):
+cron expressions (5 fields: minute hour day-of-month month weekday)
+or fixed intervals, firing jobs (backups, checks, test runs).
+
+**How**: `POST /api/schedules` with
+`{name, kind: 'cron'|'interval', cronExpr|intervalMs, job}`;
+invalid expressions are rejected with 400, never silently swallowed.
+
+## 14. Code index: codeindex (hardening wave 1)
+
+**What**: a symbol-level search engine for the project: it indexes
+functions, classes, and exported symbols plus their reference graph —
+the shared foundation for @ references, the repo map, and impact
+analysis.
+
+**How**: indexing is incremental (files with unchanged mtime+size are
+reused); the two-tier ignore gate sits at the index entry point
+(see §33) — ignored files are invisible to both indexing and queries.
+
+**Honest boundaries**: references are heuristic symbol-name matches
+(same-name symbols add noise), not compiler-grade semantics — the
+impact report says so explicitly.
+
+## 15. Notification center (hardening wave 1)
+
+**What**: one inbox for every async event: hook vetoes, security-scan
+blocks, egress-firewall blocks, backup completions — severity-graded,
+HIGH pinned to the top.
+
+**How**: the bell icon in the top bar; filter by type/severity.
+A notification only records what happened — the handling action
+(e.g. allowlisting a blocked host) lives in its own panel.
+
+**Honest boundaries**: notifications are not an approval channel;
+anything needing your nod goes through the Approvals tab.
+
+## 16. Metrics dashboard (hardening wave 1)
+
+**What**: the "Metrics" tab: a live board of the server's `/stats`
+operational metrics (task counts, agent counts, QA failures,
+deployments), refreshing every 5s.
+
+**Honest boundaries**: these are server self-reported metrics — a
+sampled view, not APM. Each tile labels its data source.
+
+## 17. One-tap offline (hardening wave 2)
+
+**What**: a top-bar kill switch: flip it and all external network
+egress stops (web search, remote MCP, webhooks) — the big red button
+against code exfiltration.
+
+**How**: one click on the top-bar toggle; the env var
+`FACTORY_NETWORK_OFFLINE=1` forces offline regardless (config wins
+over the switch).
+
+**Honest boundaries**: it's binary — all-off or all-on. For
+"allow npm but nothing else" granularity, use the egress firewall
+in §38.
+
+## 18. Auto-backup & retention (hardening wave 2)
+
+**What**: the Ops tab's backup panel: one-click manual backups plus
+scheduled automatic backups. Retention only ever deletes `scheduled`
+auto-backups (keeping the newest N); manual and pre-restore backups
+are never auto-deleted.
+
+**How**: enable auto-backup and set the keep count in the backup
+panel; a restore first takes a pre-restore safety snapshot, so the
+rollback itself is reversible.
+
+**Honest boundaries**: retention only prunes automatic backups;
+manual ones are exempt. (A soak once caught a real bug wrongly
+deleting a manual backup — fixed, with a regression test.)
+
+## 19. Task template library (hardening wave 2)
+
+**What**: "create from template" when making a task: recurring task
+shapes (goal, acceptance criteria, constraints) saved as templates,
+applied in one click. Three seed templates ship on first boot.
+
+**How**: new-task dialog → "from template"; templates live in
+`AI_FACTORY_DATA_DIR/task-templates.json` and are editable.
+
+**Honest boundaries**: a template fills in fields, it doesn't do the
+work — no auto-execution.
+
+## 20. Audit compliance export (hardening wave 2)
+
+**What**: one-click audit-chain export: a time range exported as CSV
+or JSON, with snapshot metadata (format, range, record count) carried
+in response headers — for compliance/audit use.
+
+**How**:
+`GET /api/audit/export?format=csv|json&from=<ISO>&to=<ISO>`;
+the CSV is pure RFC4180, Excel-ready.
+
+## 21. Multi-project (hardening wave 2)
+
+**What**: one server manages many projects: project list, per-project
+isolation of tasks/knowledge/audit views, one-click switching in the
+top-bar project switcher.
+
+**How**: create/switch projects in the left "Project" panel; every
+tab filters by the current project.
+
+**Honest boundaries**: isolation is at the data-ownership/view
+level; execution-level isolation is §25's OS sandbox.
+
+## 22. lint/test quality gates (third wave, part 1)
+
+**What**: CI-style quality gates: run lint, run tests, run coverage;
+any failing step blocks (blockOnFailure), results go to the audit
+chain.
+
+**How**: configure gates in the "Inspections" tab; test runs can emit
+coverage reports (see §32), with an optional "block on coverage
+drop".
+
+**Honest boundaries**: gates run the project's own lint/test
+commands — we do the running and judging, not the writing.
+
+## 23. AST repo map: repomap (third wave, part 1)
+
+**What**: an AST-level map of the repository: file → symbol →
+reference graph, a static "code tour" for agents.
+
+**How**: agents pull it automatically through the @ context
+providers; nothing to configure by hand.
+
+**Honest boundaries**: heuristic parsing (not a full compile);
+same-name symbols add noise; dynamic imports/reflection are
+invisible.
+
+## 24. Worktree session isolation (third wave, part 1)
+
+**What**: every session gets its own git worktree: agents edit code
+in isolated worktrees, never stepping on each other; merge or discard
+at the end.
+
+**How**: worktrees are allocated automatically when a session is
+created; the Git panel shows each session's worktree state.
+
+**Honest boundaries**: this isolates the *workspace*, not the OS
+(that's §25).
+
+## 25. OS sandbox tiers (third wave, part 1)
+
+**What**: three OS isolation tiers for command execution: read-only,
+workspace-write, and off — implemented with bwrap (Linux).
+
+**How**: pick a tier in the exec config; **fail-closed**:
+read-only/workspace-write require a working bwrap, otherwise
+execution is refused rather than silently downgraded. The response
+honestly reports the tier actually applied.
+
+**Honest boundaries**: when bwrap is unavailable we'd rather refuse
+than fake isolation; this is directory/syscall-level isolation, not
+a VM.
+
+## 26. allow/ask/deny permission rules (third wave, part 1)
+
+**What**: a rule layer beside §5's four permission tiers: glob/action
+rules, each allow/ask/deny; the most specific match wins, ties go to
+deny.
+
+**How**: configure `.ai-factory/permissions.json` in the Permissions
+tab; rule changes are audited.
+
+**Honest boundaries**: rules govern *our* tool surface; your own
+manual actions are unrestricted.
+
+## 27. @ context providers (third wave, part 2)
+
+**What**: `@` references in chat for code/issues/file trees: @open
+(open a file), @tree (directory tree), @problems (problem list),
+code_search (code search) and more — feeding precise context to the
+agent.
+
+**How**: type `@` in the chat box for autocomplete; the two-tier
+ignore hard-exclusion applies here too — referencing an ignored file
+is explicitly refused, never silent.
+
+**Honest boundaries**: @problems diagnostics come from internal
+parsers like the problem matchers (§34), not from an LSP.
+
+## 28. Shadow git checkpoints (third wave, part 2)
+
+**What**: Cline-style sidecar checkpoints: a bare git object store
+snapshotting the workspace at file level (the workspace itself need
+not be a git repo), with one-click undo.
+
+**How**: "create checkpoint" in the session/task panel; restores
+first take a pre-restore safety snapshot; design-mode write-backs and
+DB time travel reuse it as their undo foundation.
+
+**Honest boundaries**: file-level snapshots, not semantic ones;
+oversized/binary files are skipped per policy and clearly marked.
+
+## 29. Team quality gates: inspections (third wave, part 2)
+
+**What**: the "Inspections" tab: a configurable checker set
+(style/hygiene/security), with profiles, baselines (pre-existing
+issues baselined — only new ones block), and trend panels.
+
+**How**: pick a profile and run checks in the inspections panel;
+the security scan (§35) is one checker category here.
+
+**Honest boundaries**: checkers are deterministic rules, not AI
+review; a baseline manages honest debt, it doesn't erase it.
+
+## 30. Batch changes (third wave, part 2)
+
+**What**: the "Batch" tab: change many repos at once — define steps
+(shell/recipes), run them across the repo registry, watch progress
+and results on one board.
+
+**How**: new batch job in the batch panel, pick repos, write steps,
+execute; a single repo is just the special case.
+
+**Honest boundaries**: steps are deterministic; migration recipes
+(§36) are its "semantic" sibling.
+
+## 31. CRDT realtime collaboration (third wave, part 2)
+
+**What**: the "Collab" tab: realtime multi-client co-presence (CRDT),
+so two people can look at the same board/task view without
+conflicts.
+
+**How**: join a room from the Collab tab; the shared package builds
+dual-format (CJS+ESM), the browser uses ESM.
+
+**Honest boundaries**: MVP grade — shared-state sync works; fancier
+conflict resolution and permission granularity are still ahead.
+
+## 32. Test coverage visualization (second round, part 1)
+
+**What**: like Coverage Gutters: quality-gate test runs can emit
+lcov/cobertura/V8 coverage reports; the "Coverage" tab renders
+per-line coloring, file-tree aggregate badges, and trend curves.
+
+**How**: enable "emit coverage report" in the gate; inspect gaps in
+the coverage panel; optional "block on coverage drop"
+(blockOnCoverageDrop).
+
+**Honest boundaries**: the data comes entirely from the project's
+own test command output — we don't instrument anything; high
+coverage ≠ strong assertions.
+
+## 33. Two-tier ignore files (second round, part 1)
+
+**What**: like Cursor: project-root `.ai-factory/ignore` (hard
+exclusion — invisible to all AI features) plus
+`.ai-factory/indexing-ignore` (not indexed, but explicitly
+referenceable).
+
+**How**: create the two files in the project root (glob syntax);
+codeindex, repomap, @ providers, search, and backup all pass one
+shared gate; hits are explicitly labeled "ignored" in the UI, never
+silent.
+
+**Honest boundaries**: this governs *our* tool surface, not the OS —
+other tools can still read those files.
+
+## 34. Problem matchers (second round, part 1)
+
+**What**: like VS Code problemMatcher: declarative regexes in
+`.ai-factory/problems.json` turn any command output
+(build/test/scheduled jobs) into clickable
+"file:line:column:message" entries in the Problems panel. Built-ins:
+$tsc/$eslint/$go/$node-test/$vitest.
+
+**How**: browse entries in the bottom Problems panel, click to jump;
+the panel has a "test matcher" dry-run box — paste output, see the
+parse instantly.
+
+**Honest boundaries**: regexes misfire on non-standard output;
+multi-line stacks are best-effort; this is not an LSP.
+
+## 35. Unified security scan (second round, part 1)
+
+**What**: like Amazon Q's security scan: three categories in one run —
+hardcoded secrets (20 pattern families), SAST (14 high-precision
+rules: SQL concatenation, XSS sinks, command injection, path
+traversal…), and a dependency CVE denylist (15 entries, snapshot
+2026-10-20).
+
+**How**: run it as a checker in the Inspections tab; serious findings
+can block the quality gate and raise notification-center alerts;
+results enter the audit chain.
+
+**Honest boundaries**: pattern matching has false positives/negatives —
+not a certified audit; CVE coverage depends on snapshot freshness.
+
+## 36. Deterministic migration recipes (second round, part 1)
+
+**What**: like Amazon Q /transform: 10 built-in npm/TS recipes
+(dependency upgrades, package renames, deprecated-API swaps):
+pick a recipe → review the plan → execute on a new branch →
+auto build+test verification.
+
+**How**: the "Recipes" tab: pick a recipe, review the (editable)
+plan, approve, execute; a 409 drift refusal stops a write when the
+file changed mid-flight.
+
+**Honest boundaries**: deterministic parts only; anything a recipe
+can't cover is explicitly listed as "unhandled" for human review.
+
+## 37. Change impact analysis (second round, part 2)
+
+**What**: like Augment: see the blast radius *before* merging — a
+reverse-reference graph over codeindex/repomap computes direct and
+transitive downstream plus an API contract diff (export symbol
+add/remove/change).
+
+**How**: "Run impact analysis" in the Git panel's PR review, or
+`POST /api/impact/analyze`; the quality gate offers
+`impact.failOnBreaking` (default off — advisory, never blocking).
+
+**Honest boundaries**: heuristic advice, not proof: same-name
+symbols add noise, dynamic dispatch/reflection is invisible; when
+analysis can't run it's audited, never blocking.
+
+## 38. Egress firewall allowlist (second round, part 2)
+
+**What**: like Copilot coding-agent allowlists: the middle ground
+between one-tap offline (§17) and fully open. Three-layer config in
+`.ai-factory/egress.json` (global/project/task); a rule is a domain
+(including subdomains) or a URL prefix; deny always wins.
+
+**How**: configure rules in the Project panel; blocked calls are
+audited as `EGRESS_BLOCKED`, raise HIGH notifications, and are
+listed in the log; a dry-run box tests whether a URL would be
+blocked.
+
+**Honest boundaries**: only enforced on the exits we control (web
+search, remote MCP); default off = nothing blocked, nothing logged;
+loopback is always allowed.
+
+## 39. Task-scoped edit lock (second round, part 2)
+
+**What**: like bolt.new: when creating a task, draw the fence —
+"only these files may change" (`scope: {include, exclude}` globs),
+hard-enforced at the tool layer against out-of-scope writes.
+
+**How**: fill "allowed dirs / excluded dirs" in the new-task dialog
+(presets available); out-of-scope writes get 403 `SCOPE_LOCKED`
+plus a `SCOPE_VIOLATION` audit; scope can be adjusted mid-task
+(adjustments are audited); runs get a post-hoc diff re-check.
+
+**Honest boundaries**: it constrains task-attributed writes; your
+own manual edits in the editor are unrestricted (by design).
+
+## 40. Visual Design Mode (second round, part 2)
+
+**What**: like v0 Design Mode: in the "Design" tab, click an element
+in the preview and visually edit Tailwind styles (five dimensions —
+background/text color, font size, padding, margin — plus copy),
+written back to source deterministically; right-click "Go to Code"
+jumps from pixels back to code.
+
+**How**: click an element in the design panel → edit in the property
+panel → write back; a shadow checkpoint is mandatory before writing
+(no checkpoint, no write); a 409 `DESIGN_DRIFT` refusal fires if the
+file changed mid-flight.
+
+**Honest boundaries**: DOM→source mapping is heuristic — failed
+mappings say so and never force a write; only common Tailwind
+conventions are covered; the whole `dirname(DB_PATH)` tree is a
+control-plane no-write zone.
+
+## 41. DB time travel + dev/prod isolation (second round, part 2)
+
+**What**: like Replit: when a shadow checkpoint is created, the
+project's declared SQLite DB gets a WAL-checkpointed atomic snapshot
+bound to the same checkpoint id; projects declare dev/prod data
+sources, and tasks only ever touch dev by default.
+
+**How**: browse snapshots in the Changes panel; restore writes dev
+only (double-confirmed, with an automatic pre-restore safety net);
+promote is the *only* prod write path (explicit + confirmed +
+`DB_PROMOTE` audit); dev==prod configs are refused outright.
+
+**Honest boundaries**: SQLite only in this phase; snapshots cap at
+100MB by default — oversize/symlink cases record a skip reason,
+never silently.
+
 ---
 
-*Version 0.2.0 (2026-10-18). 中文版见 ADVANCED_FEATURES.md。*
+*Version 0.2.0 (2026-10-18). Supplemented 2026-10-21: hardening waves
+(1/2), third wave (parts 1/2), second round (parts 1/2) — §12–§41.
+中文版见 ADVANCED_FEATURES.md。*
