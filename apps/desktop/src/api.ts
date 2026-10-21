@@ -588,6 +588,8 @@ export interface QualityGateConfig {
   security?: { failOn: string[] };
   /** 变更影响阻断配置（第二轮⑥；缺失 = 未配置，兼容旧服务）。 */
   impact?: { failOnBreaking: boolean };
+  /** 间歇失败重跑配置（第三轮③；缺失 = 未配置，兼容旧服务）。 */
+  flaky?: { rerunFlakyOnce: boolean };
 }
 export interface QualityGateConfigInput {
   lintCmd?: string;
@@ -597,6 +599,7 @@ export interface QualityGateConfigInput {
   blockOnFailure?: boolean;
   security?: { failOn: string[] };
   impact?: { failOnBreaking: boolean };
+  flaky?: { rerunFlakyOnce: boolean };
 }
 export interface QualityGateLastRun {
   kind: 'lint' | 'test';
@@ -641,6 +644,73 @@ export interface QualityGateRunResult {
     error?: string;
     note?: string;
   } | null;
+  /** 间歇失败联动结果（第三轮③；仅当 flaky.rerunFlakyOnce 已配置且 test 步骤失败时返回）。 */
+  flakyRerun?: {
+    attempted: boolean;
+    reason?: string;
+    firstRun?: { failing: string[]; knownFlaky: string[]; otherFailing: string[] };
+    rerun?: { ok: boolean; exitCode: number | null; timedOut: boolean; parsedOutcomes: number; failing: string[] };
+    note?: string;
+  } | null;
+}
+/** 间歇失败检测（第三轮③）——服务端 /api/flaky 的形状。 */
+export type FlakyStatus = 'flaky' | 'always-failing' | 'stable' | 'insufficient-data';
+export interface FlakyTestEntry {
+  key: string;
+  file: string;
+  name: string;
+  firstSeen: string;
+  lastSeen: string;
+  recent: Array<'pass' | 'fail'>;
+  passes: number;
+  fails: number;
+  runs: number;
+  status: FlakyStatus;
+}
+export interface FlakyConfig {
+  windowSize: number;
+  minRuns: number;
+}
+export interface FlakyRunSummary {
+  runId: string;
+  at: string;
+  label: string;
+  file: string | null;
+  total: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  todo: number;
+}
+export interface FlakyState {
+  projectId: string;
+  config: FlakyConfig;
+  defaults: FlakyConfig;
+  tests: FlakyTestEntry[];
+  runs: FlakyRunSummary[];
+  total: number;
+  counts: { flaky: number; alwaysFailing: number; stable: number; insufficientData: number };
+}
+export interface FlakyRecordResponse {
+  projectId: string;
+  summary: FlakyRunSummary;
+  stats: { lines: number; resultLines: number; recorded: number; yamlBlocks: number; truncated: boolean };
+  newlyFlaky: string[];
+  newlyStable: string[];
+}
+export interface FlakyRunsResponse {
+  projectId: string;
+  files: Array<{
+    file: string;
+    exitCode: number | null;
+    timedOut: boolean;
+    truncated: boolean;
+    total: number;
+    passed: number;
+    failed: number;
+    newlyFlaky: string[];
+  }>;
+  newlyFlaky: string[];
 }
 /** §28.3 checkpoint（runtime CheckpointV2 的线上形状；capturedAt 为 epoch ms）。 */
 export interface CheckpointV2 {
@@ -1024,6 +1094,29 @@ export const api = {
   runQualityGate: (projectId: string, kind: 'lint' | 'test') =>
     req<QualityGateRunResult>(
       '/quality/run', { method: 'POST', body: JSON.stringify({ projectId, kind }) },
+    ),
+  /** 间歇失败检测状态（GET /api/flaky?projectId=）：读 viewer。 */
+  flaky: (projectId: string) =>
+    req<FlakyState>(`/flaky?projectId=${encodeURIComponent(projectId)}`),
+  /** 间歇失败判定阈值（PUT /api/flaky）：写 operator。 */
+  updateFlaky: (projectId: string, p: { windowSize?: number; minRuns?: number }) =>
+    req<{ projectId: string; config: FlakyConfig }>(
+      '/flaky', { method: 'PUT', body: JSON.stringify({ projectId, ...p }) },
+    ),
+  /** 解析 TAP 文本并记录一次运行（POST /api/flaky/record）：写 operator。 */
+  recordFlakyTap: (projectId: string, p: { tap: string; file?: string; label?: string }) =>
+    req<FlakyRecordResponse>(
+      '/flaky/record', { method: 'POST', body: JSON.stringify({ projectId, ...p }) },
+    ),
+  /** 在服务端运行测试文件并记录（POST /api/flaky/runs）：写 operator。 */
+  runFlakyFiles: (projectId: string, files: string[]) =>
+    req<FlakyRunsResponse>(
+      '/flaky/runs', { method: 'POST', body: JSON.stringify({ projectId, files }) },
+    ),
+  /** 清空项目历史（POST /api/flaky/clear）：写 operator。 */
+  clearFlaky: (projectId: string) =>
+    req<{ projectId: string; cleared: boolean }>(
+      '/flaky/clear', { method: 'POST', body: JSON.stringify({ projectId }) },
     ),
   /** 两层忽略文件状态（GET /api/ignores?projectId=）：读 viewer。 */
   ignores: (projectId: string) =>

@@ -12,3 +12,4 @@ export * from './adapters';
 export * from './runner';
 export * from './baseline';
 export * from './report';
+export * from './stats';

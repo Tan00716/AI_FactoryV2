@@ -20,4 +20,11 @@ contextBridge.exposeInMainWorld('aiFactory', {
   openWindow: (projectId: string): void => {
     ipcRenderer.send('ai-factory:open-window', { projectId });
   },
+  // R3-T1: app update download + install (explicit user click only).
+  // Resolves/rejects with the main-process errors (feed not configured,
+  // dev mode, electron-updater missing) — the Updates tab shows them.
+  updateDownload: (): Promise<{ downloaded: boolean; version?: string }> =>
+    ipcRenderer.invoke('ai-factory:update-download'),
+  updateQuitAndInstall: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('ai-factory:update-quit-install'),
 });

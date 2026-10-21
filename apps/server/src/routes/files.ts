@@ -22,6 +22,7 @@ import {
   hasScope,
   type TaskEditScope,
 } from '../scope-lock';
+import { snapshotOnSave, type SnapshotRecord } from '../local-history';
 
 const WORKSPACE_ROOT = resolve(process.cwd());
 const MAX_FILE_BYTES = 1024 * 1024; // 1 MiB — prototype cap
@@ -43,7 +44,7 @@ function hitsControlDir(abs: string): boolean {
 }
 
 /** Confine a relative path to the workspace tree. Returns absolute path. */
-function resolveWorkspacePath(raw: string | undefined | null): string {
+export function resolveWorkspacePath(raw: string | undefined | null): string {
   const abs = resolve(WORKSPACE_ROOT, raw ?? '.');
   const rel = relative(WORKSPACE_ROOT, abs);
   if (rel === '..' || rel.startsWith(`..${'/'}`)) {
@@ -223,7 +224,19 @@ export async function handleFileRoutes(
     ctx.audit.record(actor, 'FILE_WRITE', 'file', relOf(file), {
       bytes: Buffer.byteLength(content, 'utf8'),
     });
-    ctx.json(res, 200, { ok: true, path: relOf(file) });
+    // R3-T6 Local History: snapshot the saved content. The write has
+    // already landed — a snapshot failure must never undo it, so the
+    // snapshot is best-effort and its status is reported explicitly
+    // (ok / skipped-unchanged / skipped-too-large / skipped-disabled /
+    // skipped-error), mirroring the db-time-travel skip-and-say-plainly
+    // convention.
+    let localHistory: SnapshotRecord;
+    try {
+      localHistory = snapshotOnSave(WORKSPACE_ROOT, relOf(file), content, 'save');
+    } catch (err) {
+      localHistory = { status: 'skipped-error', id: null, reason: (err as Error).message, pruned: 0 };
+    }
+    ctx.json(res, 200, { ok: true, path: relOf(file), localHistory });
     return true;
   }
 

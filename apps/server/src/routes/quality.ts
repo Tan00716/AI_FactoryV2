@@ -7,7 +7,8 @@
  *                                     timeoutMs, runOnEdit, blockOnFailure,
  *                                     coverage?: {report, failOnDropBelow},
  *                                     security?: {failOn: ['secret'|'sast'|'sca']},
- *                                     impact?: {failOnBreaking: boolean}}
+ *                                     impact?: {failOnBreaking: boolean},
+ *                                     flaky?: {rerunFlakyOnce: boolean}}
  *                                     (operator; invalid input → 400)
  *   POST /api/quality/run            {projectId, kind: 'lint'|'test',
  *                                     runId?} — run one gate step now
@@ -148,6 +149,31 @@ export function setImpactGateAnalyzer(
   fn: ((root: string) => Promise<ImpactGateSummary>) | null,
 ): void {
   impactGateAnalyzer = fn;
+}
+
+/**
+ * Flaky-test gate linkage (round-3 task 3) — the injected
+ * runFlakyGateLinkage from routes/flaky.ts. Same setter-injection
+ * pattern: routes/quality must not value-import routes/flaky.
+ * The linkage is annotation-only: it quarantines known-flaky failures
+ * and runs the test command once more, but never flips the verdict.
+ */
+export interface FlakyGateLinkageArgs {
+  ctx: RouteContext;
+  projectId: string;
+  actor: string;
+  runId?: string;
+  stdout: string;
+  testCmd: string;
+  rerun: () => Promise<QualityGateRunResult>;
+}
+
+export type FlakyGateLinkageFn = (args: FlakyGateLinkageArgs) => Promise<Record<string, unknown>>;
+
+let flakyGateLinkage: FlakyGateLinkageFn | null = null;
+
+export function setFlakyGateLinkage(fn: FlakyGateLinkageFn | null): void {
+  flakyGateLinkage = fn;
 }
 
 function summarize(result: QualityGateRunResult): Record<string, unknown> {
@@ -520,6 +546,28 @@ export async function executeQualityGate(
     }
   }
   const blocked = exitBlocked || coverageBlocked || securityBlocked || impactBlocked;
+  // Flaky linkage (round-3 ③): when the project opted in via
+  // flaky.rerunFlakyOnce and the test step failed, quarantine
+  // known-flaky failures and run the command once more. Annotation
+  // only — the payload below never flips `blocked` or the verdict.
+  let flakyRerun: Record<string, unknown> | null = null;
+  if (kind === 'test' && config.flaky?.rerunFlakyOnce && flakyGateLinkage && !result.skipped && !result.ok) {
+    try {
+      flakyRerun = await flakyGateLinkage({
+        ctx,
+        projectId,
+        actor,
+        runId: opts.runId,
+        stdout: result.stdout,
+        testCmd: config.testCmd,
+        rerun: () => runQualityGate(st, projectId, kind),
+      });
+    } catch (e) {
+      // Linkage failures must never crash the gate itself.
+      console.error('[quality-gate] flaky linkage failed:', (e as Error).message);
+      flakyRerun = { attempted: false, error: (e as Error).message };
+    }
+  }
   // Problem matchers (task ③): turn gate output into structured
   // diagnostics automatically. Observer — must never affect the gate.
   if (qualityGateOutputSink && !result.skipped) {
@@ -547,6 +595,7 @@ export async function executeQualityGate(
       coverageBlocked,
       securityBlocked,
       impactBlocked,
+      flakyRerunAttempted: flakyRerun?.['attempted'] ?? false,
     },
   );
   if (blocked) {
@@ -588,6 +637,7 @@ export async function executeQualityGate(
     ...(coverage ? { coverage } : {}),
     ...(security ? { security } : {}),
     ...(impact ? { impact } : {}),
+    ...(flakyRerun ? { flakyRerun } : {}),
   };
   return { result: payload, blocked };
 }

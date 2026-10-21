@@ -11,6 +11,8 @@
  *  - flaky     flake quarantine (owner+expiry+policy)       [v2 §38.2]
  *  - repair    stagnation + budget + test-change review    [v2 §38.3]
  *  - uat       business-scenario acceptance                [v2 §38.4]
+ *  - devenv    reproducible dev env: devcontainer.json + Copilot setup-steps
+ *              (single DevEnvSpec source, two renderings, validators) [R3-T7+8]
  */
 export * from './types';
 export * from './org';
@@ -21,3 +23,4 @@ export * from './report';
 export * from './flaky';
 export * from './repair';
 export * from './uat';
+export * from './devenv';

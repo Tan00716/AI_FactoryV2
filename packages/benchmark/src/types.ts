@@ -88,6 +88,11 @@ export interface CaseResult {
   expectedOutcome: ExpectedOutcome;
   failReasons: string[];
   latencyMs: number;
+  /**
+   * Per-run wall-clock latencies when the case was executed more than
+   * once (`--runs n`). Absent (or length < 2) = single measurement.
+   */
+  latencySamples?: number[];
   steps: number;
   modelCalls: number;
   toolCalls: number;
@@ -118,10 +123,33 @@ export interface BenchmarkReport {
 export interface BaselineCaseEntry {
   pass: boolean;
   latencyMs: number;
+  /**
+   * Per-run wall-clock latencies recorded with `--runs n`. Older
+   * baselines (single measurement) omit this; comparison then falls
+   * back to the fractional-tolerance rule.
+   */
+  latencySamples?: number[];
   steps: number;
   modelCalls: number;
   toolCalls: number;
   tokenEstimate: number;
+}
+
+/**
+ * Aggregate statistics over repeated runs of one case (R3-T4).
+ * The 95% interval is a normal approximation (z=1.96), not a bootstrap —
+ * documented as approximate. With tiny n the interval is wide, so
+ * environment jitter does not register as a regression.
+ */
+export interface AggregateStats {
+  n: number;
+  mean: number;
+  median: number;
+  stddev: number;
+  /** Approximate 95% confidence interval [lo, hi] (normal approximation). */
+  ci95: [number, number];
+  min: number;
+  max: number;
 }
 
 export interface Baseline {
@@ -136,6 +164,16 @@ export interface CaseDiff {
   status: 'regression' | 'fixed' | 'unchanged' | 'new' | 'removed';
   /** Human-readable notes (latency moved > tolerance, steps changed, …). */
   notes: string[];
+  /**
+   * Structured latency comparison, present when both sides had ≥2
+   * samples. Machine-readable for downstream CI artifact consumers.
+   */
+  latencyStats?: {
+    baseline: AggregateStats;
+    current: AggregateStats;
+    deltaPct: number;
+    significant: boolean;
+  };
 }
 
 export interface BaselineComparison {

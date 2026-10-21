@@ -14,6 +14,8 @@
  *   --no-gate                   skip the CI gate (report only)
  *   --cases <id,id,..>          run a subset of cases
  *   --timeout-ms <n>            per-case wall-clock budget override
+ *   --runs <n>                  repeat each case n times and aggregate
+ *                               (mean/median/approx 95% CI; default 1)
  *
  * Exit codes: 0 = gate passed (or --no-gate), 1 = gate failed, 2 = usage error.
  */
@@ -38,6 +40,8 @@ function usage(): string {
     '  --no-gate                   report only, always exit 0',
     '  --cases <id,id,..>          run a subset of cases',
     '  --timeout-ms <n>            per-case wall-clock budget override',
+    '  --runs <n>                  repeat each case n times and aggregate',
+    '                              (mean/median/approx 95% CI; default 1)',
   ].join('\n');
 }
 
@@ -50,6 +54,7 @@ interface CliArgs {
   noGate: boolean;
   cases?: string[];
   timeoutMs?: number;
+  runs: number;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -80,6 +85,12 @@ function parseArgs(argv: string[]): CliArgs {
     console.error(`error: --timeout-ms must be a positive number (got '${timeoutRaw}')`);
     process.exit(2);
   }
+  const runsRaw = get('--runs');
+  const runs = runsRaw === undefined ? 1 : Number(runsRaw);
+  if (!Number.isInteger(runs) || runs < 1) {
+    console.error(`error: --runs must be a positive integer (got '${runsRaw}')`);
+    process.exit(2);
+  }
   const casesRaw = get('--cases');
   const cases = casesRaw === undefined ? undefined : casesRaw.split(',').map((s) => s.trim()).filter(Boolean);
   if (cases) {
@@ -101,6 +112,7 @@ function parseArgs(argv: string[]): CliArgs {
     noGate: has('--no-gate'),
     cases,
     timeoutMs,
+    runs,
   };
 }
 
@@ -110,10 +122,12 @@ async function main(): Promise<void> {
     ? BENCHMARK_CASES.filter((c) => opts.cases!.includes(c.id))
     : BENCHMARK_CASES;
   console.log(`running ${selected.length} benchmark cases with adapter '${opts.adapter}'…`);
+  if (opts.runs > 1) console.log(`repeated runs: ${opts.runs} per case (aggregating mean/median/approx 95% CI)`);
   const report = await runBenchmark({
     adapter: opts.adapter,
     cases: selected,
     defaultTimeoutMs: opts.timeoutMs,
+    runs: opts.runs,
   });
   const outPath = writeReportJson(opts.outPath, report);
   console.log(formatSummaryTable(report));

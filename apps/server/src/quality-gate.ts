@@ -77,6 +77,17 @@ export interface QualityGateImpactConfig {
   failOnBreaking: boolean;
 }
 
+/** Flaky-test linkage (deterministic; see flaky.ts). */
+export interface QualityGateFlakyConfig {
+  /** When true, a failed test step is parsed for TAP outcomes and, when
+   * parseable, the command is run once more with known-flaky failures
+   * quarantined in the report. Annotation only — the original verdict
+   * always stands; a flaky test is never auto-passed. False (default)
+   * = the gate never runs the extra pass. Same inline-validation +
+   * import-free rationale as coverage above. */
+  rerunFlakyOnce: boolean;
+}
+
 /** Per-project gate configuration. */
 export interface QualityGateConfig {
   /** Shell command for the lint step; '' = disabled. */
@@ -101,6 +112,10 @@ export interface QualityGateConfig {
    * never runs impact analysis. Same inline-validation + import-free
    * rationale as coverage above. */
   impact: QualityGateImpactConfig;
+  /** Flaky-test linkage; rerunFlakyOnce=false (default) = the gate never
+   * runs the extra pass. Same inline-validation + import-free rationale
+   * as coverage above. */
+  flaky: QualityGateFlakyConfig;
 }
 
 export interface QualityGateConfigInput {
@@ -112,6 +127,7 @@ export interface QualityGateConfigInput {
   coverage?: unknown;
   security?: unknown;
   impact?: unknown;
+  flaky?: unknown;
 }
 
 export const DEFAULT_QUALITY_TIMEOUT_MS = 120_000;
@@ -144,6 +160,7 @@ export function defaultQualityGateConfig(): QualityGateConfig {
     coverage: null,
     security: { failOn: [] },
     impact: { failOnBreaking: false },
+    flaky: { rerunFlakyOnce: false },
   };
 }
 
@@ -222,6 +239,23 @@ function checkImpactConfig(input: unknown, errors: string[]): QualityGateImpactC
   return { failOnBreaking: fo };
 }
 
+/** Structural validation for the flaky linkage (kept inline: no imports). */
+function checkFlakyConfig(input: unknown, errors: string[]): QualityGateFlakyConfig {
+  if (input === undefined || input === null) return { rerunFlakyOnce: false };
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    errors.push('flaky must be an object');
+    return { rerunFlakyOnce: false };
+  }
+  const raw = input as { rerunFlakyOnce?: unknown };
+  const ro = raw.rerunFlakyOnce;
+  if (ro === undefined || ro === null) return { rerunFlakyOnce: false };
+  if (typeof ro !== 'boolean') {
+    errors.push('flaky.rerunFlakyOnce must be a boolean');
+    return { rerunFlakyOnce: false };
+  }
+  return { rerunFlakyOnce: ro };
+}
+
 function checkCommand(label: string, v: unknown, errors: string[]): string {
   if (v === undefined || v === null) return '';
   if (typeof v !== 'string') {
@@ -267,6 +301,7 @@ export function validateQualityGateConfig(input: QualityGateConfigInput): {
   const coverage = checkCoverageConfig(input.coverage, errors);
   const security = checkSecurityConfig(input.security, errors);
   const impact = checkImpactConfig(input.impact, errors);
+  const flaky = checkFlakyConfig(input.flaky, errors);
   return {
     config: {
       lintCmd,
@@ -277,6 +312,7 @@ export function validateQualityGateConfig(input: QualityGateConfigInput): {
       coverage,
       security,
       impact,
+      flaky,
     },
     errors,
   };
@@ -380,6 +416,9 @@ export class QualityGateStore {
     if (config.security === undefined) config.security = { failOn: [] };
     if (config.impact === undefined || typeof config.impact.failOnBreaking !== 'boolean') {
       config.impact = { failOnBreaking: false };
+    }
+    if (config.flaky === undefined || typeof config.flaky.rerunFlakyOnce !== 'boolean') {
+      config.flaky = { rerunFlakyOnce: false };
     }
     return config;
   }

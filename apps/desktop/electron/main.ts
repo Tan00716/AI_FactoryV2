@@ -18,6 +18,33 @@ const UI_PORT = Number(process.env.UI_PORT ?? 5173);
 
 let backend: ChildProcess | null = null;
 
+/** Feed base URL for electron-updater's generic provider (feed URL minus filename). */
+function feedBaseUrl(feedUrl: string): string {
+  const u = new URL(feedUrl);
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error('update feed URL must be http(s)');
+  }
+  const i = u.pathname.lastIndexOf('/');
+  u.pathname = i >= 0 ? u.pathname.slice(0, i + 1) : '/';
+  u.search = '';
+  u.hash = '';
+  return u.toString();
+}
+
+/** Minimal numeric version compare for the main-process second gate (x.y.z). */
+function isNewerVersion(latest: string, current: string): boolean {
+  const parts = (v: string) => v.replace(/^v/, '').split('.').map((x) => Number(x));
+  const a = parts(latest);
+  const b = parts(current);
+  for (let i = 0; i < 3; i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false; // unparseable: fail closed
+    if (x !== y) return x > y;
+  }
+  return false;
+}
+
 function startBackend(): void {
   const serverEntry = isDev
     ? path.join(__dirname, '..', '..', 'server', 'dist', 'index.js')
@@ -92,6 +119,41 @@ app.whenReady().then(() => {
     // Same allowlist as the renderer's project-query helper: fail closed.
     const projectId = /^[A-Za-z0-9_-]{1,64}$/.test(raw) ? raw : undefined;
     createWindow(projectId);
+  });
+  // R3-T1: app update download + install via electron-updater (generic
+  // provider). Explicit user click only — never automatic, never silent.
+  // The renderer already ran the server-side check; the main process
+  // re-validates the feed config and re-compares versions as a second gate.
+  ipcMain.handle('ai-factory:update-download', async () => {
+    const feedUrl = (process.env.FACTORY_UPDATE_FEED_URL ?? '').trim();
+    if (!feedUrl) throw new Error('update feed not configured (FACTORY_UPDATE_FEED_URL)');
+    if (!app.isPackaged) {
+      throw new Error('update download is only available in the packaged app, not in dev');
+    }
+    let autoUpdater: typeof import('electron-updater').autoUpdater;
+    try {
+      ({ autoUpdater } = await import('electron-updater'));
+    } catch {
+      throw new Error('electron-updater is not installed');
+    }
+    const base = feedBaseUrl(feedUrl); // throws on non-http(s)
+    autoUpdater.autoDownload = false;
+    autoUpdater.setFeedURL({ provider: 'generic', url: base });
+    const check = await autoUpdater.checkForUpdates();
+    const latest = check?.updateInfo?.version;
+    if (!latest) throw new Error('update feed returned no version');
+    console.log(`[main] update check: running=${app.getVersion()} latest=${latest}`);
+    if (!isNewerVersion(latest, app.getVersion())) {
+      return { downloaded: false, version: latest };
+    }
+    await autoUpdater.downloadUpdate();
+    console.log(`[main] update downloaded: ${latest}`);
+    return { downloaded: true, version: latest };
+  });
+  ipcMain.handle('ai-factory:update-quit-install', async () => {
+    const { autoUpdater } = await import('electron-updater');
+    autoUpdater.quitAndInstall();
+    return { ok: true };
   });
   // In dev, `npm run dev` already starts the backend; only spawn it here
   // when this main process is launched standalone (e.g. packaged app).

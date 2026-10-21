@@ -14,6 +14,7 @@ import { Harness, runAgent } from '@ai-factory/runtime';
 import type { BenchmarkAdapterName } from './adapters';
 import { createCaseAdapter } from './adapters';
 import { BENCHMARK_CASES } from './tasks';
+import { aggregateCaseRuns } from './stats';
 import type {
   BenchmarkCase,
   BenchmarkReport,
@@ -32,6 +33,11 @@ export interface RunBenchmarkOptions {
   cases?: BenchmarkCase[];
   /** Default per-case wall-clock budget when the case sets none. */
   defaultTimeoutMs?: number;
+  /**
+   * Repeat each case this many times and aggregate (mean/median/95% CI).
+   * Defaults to 1 (single run, legacy behavior).
+   */
+  runs?: number;
   env?: NodeJS.ProcessEnv;
   appVersion?: string;
 }
@@ -194,10 +200,17 @@ export async function runCase(
 export async function runBenchmark(opts: RunBenchmarkOptions = {}): Promise<BenchmarkReport> {
   const adapter = opts.adapter ?? 'stub';
   const cases = opts.cases ?? BENCHMARK_CASES;
+  const runs = Math.max(1, Math.floor(opts.runs ?? 1));
   const results: CaseResult[] = [];
   for (const c of cases) {
     // Sequential: comparable timings, one hung case cannot starve others.
-    results.push(await runCase(c, adapter, { defaultTimeoutMs: opts.defaultTimeoutMs, env: opts.env }));
+    // Repeated runs are also sequential so every sample sees the same
+    // machine conditions in order (no parallel self-contention).
+    const attempts: CaseResult[] = [];
+    for (let i = 0; i < runs; i++) {
+      attempts.push(await runCase(c, adapter, { defaultTimeoutMs: opts.defaultTimeoutMs, env: opts.env }));
+    }
+    results.push(runs === 1 ? attempts[0] : aggregateCaseRuns(attempts));
   }
   const passed = results.filter((r) => r.pass).length;
   const totalLatencyMs = results.reduce((a, r) => a + r.latencyMs, 0);

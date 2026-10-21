@@ -5,6 +5,10 @@ interface AiFactoryBridge {
   notify: (title: string, body: string) => void;
   /** Multi-project: open a new window bound to the given projectId. */
   openWindow: (projectId: string) => void;
+  /** R3-T1: download the pending app update (explicit user click only). */
+  updateDownload: () => Promise<{ downloaded: boolean; version?: string }>;
+  /** R3-T1: quit and install the downloaded update. */
+  updateQuitAndInstall: () => Promise<{ ok: boolean }>;
 }
 
 interface Window {

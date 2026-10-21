@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { defaultApiBase, authHeaders } from '../api';
+import { defaultApiBase, authHeaders, api, type FlakyState, type FlakyStatus } from '../api';
 import { useLang } from '../i18n';
 
 /**
@@ -44,6 +44,223 @@ interface MatcherMeta {
 }
 
 const SOURCES = ['all', 'terminal', 'quality-gate', 'scheduler', 'manual'] as const;
+
+/**
+ * Flaky-test section (round-3 task 3) — history-backed intermittent
+ * failure classification. Renders its own honest note: history only
+ * contains explicitly recorded runs, and "flaky" never turns a failure
+ * green.
+ */
+function FlakySection({ projectId }: { projectId: string }) {
+  const { t } = useLang();
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<FlakyState | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [files, setFiles] = useState('');
+  const [tapText, setTapText] = useState('');
+  const [tapFile, setTapFile] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  const [windowSize, setWindowSize] = useState('10');
+  const [minRuns, setMinRuns] = useState('3');
+
+  const load = useCallback(async () => {
+    try {
+      const s = await api.flaky(projectId);
+      setState(s);
+      setWindowSize(String(s.config.windowSize));
+      setMinRuns(String(s.config.minRuns));
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (open) void load();
+  }, [open, load]);
+
+  const runFiles = useCallback(async () => {
+    const list = files
+      .split(/[\n,]+/)
+      .map((f) => f.trim())
+      .filter(Boolean);
+    if (list.length === 0) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api.runFlakyFiles(projectId, list);
+      setMsg(t('flaky.runsDone', { files: String(r.files.length), newly: String(r.newlyFlaky.length) }));
+      await load();
+    } catch (e) {
+      setMsg(t('flaky.runFailed', { message: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setBusy(false);
+    }
+  }, [projectId, files, load, t]);
+
+  const recordTap = useCallback(async () => {
+    if (!tapText.trim()) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api.recordFlakyTap(projectId, {
+        tap: tapText,
+        ...(tapFile.trim() ? { file: tapFile.trim() } : {}),
+        label: 'panel TAP ingest',
+      });
+      setMsg(
+        t('flaky.recorded', {
+          total: String(r.summary.total),
+          newly: String(r.newlyFlaky.length),
+        }),
+      );
+      setTapText('');
+      await load();
+    } catch (e) {
+      setMsg(t('flaky.recordFailed', { message: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setBusy(false);
+    }
+  }, [projectId, tapText, tapFile, load, t]);
+
+  const saveConfig = useCallback(async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.updateFlaky(projectId, {
+        windowSize: Number(windowSize),
+        minRuns: Number(minRuns),
+      });
+      setMsg(t('flaky.configSaved'));
+      await load();
+    } catch (e) {
+      setMsg(t('flaky.configFailed', { message: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setBusy(false);
+    }
+  }, [projectId, windowSize, minRuns, load, t]);
+
+  const clearHistory = useCallback(async () => {
+    setBusy(true);
+    try {
+      await api.clearFlaky(projectId);
+      setMsg(t('flaky.cleared'));
+      await load();
+    } catch (e) {
+      setMsg(t('flaky.recordFailed', { message: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setBusy(false);
+    }
+  }, [projectId, load, t]);
+
+  const statusLabel = (s: FlakyStatus) =>
+    s === 'flaky'
+      ? t('flaky.statusFlaky')
+      : s === 'always-failing'
+        ? t('flaky.statusAlwaysFailing')
+        : s === 'stable'
+          ? t('flaky.statusStable')
+          : t('flaky.statusInsufficient');
+  const statusClass = (s: FlakyStatus) =>
+    s === 'flaky' ? 'pill warn' : s === 'always-failing' ? 'pill sev-error' : 'pill';
+
+  return (
+    <div className="flaky-box" style={{ margin: '6px 0', borderTop: '1px solid var(--border, #333)' }}>
+      <button className="link" onClick={() => setOpen((v) => !v)}>
+        {t('flaky.title')}
+        {state && state.counts.flaky > 0 ? ` (${state.counts.flaky})` : ''} {open ? '▾' : '▸'}
+      </button>
+      {open && (
+        <div>
+          <div className="muted" style={{ margin: '2px 0 6px' }}>
+            {t('flaky.honestNote')}
+          </div>
+          {err && <span className="pill warn">{err}</span>}
+          {msg && <span className="pill">{msg}</span>}
+          <div className="act-toolbar">
+            <button className="link" disabled={busy} onClick={() => void load()}>
+              {t('flaky.refresh')}
+            </button>
+            <button className="link" disabled={busy} onClick={() => void clearHistory()}>
+              {t('flaky.clear')}
+            </button>
+            <span className="muted">
+              {t('flaky.configTitle')}: {t('flaky.windowSize')}{' '}
+              <input
+                value={windowSize}
+                onChange={(e) => setWindowSize(e.target.value)}
+                style={{ width: 48 }}
+                inputMode="numeric"
+              />{' '}
+              {t('flaky.minRuns')}{' '}
+              <input
+                value={minRuns}
+                onChange={(e) => setMinRuns(e.target.value)}
+                style={{ width: 48 }}
+                inputMode="numeric"
+              />{' '}
+              <button className="pill" disabled={busy} onClick={() => void saveConfig()}>
+                {t('flaky.saveConfig')}
+              </button>
+            </span>
+          </div>
+          {state && state.tests.length === 0 && <div className="muted">{t('flaky.empty')}</div>}
+          <div className="problems-list">
+            {(state?.tests ?? []).map((te) => (
+              <div key={te.key} className="problem-row">
+                <div className="problem-head" style={{ cursor: 'default' }}>
+                  <span className={statusClass(te.status)}>{statusLabel(te.status)}</span>
+                  <span className="mono problem-msg">{te.key}</span>
+                  <span className="muted">
+                    {t('flaky.statsLine', {
+                      passes: String(te.passes),
+                      fails: String(te.fails),
+                      runs: String(te.runs),
+                    })}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+          <h4>{t('flaky.runFiles')}</h4>
+          <div className="muted">{t('flaky.filesHint')}</div>
+          <textarea
+            value={files}
+            onChange={(e) => setFiles(e.target.value)}
+            rows={2}
+            style={{ width: '100%' }}
+            placeholder={t('flaky.filesPlaceholder')}
+          />
+          <div className="act-toolbar">
+            <button className="pill" disabled={busy || !files.trim()} onClick={() => void runFiles()}>
+              {busy ? t('flaky.running') : t('flaky.runFiles')}
+            </button>
+          </div>
+          <h4>{t('flaky.recordTap')}</h4>
+          <textarea
+            value={tapText}
+            onChange={(e) => setTapText(e.target.value)}
+            rows={4}
+            style={{ width: '100%' }}
+            placeholder={t('flaky.tapPlaceholder')}
+          />
+          <div className="act-toolbar">
+            <input
+              value={tapFile}
+              onChange={(e) => setTapFile(e.target.value)}
+              style={{ width: '60%' }}
+              placeholder={t('flaky.tapFilePlaceholder')}
+            />
+            <button className="pill" disabled={busy || !tapText.trim()} onClick={() => void recordTap()}>
+              {t('flaky.recordTap')}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 async function apiReq<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${defaultApiBase()}${path}`, {
@@ -276,6 +493,7 @@ export function ProblemsPanel({ projectId }: { projectId: string }) {
       )}
       {evicted && <div className="pill warn">{t('problems.evicted')}</div>}
       {err && <span className="pill warn">{err}</span>}
+      <FlakySection projectId={projectId} />
       {visible.length === 0 && !err && <div className="muted">{t('problems.empty')}</div>}
       <div className="problems-list">
         {visible.map((d, i) => {

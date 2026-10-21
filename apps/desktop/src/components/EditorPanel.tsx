@@ -27,6 +27,13 @@ interface DirCache {
   expanded: boolean;
 }
 
+interface SnapshotMeta {
+  id: string;
+  createdAt: string;
+  kind: 'save' | 'pre-restore';
+  size: number;
+}
+
 function FileIcon({ type }: { type: 'dir' | 'file' }) {
   return <span style={{ marginRight: 6 }}>{type === 'dir' ? '📁' : '📄'}</span>;
 }
@@ -56,6 +63,12 @@ export function EditorPanel({
   openPathRef.current = openPath;
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  // R3-T6 Local History: per-save snapshot browser + restore.
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState<SnapshotMeta[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const showHistoryRef = useRef(false);
+  showHistoryRef.current = showHistory;
 
   // --- Monaco lifecycle -------------------------------------------------
   useEffect(() => {
@@ -154,6 +167,45 @@ export function EditorPanel({
   const openFileRef = useRef(openFile);
   openFileRef.current = openFile;
 
+  // R3-T6 Local History: list snapshots of the open file.
+  const loadHistory = useCallback(async (path: string) => {
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/file/history?path=${encodeURIComponent(path)}`, { headers: { ...authHeaders() } });
+      if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`);
+      const body = (await res.json()) as { snapshots: SnapshotMeta[] };
+      setHistory(body.snapshots);
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t('editor.localHistory.listFailed'));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  // R3-T6 Local History: restore a snapshot (explicit confirm; the
+  // current content is snapshotted as pre-restore on the server first,
+  // so the restore itself is undoable).
+  const restoreVersion = useCallback(async (id: string) => {
+    const path = openPathRef.current;
+    if (!path) return;
+    if (!window.confirm(t('editor.localHistory.confirmRestore'))) return;
+    setErr(null);
+    try {
+      const res = await fetch(`${API_BASE}/file/history/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ path, id }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`);
+      await openFileRef.current(path);
+      await loadHistory(path);
+      setStatus(t('editor.localHistory.restored', { id }));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t('editor.localHistory.restoreFailed'));
+    }
+  }, [loadHistory]);
+
   // Task ⑨: open-request while already mounted (the Monaco mount effect
   // covers the request that arrived before the editor existed).
   useEffect(() => {
@@ -185,13 +237,20 @@ export function EditorPanel({
       if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`);
       setDirty(false);
       setStatus(t('editor.saved', { path: openPath }));
+      // A save created a new snapshot — refresh the history list if open.
+      if (showHistoryRef.current) void loadHistory(openPath);
     } catch (e) {
       setErr(e instanceof Error ? e.message : t('editor.saveFailed'));
     } finally {
       savingRef.current = false;
       setSaving(false);
     }
-  }, [openPath]);
+  }, [openPath, loadHistory]);
+
+  // R3-T6: keep the history drawer in sync with the open file.
+  useEffect(() => {
+    if (showHistory && openPath) void loadHistory(openPath);
+  }, [showHistory, openPath, loadHistory]);
 
   // Ctrl/Cmd+S saves
   useEffect(() => {
@@ -255,6 +314,17 @@ export function EditorPanel({
             <button onClick={() => void saveFile()} disabled={!dirty || saving}>
               {saving ? t('editor.saving') : t('editor.save')}
             </button>
+            <button
+              onClick={() => {
+                const next = !showHistory;
+                setShowHistory(next);
+                if (next && openPath) void loadHistory(openPath);
+              }}
+              style={{ fontSize: 12 }}
+              title={t('editor.localHistory.title')}
+            >
+              🕘 {t('editor.localHistory.show')}
+            </button>
           </>
         )}
         <span style={{ flex: 1 }} />
@@ -275,6 +345,33 @@ export function EditorPanel({
           {renderEntries(root, 0)}
         </div>
         <div ref={hostRef} style={{ flex: 1, minWidth: 0 }} />
+        {showHistory && openPath && (
+          <div style={{ width: 300, borderLeft: '1px solid var(--border)', overflowY: 'auto', padding: '8px 10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+              <b>🕘 {t('editor.localHistory.title')}</b>
+              <span style={{ flex: 1 }} />
+              <button onClick={() => setShowHistory(false)} style={{ fontSize: 12 }}>
+                {t('editor.localHistory.close')}
+              </button>
+            </div>
+            {historyLoading && <div className="muted" style={{ fontSize: 12 }}>…</div>}
+            {!historyLoading && history.length === 0 && (
+              <div className="muted" style={{ fontSize: 12 }}>{t('editor.localHistory.empty')}</div>
+            )}
+            {history.map((s) => (
+              <div key={s.id} style={{ padding: '6px 4px', borderBottom: '1px solid var(--border)', fontSize: 12 }}>
+                <div style={{ fontFamily: 'monospace' }}>{new Date(s.createdAt).toLocaleString()}</div>
+                <div className="muted">
+                  {s.kind === 'pre-restore' ? t('editor.localHistory.kindPreRestore') : t('editor.localHistory.kindSave')}
+                  {' · '}{(s.size / 1024).toFixed(1)} KB
+                </div>
+                <button onClick={() => void restoreVersion(s.id)} style={{ fontSize: 12, marginTop: 4 }}>
+                  {t('editor.localHistory.restore')}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

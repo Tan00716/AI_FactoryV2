@@ -460,3 +460,19 @@ button.ghost:hover { background: rgba(88,166,255,.12); }
 .design-form label { display: block; margin: 6px 0; font-size: 12px; }
 .design-form input, .design-form select { width: 100%; margin-top: 2px; }
 .design-status { font-size: 12px; margin-top: 8px; }
+
+/* Updates tab (R3-T1) */
+.updates-panel { padding: 8px 4px; }
+.updates-panel .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.updates-panel .kv > div { display: flex; gap: 12px; margin: 6px 0; }
+.updates-panel .kv dt { width: 110px; color: var(--muted); flex: 0 0 auto; }
+.updates-panel .kv dd { margin: 0; }
+.updates-panel .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.update-available { margin-top: 10px; border-color: var(--accent); }
+.changelog-entry { margin: 8px 0; }
+.changelog-entry summary { cursor: pointer; }
+.changelog-entry ul { margin: 6px 0 6px 18px; padding: 0; }
+.pill.ok { background: #1a7f37; color: #fff; }
+.pill.warn { background: #9e6a03; color: #fff; }
+button.linklike { background: none; border: none; padding: 0; color: var(--accent, #58a6ff); cursor: pointer; font-size: inherit; text-decoration: underline; }
+.error-banner { background: #5a1f1f; color: #ffd7d7; border: 1px solid #a33; border-radius: 6px; padding: 8px; margin-bottom: 12px; }

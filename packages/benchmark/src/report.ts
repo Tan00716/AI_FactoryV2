@@ -8,6 +8,7 @@
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { aggregate } from './stats';
 import type {
   Baseline,
   BaselineComparison,
@@ -49,7 +50,13 @@ export function checkGate(
   if (comparison) {
     for (const d of comparison.diffs) {
       for (const n of d.notes) {
-        if (n.startsWith('latency drift')) warnings.push(`${d.caseId}: ${n}`);
+        // Latency observations are warnings only: wall-clock timings are
+        // environment-sensitive and must not red-flag CI. This covers both
+        // the legacy single-measurement 'latency drift' note and the new
+        // statistically-significant regression note from repeated runs.
+        if (n.startsWith('latency drift') || n.startsWith('latency regression')) {
+          warnings.push(`${d.caseId}: ${n}`);
+        }
       }
     }
     if (comparison.newCases.length > 0) {
@@ -68,15 +75,28 @@ export function formatSummaryTable(report: BenchmarkReport): string {
   lines.push(`adapter: ${report.adapter}   app: ${report.appVersion}   generated: ${report.generatedAt}`);
   lines.push('');
   const head = ['case', 'pass', 'outcome', 'latency', 'steps', 'mCalls', 'tCalls', 'tokEst'];
-  lines.push(head.map((h) => h.padEnd(12)).join(''));
-  lines.push('-'.repeat(100));
+  const widths = [12, 12, 12, 22, 12, 12, 12, 12];
+  lines.push(head.map((h, i) => h.padEnd(widths[i])).join(''));
+  lines.push('-'.repeat(110));
   for (const r of report.cases) {
+    const samples = r.latencySamples && r.latencySamples.length >= 2 ? r.latencySamples : null;
+    // Repeated runs: show mean with the approximate 95% CI, e.g. "58 [51-65]ms".
+    // Display clamps the interval at 0 (latency can't be negative); the
+    // structured stats in the JSON report keep the raw values.
+    const latency = samples
+      ? (() => {
+          const s = aggregate(samples);
+          const lo = Math.max(0, Math.round(s.ci95[0]));
+          const hi = Math.max(0, Math.round(s.ci95[1]));
+          return `${Math.round(s.mean)} [${lo}-${hi}]ms`;
+        })()
+      : `${r.latencyMs}ms`;
     lines.push(
       [
         r.caseId.slice(0, 12).padEnd(12),
         (r.pass ? 'PASS' : 'FAIL').padEnd(12),
         r.outcome.slice(0, 12).padEnd(12),
-        `${r.latencyMs}ms`.padEnd(12),
+        latency.padEnd(22),
         String(r.steps).padEnd(12),
         String(r.modelCalls).padEnd(12),
         String(r.toolCalls).padEnd(12),
@@ -87,7 +107,7 @@ export function formatSummaryTable(report: BenchmarkReport): string {
       lines.push(`  ! ${reason}`);
     }
   }
-  lines.push('-'.repeat(100));
+  lines.push('-'.repeat(110));
   const s = report.summary;
   lines.push(
     `total ${s.total}  passed ${s.passed}  failed ${s.failed}  ` +

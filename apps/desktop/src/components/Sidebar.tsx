@@ -31,9 +31,10 @@ function OrgTreeNode({ node, depth, onSelectAgent }: {
 }
 
 /** §3 left rail: project tree, AI organization (§84 simplified), skills (live from /api/skills). */
-export function Sidebar({ org, onSelectAgent }: {
+export function Sidebar({ org, onSelectAgent, onOpenUpdates }: {
   org: OrgNode[];
   onSelectAgent?: (agentId: string) => void;
+  onOpenUpdates?: () => void;
 }) {
   const { t } = useLang();
   // Batch 89：SKILLS 摘要走真实数据；拉取失败时回退到硬编码文本（旧服务端/未连通），不猜测。
@@ -75,6 +76,14 @@ export function Sidebar({ org, onSelectAgent }: {
       </section>
       <footer className="sidebar-version muted" title="AI Factory">
         AI Factory v{APP_VERSION}
+        {onOpenUpdates && (
+          <>
+            {' · '}
+            <button className="linklike" onClick={onOpenUpdates} title={t('sidebar.checkUpdates')}>
+              {t('sidebar.checkUpdates')}
+            </button>
+          </>
+        )}
       </footer>
     </aside>
   );

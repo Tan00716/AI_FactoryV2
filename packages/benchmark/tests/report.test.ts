@@ -96,6 +96,53 @@ describe('checkGate', () => {
     assert.equal(gate.pass, true);
     assert.ok(gate.warnings.some((w) => w.includes('latency drift')));
   });
+
+  it('surfaces a statistically significant slowdown as a warning, not a failure (R3-T4)', () => {
+    const mk = (caseId: string, pass: boolean, latencyMs: number, samples: number[]): CaseResult => ({
+      ...caseResult(caseId, pass, latencyMs),
+      latencySamples: samples,
+    });
+    const r = report([
+      mk('a', true, 21, [20, 21, 22, 21, 20]),
+    ]);
+    const b: Baseline = {
+      adapter: 'stub',
+      generatedAt: '2026-10-19T00:00:00Z',
+      appVersion: '0.2.0',
+      cases: {
+        a: { pass: true, latencyMs: 11, steps: 6, modelCalls: 1, toolCalls: 1, tokenEstimate: 100, latencySamples: [10, 11, 12, 11, 10] },
+      },
+    };
+    const gate = checkGate(r, b, diffBaseline(b, r));
+    assert.equal(gate.pass, true, `significant slowdown must not fail the gate: ${gate.reasons.join('; ')}`);
+    assert.ok(
+      gate.warnings.some((w) => w.includes('latency regression (statistically significant)')),
+      `expected a significant-regression warning, got: ${gate.warnings.join(' | ')}`,
+    );
+  });
+
+  it('still fails the gate when repeated runs turn pass into fail (R3-T4)', () => {
+    const mk = (caseId: string, pass: boolean, samples: number[]): CaseResult => ({
+      ...caseResult(caseId, pass, 50),
+      latencySamples: samples,
+    });
+    const r = report([
+      { ...mk('a', false, [50, 51, 52]), failReasons: ['boom'] },
+      mk('b', true, [50, 51, 52]),
+    ]);
+    const b: Baseline = {
+      adapter: 'stub',
+      generatedAt: '2026-10-19T00:00:00Z',
+      appVersion: '0.2.0',
+      cases: {
+        a: { pass: true, latencyMs: 50, steps: 6, modelCalls: 1, toolCalls: 1, tokenEstimate: 100, latencySamples: [50, 51, 52] },
+        b: { pass: true, latencyMs: 50, steps: 6, modelCalls: 1, toolCalls: 1, tokenEstimate: 100, latencySamples: [50, 51, 52] },
+      },
+    };
+    const gate = checkGate(r, b, diffBaseline(b, r));
+    assert.equal(gate.pass, false);
+    assert.ok(gate.reasons.some((x) => x.includes('a')), 'regression case must be named');
+  });
 });
 
 describe('formatSummaryTable', () => {

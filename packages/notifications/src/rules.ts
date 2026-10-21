@@ -186,6 +186,21 @@ export const DEFAULT_RULES: NotificationRule[] = [
         'HIGH',
       )(e),
   },
+  {
+    // R3-T1: a new app version is available on the configured update feed.
+    // MEDIUM (not HIGH): it never auto-installs; the human decides in the
+    // Updates tab. Dedupe keeps one notification per version.
+    id: 'update-available',
+    eventTypes: ['UPDATE_AVAILABLE'],
+    build: (e) =>
+      outcome(
+        `Update available: ${label(e)}`,
+        `AI Factory ${detail(e, 'latest') || label(e)} is available` +
+          `${detail(e, 'current') ? ` (you are on ${detail(e, 'current')})` : ''}. ` +
+          `Open the Updates tab to review the changelog and install. Nothing is downloaded automatically.`,
+        'MEDIUM',
+      )(e),
+  },
   // Fallback: any unmatched event still produces an INFO notification so
   // nothing is silently dropped.
   {

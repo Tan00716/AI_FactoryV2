@@ -121,3 +121,97 @@ describe('diffBaseline', () => {
     assert.equal(baseline.cases['a'].pass, true);
   });
 });
+
+describe('diffBaseline with repeated runs (R3-T4)', () => {
+  const base: Baseline = {
+    adapter: 'stub',
+    generatedAt: '2026-10-19T00:00:00Z',
+    appVersion: '0.2.0',
+    cases: {
+      a: { ...{ pass: true, latencyMs: 11, steps: 6, modelCalls: 1, toolCalls: 1, tokenEstimate: 100 }, latencySamples: [10, 11, 12, 11, 10] },
+      noisy: { ...{ pass: true, latencyMs: 50, steps: 6, modelCalls: 1, toolCalls: 1, tokenEstimate: 100 }, latencySamples: [40, 50, 60] },
+    },
+  };
+
+  function reportWithSamples(entries: Record<string, { pass: boolean; samples: number[] }>): BenchmarkReport {
+    return makeReport({
+      cases: Object.entries(entries).map(([caseId, e]) => {
+        const m = e.samples.reduce((x, y) => x + y, 0) / e.samples.length;
+        return {
+          caseId,
+          name: caseId,
+          adapter: 'stub',
+          pass: e.pass,
+          outcome: e.pass ? 'completed' : 'failed',
+          expectedOutcome: 'completed' as const,
+          failReasons: [],
+          latencyMs: Math.round(m),
+          latencySamples: [...e.samples],
+          steps: 6,
+          modelCalls: 1,
+          toolCalls: 1,
+          tokenEstimate: 100,
+          tokenEstimateMethod: 'test',
+        };
+      }),
+    });
+  }
+
+  it('flags a statistically significant 2x slowdown as a note, not a regression', () => {
+    const cmp = diffBaseline(
+      base,
+      reportWithSamples({
+        a: { pass: true, samples: [20, 21, 22, 21, 20] },
+        noisy: { pass: true, samples: [45, 55, 65] },
+      }),
+    );
+    assert.deepEqual(cmp.regressions, [], 'latency must never be a gate regression');
+    const a = cmp.diffs.find((d) => d.caseId === 'a')!;
+    assert.equal(a.status, 'unchanged');
+    assert.ok(
+      a.notes.some((n) => n.startsWith('latency regression (statistically significant)')),
+      `expected a significant-regression note, got: ${a.notes.join(' | ')}`,
+    );
+    assert.ok(a.latencyStats?.significant, 'structured latencyStats must be present');
+    // The noisy case has overlapping CIs: no note at all.
+    const noisy = cmp.diffs.find((d) => d.caseId === 'noisy')!;
+    assert.ok(
+      !noisy.notes.some((n) => n.startsWith('latency')),
+      `jitter must not be flagged, got: ${noisy.notes.join(' | ')}`,
+    );
+  });
+
+  it('still detects pass→fail regressions across repeated runs', () => {
+    const cmp = diffBaseline(
+      base,
+      reportWithSamples({
+        a: { pass: false, samples: [20, 21, 22] },
+        noisy: { pass: true, samples: [45, 55, 65] },
+      }),
+    );
+    assert.deepEqual(cmp.regressions, ['a']);
+    const a = cmp.diffs.find((d) => d.caseId === 'a')!;
+    assert.equal(a.status, 'regression');
+  });
+
+  it('falls back to the tolerance rule when the baseline has a single measurement', () => {
+    const singleBase: Baseline = {
+      adapter: 'stub',
+      generatedAt: '2026-10-19T00:00:00Z',
+      appVersion: '0.2.0',
+      cases: { a: { pass: true, latencyMs: 50, steps: 6, modelCalls: 1, toolCalls: 1, tokenEstimate: 100 } },
+    };
+    const cmp = diffBaseline(
+      singleBase,
+      reportWithSamples({ a: { pass: true, samples: [200, 210, 205] } }),
+      { latencyTolerance: 1.0 },
+    );
+    const a = cmp.diffs.find((d) => d.caseId === 'a')!;
+    assert.ok(a.notes.some((n) => n.startsWith('latency drift')), 'legacy single-sample rule must still apply');
+  });
+
+  it('reportToBaseline persists latency samples', () => {
+    const b = reportToBaseline(reportWithSamples({ a: { pass: true, samples: [40, 50, 60] } }));
+    assert.deepEqual(b.cases['a'].latencySamples, [40, 50, 60]);
+  });
+});

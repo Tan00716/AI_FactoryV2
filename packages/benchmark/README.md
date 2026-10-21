@@ -46,13 +46,30 @@ Case ids are baseline keys — **never rename a case once baselined**.
 ## Baselines & the CI gate
 
 - Baselines live in `baselines/<adapter>.json` (committed). `--update-baseline`
-  rewrites one atomically (temp + rename).
+  rewrites one atomically (temp + rename). Entries recorded with `--runs n`
+  (n ≥ 2) also store the per-run `latencySamples`; older single-measurement
+  baselines keep working (comparison falls back to the tolerance rule).
 - The gate fails CI on any **success regression** (baseline-pass → now-fail)
   or a pass-rate drop below the baseline rate (overridable with
   `--min-pass-rate`). Latency drift beyond 2× is a **warning**, never a
   failure — wall-clock timings are environment-sensitive.
 - The JSON report (`--out`, default `reports/benchmark-<ts>.json`) is the
   CI artifact: parse `summary.passRate` / `cases[].pass` downstream.
+
+### Repeated runs & statistical regression detection (R3-T4)
+
+```sh
+npm run benchmark -- --runs 5
+```
+
+Each case runs 5 times (sequentially, same machine conditions); the report
+shows mean latency with the approximate 95% confidence interval
+(`58 [51-65]ms`) and the baseline comparison calls a slowdown **only when
+statistically significant** — the current and baseline 95% CIs do not
+overlap and the current mean is higher. Overlapping jitter is never
+flagged. A significant slowdown is still a **warning**, never a gate
+failure: only success regressions fail CI. The CI is a normal
+approximation (z=1.96), not a bootstrap — documented as approximate.
 
 Example CI step (GitHub Actions):
 
@@ -112,3 +129,7 @@ Then run with `--update-baseline` to record the new case.
 - Token estimates are `chars/4` heuristics over measured prompt/output
   text — fine for trend comparison, not for billing.
 - Latency numbers come from this machine; compare runs on the same host.
+- Repeated-run statistics (`--runs`) use an approximate 95% CI (normal
+  approximation) and a non-overlapping-intervals significance rule: with
+  tiny n the intervals are wide on purpose, so ordinary environment
+  jitter cannot be misread as a regression.

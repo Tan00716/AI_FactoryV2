@@ -22,6 +22,7 @@ import { CollabPanel } from './components/CollabPanel';
 import { RecipesPanel, createRecipesApi } from './components/RecipesPanel';
 import { DesignPanel, createDesignApi } from './components/DesignPanel';
 import { CoveragePanel, createCoverageApi } from './components/CoveragePanel';
+import { UpdatePanel, createUpdateApi } from './components/UpdatePanel';
 import { CommandPalette } from './components/CommandPalette';
 import { DispatchPanel } from './components/DispatchPanel';
 import { CicdPanel, createCicdApi } from './components/CicdPanel';
@@ -79,7 +80,7 @@ function IdeShell() {
   /** Batch 15: API identity label for the top bar (role / local mode /
    *  unknown when whoami cannot be fetched — displayed as-is, never guessed). */
   const [apiIdentityLabel, setApiIdentityLabel] = useState('');
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   /**
    * Design panel → editor jump (task ⑨): the Design panel dispatches an
@@ -123,6 +124,7 @@ function IdeShell() {
   const recipesApi = useMemo(() => createRecipesApi(API_BASE), []);
   const inspectionsApi = useMemo(() => createInspectionsApi(API_BASE), []);
   const coverageApi = useMemo(() => createCoverageApi(API_BASE), []);
+  const updateApi = useMemo(() => createUpdateApi(API_BASE), []);
   const designApi = useMemo(() => createDesignApi(API_BASE), []);
   const changesApi = useMemo(() => createChangesApi(API_BASE), []);
   const dashboardApi = useMemo(() => createDashboardApi(API_BASE), []);
@@ -237,11 +239,11 @@ function IdeShell() {
         onCommandNavigate={(tab) => setCenterTab(tab as typeof centerTab)}
       />
       <div className="ide-mid">
-        <Sidebar org={org} onSelectAgent={setSelectedAgentId} />
+        <Sidebar org={org} onSelectAgent={setSelectedAgentId} onOpenUpdates={() => setCenterTab('Updates')} />
         <main className="center">
           {bootError && <div className="banner err">{bootError}</div>}
           <div className="center-tabs">
-            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab', 'Coverage', 'Recipes', 'Design'] as const).map((name) => (
+            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab', 'Coverage', 'Recipes', 'Design', 'Updates'] as const).map((name) => (
               <button key={name} className={centerTab === name ? 'active' : ''} onClick={() => setCenterTab(name)}>{t(`tab.${name.toLowerCase().replace('/', '')}` as const)}</button>
             ))}
           </div>
@@ -353,6 +355,8 @@ function IdeShell() {
             <RecipesPanel api={recipesApi} />
           ) : centerTab === 'Design' ? (
             <DesignPanel api={designApi} />
+          ) : centerTab === 'Updates' ? (
+            <UpdatePanel api={updateApi} />
           ) : (
             <EditorPanel openRequest={editorOpenRequest} />
           )}

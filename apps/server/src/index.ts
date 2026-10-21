@@ -141,11 +141,14 @@ import { handleSandboxRoutes } from './routes/sandbox';
 import { setToolRunnerDangerGate, makeToolDangerGate } from './tool-runner';
 import { ApprovalManager } from '@ai-factory/approvals';
 import { handleReleaseRoutes } from './routes/releases';
+import { handleUpdateRoutes, performUpdateCheck } from './routes/updates';
+import { getUpdateConfig } from './updates';
 import { handlePolicyRoutes } from './routes/policy';
 import { handleExecRoutes } from './routes/exec';
 import { handleTerminalRoutes, getTerminalTailForContext } from './routes/terminal';
 import { handleSecretRoutes } from './routes/secrets';
 import { handleFileRoutes, setFileScopeLookup } from './routes/files';
+import { handleLocalHistoryRoutes } from './routes/local-history';
 import { handleChangesRoutes } from './routes/changes';
 import { handleSecurityRoutes } from './routes/security';
 import { handleRecoveryRoutes } from './routes/recovery';
@@ -194,8 +197,9 @@ import {
 } from './routes/backup';
 import { handleRetentionRoutes } from './routes/retention';
 import { handleAutoBackupRoutes, syncAutoBackupPolicy } from './routes/auto-backup';
-import { handleQualityRoutes, setImpactGateAnalyzer } from './routes/quality';
+import { handleQualityRoutes, setImpactGateAnalyzer, setFlakyGateLinkage } from './routes/quality';
 import { handleImpactRoutes, analyzeGateWorkingTree } from './routes/impact';
+import { handleFlakyRoutes, runFlakyGateLinkage } from './routes/flaky';
 import { handleIgnoresRoutes } from './routes/ignores';
 import { handleEgressRoutes } from './routes/egress';
 import { assertEgressAllowed, setEgressBlockSinks } from './egress';
@@ -626,6 +630,15 @@ setQualityGateOutputSink(qualityGateOutputSink);
 setImpactGateAnalyzer((root) => analyzeGateWorkingTree(root));
 
 /**
+ * Flaky-test gate linkage (round-3 task 3) — installs the quarantine +
+ * rerun-once handler the quality gate consults when a project enables
+ * flaky.rerunFlakyOnce. Same setter-injection pattern: routes/quality
+ * must not value-import routes/flaky. Annotation only, never flips the
+ * gate verdict.
+ */
+setFlakyGateLinkage((args) => runFlakyGateLinkage(args));
+
+/**
  * Shadow checkpoints (third-wave task ⑦) — installs the two observer
  * hooks: auto snapshot before a run starts, and auto snapshot after a
  * tool (exec) runs. Same setter-injection pattern as the code index /
@@ -971,6 +984,27 @@ const taskTemplateStore = new TaskTemplateStore();
     }
   };
 }
+/**
+ * R3-T1: periodic app-update check (electron-updater 式, deterministic).
+ * Default ON but inert: with FACTORY_UPDATE_FEED_URL unset the tick
+ * short-circuits to not-configured (audited, no fetch, no notification).
+ * FACTORY_UPDATE_AUTO_CHECK=false opts out; FACTORY_UPDATE_CHECK_INTERVAL_MS
+ * sets the tick (default 6h, min 60s). A tick never throws; an available
+ * update emits an UPDATE_AVAILABLE (MEDIUM) notification via the normal
+ * engine — nothing downloads or installs without an explicit user click
+ * in the Updates tab.
+ */
+{
+  const updateCfg = getUpdateConfig(process.env);
+  if (updateCfg.autoCheck) {
+    const tickUpdateCheck = () => {
+      performUpdateCheck({ notify, audit })
+        .catch((e) => console.error('[updates] scheduled check failed:', (e as Error).message));
+    };
+    const updateTimer = setInterval(tickUpdateCheck, updateCfg.checkIntervalMs);
+    if (typeof updateTimer.unref === 'function') updateTimer.unref();
+  }
+}
 /** System Event Bus — spec §91; shared by all route modules via RouteContext. */
 const bus = new EventBus({ retention: 2000 });
 
@@ -1296,11 +1330,13 @@ const server = createServer(async (req, res) => {
     if (await handleNetworkRoutes(req, res, url, routeCtx)) return;
     if (await handleSandboxRoutes(req, res, url, routeCtx)) return;
     if (await handleReleaseRoutes(req, res, url, routeCtx)) return;
+    if (await handleUpdateRoutes(req, res, url, routeCtx)) return;
     if (await handlePolicyRoutes(req, res, url, routeCtx)) return;
     if (await handleExecRoutes(req, res, url, routeCtx)) return;
     if (await handleTerminalRoutes(req, res, url, routeCtx)) return;
     if (await handleSecretRoutes(req, res, url, routeCtx)) return;
     if (await handleFileRoutes(req, res, url, routeCtx)) return;
+    if (await handleLocalHistoryRoutes(req, res, url, routeCtx)) return;
     if (await handleChangesRoutes(req, res, url, routeCtx)) return;
     if (await handleSecurityRoutes(req, res, url, routeCtx)) return;
     if (await handleRecoveryRoutes(req, res, url, routeCtx)) return;
@@ -1334,6 +1370,7 @@ const server = createServer(async (req, res) => {
     if (await handleAutoBackupRoutes(req, res, url, routeCtx)) return;
     if (await handleQualityRoutes(req, res, url, routeCtx)) return;
     if (await handleImpactRoutes(req, res, url, routeCtx)) return;
+    if (await handleFlakyRoutes(req, res, url, routeCtx)) return;
     if (await handleIgnoresRoutes(req, res, url, routeCtx)) return;
     if (await handleCoverageRoutes(req, res, url, routeCtx)) return;
     if (await handleContextProviderRoutes(req, res, url, routeCtx)) return;

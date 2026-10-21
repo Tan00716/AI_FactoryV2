@@ -48,6 +48,7 @@ function QualityGateSection({ projectId }: { projectId: string }) {
   const [blockOnFailure, setBlockOnFailure] = useState(false);
   const [secFailOn, setSecFailOn] = useState<string[]>([]);
   const [impactFailOnBreaking, setImpactFailOnBreaking] = useState(false);
+  const [flakyRerunOnce, setFlakyRerunOnce] = useState(false);
   const [lastResult, setLastResult] = useState<string | null>(null);
 
   useEffect(() => {
@@ -65,6 +66,7 @@ function QualityGateSection({ projectId }: { projectId: string }) {
         setBlockOnFailure(res.config.blockOnFailure);
         setSecFailOn(res.config.security?.failOn ?? []);
         setImpactFailOnBreaking(res.config.impact?.failOnBreaking ?? false);
+        setFlakyRerunOnce(res.config.flaky?.rerunFlakyOnce ?? false);
         setLoaded(true);
       } catch (e) {
         if (!cancelled) setMsg({ kind: 'err', text: t('quality.loadFailed', { message: (e as Error).message }) });
@@ -86,6 +88,7 @@ function QualityGateSection({ projectId }: { projectId: string }) {
         blockOnFailure,
         security: { failOn: secFailOn },
         impact: { failOnBreaking: impactFailOnBreaking },
+        flaky: { rerunFlakyOnce: flakyRerunOnce },
       });
       setConfig(res.config);
       setMsg({ kind: 'ok', text: t('quality.saved') });
@@ -130,6 +133,16 @@ function QualityGateSection({ projectId }: { projectId: string }) {
                     breaking: r.impact.breaking ?? 0,
                     blocked: r.impact.blocked ? t('quality.blockedNote') : '',
                   })
+              : '') +
+            (r.flakyRerun
+              ? r.flakyRerun.attempted
+                ? t('quality.flakyRerunNote', {
+                    known: r.flakyRerun.firstRun?.knownFlaky.length ?? 0,
+                    other: r.flakyRerun.firstRun?.otherFailing.length ?? 0,
+                    rerun: r.flakyRerun.rerun?.ok ? t('quality.pass') : t('quality.fail'),
+                    rerunFailing: r.flakyRerun.rerun?.failing.length ?? 0,
+                  })
+                : t('quality.flakySkippedNote', { reason: r.flakyRerun.reason ?? '' })
               : ''),
       );
     } catch (e) {
@@ -208,6 +221,17 @@ function QualityGateSection({ projectId }: { projectId: string }) {
             </label>
           </div>
           <p className="muted" style={{ fontSize: 11 }}>{t('quality.impactNote')}</p>
+          <div className="row">
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={flakyRerunOnce}
+                onChange={(e) => setFlakyRerunOnce(e.target.checked)}
+              />
+              {t('quality.flakyRerunOnce')}
+            </label>
+          </div>
+          <p className="muted" style={{ fontSize: 11 }}>{t('quality.flakyNote')}</p>
           <div className="row">
             <button onClick={onSave} disabled={saving}>{t('quality.save')}</button>
             <button onClick={() => void onRun('lint')} disabled={running !== null}>

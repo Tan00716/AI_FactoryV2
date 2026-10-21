@@ -23,6 +23,7 @@ export type NotificationEventType =
   | 'SECURITY_SCAN_BLOCKED'
   | 'SCOPE_VIOLATION_DETECTED'
   | 'EGRESS_BLOCKED'
+  | 'UPDATE_AVAILABLE'
   | 'GENERIC';
 
 /** Notification priority (drives the UI badge + ordering). */
