@@ -155,10 +155,20 @@ export interface SnapshotMeta {
 
 const SNAPSHOT_NAME_RE = /^(\d+)-(\d{6})-(save|pre-restore)\.snap$/;
 
+/** Per-process monotonic sequence: filename sort order always matches creation
+ * order, even for bursts inside one wall-clock millisecond. (The previous
+ * `process.hrtime.bigint() % 1000000n` was NOT monotonic: the modulo wraps at
+ * hrtime-ms boundaries, which do not align with wall-clock ms boundaries, so
+ * same-ms bursts could sort out of creation order and prune kept the wrong
+ * snapshot. It could also collide for calls exactly 1ms of hrtime apart.) */
+let snapshotSeq = 0;
+
 function snapshotFileName(kind: SnapshotKind): string {
   const now = Date.now();
-  // hrtime sub-millisecond part disambiguates bursts within the same ms.
-  const seq = String(process.hrtime.bigint() % 1000000n).padStart(6, '0');
+  // 6 digits to keep SNAPSHOT_NAME_RE valid; 1M snapshots within one ms is
+  // not reachable, so the wrap never breaks same-ms ordering in practice.
+  snapshotSeq = (snapshotSeq + 1) % 1000000;
+  const seq = String(snapshotSeq).padStart(6, '0');
   return `${now}-${seq}-${kind}.snap`;
 }
 

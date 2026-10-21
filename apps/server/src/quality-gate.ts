@@ -88,6 +88,16 @@ export interface QualityGateFlakyConfig {
   rerunFlakyOnce: boolean;
 }
 
+/** Mutation-testing linkage (deterministic; see routes/mutation.ts). */
+export interface QualityGateMutationConfig {
+  /** When true, the gate attaches the latest stored mutation-testing
+   * report summary (if any) as an annotation on test-kind runs.
+   * The gate never runs mutation testing itself and the annotation can
+   * never block or flip the verdict. False (default) = no annotation.
+   * Same inline-validation + import-free rationale as coverage above. */
+  report: boolean;
+}
+
 /** Per-project gate configuration. */
 export interface QualityGateConfig {
   /** Shell command for the lint step; '' = disabled. */
@@ -116,6 +126,9 @@ export interface QualityGateConfig {
    * runs the extra pass. Same inline-validation + import-free rationale
    * as coverage above. */
   flaky: QualityGateFlakyConfig;
+  /** Mutation-testing linkage; report=false (default) = no annotation.
+   * Same inline-validation + import-free rationale as coverage above. */
+  mutation: QualityGateMutationConfig;
 }
 
 export interface QualityGateConfigInput {
@@ -128,6 +141,7 @@ export interface QualityGateConfigInput {
   security?: unknown;
   impact?: unknown;
   flaky?: unknown;
+  mutation?: unknown;
 }
 
 export const DEFAULT_QUALITY_TIMEOUT_MS = 120_000;
@@ -161,6 +175,7 @@ export function defaultQualityGateConfig(): QualityGateConfig {
     security: { failOn: [] },
     impact: { failOnBreaking: false },
     flaky: { rerunFlakyOnce: false },
+    mutation: { report: false },
   };
 }
 
@@ -256,6 +271,23 @@ function checkFlakyConfig(input: unknown, errors: string[]): QualityGateFlakyCon
   return { rerunFlakyOnce: ro };
 }
 
+/** Structural validation for the mutation linkage (kept inline: no imports). */
+function checkMutationConfig(input: unknown, errors: string[]): QualityGateMutationConfig {
+  if (input === undefined || input === null) return { report: false };
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    errors.push('mutation must be an object');
+    return { report: false };
+  }
+  const raw = input as { report?: unknown };
+  const ro = raw.report;
+  if (ro === undefined || ro === null) return { report: false };
+  if (typeof ro !== 'boolean') {
+    errors.push('mutation.report must be a boolean');
+    return { report: false };
+  }
+  return { report: ro };
+}
+
 function checkCommand(label: string, v: unknown, errors: string[]): string {
   if (v === undefined || v === null) return '';
   if (typeof v !== 'string') {
@@ -302,6 +334,7 @@ export function validateQualityGateConfig(input: QualityGateConfigInput): {
   const security = checkSecurityConfig(input.security, errors);
   const impact = checkImpactConfig(input.impact, errors);
   const flaky = checkFlakyConfig(input.flaky, errors);
+  const mutation = checkMutationConfig(input.mutation, errors);
   return {
     config: {
       lintCmd,
@@ -313,6 +346,7 @@ export function validateQualityGateConfig(input: QualityGateConfigInput): {
       security,
       impact,
       flaky,
+      mutation,
     },
     errors,
   };

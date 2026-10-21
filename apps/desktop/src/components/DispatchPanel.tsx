@@ -265,7 +265,18 @@ export function DispatchPanel() {
         </div>
       </td>
       <td>{projectName(task.projectId)}</td>
-      <td>{task.creator}</td>
+      <td>
+        {task.creator}
+        {task.creator === 'sweep' && (
+          <span
+            className="sweep-tag"
+            title={t('sweep.originTitle')}
+            style={{ marginLeft: 6 }}
+          >
+            {t('sweep.originBadge')}
+          </span>
+        )}
+      </td>
       <td><span className={`prio ${task.priority.toLowerCase()}`}>{task.priority}</span></td>
     </>
   );

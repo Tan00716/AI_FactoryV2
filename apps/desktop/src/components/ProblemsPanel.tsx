@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { defaultApiBase, authHeaders, api, type FlakyState, type FlakyStatus } from '../api';
+import { defaultApiBase, authHeaders, api, type FlakyState, type FlakyStatus, type MutationReportSummary, type MutationRunRequest, type MutationRunStatus } from '../api';
 import { useLang } from '../i18n';
 
 /**
@@ -262,6 +262,155 @@ function FlakySection({ projectId }: { projectId: string }) {
   );
 }
 
+/**
+ * Mutation-testing section (round-3 task R3-T2) — StrykerJS-style sampled
+ * mutation runs. Explicit operator action: the user picks source + test
+ * files and starts a run; results are polled until done. Renders the
+ * honest boundaries: sampling only, timeouts/invalid excluded from score.
+ */
+function MutationSection({ projectId }: { projectId: string }) {
+  const { t } = useLang();
+  const [open, setOpen] = useState(false);
+  const [latest, setLatest] = useState<MutationReportSummary | null>(null);
+  const [run, setRun] = useState<MutationRunStatus | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [files, setFiles] = useState('');
+  const [testFiles, setTestFiles] = useState('');
+  const [maxMutants, setMaxMutants] = useState('50');
+  const [seed, setSeed] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const r = await api.mutationLatest(projectId);
+      setLatest(r.report);
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (open) void load();
+  }, [open, load]);
+
+  useEffect(() => {
+    if (!run || run.status !== 'running') return;
+    const timer = setInterval(async () => {
+      try {
+        const s = await api.mutationRunStatus(run.runId);
+        setRun(s);
+        if (s.status !== 'running') void load();
+      } catch {
+        /* keep polling; the next tick retries */
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [run, load]);
+
+  const startRun = useCallback(async () => {
+    const fileList = files.split(/[\n,]+/).map((f) => f.trim()).filter(Boolean);
+    const testList = testFiles.split(/[\n,]+/).map((f) => f.trim()).filter(Boolean);
+    if (fileList.length === 0 || testList.length === 0) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const p: MutationRunRequest = { files: fileList, testFiles: testList };
+      const n = Number(maxMutants);
+      if (Number.isInteger(n) && n > 0) p.maxMutants = n;
+      const s = seed.trim();
+      if (s) {
+        const sn = Number(s);
+        p.seed = Number.isFinite(sn) && s !== '' ? sn : s;
+      }
+      const r = await api.runMutation(projectId, p);
+      setMsg(t('mutation.runStarted', { sampled: String(r.sampled), generated: String(r.generated) }));
+      setRun({ runId: r.runId, projectId, status: 'running', progress: { done: 0, total: r.sampled }, startedAt: new Date().toISOString(), finishedAt: null, error: null, report: null });
+    } catch (e) {
+      setMsg(t('mutation.runFailed', { message: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setBusy(false);
+    }
+  }, [projectId, files, testFiles, maxMutants, seed, t]);
+
+  const score = latest?.totals.score;
+  const scoreText = score === null || score === undefined ? '—' : `${(score * 100).toFixed(1)}%`;
+
+  return (
+    <div className="mutation-box" style={{ margin: '6px 0', borderTop: '1px solid var(--border, #333)' }}>
+      <button className="link" onClick={() => setOpen((v) => !v)}>
+        {t('mutation.title')}
+        {latest ? ` (${scoreText})` : ''} {open ? '▾' : '▸'}
+      </button>
+      {open && (
+        <div>
+          <div className="muted">{t('mutation.honestNote')}</div>
+          {err && <span className="pill warn">{err}</span>}
+          {msg && <div className="muted">{msg}</div>}
+          {latest ? (
+            <div style={{ margin: '6px 0' }}>
+              <div>
+                <strong>{t('mutation.score')}: {scoreText}</strong>
+                {' — '}
+                {t('mutation.killed')}: {latest.totals.killed} · {t('mutation.survived')}: {latest.totals.survived} ·{' '}
+                {t('mutation.timeout')}: {latest.totals.timeout} · {t('mutation.invalid')}: {latest.totals.invalid}
+              </div>
+              <div className="muted">
+                {t('mutation.sampledOf', { sampled: String(latest.totals.sampled), generated: String(latest.totals.generated) })}
+                {' · '}
+                {t('mutation.seedLabel')}: {latest.seed}
+                {latest.truncated && latest.truncateReason ? ` · ⚠ ${t('mutation.truncated', { reason: latest.truncateReason })}` : ''}
+              </div>
+              <div className="muted">
+                {latest.target.files.join(', ')}
+              </div>
+            </div>
+          ) : (
+            <div className="muted">{t('mutation.empty')}</div>
+          )}
+          {run && run.status === 'running' && (
+            <div className="muted">{t('mutation.running', { done: String(run.progress.done), total: String(run.progress.total) })}</div>
+          )}
+          {run && run.status === 'failed' && (
+            <div className="pill warn">{t('mutation.runFailed', { message: run.error ?? '?' })}</div>
+          )}
+          <div style={{ margin: '6px 0' }}>
+            <div className="muted">{t('mutation.filesLabel')}</div>
+            <textarea
+              rows={2}
+              style={{ width: '100%' }}
+              placeholder={t('mutation.filesPlaceholder')}
+              value={files}
+              onChange={(e) => setFiles(e.target.value)}
+            />
+            <div className="muted">{t('mutation.testFilesLabel')}</div>
+            <textarea
+              rows={2}
+              style={{ width: '100%' }}
+              placeholder={t('mutation.testFilesPlaceholder')}
+              value={testFiles}
+              onChange={(e) => setTestFiles(e.target.value)}
+            />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+              <label className="muted">{t('mutation.maxMutants')}</label>
+              <input style={{ width: 70 }} value={maxMutants} onChange={(e) => setMaxMutants(e.target.value)} />
+              <label className="muted">{t('mutation.seedLabel')}</label>
+              <input style={{ width: 110 }} placeholder={t('mutation.seedPlaceholder')} value={seed} onChange={(e) => setSeed(e.target.value)} />
+              <button className="pill" disabled={busy} onClick={() => void startRun()}>
+                {t('mutation.run')}
+              </button>
+              <button className="pill" disabled={busy} onClick={() => void load()}>
+                {t('mutation.refresh')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 async function apiReq<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${defaultApiBase()}${path}`, {
     ...init,
@@ -494,6 +643,7 @@ export function ProblemsPanel({ projectId }: { projectId: string }) {
       {evicted && <div className="pill warn">{t('problems.evicted')}</div>}
       {err && <span className="pill warn">{err}</span>}
       <FlakySection projectId={projectId} />
+      <MutationSection projectId={projectId} />
       {visible.length === 0 && !err && <div className="muted">{t('problems.empty')}</div>}
       <div className="problems-list">
         {visible.map((d, i) => {

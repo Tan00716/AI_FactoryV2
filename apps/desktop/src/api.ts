@@ -178,6 +178,56 @@ export interface DispatchActionResult {
   task: DispatchTask;
 }
 
+/** R3-T5 sweep.yaml：外部事件输入（服务端做严格校验）。 */
+export interface SweepEventInput {
+  source: string;
+  labels?: string[];
+  title: string;
+  body?: string;
+  url?: string;
+  external_id?: string;
+}
+
+/** R3-T5 sweep.yaml：GET /api/sweep/config 的规则摘要。 */
+export interface SweepConfigSummary {
+  path: string;
+  exists: boolean;
+  loadError?: string;
+  ruleCount: number;
+  rules: Array<{
+    id: string;
+    name?: string;
+    enabled: boolean;
+    priority: number;
+    template: string;
+  }>;
+  invalidRules: Array<{ id: string; reason: string }>;
+}
+
+/** R3-T5 sweep.yaml：dry-run / ingest 的匹配结果。 */
+export interface SweepMatchResult {
+  ruleId: string;
+  templateId: string;
+  title: string;
+  taskId: string;
+}
+
+export interface SweepDryRunResult {
+  proposed: false;
+  matches: SweepMatchResult[];
+  skipped: Array<{ ruleId: string; reason: string }>;
+  invalidRules: Array<{ id: string; reason: string }>;
+}
+
+export interface SweepIngestResult {
+  proposed: boolean;
+  task?: DispatchTask;
+  ruleId?: string;
+  templateId?: string;
+  skipped: Array<{ ruleId: string; reason: string }>;
+  invalidRules?: Array<{ id: string; reason: string }>;
+}
+
 /** Batch 18 预授权票（GET /api/authorization-tickets，服务端 Batch 18-1）。
  *  票面语义的宽松只读形状：本面只呈现服务端实际给出的字段，缺失即
  *  显示「—」；端点未就绪（404）由面板如实显示未就绪，不编造票面。 */
@@ -652,6 +702,65 @@ export interface QualityGateRunResult {
     rerun?: { ok: boolean; exitCode: number | null; timedOut: boolean; parsedOutcomes: number; failing: string[] };
     note?: string;
   } | null;
+  /** 变异测试联动结果（第三轮 R3-T2；仅当 mutation.report 已配置时返回，仅标注）。 */
+  mutationAnnotation?: {
+    attempted: boolean;
+    reason?: string;
+    advisory?: boolean;
+    blocks?: boolean;
+    runId?: string;
+    generatedAt?: string;
+    score?: number | null;
+    totals?: MutationTotals;
+  } | null;
+}
+/** 变异测试（第三轮 R3-T2）——服务端 /api/mutation 的形状。 */
+export type MutantVerdict = 'killed' | 'survived' | 'timeout' | 'invalid';
+export interface MutationTotals {
+  generated: number;
+  sampled: number;
+  killed: number;
+  survived: number;
+  timeout: number;
+  invalid: number;
+  score: number | null;
+}
+export interface MutationReportSummary {
+  runId: string;
+  seed: number;
+  generatedAt: string;
+  target: { dir: string; files: string[]; testFiles: string[] };
+  sampling: { maxMutants: number; perFileCap: number };
+  timeoutMs: number;
+  truncated: boolean;
+  truncateReason: string | null;
+  totals: MutationTotals;
+}
+export interface MutationRunRequest {
+  files: string[];
+  testFiles: string[];
+  targetDir?: string;
+  seed?: number | string;
+  maxMutants?: number;
+  perFileCap?: number;
+  timeoutMs?: number;
+  maxTotalMs?: number;
+}
+export interface MutationRunAccepted {
+  runId: string;
+  status: 'running';
+  generated: number;
+  sampled: number;
+}
+export interface MutationRunStatus {
+  runId: string;
+  projectId: string;
+  status: 'running' | 'done' | 'failed';
+  progress: { done: number; total: number };
+  startedAt: string;
+  finishedAt: string | null;
+  error: string | null;
+  report: MutationReportSummary | null;
 }
 /** 间歇失败检测（第三轮③）——服务端 /api/flaky 的形状。 */
 export type FlakyStatus = 'flaky' | 'always-failing' | 'stable' | 'insufficient-data';
@@ -928,6 +1037,22 @@ export const api = {
       `/tasks/${encodeURIComponent(id)}/expire-authorization`,
       { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) },
     ),
+  /** R3-T5 sweep.yaml：外部事件 → 任务模板发起（只做约定+手动触发，
+   *  无 webhook；ingest 永不自动执行，任务进 WAITING_HUMAN_DISPATCH）。 */
+  sweepConfig: (projectId: string) =>
+    req<SweepConfigSummary>(
+      `/sweep/config?projectId=${encodeURIComponent(projectId)}`,
+    ),
+  sweepDryRun: (projectId: string, event: SweepEventInput) =>
+    req<SweepDryRunResult>(
+      '/sweep/dry-run',
+      { method: 'POST', body: JSON.stringify({ projectId, event }) },
+    ),
+  sweepIngest: (projectId: string, event: SweepEventInput) =>
+    req<SweepIngestResult>(
+      '/sweep/ingest',
+      { method: 'POST', body: JSON.stringify({ projectId, event }) },
+    ),
   /** Batch 18 预授权票只读面（服务端 Batch 18-1）：用 reqWithStatus——
    *  端点未就绪（404）是面板要如实呈现的状态，不是异常。 */
   dispatchTickets: () =>
@@ -1118,6 +1243,19 @@ export const api = {
     req<{ projectId: string; cleared: boolean }>(
       '/flaky/clear', { method: 'POST', body: JSON.stringify({ projectId }) },
     ),
+  /** 变异测试最新报告摘要（GET /api/mutation/latest?projectId=）：读 viewer。 */
+  mutationLatest: (projectId: string) =>
+    req<{ projectId: string; report: MutationReportSummary | null }>(
+      `/mutation/latest?projectId=${encodeURIComponent(projectId)}`,
+    ),
+  /** 发起一次抽样变异测试（POST /api/mutation/run）：写 operator，后台执行。 */
+  runMutation: (projectId: string, p: MutationRunRequest) =>
+    req<MutationRunAccepted>(
+      '/mutation/run', { method: 'POST', body: JSON.stringify({ projectId, ...p }) },
+    ),
+  /** 查询变异测试运行状态（GET /api/mutation/runs/:runId）：读 viewer。 */
+  mutationRunStatus: (runId: string) =>
+    req<MutationRunStatus>(`/mutation/runs/${encodeURIComponent(runId)}`),
   /** 两层忽略文件状态（GET /api/ignores?projectId=）：读 viewer。 */
   ignores: (projectId: string) =>
     req<IgnoreFilesState>(`/ignores?projectId=${encodeURIComponent(projectId)}`),

@@ -176,6 +176,29 @@ export function setFlakyGateLinkage(fn: FlakyGateLinkageFn | null): void {
   flakyGateLinkage = fn;
 }
 
+/**
+ * Mutation-testing gate linkage (round-3 task R3-T2) — the injected
+ * runMutationGateLinkage from routes/mutation.ts. Same setter-injection
+ * pattern: routes/quality must not value-import routes/mutation.
+ * The linkage is annotation-only: it attaches the latest stored mutation
+ * report summary (if any) to test-kind gate runs. It never triggers a
+ * mutation run and can never block or flip the verdict.
+ */
+export interface MutationGateLinkageArgs {
+  ctx: RouteContext;
+  projectId: string;
+  actor: string;
+  runId?: string;
+}
+
+export type MutationGateLinkageFn = (args: MutationGateLinkageArgs) => Promise<Record<string, unknown>>;
+
+let mutationGateLinkage: MutationGateLinkageFn | null = null;
+
+export function setMutationGateLinkage(fn: MutationGateLinkageFn | null): void {
+  mutationGateLinkage = fn;
+}
+
 function summarize(result: QualityGateRunResult): Record<string, unknown> {
   return {
     kind: result.kind,
@@ -568,6 +591,19 @@ export async function executeQualityGate(
       flakyRerun = { attempted: false, error: (e as Error).message };
     }
   }
+  // Mutation linkage (round-3 R3-T2): when the project opted in via
+  // mutation.report, attach the latest stored mutation report summary.
+  // Annotation only — the payload below never flips `blocked` or the verdict.
+  let mutationAnnotation: Record<string, unknown> | null = null;
+  if (kind === 'test' && config.mutation?.report && mutationGateLinkage && !result.skipped) {
+    try {
+      mutationAnnotation = await mutationGateLinkage({ ctx, projectId, actor, runId: opts.runId });
+    } catch (e) {
+      // Linkage failures must never crash the gate itself.
+      console.error('[quality-gate] mutation linkage failed:', (e as Error).message);
+      mutationAnnotation = { attempted: false, error: (e as Error).message };
+    }
+  }
   // Problem matchers (task ③): turn gate output into structured
   // diagnostics automatically. Observer — must never affect the gate.
   if (qualityGateOutputSink && !result.skipped) {
@@ -638,6 +674,7 @@ export async function executeQualityGate(
     ...(security ? { security } : {}),
     ...(impact ? { impact } : {}),
     ...(flakyRerun ? { flakyRerun } : {}),
+    ...(mutationAnnotation ? { mutationAnnotation } : {}),
   };
   return { result: payload, blocked };
 }

@@ -37,6 +37,18 @@ test('validate: empty input yields safe defaults (everything disabled)', () => {
   assert.equal(config.lintCmd, '');
   assert.equal(config.runOnEdit, false);
   assert.equal(config.blockOnFailure, false);
+  assert.equal(config.mutation.report, false);
+});
+
+test('validate: mutation linkage config (advisory-only annotation)', () => {
+  const ok = validateQualityGateConfig({ mutation: { report: true } });
+  assert.deepEqual(ok.errors, []);
+  assert.equal(ok.config.mutation.report, true);
+  const bad = validateQualityGateConfig({ mutation: { report: 'yes' } });
+  assert.ok(bad.errors.some((e) => e.includes('mutation.report must be a boolean')));
+  assert.equal(bad.config.mutation.report, false);
+  const wrongShape = validateQualityGateConfig({ mutation: 42 });
+  assert.ok(wrongShape.errors.some((e) => e.includes('mutation must be an object')));
 });
 
 test('validate: accepts a full valid config', () => {

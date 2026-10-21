@@ -34,6 +34,50 @@ interface SnapshotMeta {
   size: number;
 }
 
+/**
+ * R3-T9 file nesting (VS Code fileNesting 式, 文件名模式分组).
+ * 可配的父子文件名模式: `*` 匹配父文件名中的 stem, 子模式中的 `*`
+ * 替换为同一 stem 后必须与子文件名完全一致. 纯文件名模式, 不做语义分析.
+ */
+const FILE_NESTING_RULES: Array<{ parent: string; children: string[] }> = [
+  { parent: 'package.json', children: ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'] },
+  { parent: '*.ts', children: ['*.d.ts', '*.test.ts', '*.spec.ts', '*.stories.ts'] },
+  { parent: '*.tsx', children: ['*.test.tsx', '*.spec.tsx', '*.stories.tsx'] },
+  { parent: '*.js', children: ['*.test.js', '*.spec.js'] },
+  { parent: '*.jsx', children: ['*.test.jsx', '*.spec.jsx'] },
+];
+
+const STICKY_SCROLL_KEY = 'ai-factory.editor.stickyScroll';
+
+function readStickyScrollPref(): boolean {
+  try {
+    const v = localStorage.getItem(STICKY_SCROLL_KEY);
+    return v === null ? true : v === '1';
+  } catch {
+    return true;
+  }
+}
+
+/** 父模式命中时返回 stem (无 `*` 的精确模式返回 ''), 未命中返回 null. */
+function matchParentPattern(pattern: string, name: string): string | null {
+  if (!pattern.includes('*')) return pattern === name ? '' : null;
+  const rx = new RegExp('^' + pattern.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('(.+)') + '$');
+  const m = rx.exec(name);
+  return m ? m[1] : null;
+}
+
+function isNestingChild(parentName: string, childName: string): boolean {
+  if (parentName === childName) return false;
+  for (const rule of FILE_NESTING_RULES) {
+    const stem = matchParentPattern(rule.parent, parentName);
+    if (stem === null) continue;
+    for (const cp of rule.children) {
+      if (cp.split('*').join(stem) === childName) return true;
+    }
+  }
+  return false;
+}
+
 function FileIcon({ type }: { type: 'dir' | 'file' }) {
   return <span style={{ marginRight: 6 }}>{type === 'dir' ? '📁' : '📄'}</span>;
 }
@@ -63,6 +107,8 @@ export function EditorPanel({
   openPathRef.current = openPath;
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  // R3-T9 Sticky scroll: Monaco 内置吸顶 (默认开, localStorage 持久化).
+  const [stickyOn, setStickyOn] = useState<boolean>(readStickyScrollPref);
   // R3-T6 Local History: per-save snapshot browser + restore.
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<SnapshotMeta[]>([]);
@@ -81,6 +127,8 @@ export function EditorPanel({
       automaticLayout: true,
       minimap: { enabled: false },
       fontSize: 13,
+      // R3-T9: Monaco 内置粘性滚动 (VS Code stickyScroll 式), 不做自定义吸顶.
+      stickyScroll: { enabled: readStickyScrollPref(), maxLineCount: 10 },
     });
     editorRef.current = editor;
     editor.onDidChangeModelContent(() => {
@@ -264,6 +312,33 @@ export function EditorPanel({
     return () => window.removeEventListener('keydown', onKey);
   }, [saveFile]);
 
+  // R3-T9: 粘性滚动开关 —— 实时写回 Monaco, 偏好持久化到 localStorage.
+  const toggleSticky = () => {
+    setStickyOn((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(STICKY_SCROLL_KEY, next ? '1' : '0');
+      } catch {
+        /* storage unavailable — session-only */
+      }
+      const ed = editorRef.current;
+      ed?.updateOptions({ stickyScroll: { enabled: next } });
+      if (next && ed) {
+        // Monaco 重开吸顶后不等下一次滚动就重绘: 轻推一次滚动位置触发重渲染.
+        const st = ed.getScrollTop();
+        ed.setScrollTop(st + 1);
+        ed.setScrollTop(st);
+      }
+      return next;
+    });
+  };
+
+  // R3-T9: 嵌套组的展开/收起 (key: `${dir}/${parentName}`, 默认展开).
+  const [nestCollapsed, setNestCollapsed] = useState<Record<string, boolean>>({});
+  const toggleNest = (key: string) => {
+    setNestCollapsed((n) => ({ ...n, [key]: !n[key] }));
+  };
+
   const renderEntries = (dir: string, depth: number): React.ReactNode[] => {
     const cache = dirs[dir];
     if (!cache || !cache.expanded) return [];
@@ -274,39 +349,125 @@ export function EditorPanel({
         </div>,
       ];
     }
-    return cache.entries.map((e) => (
+    // R3-T9 file nesting: 同一目录下, 按 FILE_NESTING_RULES 把子文件收进父文件.
+    const files = cache.entries.filter((e) => e.type === 'file');
+    const claimed = new Set<string>();
+    const childrenOf = new Map<string, Entry[]>();
+    for (const e of files) {
+      if (claimed.has(e.path)) continue;
+      const kids = files.filter(
+        (g) => g.path !== e.path && !claimed.has(g.path) && isNestingChild(e.name, g.name),
+      );
+      if (kids.length > 0) {
+        childrenOf.set(e.path, kids);
+        kids.forEach((k) => claimed.add(k.path));
+      }
+    }
+    const rowStyle = (active: boolean): React.CSSProperties => ({
+      padding: '3px 8px',
+      cursor: 'pointer',
+      fontSize: 12,
+      fontFamily: 'monospace',
+      background: active ? 'var(--bg3)' : undefined,
+      whiteSpace: 'nowrap',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+    });
+    const renderFileRow = (e: Entry, pad: number, toggle?: { key: string; collapsed: boolean }) => (
       <div key={e.path}>
         <div
           role="button"
           tabIndex={0}
-          onClick={() => (e.type === 'dir' ? toggleDir(e.path) : void openFile(e.path))}
+          onClick={() => void openFile(e.path)}
           onKeyDown={(ev) => {
-            if (ev.key === 'Enter') e.type === 'dir' ? toggleDir(e.path) : void openFile(e.path);
+            if (ev.key === 'Enter') void openFile(e.path);
           }}
-          style={{
-            padding: '3px 8px',
-            paddingLeft: 8 + depth * 14,
-            cursor: 'pointer',
-            fontSize: 12,
-            fontFamily: 'monospace',
-            background: openPath === e.path ? 'var(--bg3)' : undefined,
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}
+          style={{ ...rowStyle(openPath === e.path), paddingLeft: 8 + pad * 14 }}
         >
-          <FileIcon type={e.type} />
+          {toggle && (
+            <span
+              role="button"
+              tabIndex={0}
+              title={t('editor.fileNesting.toggle')}
+              onClick={(ev) => {
+                ev.stopPropagation();
+                toggleNest(toggle.key);
+              }}
+              onKeyDown={(ev) => {
+                if (ev.key === 'Enter') {
+                  ev.stopPropagation();
+                  toggleNest(toggle.key);
+                }
+              }}
+              style={{ display: 'inline-block', width: 14, cursor: 'pointer' }}
+            >
+              {toggle.collapsed ? '▸' : '▾'}
+            </span>
+          )}
+          <FileIcon type="file" />
           {e.name}
         </div>
-        {e.type === 'dir' && renderEntries(e.path, depth + 1)}
+        {toggle && !toggle.collapsed &&
+          (childrenOf.get(e.path) ?? []).map((k) => (
+            <div
+              key={k.path}
+              role="button"
+              tabIndex={0}
+              onClick={() => void openFile(k.path)}
+              onKeyDown={(ev) => {
+                if (ev.key === 'Enter') void openFile(k.path);
+              }}
+              style={{ ...rowStyle(openPath === k.path), paddingLeft: 8 + (pad + 1) * 14 }}
+            >
+              <span style={{ display: 'inline-block', width: 14 }} />
+              <FileIcon type="file" />
+              {k.name}
+            </div>
+          ))}
       </div>
-    ));
+    );
+    const rows: React.ReactNode[] = [];
+    for (const e of cache.entries) {
+      if (e.type === 'dir') {
+        rows.push(
+          <div key={e.path}>
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => toggleDir(e.path)}
+              onKeyDown={(ev) => {
+                if (ev.key === 'Enter') toggleDir(e.path);
+              }}
+              style={{ ...rowStyle(openPath === e.path), paddingLeft: 8 + depth * 14 }}
+            >
+              <FileIcon type="dir" />
+              {e.name}
+            </div>
+            {renderEntries(e.path, depth + 1)}
+          </div>,
+        );
+      } else if (!claimed.has(e.path)) {
+        const kids = childrenOf.get(e.path);
+        rows.push(
+          renderFileRow(
+            e,
+            depth,
+            kids ? { key: `${dir}/${e.name}`, collapsed: !!nestCollapsed[`${dir}/${e.name}`] } : undefined,
+          ),
+        );
+      }
+    }
+    return rows;
   };
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'center' }}>
         <b>{t('editor.title')}</b> <span className="muted">§65 · Monaco</span>
+        <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }} title="R3-T9">
+          <input type="checkbox" checked={stickyOn} onChange={toggleSticky} />
+          {t('editor.stickyScroll')}
+        </label>
         {openPath && (
           <>
             <span className="pill" style={{ fontFamily: 'monospace' }}>{openPath}</span>

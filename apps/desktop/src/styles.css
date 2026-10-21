@@ -164,6 +164,12 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 sys
 .prio.p0, .prio.p1 { color: var(--red); }
 .prio.p2 { color: var(--yellow); }
 .prio.p3, .prio.p4 { color: var(--green); }
+/* R3-T5 sweep origin badge (Dispatch panel creator cell). */
+.sweep-tag {
+  display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg2); color: var(--muted);
+  vertical-align: middle; white-space: nowrap;
+}
 
 /* task detail */
 .detail { position: fixed; right: 0; top: 0; bottom: 0; width: 420px; background: var(--bg2); border-left: 1px solid var(--border); padding: 16px; overflow-y: auto; z-index: 20; box-shadow: -8px 0 24px rgba(0,0,0,.5); }

@@ -179,6 +179,7 @@ import { handleDashboardRoutes } from './routes/dashboard';
 import { handleNotificationRoutes } from './routes/notifications';
 import { handleAuditExportRoutes } from './routes/audit-export';
 import { handleTaskTemplateRoutes } from './routes/task-templates';
+import { handleSweepRoutes } from './routes/sweep';
 import { TaskTemplateStore } from './task-template-store';
 import { handleEventRoutes } from './routes/events';
 import { handleActivityRoutes } from './routes/activity';
@@ -196,10 +197,12 @@ import {
   validateProjectPath,
 } from './routes/backup';
 import { handleRetentionRoutes } from './routes/retention';
+import { resolveInspectionRoot } from './inspections';
 import { handleAutoBackupRoutes, syncAutoBackupPolicy } from './routes/auto-backup';
-import { handleQualityRoutes, setImpactGateAnalyzer, setFlakyGateLinkage } from './routes/quality';
+import { handleQualityRoutes, setImpactGateAnalyzer, setFlakyGateLinkage, setMutationGateLinkage } from './routes/quality';
 import { handleImpactRoutes, analyzeGateWorkingTree } from './routes/impact';
 import { handleFlakyRoutes, runFlakyGateLinkage } from './routes/flaky';
+import { handleMutationRoutes, runMutationGateLinkage, setMutationInspectionRootResolver } from './routes/mutation';
 import { handleIgnoresRoutes } from './routes/ignores';
 import { handleEgressRoutes } from './routes/egress';
 import { assertEgressAllowed, setEgressBlockSinks } from './egress';
@@ -637,6 +640,21 @@ setImpactGateAnalyzer((root) => analyzeGateWorkingTree(root));
  * gate verdict.
  */
 setFlakyGateLinkage((args) => runFlakyGateLinkage(args));
+
+/**
+ * Mutation-testing gate linkage (round-3 task R3-T2) — installs the
+ * advisory annotation the quality gate consults when a project enables
+ * mutation.report. Same setter-injection pattern as the flaky linkage:
+ * annotation only, never flips the gate verdict.
+ */
+setMutationGateLinkage((args) => runMutationGateLinkage(args));
+
+/**
+ * Mutation-testing inspection-root wiring (round-3 task R3-T2) — the
+ * route must not value-import ../inspections (dual-mode import rule),
+ * so the real resolveInspectionRoot is injected here.
+ */
+setMutationInspectionRootResolver((root) => resolveInspectionRoot(root));
 
 /**
  * Shadow checkpoints (third-wave task ⑦) — installs the two observer
@@ -1363,6 +1381,7 @@ const server = createServer(async (req, res) => {
     if (await handleNotificationRoutes(req, res, url, routeCtx)) return;
     if (await handleAuditExportRoutes(req, res, url, routeCtx)) return;
     if (await handleTaskTemplateRoutes(req, res, url, routeCtx)) return;
+    if (await handleSweepRoutes(req, res, url, routeCtx)) return;
     if (await handleEventRoutes(req, res, url, routeCtx)) return;
     if (await handleActivityRoutes(req, res, url, routeCtx)) return;
     if (await handleBackupRoutes(req, res, url, routeCtx)) return;
@@ -1371,6 +1390,7 @@ const server = createServer(async (req, res) => {
     if (await handleQualityRoutes(req, res, url, routeCtx)) return;
     if (await handleImpactRoutes(req, res, url, routeCtx)) return;
     if (await handleFlakyRoutes(req, res, url, routeCtx)) return;
+    if (await handleMutationRoutes(req, res, url, routeCtx)) return;
     if (await handleIgnoresRoutes(req, res, url, routeCtx)) return;
     if (await handleCoverageRoutes(req, res, url, routeCtx)) return;
     if (await handleContextProviderRoutes(req, res, url, routeCtx)) return;
