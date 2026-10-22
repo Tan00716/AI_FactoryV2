@@ -9,7 +9,9 @@
 > 覆盖率可视化、忽略文件、问题匹配器、安全扫描、配方迁移、
 > 影响分析、出站防火墙、范围锁定、设计模式、DB 时间旅行、
 > 自动更新、Flaky 检测、基准回归统计、Local History、devcontainer、
-> 变异测试、sweep.yaml、编辑器/终端小件。
+> 变异测试、sweep.yaml、编辑器/终端小件、预发送密钥扫描、
+> 确定性重构、结构化搜索替换、TODO 追踪、依赖顾问、
+> DAP 调试器、数据库浏览器、HTTP 客户端、性能剖析、终端命令历史。
 > 快速上手见 [USER_GUIDE.md](USER_GUIDE.md)；
 > 已知限制见 [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)。
 > 英文版：[ADVANCED_FEATURES.en.md](ADVANCED_FEATURES.en.md)。
@@ -712,7 +714,300 @@ R3-T10 终端小件：xterm 下方 DOM 状态条——
 
 ---
 
+## 50. 预发送提示词密钥扫描（第四轮一）
+
+**是什么**：修一个真漏洞——`scanForSecrets` 以前只被 MemoryStore.write 调用，
+`adapter.invoke` 发给厂商的 prompt 是直发的，密钥原文会直接出境。
+`packages/runtime/src/pre-send-scan.ts` 的 `assertPromptSafe` 接在
+`StubAdapter.invoke` 与 `CodexAdapter.invoke` 的入口首行，
+任何调用方都绕不过。扫描引擎 = 21 族共享表单
+（`packages/security/src/secret-patterns.ts` 的 `SECRET_PATTERNS`，
+单一真相源；`inspections.ts` 改成 import+re-export，repo 扫描行为零变化）
++ 3 个 prompt 形赋值族（`token-assignment`/`secret-assignment`/
+`password-assignment`，只放在 pre-send 本地扩展，不进共享表）。
+扫描用 `matchAll` 全量匹配——修掉了"占位符在前、真密钥在后"的
+fail-open 漏报；redact 回调保留占位符不误伤。
+
+**怎么用**：自动生效，无需配置。双模式经 `setPreSendScanMode` 切换
+（默认 `block`）：block 命中则审计 `PROMPT_SECRET_BLOCKED` + HIGH 告警
+（"Prompt blocked: …"），抛 `PreSendSecretBlockedError`
+（只点名 pattern 名，永不回显密钥值）；`redact` 模式把命中替换成
+`[REDACTED]` 后放行，记审计 `PROMPT_SECRET_REDACTED`。
+sinks 经 `setPreSendScanSinks` 接入审计链与通知中心（best-effort：
+没装 sinks 阻断照样执行，只是没有审计/通知）。
+
+**诚实边界**：`images` 只扫 prompt 文本——`AdapterInput.images`
+是描述符（无字节），vision:false 的适配器看不到字节；
+redact 模式不发 HIGH 告警（算子显式选择的宽松模式），但审计照记；
+纯文本扫描，零模型 key。
+
+## 51. 确定性重构（第四轮一）
+
+**是什么**：对标 IDE 的 Refactor 预览。新包 `@ai-factory/refactor`
+（零依赖）：`tokenizer.ts`（TS/JS 分词：字符串/模板 `${}`/正则 vs 除法/
+私有字段/行列+depth）、`scope.ts`（两遍作用域分析：函数/箭头/方法/类/
+import/catch/for、解构、TS 类型注解、遮蔽解析）、`ops.ts`
+（4 个操作：extract-method/extract-variable/inline-variable/rename）、
+`diff.ts`（确定性 unified-diff 生成器）、`types.ts`。
+服务端 `routes/refactor.ts`：`POST /api/refactor/analyze` 只读预览
+（返回 proposalId + diff）、`POST /api/refactor/apply`
+（逐项 `acceptedIds`；写前重读所有触碰文件做 sha256 漂移守卫，
+变了就整批 409 `REFACTOR_DRIFT`、什么都不写）、
+`GET /api/refactor/proposals/:id`。proposal 内存店，10 分钟 TTL。
+桌面端 RefactorPanel：操作表单 → 预览（逐项勾选 + diff）→ 应用选中。
+
+**怎么用**：Refactor 面板填操作参数 → 看预览 → 勾选要接受的项 →
+应用；多文件重命名只跟随显式 `otherFiles`；
+jail 经 `setRefactorInspectionRootResolver` 注入。审计：
+`REFACTOR_ANALYZED` / `REFACTOR_APPLIED` / `REFACTOR_APPLY_REJECTED`。
+
+**诚实边界**：preview diff 没有复用影子 git 管道——deliberate：
+影子 git 需要真实 checkpoint，preview 必须 side-effect free；
+extract-method 闭包式、不合成参数；
+逃逸的 return/break/continue 直接拒绝；rename 按作用域生效；
+apply 整批原子；proposal 重启丢失。
+
+## 52. 结构化搜索替换（第四轮一）
+
+**是什么**：按 AST 结构而非文本做搜索/替换。新包 `@ai-factory/ssr`：
+`scanner.ts`（字符级状态机：字符串/注释/模板字面量/正则字面量感知 +
+花括号配平）、`template.ts`（4 个内置模板）、`replace.ts`
+（`renameInScope`/preview/apply）。服务端 `routes/ssr.ts`：
+`GET/POST/DELETE /api/ssr/templates`（模板管理，写操作审计）、
+`POST /api/ssr/search`、`POST /api/ssr/preview`、`POST /api/ssr/apply`
+（审计）、`POST /api/ssr/quickfix`（inspection 命中一键修）。
+`inspections.ts` 新增 `setExtraCheckerProvider`，
+`ssr-template` checker 进默认 profile。
+桌面端：InspectionsPanel 的 quick-fix 按钮 + SsrTemplatesManager。
+对照实验：同名变量场景文本搜索命中 6 处，SSR 作用域重命名只改 3 处
+（`beta` 的同名 `count` 与 `obj.count` 纹丝不动）。
+
+**怎么用**：SsrTemplatesManager 选内置/自建模板 → search 看命中 →
+preview 看 diff → apply；Problems 面板里 inspection 命中直接点
+quick-fix。jail 经 setter 注入。
+
+**诚实边界**：没有字面复用 repomap 解析器——codeindex 的
+extractSymbols 不支持可见性修饰符/局部变量，所以自写了扩展启发式
+扫描器；它是 heuristic extraction，不是编译器 AST
+（局限声明写在 `packages/ssr/src/types.ts` 顶部）。
+
+## 53. TODO 追踪（第四轮一）
+
+**是什么**：对标 JetBrains TODO 工具窗。
+`apps/server/src/todo-scan.ts`（~300 行）：确定性正则扫描内核。
+`DEFAULT_TODO_PATTERNS`：FIXME→error、BUG→error、HACK→warning、
+TODO→info（大小写敏感）；`validateTodoPatterns` fail-closed：
+坏正则点名、拒绝匹配空串的模式、重名、坏级别、超 32 个；
+文件上限 20000。服务端 `routes/todo-scan.ts`：
+`GET /api/todos`（配置 + 全量扫描，viewer）、
+`GET /api/todos/file`（单文件，编辑器 gutter 用）、
+`PUT /api/todos`（自定义模式，operator，审计 `TODO_CONFIG_UPDATED`）、
+`POST /api/todos/reset`（回默认，审计 `TODO_CONFIG_RESET`）。
+桌面端：BottomPanel 新增 TODO tab（TodoPanel）、
+EditorPanel gutter 圆点 + overview 条纹。
+
+**怎么用**：底部 TODO tab 看全项目扫描；编辑器 gutter 圆点定位；
+PUT 自定模式（会话级，重启回默认，UI 有诚实说明）。
+只读路径不审计。
+
+**诚实边界**：两级 ignore-gate 只读 `.ai-factory/ignore` +
+`indexing-ignore`，**不读 `.gitignore`**（真实行为）；
+字符串字面量里的 TODO 和真注释一视同仁（没有"字符串感知"）；
+自定义配置是会话级的。
+
+## 54. 依赖升级顾问（第四轮一）
+
+**是什么**：离线优先的依赖升级建议。新包 `@ai-factory/depscan`：
+自研 semver 子集引擎（`||`/hyphen/dist-tag 不支持时返回 null，
+**永不猜**）、`advise` 生成升级计划（semver 安全分级：
+major/minor/patch）、registry 双 provider（离线快照默认 + live 需
+显式 opt-in 且过 egress 门禁）。快照 `registry-snapshot.json`
+（2026-10-22，20 包，CVE 黑名单集 + 常见包；每份报告披露快照日期，
+明确声明滞后于真实 registry、不是 live 查询的替代品）。
+服务端 `routes/depscan.ts`：`POST /api/depscan/advise`
+（走 egress gate）、`GET /api/depscan/snapshot`（快照元数据，viewer）；
+CVE 交叉经 setter 注入复用 inspections 的 `BUILTIN_VULNERABLE`。
+桌面端：ProblemsPanel 的 DepscanSection。
+
+**怎么用**：Problems 面板的依赖分区看升级计划；
+快照元数据端点随时核对滞后日期；要查 live registry 显式 opt-in
+（被 egress 拦会有明确错误）。
+
+**诚实边界**：自研 semver 只覆盖子集，不支持的写法定然返回 null；
+快照是手工维护的 20 包小集合，覆盖不了长尾依赖；
+live 模式走出站防火墙门禁，默认 deny 下被拦是 fail-closed 行为。
+
+## 55. DAP 调试器（第四轮二）
+
+**是什么**：Debug Adapter Protocol 调试器客户端。
+新包 `@ai-factory/debugger`（零依赖，纯 node 内置）：
+`framer.ts`（Content-Length 帧）、`ws.ts`（手写 WebSocket 客户端）、
+`cdp.ts`（最小 CDP 客户端）、`launchjson.ts`
+（launch.json 解析/归一化）、`client.ts`（DebugClient：spawn adapter、
+DAP 请求/事件、fail-closed）、`node-adapter.ts`
+（DAP↔CDP 桥子进程）。兼容 `.vscode/launch.json`，**先 Node.js**：
+launch 走 `node --inspect=127.0.0.1:0`（loopback），
+attach 只允许 127.0.0.1。服务端 `routes/debug.ts`：
+`GET /api/debug/configs`、`POST /api/debug/sessions`（201）、
+`GET` 列表/详情、`:id/output`（200 行上限）、
+`:id/breakpoints`（断点/条件断点/日志点）、
+`:id/{continue,next,step-in,step-out,pause}`、
+`:id/{stack,scopes,variables}`、`:id/evaluate`、`DELETE :id`。
+最多 8 并发会话（超了 409）；错误码 404/409/410/502/504；
+审计 `DEBUG_SESSION_STARTED`/`STOPPED`/`BREAKPOINTS_SET`。
+桌面端 DebugPanel：配置选择/启动/断点起草/单步/调用栈/变量/
+Watch/输出轮询。
+
+**怎么用**：Debug 面板选 launch.json 配置 → 启动 →
+设断点（条件/日志点）→ 单步 → 看调用栈/变量 → evaluate 求值；
+条件断点/日志点起草后发送。
+
+**诚实边界**：只先做 Node.js；chrome/python/coreclr/compound 等配置
+上报 unsupported，绝不静默 reinterpret；
+evaluate 不带 frameId 时 500 dap-error（桌面端传 frameId）；
+return 处的 step 停顿是 V8 标准行为（先停看返回值），
+如实上报不是 bug；adapter spawn 失败/崩溃 fail-closed。
+
+## 56. 数据库浏览器（第四轮二）
+
+**是什么**：IDE 式数据库浏览器。**先 SQLite/Postgres**。
+新包 `@ai-factory/dbbrowser`（零依赖）：`sql-guard.ts`
+（危险语句守卫，fail-closed 纯函数：read=SELECT/WITH..SELECT/EXPLAIN/
+只读 PRAGMA；write=INSERT/带 WHERE 的 UPDATE/DELETE/
+CREATE TABLE|INDEX|VIEW/加法 ALTER；destructive=DROP/TRUNCATE/
+删列改名/无 WHERE 的 DELETE/UPDATE——要票据；blocked=多语句/
+ATTACH/VACUUM/事务控制/未知）、`drivers.ts`
+（`SqliteDriver` 走 node:sqlite；`PostgresDriver` 手写最小 PG 线协议：
+startup + simple query，trust 认证、无 SSL、无预编译、值按文本返回）、
+`schema.ts`（SQLite 用 PRAGMA、PG 用 information_schema 内省；
+`createTableDdl`；`diffSchemas` 加法-only——删除只报告不脚本化；
+`schemaToErGraph` 关系图）、`browser.ts`
+（连接 env 身份；`updateRow` 写回后复读逐列校验，非"假装成功"）。
+服务端 `routes/dbbrowser.ts`：连接注册（sqlite 路径 jail 进数据目录，
+`PATH_ESCAPED` 403；prod 注册要求文件已存在否则 404）、查询控制台、
+表编辑器（分页/过滤/排序/行编辑）、schema 对比、DDL 生成、ER 图；
+破坏性语句永不 inline：`destructive/request`（201 票据）→
+`destructive/approve`（`decided_by` 显式决策人）→
+`destructive/execute`（单次消费，15 分钟 TTL，
+绑定 connection + 语句 sha256，执行时重分类）。审计：
+`DBB_CONNECTION_REGISTERED/REMOVED/WRITE/ROW_UPDATED/
+DESTRUCTIVE_REQUESTED/APPROVED/EXECUTED`（只读不审计）。
+桌面端 DbBrowserPanel（BottomPanel Database tab）。
+
+**怎么用**：Database tab 注册连接 → 查询控制台跑只读 SQL →
+表编辑器分页改行（复读校验）→ schema diff 看加法 DDL →
+破坏性操作走票据三态。prod 数据禁止直写
+（`PROD_WRITE_REFUSED`），唯一入口走 DB 时间旅行的 promote。
+
+**诚实边界**：PG 驱动只在 in-process 协议 stub 上验证过，
+未对真实 PG 服务器验证（环境里没有 postgres）——UI/包头/报告
+三处诚实声明；破坏性票据没复用 `/api/approvals`
+（审批存储强制 `task_id` 外键，官方端点无 task_id 也 500），
+走自有审计票据状态机；表编辑器标识符对 schema 校验、值走参数绑定。
+
+## 57. HTTP 客户端（第四轮二）
+
+**是什么**：`.http` 文件式 HTTP/REST 客户端。
+新包 `@ai-factory/httpclient`（零依赖，node:http/https 自己写）：
+`parse.ts`（`###` 多段、METHOD URL、头、空行后 body、
+行首 `>` 断言、`@timeout-ms` 指令、注释；fail-closed 带行号）、
+`envs.ts`（环境合并：所选环境变量 < 显式变量；
+`{{var}}` 替换，未知留原文）、`client.ts`
+（默认超时 10 秒，响应体 5MB 上限，**不跟随重定向**、无 cookie jar）。
+6 种断言：`status == 200`、`status-class`（2xx/3xx/4xx/5xx）、
+`header`（eq/contains）、`body-contains`、`json-path`（exists 或 eq）、
+`max-time-ms`。服务端 `routes/httpclient.ts`：
+`POST /api/http/run`（解析→环境合并→**逐 URL 过出站防火墙门禁**→
+发送→断言；被拦记 `blocked:true` 其余继续；
+审计 `HTTP_CLIENT_RUN`，只记 method/host/path/status）、
+`GET/PUT /api/http/environments`
+（`<project-root>/.ai-factory/http-env.json`，jail+校验）。
+桌面端 HttpPanel（.http 编辑器、环境 JSON、逐请求状态/耗时/
+断言/响应体预览、blocked 显示）。
+
+**怎么用**：HTTP tab 写 .http 块 → 选环境 → 发送 →
+看每个请求的断言与 blocked 态；
+环境文件放 `.ai-factory/http-env.json`。
+
+**诚实边界**：重定向不跟随（3xx 原样报告）；
+响应体 5MB 上限（`bytes` 记真实大小）；
+json-path 只支持点路径+`[n]`，无通配符；
+未知 `{{var}}` 留原文；egress 判定在 route 层发送前，
+包本身不做门禁；格式错的断言（如 `> status 200`）
+直接 400 fail-closed。
+
+## 58. 性能剖析（第四轮二）
+
+**是什么**：真 V8 采样剖析。新包 `@ai-factory/profiler`
+（零依赖，纯 node 内置）：`spawn.ts`（子进程跑 `node --cpu-prof`，
+超时先给 SIGTERM 让 profile 落盘——SIGTERM 下不落盘则 fail-closed
+报 `no-profile`，绝不返回部分数据）、`cpu.ts`
+（解析 .cpuprofile → 热点 top-10（self/total）+ 折叠火焰树）、
+`flame.ts`（SVG 火焰图渲染）、`heap.ts`（`--require` preload 在
+exit hook 写真实 `v8.writeHeapSnapshot()`，CJS/ESM 通吃、
+无需 --inspect；按构造器统计 count/self 大小 + 快照 diff
+做泄漏定位）。服务端 `routes/profiler.ts`：
+`POST /api/profiler/cpu`（`{script, args?, timeoutMs?, sampleIntervalUs?}`）、
+`POST /api/profiler/heap`；jail：403 逃逸/404 缺失/400 非 js；
+超时上限 120 秒（下限 1 秒）；
+审计 `PROFILER_CPU_CAPTURED` / `PROFILER_HEAP_CAPTURED`。
+桌面端 ProfilerPanel：SVG 火焰图由**真实采样数据**渲染，
+不是示意图。
+
+**怎么用**：Profiler 面板填脚本 → cpu 采样看热点/火焰图 →
+heap 快照看构造器排行/两次快照 diff 找泄漏；
+不存在的脚本 404 fail-closed。
+
+**诚实边界**：堆表是 self 大小（retained 不计算，列名如实标注）；
+采样是统计性的（响应带 sampleCount/totalUs）；
+堆脚本必须自己退出，长驻进程会 hit 超时；超时上限 120s。
+
+## 59. 终端命令历史（第四轮二）
+
+**是什么**：VS Code Shell Integration 式命令历史。
+新包 `@ai-factory/termhistory`（零依赖）：`markers.ts`
+（标记扫描 + rcfile 生成器 + 包裹器）、`tracker.ts`
+（`CommandTracker` 状态机：B→C→D→H 才记录，否则丢弃）、
+`fuzzy.ts`（子序列模糊评分，连写加成 > 散点）、
+`store.ts`（`HistoryStore`：
+`<数据目录>/terminal-history/history.jsonl`，JSONL，
+去连续重复、损坏行跳过、超限压缩）。标记协议（OSC 133）：
+A=prompt 开始、B=输入开始（PS1 前缀，每 prompt 前重打补丁）、
+C=命令开始执行（DEBUG trap）、D;`<code>`=真实退出码、
+E;`<b64>`=BASH_COMMAND（fallback）、H;`<b64>`=精确输入行
+（`fc -ln -1`）。注入方式：bash 会话经 `bash -c` 包裹器，
+rc 文本走 `$AF_SHELL_INTEGRATION_RC` 环境变量
+（env 穿透 bwrap），会话内 `/tmp` 落盘 `--rcfile`。
+服务端 `routes/terminal.ts`：bash 会话自动包裹
+（sh 跳过→`integrated:false`）、命令落盘（best-effort）、
+`GET /api/terminal/history`（fuzzy/跨会话）、
+`GET /api/terminal/sessions/:id/commands`
+（`integrated` 标志 + 退出码）。桌面端：TerminalPanel 按段写入，
+在 C 处挂 marker、D 处按退出码挂 overview-ruler 装饰（绿/红）；
+状态条 ↑/↓ 命令跳转 +「历史命令」按钮；
+搜索浮层（分组、↑↓/回车/Esc，回车插入不执行）；
+`terminalHistory.ts` 是线协议客户端镜像。
+
+**怎么用**：终端正常用，bash 会话自动记录；
+状态条的「历史命令」按钮或搜索浮层跨会话模糊找命令，
+回车插入不执行；`$?` 在 DEBUG trap 下正确保留
+（实测 D;0/D;1/D;2/D;42、Ctrl+C → D;130）。
+
+**诚实边界**：仅 bash 有历史，sh 会话 `integrated:false`，不编造；
+H 为空（HISTCONTROL 丢弃）时 fallback 用 E 拼接，属近似；
+桌面装饰是 overview-ruler 色条，本机无浏览器真机视觉未做
+（tsc + unit 覆盖）。**收口真回归**：A8 的 OSC 标记打穿了
+Batch 48 跨 chunk 脱敏器的 longest-first 判定
+（标记字节隔开了长密钥两段，导致尾段泄漏）——
+`packages/secrets/src/broker.ts` 新增 `buildOscView()`：
+匹配决策在去掉完整 OSC 序列的视图坐标上做（控制字节零宽），
+carry/holdback 逻辑不变，落盘映射回原始坐标；
+`OSC_MAX_LEN=65536` 封顶 pending 增长；+3 回归测试。
+
+---
+
 *版本 0.2.0（2026-10-18）。2026-10-21 补录：加强波（一/二）、
 第三波（一/二）、第二轮（一/二）功能（§12–§41）；
-2026-10-21 补录：第三轮（一/二）功能（§42–§49）。
+2026-10-21 补录：第三轮（一/二）功能（§42–§49）；
+2026-10-22 补录：第四轮（一/二）功能（§50–§59）。
 英文版见 ADVANCED_FEATURES.en.md。*

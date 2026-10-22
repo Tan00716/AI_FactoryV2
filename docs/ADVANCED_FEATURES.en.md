@@ -12,7 +12,10 @@
 > migration recipes, impact analysis, egress firewall, scope lock,
 > design mode, DB time travel, auto-update, flaky-test detection,
 > benchmark regression stats, Local History, devcontainer, mutation
-> testing, sweep.yaml, editor/terminal widgets.
+> testing, sweep.yaml, editor/terminal widgets, pre-send secret scan,
+> deterministic refactoring, structural search/replace, TODO tracker,
+> dependency advisor, DAP debugger, database browser, HTTP client,
+> profiler, terminal history.
 > Quick start: [USER_GUIDE.md](USER_GUIDE.md);
 > known limitations: [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 > 中文版：[ADVANCED_FEATURES.md](ADVANCED_FEATURES.md).
@@ -804,7 +807,340 @@ exit code appears only when the session ends.
 
 ---
 
+## 50. Pre-send prompt secret scan (fourth round, part 1)
+
+**What**: fixes a real hole — `scanForSecrets` used to be called only
+by MemoryStore.write, while `adapter.invoke` sent prompts to vendors
+untouched, so raw secret values could go out the door.
+`assertPromptSafe` in `packages/runtime/src/pre-send-scan.ts` sits on
+the first line of both `StubAdapter.invoke` and `CodexAdapter.invoke` —
+no caller can bypass it. The engine is a 21-family shared table
+(`SECRET_PATTERNS` in `@ai-factory/security`, the single source of
+truth; `inspections.ts` now just imports + re-exports, zero behavior
+change for repo scanning) plus 3 prompt-shaped generic families kept
+local to pre-send (`token-assignment`/`secret-assignment`/
+`password-assignment`, never in the shared table). Matching is
+`matchAll` over every family — fixing a fail-open where a placeholder
+in front hid a real key behind it; the redact callback keeps
+placeholders intact.
+
+**How**: automatic, no configuration. Two modes via
+`setPreSendScanMode` (default `block`): on a hit, block mode writes
+audit `PROMPT_SECRET_BLOCKED` + a HIGH notification
+("Prompt blocked: …") and throws `PreSendSecretBlockedError`
+(names the pattern, never the value); `redact` mode substitutes
+`[REDACTED]` and releases the prompt, with audit
+`PROMPT_SECRET_REDACTED`. Sinks plug into the audit chain +
+notification center via `setPreSendScanSinks` (best-effort: with no
+sinks installed the gate still blocks, it just doesn't audit/notify).
+
+**Honest boundaries**: `images` only scans prompt text —
+`AdapterInput.images` are descriptors (no bytes), and vision:false
+adapters can't see bytes; redact mode sends no HIGH alert (the
+operator's explicit leniency choice) but still audits; pure text scan,
+zero model keys.
+
+## 51. Deterministic refactoring (fourth round, part 1)
+
+**What**: IDE-style refactoring with preview. The new zero-dependency
+`@ai-factory/refactor` package: `tokenizer.ts` (TS/JS tokenizer:
+strings/template `${}`/regex-vs-division/private fields/line+column+
+depth), `scope.ts` (two-pass scope analysis: functions/arrows/methods/
+classes/imports/catch/for, destructuring, TS type annotations,
+shadowing), `ops.ts` (4 operations: extract-method/extract-variable/
+inline-variable/rename), `diff.ts` (deterministic unified-diff
+generator), `types.ts`. Server `routes/refactor.ts`:
+`POST /api/refactor/analyze` (read-only preview, returns proposalId +
+diff), `POST /api/refactor/apply` (per-item `acceptedIds`; before
+writing anything every touched file is re-read and sha256-compared
+against the analyze snapshot — any drift fails the whole batch closed
+with 409 `REFACTOR_DRIFT`), `GET /api/refactor/proposals/:id`.
+The proposal store is in-memory with a 10-minute TTL. The desktop
+RefactorPanel goes form → preview (per-item checkboxes + diff) →
+apply selected.
+
+**How**: fill the op form in the Refactor panel → review the preview →
+tick the items to accept → apply; cross-file renames follow explicit
+`otherFiles` only; jail wiring via `setRefactorInspectionRootResolver`.
+Audit: `REFACTOR_ANALYZED` / `REFACTOR_APPLIED` /
+`REFACTOR_APPLY_REJECTED`.
+
+**Honest boundaries**: the preview diff deliberately doesn't reuse
+the shadow-git diff pipeline — shadow-git needs a real checkpoint, and
+preview must be side-effect free; extract-method is closure-based and
+never synthesizes parameters; escaping return/break/continue is refused
+outright; rename resolves by scope; apply is all-or-nothing per request
+and proposals die with a restart.
+
+## 52. Structural search/replace (fourth round, part 1)
+
+**What**: search/replace by AST structure, not text. The new
+`@ai-factory/ssr` package: `scanner.ts` (character-level state machine:
+string/comment/template-literal/regex aware, brace balancing),
+`template.ts` (4 built-in templates), `replace.ts`
+(`renameInScope`/preview/apply). Server `routes/ssr.ts`:
+`GET/POST/DELETE /api/ssr/templates` (template management, writes
+audited), `POST /api/ssr/search`, `POST /api/ssr/preview`,
+`POST /api/ssr/apply` (audited), `POST /api/ssr/quickfix` (one-click
+fix from an inspection hit). `inspections.ts` gains
+`setExtraCheckerProvider`; the `ssr-template` checker ships in the
+default profile. Desktop: quick-fix buttons in the InspectionsPanel
+plus SsrTemplatesManager. Contrast experiment: on same-named variables,
+text search hit 6 spots while SSR's scoped rename changed 3 (beta's
+same-named `count` and `obj.count` untouched).
+
+**How**: pick a built-in or custom template in SsrTemplatesManager →
+search → preview diff → apply; or hit quick-fix directly on an
+inspection finding. Jail via setter injection.
+
+**Honest boundaries**: the repomap parser isn't literally reused —
+codeindex's extractor doesn't do visibility modifiers or locals, so SSR
+has its own extended heuristic scanner; it's heuristic extraction, NOT
+a compiler AST (limitations declared at the top of
+`packages/ssr/src/types.ts`).
+
+## 53. TODO tracker (fourth round, part 1)
+
+**What**: JetBrains-style TODO tool window.
+`apps/server/src/todo-scan.ts` (~300 lines): a deterministic regex
+scanning kernel. `DEFAULT_TODO_PATTERNS`: FIXME→error, BUG→error,
+HACK→warning, TODO→info (case-sensitive); `validateTodoPatterns`
+fails closed — bad regexes are named, patterns matching the empty
+string are rejected, no duplicate names, no bad severities, cap 32
+patterns; file cap 20,000. Server `routes/todo-scan.ts`:
+`GET /api/todos` (config + full scan, viewer),
+`GET /api/todos/file` (one file, feeds the editor gutter),
+`PUT /api/todos` (custom patterns, operator, audit
+`TODO_CONFIG_UPDATED`), `POST /api/todos/reset` (back to defaults,
+audit `TODO_CONFIG_RESET`). Desktop: a new TODO tab in the bottom
+panel (TodoPanel) plus gutter dots + overview-ruler stripes in the
+editor.
+
+**How**: the bottom TODO tab shows the whole-project scan; gutter dots
+jump to items; `PUT` custom patterns (session-scoped — a restart
+reverts to defaults, and the UI says so). Read paths aren't audited.
+
+**Honest boundaries**: the two-level ignore gate reads
+`.ai-factory/ignore` + `indexing-ignore` and **never `.gitignore`**
+(real behavior); a TODO inside a string literal matches just like one
+in a comment (no string awareness); custom configs are session-scoped.
+
+## 54. Dependency upgrade advisor (fourth round, part 1)
+
+**What**: an offline-first upgrade advisor. The new
+`@ai-factory/depscan` package: a self-written semver subset engine
+(unsupported atoms — `||`, hyphen ranges, dist-tags — make
+maxSatisfying return null, **never guessed**), `advise` builds an
+upgrade plan with semver safety grading (major/minor/patch), and the
+registry has dual providers (offline snapshot by default; live requires
+explicit opt-in and passes the egress gate). The snapshot
+`registry-snapshot.json` (2026-10-22, 20 packages: the CVE-blacklist
+set plus common ones; every report discloses the snapshot date and
+states it lags the real registry — not a substitute for a live query).
+Server `routes/depscan.ts`: `POST /api/depscan/advise` (through the
+egress gate), `GET /api/depscan/snapshot` (snapshot metadata, viewer);
+CVE cross-reference via setter injection reusing inspections'
+`BUILTIN_VULNERABLE`. Desktop: a DepscanSection in the Problems panel.
+
+**How**: the Problems panel's dependency section shows the upgrade
+plan; the snapshot endpoint lets you check the lag date any time;
+opt in explicitly for a live registry lookup (an egress block gives a
+clear error).
+
+**Honest boundaries**: the self-written semver covers a subset —
+unsupported ranges deterministically return null; the snapshot is a
+hand-maintained 20-package set and can't cover the long tail; live
+mode goes through the egress firewall, and a deny under default-deny
+is fail-closed behavior.
+
+## 55. DAP debugger client (fourth round, part 2)
+
+**What**: a Debug Adapter Protocol client. The new zero-dependency
+`@ai-factory/debugger` package (pure node builtins): `framer.ts`
+(Content-Length framing), `ws.ts` (hand-written WebSocket client),
+`cdp.ts` (minimal CDP client), `launchjson.ts` (launch.json
+parsing/normalization), `client.ts` (DebugClient: spawns the adapter,
+DAP requests/events, fail-closed), `node-adapter.ts` (DAP↔CDP bridge
+child process). Compatible with `.vscode/launch.json`, **Node.js
+first**: launch runs `node --inspect=127.0.0.1:0` (loopback), attach is
+loopback-only (127.0.0.1 enforced). Server `routes/debug.ts`:
+`GET /api/debug/configs`, `POST /api/debug/sessions` (201), `GET`
+list/detail, `:id/output` (200-line cap), `:id/breakpoints`
+(breakpoints/conditional/logpoints), `:id/{continue,next,step-in,
+step-out,pause}`, `:id/{stack,scopes,variables}`, `:id/evaluate`,
+`DELETE :id`. Max 8 concurrent sessions (409 beyond); error codes
+404/409/410/502/504; audit `DEBUG_SESSION_STARTED`/`STOPPED`/
+`BREAKPOINTS_SET`. Desktop DebugPanel: config picker/launch, breakpoint
+drafting, stepping, call stack, variables, watch, output polling.
+
+**How**: pick a launch.json config in the Debug panel → launch → set
+breakpoints (conditional/logpoints) → step → inspect stack/variables →
+evaluate expressions; draft conditional breakpoints/logpoints before
+sending.
+
+**Honest boundaries**: Node.js only for now; chrome/python/coreclr/
+compound configs are reported unsupported, never silently
+reinterpreted; evaluating without a frameId gives an honest 500
+dap-error (the desktop passes a frameId); pausing on a `return` line
+during step is standard V8 behavior (checking the return value),
+reported as-is, not a bug; adapter spawn failure/crashes fail closed.
+
+## 56. Database browser (fourth round, part 2)
+
+**What**: an IDE-style database browser. **SQLite/Postgres first**.
+The new zero-dependency `@ai-factory/dbbrowser` package:
+`sql-guard.ts` (fail-closed pure function with four verdicts — read:
+SELECT/WITH..SELECT/EXPLAIN/read-only PRAGMA; write: INSERT/
+UPDATE..WHERE/DELETE..WHERE/CREATE TABLE|INDEX|VIEW/additive ALTER;
+destructive: DROP/TRUNCATE/ALTER..DROP COLUMN|RENAME/DELETE|UPDATE
+without WHERE — needs a ticket; blocked: multi-statement/ATTACH/VACUUM/
+transaction control/unknown), `drivers.ts` (`SqliteDriver` via
+node:sqlite; `PostgresDriver` with a hand-written minimal PG wire
+protocol: startup + simple query, trust auth, no SSL, no prepared
+statements, values as text), `schema.ts` (introspection via PRAGMA /
+information_schema; `createTableDdl`; additive-only `diffSchemas` —
+deletions are reported, not scripted; `schemaToErGraph` relationship
+graph), `browser.ts` (env-scoped connections; `updateRow` re-reads and
+verifies per column after write — never "pretends success"). Server
+`routes/dbbrowser.ts`: connection registration (sqlite paths jailed
+into the data dir, `PATH_ESCAPED` 403; prod registration requires an
+existing file or 404s), query console, table editor
+(paging/filtering/sorting/row edits), schema diff, DDL generation, ER
+graph; destructive statements never run inline:
+`destructive/request` (201 ticket) → `destructive/approve` (explicit
+`decided_by`) → `destructive/execute` (single-use, 15-minute TTL, bound
+to connection + statement sha256, re-classified at execute time).
+Audit: `DBB_CONNECTION_REGISTERED/REMOVED/WRITE/ROW_UPDATED/
+DESTRUCTIVE_REQUESTED/APPROVED/EXECUTED` (reads aren't audited).
+Desktop DbBrowserPanel (new Database tab in the bottom panel).
+
+**How**: register a connection in the Database tab → query console for
+read-only SQL → table editor for paged row edits (re-read verified) →
+schema diff for additive DDL → the ticket flow for anything
+destructive. Prod data is never written directly
+(`PROD_WRITE_REFUSED`); the only route is promote via DB time travel.
+
+**Honest boundaries**: the Postgres driver was verified only against
+an in-process protocol stub — never against a live Postgres server
+(none in this environment), stated in the UI, package header, and
+reports; the destructive ticket doesn't reuse `/api/approvals` (the
+approval store forces a `task_id` foreign key — the official endpoint
+500s without one), so it runs its own audited ticket state machine;
+the table editor validates identifiers against the schema and binds
+values as parameters.
+
+## 57. HTTP/REST client (fourth round, part 2)
+
+**What**: an `.http`-file HTTP/REST client. The new zero-dependency
+`@ai-factory/httpclient` package (hand-rolled node:http/https, no
+cookie jar): `parse.ts` (`###` multi-segment blocks, METHOD URL,
+headers, body after a blank line, `>` assertions, `@timeout-ms`
+directive, comments; fail-closed with line numbers), `envs.ts`
+(environment merge: selected environment vars < explicit variables;
+`{{var}}` substitution, unknown names left literal), `client.ts`
+(default 10s timeout, 5MB response-body cap, **no redirect
+following**). Six assertion kinds: `status == 200`, `status-class`
+(2xx/3xx/4xx/5xx), `header` (eq/contains), `body-contains`,
+`json-path` (exists or eq), `max-time-ms`. Server
+`routes/httpclient.ts`: `POST /api/http/run` (parse → env merge →
+**every URL through the egress firewall gate** before sending → send →
+assert; a blocked request is recorded `blocked:true` while the rest
+continue; audit `HTTP_CLIENT_RUN` records only method/host/path/
+status), `GET/PUT /api/http/environments`
+(`<project-root>/.ai-factory/http-env.json`, jailed + validated).
+Desktop HttpPanel (.http editor, environment JSON, per-request
+status/timing/assertions/body preview, blocked display).
+
+**How**: write `.http` blocks in the HTTP tab → pick an environment →
+send → check per-request assertions and blocked state; environments
+live in `.ai-factory/http-env.json`.
+
+**Honest boundaries**: redirects are not followed (3xx reported
+as-is); the 5MB body cap records the real `bytes` size; json-path
+supports only dot paths + `[n]`, no wildcards; unknown `{{var}}` stays
+literal; egress is enforced in the route layer before sending — the
+package itself has no gate; a malformed assertion like `> status 200`
+fails closed with 400.
+
+## 58. Performance profiler (fourth round, part 2)
+
+**What**: real V8 sampling. The new zero-dependency
+`@ai-factory/profiler` package (pure node builtins): `spawn.ts`
+(child runs `node --cpu-prof`; on timeout the child gets SIGTERM first
+so the profile can flush — if nothing lands, it fails closed with
+`no-profile`, never partial data), `cpu.ts` (parses .cpuprofile →
+hotspot top-10 by self/total + folded flame tree), `flame.ts` (SVG
+flame-graph rendering), `heap.ts` (a `--require` preload that writes a
+real `v8.writeHeapSnapshot()` in an exit hook — CJS/ESM, no --inspect
+needed; per-constructor count/self-size stats plus snapshot diff for
+leak hunting). Server `routes/profiler.ts`:
+`POST /api/profiler/cpu` (`{script, args?, timeoutMs?,
+sampleIntervalUs?}`), `POST /api/profiler/heap`; jail: 403 escaped/404
+missing/400 non-js; timeout capped at 120s (min 1s); audit
+`PROFILER_CPU_CAPTURED` / `PROFILER_HEAP_CAPTURED`. The desktop
+ProfilerPanel renders the SVG flame graph from **real sampled data**,
+not a mockup.
+
+**How**: enter a script in the Profiler panel → CPU sampling shows
+hotspots/flame graph → heap snapshots show constructor rankings, and
+diffing two snapshots hunts leaks; nonexistent scripts 404 fail-closed.
+
+**Honest boundaries**: the heap table shows self sizes (retained size
+isn't computed — the column labels say so); sampling is statistical
+(responses carry sampleCount/totalUs); heap scripts must exit on their
+own — long-running servers hit the timeout; 120s timeout cap.
+
+## 59. Terminal command history (fourth round, part 2)
+
+**What**: VS Code shell-integration-style command history. The new
+zero-dependency `@ai-factory/termhistory` package: `markers.ts`
+(marker scanning + rcfile generator + wrapper), `tracker.ts`
+(`CommandTracker` state machine: only a full B→C→D→H sequence
+records, anything else is discarded), `fuzzy.ts` (subsequence fuzzy
+scoring where consecutive runs outscore scattered letters),
+`store.ts` (`HistoryStore`:
+`<dataDir>/terminal-history/history.jsonl`, JSONL, dedupes
+consecutive repeats, skips corrupt lines, compacts over limit). The
+OSC 133 marker protocol: A=prompt start, B=input start (PS1 prefix,
+re-patched before every prompt), C=command start (DEBUG trap),
+D;`<code>`=real exit code, E;`<b64>`=BASH_COMMAND (fallback),
+H;`<b64>`=exact input line (`fc -ln -1`). Injection: bash sessions
+get a `bash -c` wrapper, the rc text travels via the
+`$AF_SHELL_INTEGRATION_RC` env var (env penetrates bwrap), landed as
+`--rcfile` under the session's /tmp. Server `routes/terminal.ts`: bash
+sessions auto-wrapped (sh skipped → `integrated:false`), commands land
+on disk best-effort, `GET /api/terminal/history` (fuzzy,
+cross-session), `GET /api/terminal/sessions/:id/commands`
+(`integrated` flag + exit codes). Desktop: TerminalPanel writes output
+per segment, hangs decorations at C and green/red overview-ruler marks
+at D by exit code; the status bar gains ↑/↓ command jumping plus a
+history button; a search overlay (grouped, ↑↓/Enter/Esc, Enter inserts
+without executing); `terminalHistory.ts` is the line-protocol client
+mirror.
+
+**How**: use the terminal normally — bash sessions record
+automatically; the history button or search overlay finds commands
+across sessions with fuzzy matching, Enter inserts without executing;
+`$?` is correctly preserved in the DEBUG trap (verified
+D;0/D;1/D;2/D;42, Ctrl+C → D;130).
+
+**Honest boundaries**: history exists for bash only — sh sessions
+report `integrated:false`, nothing invented; when H is empty
+(HISTCONTROL discarded) the E fallback concatenation is an
+approximation; desktop decorations are overview-ruler color bars (no
+real-browser visual check in this environment; tsc + unit coverage).
+**Closeout found a real regression**: A8's OSC markers broke the
+Batch-48 cross-chunk redactor's longest-first decision (marker bytes
+split a long secret's two halves, leaking the tail) —
+`packages/secrets/src/broker.ts` now matches on an OSC-stripped view
+coordinate space (control bytes are zero-width), carry/holdback logic
+unchanged, writes map back to raw coordinates; `OSC_MAX_LEN=65536`
+bounds pending growth; +3 regression tests.
+
+---
+
 *Version 0.2.0 (2026-10-18). Supplemented 2026-10-21: hardening waves
 (1/2), third wave (parts 1/2), second round (parts 1/2) — §12–§41;
-supplemented 2026-10-21: third round (parts 1/2) — §42–§49.
+supplemented 2026-10-21: third round (parts 1/2) — §42–§49;
+supplemented 2026-10-22: fourth round (parts 1/2) — §50–§59.
 中文版见 ADVANCED_FEATURES.md。*
