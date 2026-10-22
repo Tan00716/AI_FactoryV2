@@ -42,7 +42,7 @@ import { sanitizeUntrusted } from '@ai-factory/security';
 
 export type ProblemSeverity = 'error' | 'warning' | 'info';
 
-export type ProblemSource = 'terminal' | 'quality-gate' | 'scheduler' | 'manual';
+export type ProblemSource = 'terminal' | 'quality-gate' | 'scheduler' | 'manual' | 'tasks';
 
 /** One structured diagnostic produced from command output. */
 export interface ProblemDiagnostic {

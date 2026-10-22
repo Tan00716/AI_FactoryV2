@@ -4,8 +4,9 @@ import { useLang } from '../i18n';
 import { ProblemsPanel } from './ProblemsPanel';
 import { TodoPanel } from './TodoPanel';
 import { DbBrowserPanel } from './DbBrowserPanel';
+import { TasksPanel } from './TasksPanel';
 
-const TABS = ['AI Activity', 'Terminal', 'Tests', 'Problems', 'TODO', 'Database', 'Logs', 'Evidence'] as const;
+const TABS = ['AI Activity', 'Terminal', 'Tests', 'Problems', 'TODO', 'Database', 'Tasks', 'Logs', 'Evidence'] as const;
 
 /** Tab 标题 i18n：内部标识保持英文原值，展示层翻译。 */
 const TAB_TITLE_KEYS: Record<string, string> = {
@@ -15,6 +16,7 @@ const TAB_TITLE_KEYS: Record<string, string> = {
   Problems: 'bottom.tab.problems',
   TODO: 'bottom.tab.todos',
   Database: 'bottom.tab.database',
+  Tasks: 'bottom.tab.tasks',
   Logs: 'bottom.tab.logs',
   Evidence: 'bottom.tab.evidence',
 };
@@ -152,6 +154,7 @@ export function BottomPanel({ projectId }: { projectId: string }) {
         {tab === 'Problems' && <ProblemsPanel projectId={projectId} />}
         {tab === 'TODO' && <TodoPanel />}
         {tab === 'Database' && <DbBrowserPanel />}
+        {tab === 'Tasks' && <TasksPanel projectId={projectId} />}
         {tab === 'Logs' && <div className="muted">{t('bottom.logsEmpty')} <span className="pill">{t('bottom.stubBadge')}</span></div>}
         {tab === 'Evidence' && <div className="muted">{t('bottom.evidenceEmpty')}</div>}
       </div>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type TaskSummary, type OrgNode } from '../api';
 import { useLang } from '../i18n';
 import { flattenAgents, rankMatches, type PaletteAgent } from '../utils/cmdk';
+import { onCommand, PALETTE_TOGGLE_COMMAND } from '../keybinding/commands';
 
 /**
  * Command palette (Cmd+K / Ctrl+K), VS Code / Cursor style.
@@ -58,17 +59,12 @@ export function CommandPalette(props: CommandPaletteProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
 
-  // Global hotkey: Cmd+K / Ctrl+K toggles.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setOpen((o) => !o);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  // Global hotkey comes from the keybinding system (round-5 R5-S1):
+  // the manager owns Cmd/Ctrl+K ('palette.toggle') and dispatches it here.
+  // The palette no longer installs its own keydown listener.
+  useEffect(() => onCommand((id) => {
+    if (id === PALETTE_TOGGLE_COMMAND) setOpen((o) => !o);
+  }), []);
 
   // Reset + focus whenever opened.
   useEffect(() => {

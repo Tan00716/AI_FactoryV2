@@ -78,8 +78,12 @@ function projectIdOf(value: unknown): string | null {
 }
 
 function sourceOf(value: unknown): ProblemSource | null {
-  return value === 'terminal' || value === 'quality-gate' || value === 'scheduler' || value === 'manual'
-    ? value
+  return value === 'terminal' ||
+    value === 'quality-gate' ||
+    value === 'scheduler' ||
+    value === 'manual' ||
+    value === 'tasks'
+    ? (value as ProblemSource)
     : null;
 }
 
@@ -249,7 +253,7 @@ export async function handleProblemMatcherRoutes(
     if (sourceParam) {
       const s = sourceOf(sourceParam);
       if (!s) {
-        ctx.json(res, 400, { error: 'source must be terminal|quality-gate|scheduler|manual' });
+        ctx.json(res, 400, { error: 'source must be terminal|quality-gate|scheduler|manual|tasks' });
         return true;
       }
       source = s;
@@ -274,7 +278,7 @@ export async function handleProblemMatcherRoutes(
     }
     const source = sourceOf(body['source']);
     if (!source) {
-      ctx.json(res, 400, { error: 'source must be terminal|quality-gate|scheduler|manual' });
+      ctx.json(res, 400, { error: 'source must be terminal|quality-gate|scheduler|manual|tasks' });
       return true;
     }
     let text: string | null = null;

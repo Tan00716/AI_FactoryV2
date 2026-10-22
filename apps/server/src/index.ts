@@ -144,7 +144,7 @@ import { handleReleaseRoutes } from './routes/releases';
 import { handleUpdateRoutes, performUpdateCheck } from './routes/updates';
 import { getUpdateConfig } from './updates';
 import { handlePolicyRoutes } from './routes/policy';
-import { handleExecRoutes } from './routes/exec';
+import { checkCommandPolicy, commandHitsControlDir, handleExecRoutes, resolveExecCwd } from './routes/exec';
 import { handleTerminalRoutes, getTerminalTailForContext } from './routes/terminal';
 import { handleSecretRoutes } from './routes/secrets';
 import { handleFileRoutes, setFileScopeLookup } from './routes/files';
@@ -209,6 +209,12 @@ import { handleRefactorRoutes, setRefactorInspectionRootResolver } from './route
 import { handleDebugRoutes, setDebugInspectionRootResolver } from './routes/debug';
 import { handleSsrRoutes, setSsrInspectionRootResolver, ssrCheckerProvider } from './routes/ssr';
 import {
+  handleTrojanRoutes,
+  setTrojanInspectionRootResolver,
+  trojanCheckerProvider,
+} from './routes/trojanscan';
+import { handleTaskRunnerRoutes, setTaskRunnerDeps } from './routes/tasks';
+import {
   handleHttpClientRoutes,
   setHttpClientEgressGate,
   setHttpClientRootResolver,
@@ -223,6 +229,19 @@ import {
   handleProfilerRoutes,
   setProfilerInspectionRootResolver,
 } from './routes/profiler';
+import {
+  handleMerge3Routes,
+  setMerge3InspectionRootResolver,
+  setMerge3ScopeLookup,
+} from './routes/merge3';
+import {
+  handleKeybindingRoutes,
+  setKeybindingRootResolver,
+} from './routes/keybinding';
+import {
+  handleBlameRoutes,
+  setBlameInspectionRootResolver,
+} from './routes/blame';
 import { handleIgnoresRoutes } from './routes/ignores';
 import { handleEgressRoutes } from './routes/egress';
 import { assertEgressAllowed, setEgressBlockSinks } from './egress';
@@ -248,6 +267,13 @@ import {
   setProblemMatcherDeps,
   qualityGateOutputSink,
 } from './routes/problem-matchers';
+import {
+  builtinMatcher,
+  parseOutput,
+  problemDiagnosticsStore,
+  problemMatcherStore,
+  resolveMatchers,
+} from './problem-matchers';
 import { handleDesignRoutes } from './routes/design';
 import { setQualityGateOutputSink } from './routes/quality';
 import { initMcpPersistence } from './routes/mcp';
@@ -683,7 +709,44 @@ setMutationInspectionRootResolver((root) => resolveInspectionRoot(root));
  * and saved asInspection templates run as the 'ssr-template' checker.
  */
 setSsrInspectionRootResolver((root) => resolveInspectionRoot(root));
-setExtraCheckerProvider((root) => ssrCheckerProvider(root));
+
+/**
+ * Three-way merge conflict editor (round-5 task R5-S3) — same
+ * setter-injection pattern: the route must not value-import
+ * ../inspections, so the repo jail resolver is injected here, along
+ * with the task-scope lookup shared with routes/files (task-attributed
+ * resolves obey the same scope lock).
+ */
+setMerge3InspectionRootResolver((root) => resolveInspectionRoot(root));
+setMerge3ScopeLookup((taskId) => tasks.get(taskId).scope ?? null);
+setTrojanInspectionRootResolver((root) => resolveInspectionRoot(root));
+// Round-5 R5-S2: the declarative task runner reuses the /api/exec safety
+// policy (deny patterns + binary whitelist + control-dir guard) — no new
+// execution channel. Problem output is parsed with the project's matchers
+// and stored under source 'tasks'.
+setTaskRunnerDeps({
+  resolveRoot: (root) => resolveInspectionRoot(root),
+  checkCommandPolicy: (command) => checkCommandPolicy(command),
+  commandHitsControlDir: (cwd, tokens) => commandHitsControlDir(cwd, tokens),
+  resolveCwd: (cwd) => resolveExecCwd(cwd),
+  parseAndStore: (projectId, defs, text) => {
+    const { diagnostics, stats } = parseOutput(text, defs, 'tasks');
+    const added = problemDiagnosticsStore.record(projectId, diagnostics, stats, 'tasks');
+    return { added, total: problemDiagnosticsStore.all(projectId).length, stats };
+  },
+  resolveMatchers: (projectId) => resolveMatchers(projectId),
+  getMatcher: (projectId, name) => {
+    const cfg = problemMatcherStore().get(projectId);
+    return cfg.customs[name] ?? builtinMatcher(name);
+  },
+});
+// Round-5 R5-S1: the keybinding user layer lives in the user data dir
+// (AI_FACTORY_DATA_DIR/keybindings.json) — the server has no keyboard
+// context, it only stores and fail-closed-validates the user layer.
+setKeybindingRootResolver(() => process.env.AI_FACTORY_DATA_DIR ?? 'data');
+// Round-5 A5: the extra-checker hook holds one provider; combine SSR and
+// Trojan Source checkers here (both are root-supplied, profile-gated).
+setExtraCheckerProvider((root) => [...ssrCheckerProvider(root), ...trojanCheckerProvider(root)]);
 
 /**
  * Dependency upgrade advisor (round-4 task R4-B10) — same setter-injection
@@ -708,6 +771,15 @@ setDepscanLiveRegistryGate((host) => assertEgressAllowed(`https://${host}/`, { s
  * CPU = native --cpu-prof sampling; heap = v8.writeHeapSnapshot on exit.
  */
 setProfilerInspectionRootResolver((root) => resolveInspectionRoot(root));
+
+/**
+ * Git blame + timeline (round-5 task R5-A4) — same setter-injection
+ * pattern: routes/blame must not value-import ../inspections
+ * (dual-mode import rule), so the jail resolver is injected here.
+ * Blame = git blame --porcelain per line (uncommitted lines marked);
+ * timeline = git log fused with Local History snapshots, newest first.
+ */
+setBlameInspectionRootResolver((root) => resolveInspectionRoot(root));
 
 /**
  * Deterministic refactoring (round-4 task R4-S3) — same setter-injection
@@ -1484,9 +1556,14 @@ const server = createServer(async (req, res) => {
     if (await handleRefactorRoutes(req, res, url, routeCtx)) return;
     if (await handleDebugRoutes(req, res, url, routeCtx)) return;
     if (await handleSsrRoutes(req, res, url, routeCtx)) return;
+    if (await handleTrojanRoutes(req, res, url, routeCtx)) return;
     if (await handleHttpClientRoutes(req, res, url, routeCtx)) return;
+    if (await handleTaskRunnerRoutes(req, res, url, routeCtx)) return;
     if (await handleDepscanRoutes(req, res, url, routeCtx)) return;
     if (await handleProfilerRoutes(req, res, url, routeCtx)) return;
+    if (await handleKeybindingRoutes(req, res, url, routeCtx)) return;
+    if (await handleBlameRoutes(req, res, url, routeCtx)) return;
+    if (await handleMerge3Routes(req, res, url, routeCtx)) return;
     if (await handleIgnoresRoutes(req, res, url, routeCtx)) return;
     if (await handleCoverageRoutes(req, res, url, routeCtx)) return;
     if (await handleContextProviderRoutes(req, res, url, routeCtx)) return;

@@ -9,7 +9,7 @@
  * Diff views for the Change Review UI (§66) live in DiffViewer.tsx.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { defaultApiBase, authHeaders, api, type TodoItem } from '../api';
+import { defaultApiBase, authHeaders, api, type TodoItem, type TrojanHit, type BlameLineDto } from '../api';
 import { useLang } from '../i18n';
 import monaco, { languageOf } from '../monacoSetup';
 import { editorCursor } from '../editorCursor';
@@ -139,6 +139,8 @@ export function EditorPanel({
     // Task ⑨: feed the Design panel's code→preview lookup (editorCursor.ts).
     editor.onDidChangeCursorPosition((e) => {
       if (openPathRef.current) editorCursor.line = e.position.lineNumber;
+      // R5-A4: current-line blame annotation (best-effort).
+      renderBlameLine(editor, e.position.lineNumber);
     });
     // An open-request may have arrived while the Editor tab was unmounted.
     const pending = openRequestRef.current;
@@ -216,6 +218,94 @@ export function EditorPanel({
     [],
   );
 
+  // R5-A5 Trojan Source 防护：可疑 Unicode 字符内联高亮 + 悬停码点。
+  // Best-effort：扫描失败清掉旧标记，绝不打断编辑。只在打开文件时扫一次
+  // （快照语义）；悬停显示码点/字符名/类别——只标注、不自动改写。
+  const trojanDecorIdsRef = useRef<string[]>([]);
+  const refreshTrojanDecorations = useCallback(
+    async (editor: monaco.editor.IStandaloneCodeEditor, path: string, text: string) => {
+      const kindLabel: Record<TrojanHit['kind'], string> = {
+        'bidi-control': t('trojan.kindBidi'),
+        'zero-width': t('trojan.kindZeroWidth'),
+        confusable: t('trojan.kindConfusable'),
+      };
+      try {
+        const { findings } = await api.trojanScanText(path, text);
+        const decs = findings.slice(0, 200).map((f) => {
+          const extra =
+            f.kind === 'confusable' && f.script && f.latin
+              ? ` (${t('trojan.looksLike')} '${f.latin}', ${f.script})`
+              : '';
+          return {
+            range: new monaco.Range(f.line, f.column, f.line, f.column + f.length),
+            options: {
+              inlineClassName: `trojan-hit trojan-hit-${f.kind === 'bidi-control' ? 'bidi' : f.kind === 'zero-width' ? 'zerowidth' : 'confusable'}`,
+              hoverMessage: {
+                value: `**${kindLabel[f.kind]}** \`${f.codePoint}\` ${f.name}${extra}`,
+              },
+              ...(f.severity === 'error'
+                ? {
+                    overviewRuler: {
+                      color: '#f14c4c',
+                      position: monaco.editor.OverviewRulerLane.Right,
+                    },
+                  }
+                : {}),
+            },
+          };
+        });
+        trojanDecorIdsRef.current = editor.deltaDecorations(trojanDecorIdsRef.current, decs);
+      } catch {
+        trojanDecorIdsRef.current = editor.deltaDecorations(trojanDecorIdsRef.current, []);
+      }
+    },
+    [t],
+  );
+
+  // R5-A4 Git blame: per-file line attribution cache + current-line inline
+  // annotation (VS Code "inline blame" style). Best-effort: a failed fetch
+  // clears the cache and removes the annotation, never breaking editing.
+  const blameCacheRef = useRef<{ path: string; byLine: Map<number, BlameLineDto> } | null>(null);
+  const blameDecorIdsRef = useRef<string[]>([]);
+  const renderBlameLine = useCallback((editor: monaco.editor.IStandaloneCodeEditor, lineNumber: number) => {
+    const cache = blameCacheRef.current;
+    if (!cache) return;
+    const bl = cache.byLine.get(lineNumber);
+    const text = bl
+      ? bl.uncommitted
+        ? `  ${bl.shortHash} · ${'uncommitted'}`
+        : `  ${bl.shortHash} · ${bl.author} · ${new Date(bl.authorTime * 1000).toLocaleDateString()}`
+      : null;
+    blameDecorIdsRef.current = editor.deltaDecorations(blameDecorIdsRef.current, [
+      {
+        range: new monaco.Range(lineNumber, 1, lineNumber, 1),
+        options: text
+          ? {
+              after: {
+                content: text,
+                inlineClassName: 'blame-inline',
+              },
+            }
+          : {},
+      },
+    ]);
+  }, []);
+  const refreshBlame = useCallback(
+    async (editor: monaco.editor.IStandaloneCodeEditor, path: string) => {
+      try {
+        const res = await api.blameFile(path);
+        const byLine = new Map<number, BlameLineDto>();
+        for (const l of res.lines.slice(0, 2000)) byLine.set(l.line, l);
+        blameCacheRef.current = { path, byLine };
+        renderBlameLine(editor, editor.getPosition()?.lineNumber ?? 1);
+      } catch {
+        blameCacheRef.current = null;
+        blameDecorIdsRef.current = editor.deltaDecorations(blameDecorIdsRef.current, []);
+      }
+    },
+    [renderBlameLine],
+  );
+
   const openFile = useCallback(async (path: string) => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -241,11 +331,15 @@ export function EditorPanel({
       setStatus('');
       // R4-B9: refresh TODO gutter markers for the newly opened file.
       void refreshTodoDecorations(editor, path);
+      // R5-A4: refresh git blame attribution for the newly opened file.
+      void refreshBlame(editor, path);
+      // R5-A5: Trojan Source scan of the opened buffer (snapshot semantics).
+      void refreshTrojanDecorations(editor, path, model.getValue());
     } catch (e) {
       setErr(e instanceof Error ? e.message : t('editor.openFailed'));
       setStatus('');
     }
-  }, []);
+  }, [refreshTrojanDecorations]);
 
   const openFileRef = useRef(openFile);
   openFileRef.current = openFile;

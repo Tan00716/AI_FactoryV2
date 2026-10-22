@@ -843,6 +843,20 @@ export interface FlakyState {
 }
 /** R4-B9 TODO 追踪：服务端 TodoItem / TodoPattern 的桌面侧形状。 */
 export type TodoSeverity = 'error' | 'warning' | 'info';
+/** R5-A5 Trojan Source 防护：服务端 TrojanApiHit 的桌面侧形状。 */
+export type TrojanKind = 'bidi-control' | 'zero-width' | 'confusable';
+export interface TrojanHit {
+  line: number;
+  column: number;
+  length: number;
+  kind: TrojanKind;
+  severity: 'error' | 'warning';
+  codePoint: string;
+  name: string;
+  script?: string;
+  latin?: string;
+  message: string;
+}
 export interface TodoItem {
   file: string;
   line: number;
@@ -983,6 +997,89 @@ export interface DebugEvalResult {
   result: string;
   type?: string;
   variablesReference: number;
+}
+/** R5-A4 Git blame 响应（逐行 blame，快照语义）。 */
+export interface BlameLineDto {
+  line: number;
+  hash: string;
+  shortHash: string;
+  author: string;
+  authorMail: string;
+  authorTime: number;
+  summary: string;
+  uncommitted: boolean;
+}
+export interface BlameResponse {
+  repoRoot: string;
+  file: string;
+  lines: BlameLineDto[];
+  truncated: boolean;
+  lineCap: number;
+}
+/** R5-S3 三路合并：冲突文件条目。 */
+export interface MergeConflictFile {
+  path: string;
+  status: string;
+}
+/** R5-S3：冲突标记块（0-based 行号）。 */
+export interface MergeHunkDto {
+  index: number;
+  startLine: number;
+  midLine: number;
+  endLine: number;
+  oursLabel: string | null;
+  theirsLabel: string | null;
+  ours: string[];
+  theirs: string[];
+}
+/** R5-S3：diff3 对齐块。 */
+export interface MergeChunkDto {
+  kind: 'stable' | 'ours-only' | 'theirs-only' | 'both-same' | 'conflict';
+  baseStart: number;
+  baseLines: string[];
+  oursLines: string[];
+  theirsLines: string[];
+  needsManual: boolean;
+}
+/** R5-S3：analyze 响应（只读）。 */
+export interface MergeAnalysisResponse {
+  file: string;
+  sha256: string;
+  markerHunks: MergeHunkDto[];
+  stages: { base: boolean; ours: boolean; theirs: boolean };
+  chunks: MergeChunkDto[];
+  summary: { markerHunks: number; cleanChunks: number; conflictChunks: number; needsManual: number };
+}
+/** R5-S3：逐块解决选项。 */
+export type MergeResolutionChoice = 'ours' | 'theirs' | 'both' | 'custom';
+export interface MergeHunkResolution {
+  hunk: number;
+  choice: MergeResolutionChoice;
+  customText?: string;
+}
+/** R5-S3：resolve 响应。 */
+export interface MergeResolveResponse {
+  file: string;
+  resolved: boolean;
+  staged: boolean;
+  stageError: string | null;
+  checkpointId: string;
+  sha256: string;
+}
+/** R5-A4 Timeline 响应（git 提交 × local-history 快照融合）。 */
+export type TimelineEntryDto =
+  | { kind: 'git'; hash: string; shortHash: string; author: string; date: number; message: string }
+  | { kind: 'snapshot'; id: string; dateMs: number; snapshotKind: string; size: number };
+export interface TimelineResponse {
+  repoRoot: string;
+  file: string;
+  noGit: boolean;
+  entries: TimelineEntryDto[];
+}
+export interface TimelineDiffResponse {
+  from: string;
+  to: string;
+  diff: string;
 }
 export interface RefactorWarning {
   code: string;
@@ -1139,6 +1236,56 @@ export interface HttpRunResponse {
 export interface HttpEnvironmentsResponse {
   root: string;
   environments: Record<string, { vars: Record<string, string> }>;
+}
+/** R5-S2 声明式任务运行器：任务定义视图。 */
+export interface TaskDefView {
+  label: string;
+  type: 'shell' | 'process';
+  command: string;
+  args: string[];
+  group: 'build' | 'test' | 'none';
+  detail?: string;
+  dependsOn: string[];
+  dependsOrder: 'sequence' | 'parallel';
+  problemMatcher: string[];
+  options: { cwd?: string; env?: Record<string, string>; timeoutMs?: number };
+}
+export interface TasksListResponse {
+  tasks: TaskDefView[];
+  errors: string[];
+  warnings: string[];
+  missing: boolean;
+}
+export interface TaskRunResultView {
+  label: string;
+  status: 'ok' | 'failed' | 'denied' | 'timeout' | 'skipped';
+  exitCode: number | null;
+  durationMs: number;
+  output: string;
+  truncated: boolean;
+  diagnosticsAdded: number;
+  matchRate: number;
+  error?: string;
+  notes?: string[];
+}
+export interface TaskChainResponse {
+  requested: string[];
+  results: TaskRunResultView[];
+  stoppedAt: string | null;
+  ok: boolean;
+  startedAt: string;
+  finishedAt: string;
+}
+export interface TaskRunsResponse {
+  runs: Array<{
+    id: string;
+    label: string;
+    ok: boolean;
+    stoppedAt: string | null;
+    taskCount: number;
+    startedAt: string;
+    finishedAt: string;
+  }>;
 }
 export interface FlakyRecordResponse {
   projectId: string;
@@ -1665,6 +1812,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(root ? { root } : {}),
     }),
+  /** R5-A5 Trojan Source 防护：扫描编辑器当前文本（inline，不读盘）。 */
+  trojanScanText: (filename: string, text: string) =>
+    req<{ findings: TrojanHit[] }>('/trojan/scan', {
+      method: 'POST',
+      body: JSON.stringify({ filename, text }),
+    }),
   /** R4-S3 确定性重构：分析（preview，只读）→ proposal。 */
   refactorAnalyze: (input: RefactorAnalyzeInput) =>
     req<RefactorProposalResponse>('/api/refactor/analyze', {
@@ -1707,6 +1860,18 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ root, environments }),
     }),
+  /** R5-S1 快捷键：读取用户层 keybindings.json。 */
+  keybindingsGet: () =>
+    req<{ keybindings: Array<{ command: string; key: string | null; when?: string }> }>('/api/keybindings'),
+  /** R5-S1 快捷键：整体替换用户层（服务端 fail-closed 校验）。 */
+  keybindingsSave: (keybindings: Array<{ command: string; key: string | null; when?: string }>) =>
+    req<{ ok: boolean; keybindings: unknown[] }>('/api/keybindings', {
+      method: 'PUT',
+      body: JSON.stringify({ keybindings }),
+    }),
+  /** R5-S1 快捷键：清空用户层，回到默认。 */
+  keybindingsReset: () =>
+    req<{ ok: boolean }>('/api/keybindings', { method: 'DELETE' }),
   /** R4-A5 数据库浏览器：连接列表。 */
   dbConnections: () =>
     req<{ connections: DbBrowserConnection[] }>('/api/db-browser/connections'),
@@ -1829,4 +1994,56 @@ export const api = {
   /** 结束会话（DELETE /api/debug/sessions/:id）：写 operator。 */
   debugStopSession: (sessionId: string) =>
     req<{ ok: boolean }>(`/debug/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
+  /** R5-A4 Git blame：逐行 blame（读 viewer）。 */
+  blameFile: (path: string) =>
+    req<BlameResponse>(`/api/blame?path=${encodeURIComponent(path)}`),
+  /** R5-A4 Timeline：git log × local-history 快照融合（读 viewer）。 */
+  timelineFile: (path: string) =>
+    req<TimelineResponse>(`/api/timeline?path=${encodeURIComponent(path)}`),
+  /** R5-A4 Timeline diff：两点之间的 unified diff（读 viewer）。 */
+  timelineDiff: (path: string, from: string, to: string) =>
+    req<TimelineDiffResponse>(
+      `/api/timeline/diff?path=${encodeURIComponent(path)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    ),
+  /** R5-S3 三路合并：列出冲突文件（读 viewer）。 */
+  mergeConflicts: (repo?: string) =>
+    req<{ repo: string; files: MergeConflictFile[] }>(
+      `/api/merge/conflicts${repo ? `?repo=${encodeURIComponent(repo)}` : ''}`,
+    ),
+  /** R5-S3：分析冲突文件（只读：标记块 + diff3 对齐）。 */
+  mergeAnalyze: (repo: string | undefined, file: string) =>
+    req<MergeAnalysisResponse>('/api/merge/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ ...(repo ? { repo } : {}), file }),
+    }),
+  /** R5-S3：逐块解决并写回（drift 则 409；写前影子检查点）。 */
+  mergeResolve: (input: {
+    repo?: string;
+    file: string;
+    sha256: string;
+    resolutions: MergeHunkResolution[];
+    stage?: boolean;
+    taskId?: string;
+  }) =>
+    req<MergeResolveResponse>('/api/merge/resolve', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R5-S2 声明式任务运行器：列出 .ai-factory/tasks.json 的任务。 */
+  tasksList: (root?: string) =>
+    req<TasksListResponse>(`/api/tasks/list${root ? `?root=${encodeURIComponent(root)}` : ''}`),
+  /** R5-S2：保存 tasks.json（服务端 fail-closed 校验，非法 400）。 */
+  tasksSave: (text: string, root?: string) =>
+    req<{ ok: boolean; count: number; warnings: string[] }>('/api/tasks', {
+      method: 'PUT',
+      body: JSON.stringify({ text, ...(root ? { root } : {}) }),
+    }),
+  /** R5-S2：运行任务（含 dependsOn 链；失败 fail-closed 中断）。 */
+  tasksRun: (label: string, projectId: string, root?: string) =>
+    req<TaskChainResponse>('/api/tasks/run', {
+      method: 'POST',
+      body: JSON.stringify({ label, projectId, ...(root ? { root } : {}) }),
+    }),
+  /** R5-S2：最近的运行记录。 */
+  tasksRuns: () => req<TaskRunsResponse>('/api/tasks/runs'),
 };

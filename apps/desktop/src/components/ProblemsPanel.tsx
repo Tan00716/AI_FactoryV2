@@ -43,7 +43,7 @@ interface MatcherMeta {
   patterns: Array<{ regexp: string }>;
 }
 
-const SOURCES = ['all', 'terminal', 'quality-gate', 'scheduler', 'manual'] as const;
+const SOURCES = ['all', 'terminal', 'quality-gate', 'scheduler', 'manual', 'tasks'] as const;
 
 /**
  * Flaky-test section (round-3 task 3) — history-backed intermittent
@@ -712,7 +712,9 @@ export function ProblemsPanel({ projectId }: { projectId: string }) {
         ? t('problems.sourceQuality')
         : s === 'scheduler'
           ? t('problems.sourceScheduler')
-          : t('problems.sourceManual');
+          : s === 'tasks'
+            ? t('problems.sourceTasks')
+            : t('problems.sourceManual');
 
   const visible = filter === 'all' ? diags : diags.filter((d) => d.source === filter);
 

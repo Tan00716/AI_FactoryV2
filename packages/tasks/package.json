@@ -1,0 +1,1 @@
+{"dependencies":{},"description":"Declarative task runner: tasks.json parsing, dependency planning, fail-closed validation (R5-S2)","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/tasks","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

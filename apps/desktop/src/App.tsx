@@ -40,7 +40,9 @@ import { EditorPanel } from './components/EditorPanel';
 import { ChangesPanel, createChangesApi } from './components/ChangesPanel';
 import { StabilityPanel } from './components/StabilityPanel';
 import { RefactorPanel } from './components/RefactorPanel';
+import { MergePanel } from './components/MergePanel';
 import { DebugPanel } from './components/DebugPanel';
+import { TimelinePanel } from './components/TimelinePanel';
 import { ProfilerPanel } from './components/ProfilerPanel';
 import { HttpPanel } from './components/HttpPanel';
 import { DashboardPanel, createDashboardApi } from './components/DashboardPanel';
@@ -55,6 +57,9 @@ import { NeedsHumanPanel } from './components/NeedsHumanPanel';
 import { LanguageProvider, useLang } from './i18n';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { initialProjectId } from './utils/project-query';
+import { KeybindingHost } from './keybinding/host';
+import { onCommand, tabNameForCommand, LANGUAGE_SWITCH_COMMAND } from './keybinding/commands';
+import { KeybindingSettings } from './keybinding/KeybindingSettings';
 import './styles.css';
 
 const API_BASE = defaultApiBase();
@@ -67,7 +72,7 @@ const API_BASE = defaultApiBase();
  *   bottom (activity · terminal · tests · logs)
  */
 function IdeShell() {
-  const { t } = useLang();
+  const { t, lang, setLang } = useLang();
   const [projects, setProjects] = useState<Project[]>([]);
   // Multi-project: a window opened via "open in new window" carries
   // ?project=<id>; each window keeps its own projectId state, so two
@@ -84,7 +89,7 @@ function IdeShell() {
   /** Batch 15: API identity label for the top bar (role / local mode /
    *  unknown when whoami cannot be fetched — displayed as-is, never guessed). */
   const [apiIdentityLabel, setApiIdentityLabel] = useState('');
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor' | 'Profiler' | 'HTTP' | 'Debug'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor' | 'Profiler' | 'HTTP' | 'Debug' | 'Timeline' | 'Keybindings' | 'Merge'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   /**
    * Design panel → editor jump (task ⑨): the Design panel dispatches an
@@ -186,6 +191,16 @@ function IdeShell() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Round-5 R5-S1: keybinding commands dispatched by the KeybindingManager.
+  useEffect(() => onCommand((id) => {
+    if (id === LANGUAGE_SWITCH_COMMAND) {
+      setLang(lang === 'zh' ? 'en' : 'zh');
+      return;
+    }
+    const tab = tabNameForCommand(id);
+    if (tab) setCenterTab(tab as typeof centerTab);
+  }), [lang, setLang]);
+
   // Multi-project: the native window title follows the bound project so
   // two windows are distinguishable at a glance (Electron mirrors
   // document.title onto the window).
@@ -247,7 +262,7 @@ function IdeShell() {
         <main className="center">
           {bootError && <div className="banner err">{bootError}</div>}
           <div className="center-tabs">
-            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab', 'Coverage', 'Recipes', 'Design', 'Updates', 'Refactor', 'Profiler', 'HTTP', 'Debug'] as const).map((name) => (
+            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab', 'Coverage', 'Recipes', 'Design', 'Updates', 'Refactor', 'Profiler', 'HTTP', 'Debug', 'Timeline', 'Keybindings', 'Merge'] as const).map((name) => (
               <button key={name} className={centerTab === name ? 'active' : ''} onClick={() => setCenterTab(name)}>{t(`tab.${name.toLowerCase().replace('/', '')}` as const)}</button>
             ))}
           </div>
@@ -369,6 +384,12 @@ function IdeShell() {
             <HttpPanel />
           ) : centerTab === 'Debug' ? (
             <DebugPanel projectId={projectId} />
+          ) : centerTab === 'Timeline' ? (
+            <TimelinePanel />
+          ) : centerTab === 'Keybindings' ? (
+            <KeybindingSettings />
+          ) : centerTab === 'Merge' ? (
+            <MergePanel />
           ) : (
             <EditorPanel openRequest={editorOpenRequest} />
           )}
@@ -405,6 +426,7 @@ function IdeShell() {
         onSelectAgent={setSelectedAgentId}
         onCreateTask={() => setShowCreate(true)}
       />
+      <KeybindingHost />
     </div>
   );
 }

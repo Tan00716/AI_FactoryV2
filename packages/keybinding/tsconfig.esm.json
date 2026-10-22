@@ -1,0 +1,1 @@
+{"compilerOptions":{"declaration":false,"module":"ES2022","moduleResolution":"bundler","outDir":"dist/esm","sourceMap":false},"extends":"./tsconfig.json"}
