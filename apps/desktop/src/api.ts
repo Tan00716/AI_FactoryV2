@@ -857,6 +857,47 @@ export interface TrojanHit {
   latin?: string;
   message: string;
 }
+/** R5-A7 拼写检查：服务端 SpellApiHit 的桌面侧形状。 */
+export interface SpellHit {
+  line: number;
+  column: number;
+  length: number;
+  word: string;
+  suggestions: string[];
+  message: string;
+}
+/** R5-B10 草稿文件：服务端语言定义。 */
+export interface ScratchLanguageDef {
+  id: string;
+  label: string;
+  extension: string;
+  monacoLanguage: string;
+  runnable: boolean;
+}
+/** R5-B10 草稿文件：服务端 ScratchMeta 的桌面侧形状。 */
+export interface ScratchMeta {
+  id: string;
+  name: string;
+  language: string;
+  createdAt: string;
+  updatedAt: string;
+  sizeBytes: number;
+}
+/** R5-B10 草稿文件：含内容的草稿。 */
+export interface ScratchFile extends ScratchMeta {
+  content: string;
+}
+/** R5-B10 草稿文件：运行结果。 */
+export interface ScratchRunResult {
+  ok: boolean;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  truncated: boolean;
+  runner: string;
+  language: string;
+}
 export interface TodoItem {
   file: string;
   line: number;
@@ -864,6 +905,41 @@ export interface TodoItem {
   severity: TodoSeverity;
   tag: string;
   message: string;
+}
+/** R5-B9 书签：服务端 Bookmark 的桌面侧形状。 */
+export type BookmarkKindDto = 'line' | 'file' | 'dir';
+export type BookmarkRelocationStatus = 'ok' | 'relocated' | 'drifted';
+export interface BookmarkDtoItem {
+  id: string;
+  kind: BookmarkKindDto;
+  path: string;
+  line?: number;
+  mnemonic?: string;
+  label: string;
+  tags: string[];
+  createdAt: number;
+}
+export type BookmarkDto = BookmarkDtoItem[];
+export interface BookmarkInputDto {
+  kind: BookmarkKindDto;
+  path: string;
+  line?: number;
+  mnemonic?: string;
+  label?: string;
+  tags?: string[];
+  root?: string;
+}
+export interface BookmarkPatchDto {
+  label?: string;
+  tags?: string[];
+  mnemonic?: string | null;
+}
+export interface BookmarkResolveDto {
+  bookmark: BookmarkDtoItem;
+  status: BookmarkRelocationStatus;
+  path: string;
+  line?: number;
+  drifted: boolean;
 }
 export interface TodoPattern {
   name: string;
@@ -1594,6 +1670,40 @@ export const api = {
     req<MemoryEntry[]>(`/memory?scope=${encodeURIComponent(scope)}&scopeId=${encodeURIComponent(scopeId)}`),
   files: (root: string) =>
     req<{ root: string; entries: FileEntry[] }>(`/files?root=${encodeURIComponent(root)}`),
+  /** R5-A8: read a workspace text file (GET /api/file?path=). */
+  fileRead: (path: string) =>
+    req<{ path: string; size: number; content: string }>(`/file?path=${encodeURIComponent(path)}`),
+  /** R5-A8: write a workspace text file (POST /api/file). */
+  fileWrite: (path: string, content: string) =>
+    req<{ ok: boolean; path: string }>('/file', {
+      method: 'POST',
+      body: JSON.stringify({ path, content }),
+    }),
+  /** R5-A8: project-wide text search (index-free grep, POST /api/codesearch/search). */
+  codeSearch: (input: {
+    root?: string;
+    query: string;
+    regex?: boolean;
+    caseSensitive?: boolean;
+    glob?: string;
+    maxMatches?: number;
+  }) =>
+    req<{
+      query: { query: string; regex: boolean; caseSensitive: boolean; globs: string[]; maxMatches: number };
+      groups: Array<{
+        file: string;
+        matches: Array<{ line: number; column: number; text: string }>;
+      }>;
+      totalMatches: number;
+      stats: {
+        filesScanned: number;
+        linesScanned: number;
+        skippedBinary: number;
+        skippedTooLarge: number;
+        truncated: boolean;
+        durationMs: number;
+      };
+    }>('/codesearch/search', { method: 'POST', body: JSON.stringify(input) }),
   policyEffective: () => req<unknown>('/policy/effective'),
   mcpServers: () => req<{ servers?: Array<{ name: string; status?: string; [k: string]: unknown }> } | Array<{ name: string }>>('/mcp'),
   /** Batch 89：侧栏 SKILLS 摘要走真实数据（GET /api/skills）；拉取失败由调用方回退到硬编码文本，不猜测。 */
@@ -1818,6 +1928,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ filename, text }),
     }),
+  /** R5-A7 拼写检查：扫描编辑器当前文本（inline，不读盘；带建议）。 */
+  spellScanText: (filename: string, text: string) =>
+    req<{ findings: SpellHit[] }>('/spell/scan', {
+      method: 'POST',
+      body: JSON.stringify({ filename, text }),
+    }),
+  /** R5-A7 拼写检查：项目词典（.ai-factory/spell-dictionary.txt）。 */
+  spellDictionaryGet: () =>
+    req<{ words: string[]; file: string }>('/spell/dictionary', {}),
+  spellDictionaryAdd: (word: string) =>
+    req<{ word: string; added: boolean; total: number }>('/spell/dictionary', {
+      method: 'POST',
+      body: JSON.stringify({ word }),
+    }),
+  spellDictionaryRemove: (word: string) =>
+    req<{ word: string; removed: boolean; total: number }>('/spell/dictionary', {
+      method: 'DELETE',
+      body: JSON.stringify({ word }),
+    }),
   /** R4-S3 确定性重构：分析（preview，只读）→ proposal。 */
   refactorAnalyze: (input: RefactorAnalyzeInput) =>
     req<RefactorProposalResponse>('/api/refactor/analyze', {
@@ -1872,6 +2001,46 @@ export const api = {
   /** R5-S1 快捷键：清空用户层，回到默认。 */
   keybindingsReset: () =>
     req<{ ok: boolean }>('/api/keybindings', { method: 'DELETE' }),
+  /** R5-A6 片段库：读取项目 .ai-factory/snippets.json。 */
+  snippetsGet: (root?: string) =>
+    req<{ root: string; snippets: Array<{ id: string; trigger: string; description?: string; scope: string[]; body: string }> }>(
+      `/api/snippets${root ? `?root=${encodeURIComponent(root)}` : ''}`,
+    ),
+  /** R5-A6 片段库：整体替换（服务端 fail-closed 校验）。 */
+  snippetsSave: (
+    root: string,
+    snippets: Array<{ id: string; trigger: string; description?: string; scope: string[]; body: string }>,
+  ) =>
+    req<{ ok: boolean; root: string; snippets: unknown[] }>(
+      `/api/snippets?root=${encodeURIComponent(root)}`,
+      { method: 'PUT', body: JSON.stringify({ snippets }) },
+    ),
+  /** R5-B10 草稿文件：列表（含语言注册表）。 */
+  scratchesList: () =>
+    req<{ scratches: ScratchMeta[]; languages: ScratchLanguageDef[] }>('/api/scratches'),
+  /** R5-B10 草稿文件：新建。 */
+  scratchCreate: (input: { language: string; name?: string }) =>
+    req<{ scratch: ScratchMeta }>('/api/scratches', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R5-B10 草稿文件：读取（含内容）。 */
+  scratchGet: (id: string) =>
+    req<{ scratch: ScratchFile }>(`/api/scratches/${encodeURIComponent(id)}`),
+  /** R5-B10 草稿文件：重命名/保存。 */
+  scratchUpdate: (id: string, patch: { name?: string; content?: string }) =>
+    req<{ scratch: ScratchMeta }>(`/api/scratches/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+  /** R5-B10 草稿文件：删除。 */
+  scratchDelete: (id: string) =>
+    req<{ ok: boolean }>(`/api/scratches/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** R5-B10 草稿文件：运行（node 可运行语言；显式用户触发）。 */
+  scratchRun: (id: string) =>
+    req<{ run: ScratchRunResult }>(`/api/scratches/${encodeURIComponent(id)}/run`, {
+      method: 'POST',
+    }),
   /** R4-A5 数据库浏览器：连接列表。 */
   dbConnections: () =>
     req<{ connections: DbBrowserConnection[] }>('/api/db-browser/connections'),
@@ -2046,4 +2215,39 @@ export const api = {
     }),
   /** R5-S2：最近的运行记录。 */
   tasksRuns: () => req<TaskRunsResponse>('/api/tasks/runs'),
+  /** R5-B9 书签：按项目 root 列出。 */
+  bookmarksList: (root?: string) =>
+    req<{ root: string; bookmarks: BookmarkDto }>(
+      `/api/bookmarks${root ? `?root=${encodeURIComponent(root)}` : ''}`,
+    ),
+  /** R5-B9：新增书签（行书签服务端抓取漂移上下文）。 */
+  bookmarksAdd: (input: BookmarkInputDto) =>
+    req<{ bookmark: BookmarkDto[0] }>('/api/bookmarks', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R5-B9：改名/改标签/改助记（mnemonic: null 清除）。 */
+  bookmarksPatch: (id: string, patch: BookmarkPatchDto, root?: string) =>
+    req<{ bookmark: BookmarkDto[0] }>(
+      `/api/bookmarks?id=${encodeURIComponent(id)}${root ? `&root=${encodeURIComponent(root)}` : ''}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+    ),
+  /** R5-B9：删除书签。 */
+  bookmarksDelete: (id: string, root?: string) =>
+    req<{ ok: boolean; removed: string }>(
+      `/api/bookmarks?id=${encodeURIComponent(id)}${root ? `&root=${encodeURIComponent(root)}` : ''}`,
+      { method: 'DELETE' },
+    ),
+  /** R5-B9：编辑器一键开关行书签。 */
+  bookmarksToggle: (path: string, line: number, root?: string) =>
+    req<{ added: boolean; bookmark?: BookmarkDto[0]; removedId?: string }>('/api/bookmarks/toggle', {
+      method: 'POST',
+      body: JSON.stringify({ path, line, ...(root ? { root } : {}) }),
+    }),
+  /** R5-B9：跳转解析（漂移检查，绝不静默跳错行）。 */
+  bookmarksResolve: (id: string, root?: string) =>
+    req<BookmarkResolveDto>('/api/bookmarks/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ id, ...(root ? { root } : {}) }),
+    }),
 };

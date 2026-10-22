@@ -7,6 +7,9 @@ import {
   tabCommandId,
   PALETTE_TOGGLE_COMMAND,
   LANGUAGE_SWITCH_COMMAND,
+  BOOKMARK_TOGGLE_COMMAND,
+  BOOKMARK_MNEMONICS,
+  bookmarkJumpCommand,
   commandTitleKey,
 } from './commands';
 
@@ -48,6 +51,18 @@ export function KeybindingHost() {
       });
       for (const tab of BUILTIN_TABS) {
         m.registry.registerCommand({ id: tabCommandId(tab), title: `Go to ${tab}`, source: 'builtin' });
+      }
+      // R5-B9: bookmark commands ride the S1 registry — no private listeners.
+      // Digits get ctrl+<digit> defaults (JetBrains-style); letters are left
+      // unbound so the user assigns them (conflicts warn via S1, never silent).
+      m.registry.registerCommand({ id: BOOKMARK_TOGGLE_COMMAND, title: 'Toggle bookmark at cursor', source: 'builtin' });
+      for (const mn of BOOKMARK_MNEMONICS) {
+        m.registry.registerCommand({
+          id: bookmarkJumpCommand(mn),
+          title: `Jump to bookmark '${mn}'`,
+          defaultKeys: /^[0-9]$/.test(mn) ? [`ctrl+${mn}`] : [],
+          source: 'builtin',
+        });
       }
     }
     let cancelled = false;

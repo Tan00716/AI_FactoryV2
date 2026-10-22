@@ -152,6 +152,8 @@ export interface InspectionsApi {
     root: string,
     quickfix: { templateId: string; file: string; startLine: number },
   ): Promise<{ applied: boolean; file: string; diff: string }>;
+  /** Spell check (round-5 A7): add a word to the project dictionary. */
+  spellDictionaryAdd(word: string): Promise<{ word: string; added: boolean; total: number }>;
 }
 
 export function createInspectionsApi(base: string): InspectionsApi {
@@ -221,6 +223,12 @@ export function createInspectionsApi(base: string): InspectionsApi {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ projectId, root, ...quickfix }),
+      }),
+    spellDictionaryAdd: (word) =>
+      req<{ word: string; added: boolean; total: number }>('/spell/dictionary', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ word }),
       }),
   };
 }
@@ -579,6 +587,33 @@ export function InspectionsPanel({ api, projectId }: { api: InspectionsApi; proj
     [api, projectId, root, secRules, t],
   );
 
+  /** One-click quick-fix for a spell-check finding (round-5 A7): add the
+   *  word to the project dictionary, then re-run the inspection. */
+  const quickFixSpell = useCallback(
+    async (f: InspectionFinding) => {
+      if (!f.detail) return;
+      let d: { word?: string };
+      try {
+        d = JSON.parse(f.detail);
+      } catch {
+        setMsg(t('spell.badDetail'));
+        return;
+      }
+      if (!d.word || typeof d.word !== 'string') {
+        setMsg(t('spell.badDetail'));
+        return;
+      }
+      try {
+        const r = await api.spellDictionaryAdd(d.word);
+        setMsg(t('spell.added', { word: r.word }));
+        await doRun();
+      } catch (e) {
+        setMsg(t('spell.addFailed', { message: e instanceof Error ? e.message : String(e) }));
+      }
+    },
+    [api, t, doRun],
+  );
+
   /** One-click quick-fix for an ssr-template finding (round-4 A4). */
   const quickFixSsr = useCallback(
     async (f: InspectionFinding) => {
@@ -785,6 +820,15 @@ export function InspectionsPanel({ api, projectId }: { api: InspectionsApi; proj
                           style={{ fontSize: 11, marginLeft: 4 }}
                         >
                           {t('ssr.quickFix')}
+                        </button>
+                      )}
+                      {f.checker === 'spell-check' && f.detail && (
+                        <button
+                          onClick={() => void quickFixSpell(f)}
+                          title={t('spell.quickFixHint')}
+                          style={{ fontSize: 11, marginLeft: 4 }}
+                        >
+                          {t('spell.quickFix')}
                         </button>
                       )}
                     </li>

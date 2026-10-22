@@ -25,10 +25,12 @@ import {
   runInspection,
   saveBaseline,
   saveInspectionProfile,
+  setExtraCheckerProvider,
   todoFixmeChecker,
   validateInspectionProfile,
   InspectionConfigError,
   InspectionRootError,
+  type Checker,
   type Finding,
 } from '../src/inspections.ts';
 
@@ -177,6 +179,40 @@ test('builtinCheckers honors enabled flags', () => {
   assert.equal(builtinCheckers(p).length, 6);
   p.checkers['todo-fixme'] = false;
   assert.equal(builtinCheckers(p).length, 5);
+});
+
+test('extra checker gate (R5-A7): spell-check has its own flag; ssr-template + unicode-trojan share the legacy gate', () => {
+  const mk = (name: string): Checker => ({ name, description: `${name} (test)`, run: () => [] });
+  setExtraCheckerProvider(() => [mk('ssr-template'), mk('unicode-trojan'), mk('spell-check')]);
+  try {
+    const root = tmpRoot();
+    const extraNames = (p: ReturnType<typeof defaultInspectionProfile>) =>
+      builtinCheckers(p, root)
+        .map((c) => c.name)
+        .filter((n) => n === 'ssr-template' || n === 'unicode-trojan' || n === 'spell-check');
+    // All on by default.
+    assert.deepEqual(extraNames(defaultInspectionProfile()), ['ssr-template', 'unicode-trojan', 'spell-check']);
+    // Legacy coupling (documented): turning off 'ssr-template' also turns
+    // off 'unicode-trojan', but leaves 'spell-check' alone.
+    const p2 = defaultInspectionProfile();
+    p2.checkers['ssr-template'] = false;
+    assert.deepEqual(extraNames(p2), ['spell-check']);
+    // 'spell-check' toggles independently.
+    const p3 = defaultInspectionProfile();
+    p3.checkers['spell-check'] = false;
+    assert.deepEqual(extraNames(p3), ['ssr-template', 'unicode-trojan']);
+  } finally {
+    setExtraCheckerProvider(null);
+  }
+});
+
+test('validateInspectionProfile accepts spell-check and still rejects unknown checkers', () => {
+  const { profile, errors } = validateInspectionProfile({ checkers: { 'spell-check': false } });
+  assert.deepEqual(errors, []);
+  assert.equal(profile.checkers['spell-check'], false);
+  assert.equal(profile.checkers['todo-fixme'], true);
+  const bad = validateInspectionProfile({ checkers: { 'nope-checker': true } });
+  assert.ok(bad.errors.some((e) => e.includes('unknown checker')));
 });
 
 test('license audit: no node_modules → present=false', () => {

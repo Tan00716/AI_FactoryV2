@@ -1,0 +1,1 @@
+{"dependencies":{},"description":"Scratch files (draft buffers outside the project tree): language registry + file store (R5-B10)","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/scratch","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

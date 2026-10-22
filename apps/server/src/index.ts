@@ -181,6 +181,11 @@ import { handleAuditExportRoutes } from './routes/audit-export';
 import { handleTaskTemplateRoutes } from './routes/task-templates';
 import { handleSweepRoutes } from './routes/sweep';
 import { handleTodoScanRoutes } from './routes/todo-scan';
+import {
+  handleCodeSearchRoutes,
+  setCodeSearchIgnoreCheck,
+  setCodeSearchRootResolver,
+} from './routes/codesearch';
 import { handleDbBrowserRoutes } from './routes/dbbrowser';
 import { TaskTemplateStore } from './task-template-store';
 import { handleEventRoutes } from './routes/events';
@@ -213,7 +218,14 @@ import {
   setTrojanInspectionRootResolver,
   trojanCheckerProvider,
 } from './routes/trojanscan';
+import {
+  handleSpellRoutes,
+  setSpellInspectionRootResolver,
+  spellCheckerProvider,
+} from './routes/spell';
 import { handleTaskRunnerRoutes, setTaskRunnerDeps } from './routes/tasks';
+import { handleBookmarkRoutes, setBookmarkDataDirResolver, setBookmarkInspectionRootResolver } from './routes/bookmarks';
+import { handleScratchRoutes, setScratchDeps } from './routes/scratch';
 import {
   handleHttpClientRoutes,
   setHttpClientEgressGate,
@@ -242,6 +254,10 @@ import {
   handleBlameRoutes,
   setBlameInspectionRootResolver,
 } from './routes/blame';
+import {
+  handleSnippetRoutes,
+  setSnippetInspectionRootResolver,
+} from './routes/snippets';
 import { handleIgnoresRoutes } from './routes/ignores';
 import { handleEgressRoutes } from './routes/egress';
 import { assertEgressAllowed, setEgressBlockSinks } from './egress';
@@ -720,6 +736,29 @@ setSsrInspectionRootResolver((root) => resolveInspectionRoot(root));
 setMerge3InspectionRootResolver((root) => resolveInspectionRoot(root));
 setMerge3ScopeLookup((taskId) => tasks.get(taskId).scope ?? null);
 setTrojanInspectionRootResolver((root) => resolveInspectionRoot(root));
+
+/**
+ * Spell check (round-5 task R5-A7) — same setter-injection pattern: the
+ * route must not value-import ../inspections (dual-mode import rule), so
+ * the real resolveInspectionRoot is injected here, and the project
+ * dictionary (.ai-factory/spell-dictionary.txt) is consulted by the
+ * 'spell-check' checker via spellCheckerProvider.
+ */
+setSpellInspectionRootResolver((root) => resolveInspectionRoot(root));
+// Round-5 R5-A8: the project-wide text search (Search Editor backend) is
+// jailed by the same inspection-root resolver; index-free grep, no new index.
+setCodeSearchRootResolver((root) => resolveInspectionRoot(root));
+// Two-tier ignore gate (task ② semantics) prunes ignored paths from the walk.
+setCodeSearchIgnoreCheck((root, abs, isDir) => isIgnoredSync(root, abs, true, isDir));
+// Round-5 R5-B9: mnemonic bookmarks. Data dir holds bookmarks.json (per-root
+// sections); paths are jailed to the resolved inspection root.
+setBookmarkInspectionRootResolver((root) => resolveInspectionRoot(root));
+setBookmarkDataDirResolver(() => process.env.AI_FACTORY_DATA_DIR ?? 'data');
+// Round-5 R5-A6: snippet library. User snippets live per project at
+// <root>/.ai-factory/snippets.json; builtin defaults and plugin sets merge
+// on the desktop. Route must not value-import ../inspections (dual-mode
+// rule), so the jail resolver is injected here.
+setSnippetInspectionRootResolver((root) => resolveInspectionRoot(root));
 // Round-5 R5-S2: the declarative task runner reuses the /api/exec safety
 // policy (deny patterns + binary whitelist + control-dir guard) — no new
 // execution channel. Problem output is parsed with the project's matchers
@@ -740,13 +779,30 @@ setTaskRunnerDeps({
     return cfg.customs[name] ?? builtinMatcher(name);
   },
 });
+// Round-5 R5-B10: scratch files live in the user data dir
+// (AI_FACTORY_DATA_DIR/scratches/), never in a project tree. Runs reuse
+// the SHARED exec safety policy (same checkCommandPolicy +
+// commandHitsControlDir as /api/exec and the task runner); the route
+// stages the content in an isolated temp dir outside the control-plane
+// data dir so the guard never trips on the store itself.
+setScratchDeps({
+  resolveDataDir: () => process.env.AI_FACTORY_DATA_DIR ?? 'data',
+  checkCommandPolicy: (command) => checkCommandPolicy(command),
+  commandHitsControlDir: (cwd, tokens) => commandHitsControlDir(cwd, tokens),
+});
 // Round-5 R5-S1: the keybinding user layer lives in the user data dir
 // (AI_FACTORY_DATA_DIR/keybindings.json) — the server has no keyboard
 // context, it only stores and fail-closed-validates the user layer.
 setKeybindingRootResolver(() => process.env.AI_FACTORY_DATA_DIR ?? 'data');
-// Round-5 A5: the extra-checker hook holds one provider; combine SSR and
-// Trojan Source checkers here (both are root-supplied, profile-gated).
-setExtraCheckerProvider((root) => [...ssrCheckerProvider(root), ...trojanCheckerProvider(root)]);
+// Round-5 A5: the extra-checker hook holds one provider; combine SSR,
+// Trojan Source and spell checkers here. R5-A7: spell-check has its own
+// profile gate (see builtinCheckers), unlike the legacy shared
+// 'ssr-template' gate for ssr-template + unicode-trojan.
+setExtraCheckerProvider((root) => [
+  ...ssrCheckerProvider(root),
+  ...trojanCheckerProvider(root),
+  ...spellCheckerProvider(root),
+]);
 
 /**
  * Dependency upgrade advisor (round-4 task R4-B10) — same setter-injection
@@ -1543,6 +1599,7 @@ const server = createServer(async (req, res) => {
     if (await handleTaskTemplateRoutes(req, res, url, routeCtx)) return;
     if (await handleSweepRoutes(req, res, url, routeCtx)) return;
     if (await handleTodoScanRoutes(req, res, url, routeCtx)) return;
+    if (await handleCodeSearchRoutes(req, res, url, routeCtx)) return;
     if (await handleDbBrowserRoutes(req, res, url, routeCtx)) return;
     if (await handleEventRoutes(req, res, url, routeCtx)) return;
     if (await handleActivityRoutes(req, res, url, routeCtx)) return;
@@ -1557,13 +1614,17 @@ const server = createServer(async (req, res) => {
     if (await handleDebugRoutes(req, res, url, routeCtx)) return;
     if (await handleSsrRoutes(req, res, url, routeCtx)) return;
     if (await handleTrojanRoutes(req, res, url, routeCtx)) return;
+    if (await handleSpellRoutes(req, res, url, routeCtx)) return;
+    if (await handleBookmarkRoutes(req, res, url, routeCtx)) return;
     if (await handleHttpClientRoutes(req, res, url, routeCtx)) return;
     if (await handleTaskRunnerRoutes(req, res, url, routeCtx)) return;
+    if (await handleScratchRoutes(req, res, url, routeCtx)) return;
     if (await handleDepscanRoutes(req, res, url, routeCtx)) return;
     if (await handleProfilerRoutes(req, res, url, routeCtx)) return;
     if (await handleKeybindingRoutes(req, res, url, routeCtx)) return;
     if (await handleBlameRoutes(req, res, url, routeCtx)) return;
     if (await handleMerge3Routes(req, res, url, routeCtx)) return;
+    if (await handleSnippetRoutes(req, res, url, routeCtx)) return;
     if (await handleIgnoresRoutes(req, res, url, routeCtx)) return;
     if (await handleCoverageRoutes(req, res, url, routeCtx)) return;
     if (await handleContextProviderRoutes(req, res, url, routeCtx)) return;

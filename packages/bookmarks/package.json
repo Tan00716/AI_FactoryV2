@@ -1,0 +1,1 @@
+{"description":"Mnemonic bookmarks: line/file/dir bookmarks with drift-aware relocation (round-5 R5-B9)","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/bookmarks","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

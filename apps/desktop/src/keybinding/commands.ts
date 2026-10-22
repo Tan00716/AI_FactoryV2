@@ -16,7 +16,8 @@ export const BUILTIN_TABS = [
   'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models',
   'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch',
   'Collab', 'Coverage', 'Recipes', 'Design', 'Updates', 'Refactor', 'Profiler',
-  'HTTP', 'Debug', 'Timeline',
+  'HTTP', 'Debug', 'Timeline', 'Snippets', 'Keybindings', 'Merge', 'Search',
+  'Scratches',
 ] as const;
 
 /** Same key derivation as the tab buttons in App.tsx / CommandPalette.tsx. */
@@ -37,10 +38,29 @@ export function tabNameForCommand(commandId: string): string | null {
 export const PALETTE_TOGGLE_COMMAND = 'palette.toggle';
 export const LANGUAGE_SWITCH_COMMAND = 'language.switch';
 
+/**
+ * R5-B9 bookmark commands. `bookmark.toggle` flips the line bookmark at the
+ * editor cursor; `bookmark.jump.<m>` jumps to the bookmark whose mnemonic is
+ * <m> (digits 0-9 get default ctrl+<digit> bindings, letters are unbound by
+ * default and can be bound in Keybinding settings — conflicts surface in
+ * the S1 conflict area, never silently).
+ */
+export const BOOKMARK_TOGGLE_COMMAND = 'bookmark.toggle';
+export const BOOKMARK_MNEMONICS = '0123456789abcdefghijklmnopqrstuvwxyz'.split('');
+export function bookmarkJumpCommand(mnemonic: string): string {
+  return `bookmark.jump.${mnemonic}`;
+}
+export function mnemonicForJumpCommand(commandId: string): string | null {
+  const m = /^bookmark\.jump\.([0-9a-z])$/.exec(commandId);
+  return m ? m[1] : null;
+}
+
 /** i18n key for a command title, or null when the caller should fall back. */
 export function commandTitleKey(commandId: string): string | null {
   if (commandId === PALETTE_TOGGLE_COMMAND) return 'keybinding.cmd.palette.toggle';
   if (commandId === LANGUAGE_SWITCH_COMMAND) return 'keybinding.cmd.language.switch';
+  if (commandId === BOOKMARK_TOGGLE_COMMAND) return 'bookmark.cmd.toggle';
+  if (mnemonicForJumpCommand(commandId)) return 'bookmark.cmd.jump';
   const tab = tabNameForCommand(commandId);
   if (tab) return `tab.${tab.toLowerCase().replace('/', '')}`;
   return null;

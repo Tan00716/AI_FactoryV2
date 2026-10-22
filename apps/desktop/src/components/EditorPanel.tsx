@@ -9,10 +9,12 @@
  * Diff views for the Change Review UI (§66) live in DiffViewer.tsx.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { defaultApiBase, authHeaders, api, type TodoItem, type TrojanHit, type BlameLineDto } from '../api';
+import { defaultApiBase, authHeaders, api, type TodoItem, type TrojanHit, type SpellHit, type BlameLineDto, type BookmarkDtoItem } from '../api';
 import { useLang } from '../i18n';
 import monaco, { languageOf } from '../monacoSetup';
 import { editorCursor } from '../editorCursor';
+import { BOOKMARK_TOGGLE_COMMAND, onCommand } from '../keybinding/commands';
+import { BOOKMARKS_CHANGED_EVENT } from './BookmarksPanel';
 
 const API_BASE = defaultApiBase();
 
@@ -154,7 +156,17 @@ export function EditorPanel({
         }
       })();
     }
+    // R5-A6: command-palette "insert snippet" asks the editor to open suggest.
+    const onSuggest = () => {
+      const ed = editorRef.current;
+      if (ed) {
+        ed.focus();
+        ed.trigger('snippets', 'editor.action.triggerSuggest', {});
+      }
+    };
+    window.addEventListener('ai-factory:trigger-snippet-suggest', onSuggest);
     return () => {
+      window.removeEventListener('ai-factory:trigger-snippet-suggest', onSuggest);
       editor.dispose();
       editorRef.current = null;
     };
@@ -262,6 +274,86 @@ export function EditorPanel({
     [t],
   );
 
+  // R5-A7 拼写检查：疑似拼错的词波浪线标注 + 悬停显示建议。
+  // Best-effort：扫描失败清掉旧标记，绝不打断编辑。只在打开文件时扫一次
+  // （快照语义）；只标注、不自动改写——修正始终由人决定（"加入项目词典"
+  // 快速修复在检查面板里）。
+  const spellDecorIdsRef = useRef<string[]>([]);
+  const refreshSpellDecorations = useCallback(
+    async (editor: monaco.editor.IStandaloneCodeEditor, path: string, text: string) => {
+      try {
+        const { findings } = await api.spellScanText(path, text);
+        const decs = findings.slice(0, 200).map((f: SpellHit) => {
+          const sug =
+            f.suggestions.length > 0
+              ? ` — ${t('spell.didYouMean')}: ${f.suggestions.join(', ')}`
+              : '';
+          return {
+            range: new monaco.Range(f.line, f.column, f.line, f.column + f.length),
+            options: {
+              inlineClassName: 'spell-typo',
+              hoverMessage: {
+                value: `**${t('spell.typo')}** \`${f.word}\`${sug}`,
+              },
+            },
+          };
+        });
+        spellDecorIdsRef.current = editor.deltaDecorations(spellDecorIdsRef.current, decs);
+      } catch {
+        spellDecorIdsRef.current = editor.deltaDecorations(spellDecorIdsRef.current, []);
+      }
+    },
+    [t],
+  );
+
+  // R5-B9 书签 gutter 标记：当前打开文件的行书签在 glyph margin 显示旗标，
+  // 悬停显示 label/助记。Best-effort：失败清旧标记，绝不打断编辑。
+  const bookmarkDecorIdsRef = useRef<string[]>([]);
+  const refreshBookmarkDecorations = useCallback(
+    async (editor: monaco.editor.IStandaloneCodeEditor, path: string) => {
+      try {
+        const { bookmarks } = await api.bookmarksList();
+        const mine = bookmarks.filter(
+          (b: BookmarkDtoItem) => b.kind === 'line' && b.path === path && b.line,
+        );
+        const decs = mine.slice(0, 200).map((b: BookmarkDtoItem) => ({
+          range: new monaco.Range(b.line!, 1, b.line!, 1),
+          options: {
+            glyphMarginClassName: 'bookmark-glyph',
+            glyphMarginHoverMessage: {
+              value: `**${b.label}**${b.mnemonic ? ` \`[${b.mnemonic}]\`` : ''}`,
+            },
+          },
+        }));
+        bookmarkDecorIdsRef.current = editor.deltaDecorations(bookmarkDecorIdsRef.current, decs);
+      } catch {
+        bookmarkDecorIdsRef.current = editor.deltaDecorations(bookmarkDecorIdsRef.current, []);
+      }
+    },
+    [],
+  );
+
+  // R5-B9: bookmark.toggle 命令（S1 命令总线）→ 在当前光标行开关行书签。
+  useEffect(() => {
+    const off = onCommand((commandId) => {
+      if (commandId !== BOOKMARK_TOGGLE_COMMAND) return;
+      const editor = editorRef.current;
+      const path = openPathRef.current;
+      const pos = editor?.getPosition();
+      if (!editor || !path || !pos) return;
+      void (async () => {
+        try {
+          await api.bookmarksToggle(path, pos.lineNumber);
+          await refreshBookmarkDecorations(editor, path);
+          window.dispatchEvent(new CustomEvent(BOOKMARKS_CHANGED_EVENT));
+        } catch {
+          /* best-effort: leave the editor untouched on failure */
+        }
+      })();
+    });
+    return off;
+  }, [refreshBookmarkDecorations]);
+
   // R5-A4 Git blame: per-file line attribution cache + current-line inline
   // annotation (VS Code "inline blame" style). Best-effort: a failed fetch
   // clears the cache and removes the annotation, never breaking editing.
@@ -335,11 +427,15 @@ export function EditorPanel({
       void refreshBlame(editor, path);
       // R5-A5: Trojan Source scan of the opened buffer (snapshot semantics).
       void refreshTrojanDecorations(editor, path, model.getValue());
+      // R5-A7: spell check of the opened buffer (snapshot semantics).
+      void refreshSpellDecorations(editor, path, model.getValue());
+      // R5-B9: bookmark gutter markers for the opened file.
+      void refreshBookmarkDecorations(editor, path);
     } catch (e) {
       setErr(e instanceof Error ? e.message : t('editor.openFailed'));
       setStatus('');
     }
-  }, [refreshTrojanDecorations]);
+  }, [refreshTrojanDecorations, refreshBookmarkDecorations, refreshSpellDecorations]);
 
   const openFileRef = useRef(openFile);
   openFileRef.current = openFile;

@@ -111,6 +111,14 @@ export function CommandPalette(props: CommandPaletteProps) {
       run: () => void | Promise<void>,
     ) => list.push({ id: `action:${id}`, kind: 'action', label, searchText: label, closeAfter, run });
     action('newTask', t('cmdk.action.newTask'), true, () => props.onCreateTask());
+    // R5-A6: jump to the editor and open suggest so snippet completions show.
+    action('insertSnippet', t('snippets.action.insert'), true, () => {
+      props.onNavigateTab('Editor');
+      window.setTimeout(
+        () => window.dispatchEvent(new CustomEvent('ai-factory:trigger-snippet-suggest')),
+        60,
+      );
+    });
     action('backup', t('cmdk.action.backup'), false, async () => {
       try {
         await api.createBackup();
