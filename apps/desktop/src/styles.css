@@ -518,3 +518,92 @@ button.linklike { background: none; border: none; padding: 0; color: var(--accen
 .refactor-diff { font-family: monospace; font-size: 12px; white-space: pre-wrap; background: var(--bg3); border-radius: 4px; padding: 8px; margin: 6px 0 0; max-height: 320px; overflow: auto; }
 .refactor-warnings { color: var(--warn, #cca700); font-size: 12px; margin: 4px 0; padding-left: 18px; }
 .refactor-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+/* ---- HTTP debug client panel (R4-A6) ---- */
+.http-panel { padding: 4px 2px; }
+.http-panel h2 { margin: 4px 0; }
+.http-boundaries { color: var(--muted, #888); font-size: 12px; margin: 4px 0 10px; }
+.http-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.http-left label, .http-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; margin-bottom: 8px; }
+.http-textarea { font-family: monospace; font-size: 12px; width: 100%; resize: vertical; }
+.http-controls { display: flex; gap: 12px; align-items: flex-end; }
+.http-error { color: var(--err, #d44); font-size: 12px; margin-top: 6px; }
+.http-empty { color: var(--muted, #888); font-size: 12px; }
+.http-result { border: 1px solid var(--border, #ddd); border-radius: 6px; padding: 8px; margin-bottom: 10px; }
+.http-result.ok { border-left: 4px solid #2a7; }
+.http-result.fail { border-left: 4px solid #d44; }
+.http-result-head { display: flex; gap: 8px; align-items: center; font-size: 12px; flex-wrap: wrap; }
+.http-method { font-weight: bold; font-family: monospace; }
+.http-url { font-family: monospace; color: var(--muted, #666); overflow: hidden; text-overflow: ellipsis; max-width: 320px; white-space: nowrap; }
+.http-status.blocked { color: #d44; font-weight: bold; }
+.http-time { color: var(--muted, #888); }
+.http-ok { font-weight: bold; }
+.http-name { color: var(--muted, #888); }
+.http-blocked-reason { font-size: 12px; color: #d44; margin-top: 4px; }
+.http-assertions { list-style: none; padding: 0; margin: 6px 0; font-size: 12px; font-family: monospace; }
+.http-assertions li.pass { color: #2a7; }
+.http-assertions li.fail { color: #d44; }
+.http-toggle { font-size: 12px; margin-top: 4px; }
+.http-body { font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 240px; overflow: auto; background: var(--code-bg, #f5f5f5); padding: 6px; border-radius: 4px; }
+.profiler-panel { padding: 4px 2px; }
+.profiler-panel h2 { margin: 4px 0; }
+.profiler-hint { font-size: 12px; opacity: 0.75; max-width: 900px; }
+.profiler-form { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin: 8px 0; }
+.profiler-form label { display: flex; flex-direction: column; font-size: 12px; gap: 2px; }
+.profiler-form input { min-width: 220px; }
+.profiler-error { color: #d44; font-size: 12px; margin: 6px 0; white-space: pre-wrap; }
+.profiler-result { margin-top: 12px; }
+.profiler-meta { font-size: 12px; opacity: 0.8; }
+.profiler-table { border-collapse: collapse; font-size: 12px; margin: 6px 0; }
+.profiler-table th, .profiler-table td { border: 1px solid #ccc; padding: 3px 10px; text-align: left; }
+.profiler-table td:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
+.profiler-flame { border: 1px solid #ddd; border-radius: 4px; background: #fff; max-height: 480px; overflow: auto; }
+.dbb-panel { padding: 4px 2px; }
+.dbb-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.dbb-tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; }
+.dbb-tabs button.active { font-weight: bold; text-decoration: underline; }
+.dbb-msg { font-size: 12px; margin: 4px 0; color: #a60; }
+.dbb-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.dbb-console textarea { width: 100%; font-family: monospace; font-size: 12px; }
+.dbb-grid { border-collapse: collapse; font-size: 12px; margin: 6px 0; max-width: 100%; overflow: auto; display: block; }
+.dbb-grid th, .dbb-grid td { border: 1px solid #ccc; padding: 2px 8px; text-align: left; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbb-ticket { border: 1px dashed #a60; padding: 8px; margin: 8px 0; }
+.dbb-edit { border: 1px solid var(--border); padding: 8px; margin: 8px 0; }
+.dbb-field { display: flex; gap: 8px; align-items: center; font-size: 12px; margin: 3px 0; }
+.dbb-field input { flex: 1; }
+.dbb-pre { font-family: monospace; font-size: 12px; white-space: pre-wrap; background: var(--code-bg, #f5f5f5); padding: 8px; border-radius: 4px; max-height: 360px; overflow: auto; }
+.dbb-note { font-size: 12px; color: #a60; margin: 4px 0; }
+.dbb-schema details { margin: 6px 0; }
+.dbb-er ul { font-size: 12px; }
+.dbb-honest { margin-top: 12px; font-size: 11px; }
+.verdict-read { background: #dfd; }
+.verdict-write { background: #ffd; }
+.verdict-destructive { background: #fdd; }
+.verdict-blocked { background: #eee; }
+
+/* ---- R4-S2 DAP 调试器 ---- */
+.dbg-panel h3 { margin: 4px 0; }
+.dbg-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.dbg-toolbar input { min-width: 220px; }
+.dbg-sessionbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0; padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; }
+.dbg-state { padding: 1px 8px; border-radius: 10px; font-size: 12px; background: #eee; }
+.dbg-state-paused { background: #fdd; }
+.dbg-state-running { background: #dfd; }
+.dbg-state-terminated { background: #ddd; color: #666; }
+.dbg-stepbtns { display: flex; gap: 6px; margin-left: auto; }
+.dbg-cols { display: flex; gap: 16px; margin-top: 8px; }
+.dbg-col { flex: 1; min-width: 0; }
+.dbg-col h4 { margin: 8px 0 4px; }
+.dbg-bpform { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.dbg-bpform input { font-size: 12px; }
+.dbg-list { list-style: none; padding: 0; margin: 4px 0; font-size: 12px; }
+.dbg-list li { padding: 2px 4px; border-radius: 3px; cursor: pointer; display: flex; gap: 8px; align-items: center; }
+.dbg-list li.sel { background: #def; }
+.dbg-list li button { margin-left: auto; }
+.dbg-scope-name { font-weight: bold; font-size: 12px; margin-top: 6px; }
+.dbg-var-toggle { cursor: pointer; font-size: 12px; }
+.dbg-var-name { color: #906; font-family: monospace; }
+.dbg-var-type { color: #888; font-size: 11px; }
+.dbg-var-value { font-family: monospace; }
+.dbg-output { font-family: monospace; font-size: 11px; white-space: pre-wrap; background: var(--code-bg, #f5f5f5); padding: 8px; border-radius: 4px; max-height: 420px; overflow: auto; }
+.dbg-sessions { margin-top: 12px; }

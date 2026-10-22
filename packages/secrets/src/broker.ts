@@ -447,7 +447,12 @@ export function redactSecretValues(text: string, values: readonly string[]): str
  * on the next push; `flush()` commits everything at stream end. The
  * concatenated emits + flush equal whole-stream
  * `redactSecretValuesCounted` output — nothing duplicated, nothing
- * lost, hits counted exactly once per value occurrence.
+ * lost, hits counted exactly once per value occurrence — except when
+ * the stream contains OSC escape sequences: those are zero-width for
+ * matching here (so a secret interleaved with shell-integration
+ * markers still redacts as one span, swallowing the inner markers
+ * into the `***`), while the whole-stream function matches them
+ * literally.
  *
  * Other properties:
  *  - Carry is cut on code-point boundaries (spread), never splitting a
@@ -518,6 +523,76 @@ function spliceRedactions(cps: string[], occurrences: SecretOccurrence[]): strin
   return out;
 }
 
+/**
+ * OSC (Operating System Command) escape sequences — `ESC ] ...` terminated
+ * by BEL or `ESC \` — are terminal control bytes: they can never be part
+ * of a secret value. Shell-integration markers (R4-A8, OSC 133) are
+ * emitted into the pty output stream between command outputs, so a
+ * secret split across two writes of one input line can arrive with
+ * marker bytes interleaved between its halves
+ * (e.g. `walk-b49-pre` + 133;C/133;E markers + `-longer`).
+ *
+ * Matching must treat those sequences as zero-width. Without this, the
+ * longest-first rule sees the short prefix (`walk-b49-pre`) followed by
+ * non-secret marker bytes, concludes the longer value cannot complete,
+ * commits the short match — and the `-longer` tail leaks into the
+ * stream (first-run-walkthrough-redaction R2 caught exactly this after
+ * the R4-A8 merge).
+ *
+ * The view strips complete OSC sequences for matching decisions only;
+ * emission still uses original coordinates, so markers survive in the
+ * output stream. A marker that falls strictly *inside* a redacted
+ * secret span is swallowed into the `***` — security wins over
+ * decoration there (in practice: DEBUG-trap C/E markers for inner
+ * commands of a compound line; the PROMPT_COMMAND D/H/A markers that
+ * drive history live at prompt boundaries and are never inside a
+ * secret).
+ */
+const OSC_MAX_LEN = 65536; // bound pending growth from a never-terminated OSC
+
+interface OscView {
+  /** code points with complete OSC sequences removed (matching view) */
+  view: string[];
+  /** view index -> original code-point index (strictly increasing) */
+  map: number[];
+  /** original index where a trailing partial OSC starts, or -1 */
+  partialOscAt: number;
+}
+
+function buildOscView(cps: string[]): OscView {
+  const view: string[] = [];
+  const map: number[] = [];
+  let partialOscAt = -1;
+  const n = cps.length;
+  let i = 0;
+  while (i < n) {
+    if (cps[i] === '\x1b' && i + 1 < n && cps[i + 1] === ']') {
+      let j = i + 2;
+      let term = -1; // one past the terminator
+      let aborted = false;
+      while (j < n && j - (i + 2) <= OSC_MAX_LEN) {
+        if (cps[j] === '\x07') { term = j + 1; break; }
+        if (cps[j] === '\x1b') {
+          if (j + 1 < n && cps[j + 1] === '\\') term = j + 2;
+          else aborted = true;
+          break;
+        }
+        j++;
+      }
+      if (term > 0) { i = term; continue; } // complete OSC: zero-width
+      if (!aborted) { partialOscAt = i; break; } // trailing partial OSC: hold
+      // aborted (ESC not followed by \): not an OSC — ESC is literal text
+    } else if (cps[i] === '\x1b' && i + 1 >= n) {
+      partialOscAt = i; // chunk ends with a lone ESC
+      break;
+    }
+    view.push(cps[i]);
+    map.push(i);
+    i++;
+  }
+  return { view, map, partialOscAt };
+}
+
 export function createCrossChunkRedactor(values: readonly string[]): CrossChunkRedactor {
   const sorted = [...values]
     .filter((v) => v.length > 0)
@@ -531,18 +606,52 @@ export function createCrossChunkRedactor(values: readonly string[]): CrossChunkR
 
   const run = (chunk: string, commitAll: boolean): RedactionResult => {
     const cps = [...pending, ...chunk];
-    const occurrences = findSecretOccurrences(cps, sorted);
-    const threshold = commitAll ? cps.length : cps.length - carryLen;
+    const built = buildOscView(cps);
+    const view = built.view;
+    const map = built.map;
+    let partialOscAt = built.partialOscAt;
+    if (commitAll && partialOscAt >= 0) {
+      // At flush no more bytes are coming: a "partial" OSC will never
+      // complete, so match it as literal text rather than dropping it.
+      for (let k = partialOscAt; k < cps.length; k++) {
+        view.push(cps[k]);
+        map.push(k);
+      }
+      partialOscAt = -1;
+    }
+    const vlen = view.length;
+    // All matching decisions happen in view coordinates, where OSC
+    // sequences are zero-width. The carry holdback therefore still
+    // covers a secret split across a chunk boundary even with shell
+    // integration markers interleaved in the middle.
+    const occurrences = findSecretOccurrences(view, sorted);
+    const threshold = commitAll ? vlen : vlen - carryLen;
     const committed = occurrences.filter((m) => m.end <= threshold);
     // Emit up to the earliest uncommitted occurrence (and never past
     // the carry holdback); everything from there stays raw pending.
     // Clamp at 0: when the combined text is shorter than the carry,
     // everything is held.
-    let emitEnd = commitAll ? cps.length : Math.max(0, cps.length - carryLen);
+    let emitEndV = commitAll ? vlen : Math.max(0, vlen - carryLen);
     for (const m of occurrences) {
-      if (m.end > threshold && m.start < emitEnd) emitEnd = m.start;
+      if (m.end > threshold && m.start < emitEndV) emitEndV = m.start;
     }
-    const emit = spliceRedactions(cps.slice(0, emitEnd), committed);
+    // Map the view emit boundary back to original coordinates. A view
+    // position never lands inside an OSC sequence (they are removed
+    // wholesale), so map[emitEndV] is exact. A trailing partial OSC is
+    // excluded from the view and therefore always stays pending until
+    // flush, which commits it literally.
+    const emitEnd =
+      emitEndV >= vlen ? (partialOscAt >= 0 ? partialOscAt : cps.length) : map[emitEndV];
+    // Committed occurrences mapped back to original coordinates for
+    // splicing the emitted slice. View occurrences are non-overlapping
+    // and start-sorted; map is strictly increasing, so the mapped
+    // ranges keep both properties. A committed occurrence's original
+    // end is always <= emitEnd (shown: view end <= emitEndV).
+    const committedOrig = committed.map((m) => ({
+      start: map[m.start],
+      end: map[m.end - 1] + 1,
+    }));
+    const emit = spliceRedactions(cps.slice(0, emitEnd), committedOrig);
     pending = cps.slice(emitEnd);
     return { text: emit, hits: committed.length };
   };

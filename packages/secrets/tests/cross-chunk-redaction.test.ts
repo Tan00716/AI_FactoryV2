@@ -161,4 +161,55 @@ describe('createCrossChunkRedactor (Batch 48)', () => {
     assert.equal(text, '******');
     assert.equal(hits, 2);
   });
+
+  // R4-A8 regression: OSC 133 shell-integration markers are emitted
+  // into the pty stream between command outputs. A secret split
+  // across two writes of one input line arrives with marker bytes
+  // interleaved between its halves; the redactor must treat OSC
+  // sequences as zero-width, or the longest-first rule commits the
+  // short prefix and the tail leaks (walkthrough R2).
+  it('treats interleaved OSC sequences as zero-width (R4-A8 markers)', () => {
+    const short = 'walk-b49-pre';
+    const long = 'walk-b49-pre-longer';
+    const marker = (s: string) => `\x1b]133;${s}\x07`;
+    const chunks = [
+      `out ${short}${marker('C')}${marker('E;c2xlZXA=')}`,
+      `${marker('C')}${marker('E;cHJpbnRm')}${long.slice(short.length)} end${marker('A')}`,
+    ];
+    const { text, hits } = runAll([short, long], chunks);
+    assert.ok(!text.includes(long), `long leaked: ${JSON.stringify(text)}`);
+    assert.ok(!text.includes(short), `short leaked: ${JSON.stringify(text)}`);
+    assert.ok(!text.includes('-longer'), `tail leaked: ${JSON.stringify(text)}`);
+    assert.equal(hits, 1);
+    // markers strictly inside the redacted span are swallowed into the
+    // ***, but a marker after the span survives in the stream
+    assert.ok(text.includes(marker('A')), 'marker after the span preserved');
+    assert.ok(text.startsWith('out ***'), `shape: ${JSON.stringify(text)}`);
+    assert.ok(text.endsWith(`end${marker('A')}`), `tail: ${JSON.stringify(text)}`);
+  });
+
+  it('holds a trailing partial OSC across the chunk boundary', () => {
+    const { text, hits } = runAll([SECRET], [
+      `x${SECRET}more`,
+      '\x1b]133;C', // partial OSC at end of stream
+    ]);
+    // flush commits the partial OSC literally; the secret still redacts
+    assert.ok(!text.includes(SECRET), `leaked: ${JSON.stringify(text)}`);
+    assert.ok(text.includes('***'), 'secret redacted');
+    assert.ok(text.endsWith(']133;C'), `partial OSC preserved: ${JSON.stringify(text)}`);
+    assert.equal(hits, 1);
+  });
+
+  it('redacts a secret split by an OSC straddling the chunk boundary', () => {
+    const half = 8;
+    const osc = `\x1b]133;E;${Buffer.from('sleep 0.7').toString('base64')}\x07`;
+    const { text, hits } = runAll([SECRET], [
+      `a${SECRET.slice(0, half)}${osc.slice(0, 10)}`,
+      `${osc.slice(10)}${SECRET.slice(half)}b`,
+    ]);
+    assert.ok(!text.includes(SECRET), `leaked: ${JSON.stringify(text)}`);
+    assert.equal(hits, 1);
+    assert.ok(text.startsWith('a***'), `shape: ${JSON.stringify(text)}`);
+    assert.ok(text.endsWith('b'), `tail kept: ${JSON.stringify(text)}`);
+  });
 });

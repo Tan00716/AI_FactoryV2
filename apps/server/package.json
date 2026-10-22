@@ -15,6 +15,7 @@
     "@ai-factory/core": "0.1.0",
     "@ai-factory/dashboard": "0.1.0",
     "@ai-factory/db": "0.1.0",
+    "@ai-factory/dbbrowser": "0.1.0",
     "@ai-factory/employee-factory": "0.1.0",
     "@ai-factory/evaluation": "0.1.0",
     "@ai-factory/events": "0.1.0",
@@ -49,6 +50,7 @@
     "@ai-factory/skills": "0.1.0",
     "@ai-factory/squads": "0.1.0",
     "@ai-factory/takeover": "0.1.0",
+    "@ai-factory/termhistory": "0.1.0",
     "@ai-factory/tools": "0.1.0",
     "@ai-factory/watchdog": "0.1.0",
     "@ai-factory/worktrees": "0.1.0"

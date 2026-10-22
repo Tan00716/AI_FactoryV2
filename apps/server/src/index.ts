@@ -181,6 +181,7 @@ import { handleAuditExportRoutes } from './routes/audit-export';
 import { handleTaskTemplateRoutes } from './routes/task-templates';
 import { handleSweepRoutes } from './routes/sweep';
 import { handleTodoScanRoutes } from './routes/todo-scan';
+import { handleDbBrowserRoutes } from './routes/dbbrowser';
 import { TaskTemplateStore } from './task-template-store';
 import { handleEventRoutes } from './routes/events';
 import { handleActivityRoutes } from './routes/activity';
@@ -205,13 +206,23 @@ import { handleImpactRoutes, analyzeGateWorkingTree } from './routes/impact';
 import { handleFlakyRoutes, runFlakyGateLinkage } from './routes/flaky';
 import { handleMutationRoutes, runMutationGateLinkage, setMutationInspectionRootResolver } from './routes/mutation';
 import { handleRefactorRoutes, setRefactorInspectionRootResolver } from './routes/refactor';
+import { handleDebugRoutes, setDebugInspectionRootResolver } from './routes/debug';
 import { handleSsrRoutes, setSsrInspectionRootResolver, ssrCheckerProvider } from './routes/ssr';
+import {
+  handleHttpClientRoutes,
+  setHttpClientEgressGate,
+  setHttpClientRootResolver,
+} from './routes/httpclient';
 import {
   handleDepscanRoutes,
   setDepscanCveMatcher,
   setDepscanInspectionRootResolver,
   setDepscanLiveRegistryGate,
 } from './routes/depscan';
+import {
+  handleProfilerRoutes,
+  setProfilerInspectionRootResolver,
+} from './routes/profiler';
 import { handleIgnoresRoutes } from './routes/ignores';
 import { handleEgressRoutes } from './routes/egress';
 import { assertEgressAllowed, setEgressBlockSinks } from './egress';
@@ -691,6 +702,14 @@ setDepscanCveMatcher((name, version) =>
 setDepscanLiveRegistryGate((host) => assertEgressAllowed(`https://${host}/`, { source: 'depscan-live-registry' }));
 
 /**
+ * Performance profiling (round-4 task R4-A7) — same setter-injection
+ * pattern: routes/profiler must not value-import ../inspections
+ * (dual-mode import rule), so the jail resolver is injected here.
+ * CPU = native --cpu-prof sampling; heap = v8.writeHeapSnapshot on exit.
+ */
+setProfilerInspectionRootResolver((root) => resolveInspectionRoot(root));
+
+/**
  * Deterministic refactoring (round-4 task R4-S3) — same setter-injection
  * pattern: the route must not value-import ../inspections (dual-mode
  * import rule), so the real resolveInspectionRoot is injected here.
@@ -698,6 +717,22 @@ setDepscanLiveRegistryGate((host) => assertEgressAllowed(`https://${host}/`, { s
  * guarded by a sha256 drift check (409 REFACTOR_DRIFT).
  */
 setRefactorInspectionRootResolver((root) => resolveInspectionRoot(root));
+
+/**
+ * DAP debugger (round-4 task R4-S2) — same setter-injection pattern: the
+ * route must not value-import ../inspections (dual-mode import rule), so
+ * the real resolveInspectionRoot is injected here. Sessions are in-memory;
+ * the node adapter is spawned per session (DAP over stdio, CDP bridge).
+ */
+setDebugInspectionRootResolver((root) => resolveInspectionRoot(root));
+
+/**
+ * HTTP/REST debug client (round-4 task A6) — same setter-injection pattern
+ * (dual-mode import rule): the egress firewall decision for every outbound
+ * request URL, and the inspection-root jail for the env file.
+ */
+setHttpClientEgressGate((url) => assertEgressAllowed(url, { source: 'http-client' }));
+setHttpClientRootResolver((root) => resolveInspectionRoot(root));
 
 /**
  * Shadow checkpoints (third-wave task ⑦) — installs the two observer
@@ -1436,6 +1471,7 @@ const server = createServer(async (req, res) => {
     if (await handleTaskTemplateRoutes(req, res, url, routeCtx)) return;
     if (await handleSweepRoutes(req, res, url, routeCtx)) return;
     if (await handleTodoScanRoutes(req, res, url, routeCtx)) return;
+    if (await handleDbBrowserRoutes(req, res, url, routeCtx)) return;
     if (await handleEventRoutes(req, res, url, routeCtx)) return;
     if (await handleActivityRoutes(req, res, url, routeCtx)) return;
     if (await handleBackupRoutes(req, res, url, routeCtx)) return;
@@ -1446,8 +1482,11 @@ const server = createServer(async (req, res) => {
     if (await handleFlakyRoutes(req, res, url, routeCtx)) return;
     if (await handleMutationRoutes(req, res, url, routeCtx)) return;
     if (await handleRefactorRoutes(req, res, url, routeCtx)) return;
+    if (await handleDebugRoutes(req, res, url, routeCtx)) return;
     if (await handleSsrRoutes(req, res, url, routeCtx)) return;
+    if (await handleHttpClientRoutes(req, res, url, routeCtx)) return;
     if (await handleDepscanRoutes(req, res, url, routeCtx)) return;
+    if (await handleProfilerRoutes(req, res, url, routeCtx)) return;
     if (await handleIgnoresRoutes(req, res, url, routeCtx)) return;
     if (await handleCoverageRoutes(req, res, url, routeCtx)) return;
     if (await handleContextProviderRoutes(req, res, url, routeCtx)) return;

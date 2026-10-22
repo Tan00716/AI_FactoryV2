@@ -49,6 +49,7 @@
  *   if (await handleTerminalRoutes(req, res, url, ctx)) return;
  */
 import type { IncomingMessage, ServerResponse } from 'http';
+import { join, resolve } from 'node:path';
 import type { RouteContext } from './context';
 import {
   PtySessionManager,
@@ -56,6 +57,13 @@ import {
   PtySessionError,
   type PtySession,
 } from '@ai-factory/runtime';
+import {
+  CommandTracker,
+  HistoryStore,
+  INTEGRATION_ENV_VAR,
+  bashIntegrationWrapper,
+  generateBashIntegrationRc,
+} from '@ai-factory/termhistory';
 import {
   createCrossChunkRedactor,
   type CrossChunkRedactor,
@@ -95,6 +103,40 @@ export function terminalSessionManager(): PtySessionManager {
 }
 const IDLE_REAP_MS = 30 * 60 * 1000;
 const MAX_INPUT_BYTES = 64 * 1024;
+
+/**
+ * R4-A8 shell integration: per-session OSC 133 command trackers (bash
+ * sessions only) + one persistent cross-session history store.
+ *
+ * The store lives under <AI_FACTORY_DATA_DIR>/terminal-history — the
+ * user's data dir, never the repo. History writes are best-effort: a
+ * broken store degrades to in-memory/no history, it never breaks a
+ * live terminal session.
+ */
+const commandTrackers = new Map<string, CommandTracker>();
+let historyStore: HistoryStore | null = null;
+let historyBroken = false;
+function terminalHistoryStore(): HistoryStore | null {
+  if (historyBroken) return null;
+  if (!historyStore) {
+    try {
+      const dataDir = resolve(process.env.AI_FACTORY_DATA_DIR ?? 'data');
+      historyStore = new HistoryStore(join(dataDir, 'terminal-history'));
+    } catch {
+      historyBroken = true;
+      return null;
+    }
+  }
+  return historyStore;
+}
+
+/** True for the default interactive bash invocation (integration-safe). */
+function isIntegrableBashShell(shell: string[]): boolean {
+  return (
+    /bash$/.test(shell[0] ?? '') &&
+    (shell.length === 1 || (shell.length === 2 && shell[1] === '-i'))
+  );
+}
 
 /** Shells a session may launch (server-configured, not user-typed). */
 const ALLOWED_SESSION_SHELLS = new Set(['/bin/bash', '/bin/sh', '/usr/bin/bash']);
@@ -205,6 +247,20 @@ export async function handleTerminalRoutes(
         return true;
       }
       shell = rawShell as string[];
+    }
+
+    // R4-A8 shell integration: bash sessions are wrapped so the shell
+    // emits OSC 133 command markers (A/B/C/D/E/H — see
+    // @ai-factory/termhistory). The integration script travels in an env
+    // var and is materialized to /tmp inside the session: env survives
+    // bwrap (which only binds /usr, /opt and the cwd), file paths do
+    // not. /bin/sh has no equivalent hook — those sessions simply get
+    // no command history (reported as integrated:false).
+    let shellIntegration = false;
+    if (isIntegrableBashShell(shell)) {
+      const bashPath = shell[0];
+      shell = bashIntegrationWrapper(bashPath);
+      shellIntegration = true;
     }
 
     let secretEnv: Record<string, string> = {};
@@ -328,7 +384,9 @@ export async function handleTerminalRoutes(
         principal,
         shell,
         cwd,
-        env: secretEnv,
+        env: shellIntegration
+          ? { ...secretEnv, [INTEGRATION_ENV_VAR]: generateBashIntegrationRc() }
+          : secretEnv,
         rows: body['rows'] as number | undefined,
         cols: body['cols'] as number | undefined,
         argvPrefix: sb.prefix,
@@ -402,7 +460,41 @@ export async function handleTerminalRoutes(
       sandbox: sb.mode,
       ...(sb.reason ? { sandboxReason: sb.reason } : {}),
       ...(secretValues.length > 0 ? { secretEnvVars: Object.keys(secretEnv) } : {}),
+      ...(shellIntegration ? { shellIntegration: true } : {}),
     });
+
+    // R4-A8: attach the command tracker. The shell reports its own
+    // command lines via 133;H, so no input sniffing is needed — output
+    // markers only. Completed commands persist to the history store
+    // (best-effort; failures never break the session).
+    if (shellIntegration) {
+      const tracker = new CommandTracker();
+      tracker.onCommand((cmd) => {
+        try {
+          terminalHistoryStore()?.append({
+            sessionId: session.id,
+            principal,
+            command: cmd.command,
+            exitCode: cmd.exitCode,
+            at: cmd.at,
+          });
+        } catch {
+          /* history is best-effort */
+        }
+      });
+      session.onOutput((chunk) => {
+        try {
+          tracker.feedOutput(chunk.toString('utf8'));
+        } catch {
+          /* ignore */
+        }
+      });
+      commandTrackers.set(session.id, tracker);
+      session.onClose(() => {
+        commandTrackers.delete(session.id);
+      });
+    }
+
     ctx.json(res, 201, { ...session.toRecord(), cwd, sandbox: sb.mode });
     return true;
   }
@@ -415,6 +507,22 @@ export async function handleTerminalRoutes(
       sessions: manager.list(),
       ...(includeClosed ? { closed: manager.closedSessions() } : {}),
     });
+    return true;
+  }
+
+  // ---- command history (R4-A8) ---------------------------------------
+  // GET /api/terminal/history?q=&limit=&principal= — fuzzy search over the
+  // persistent cross-session command history (viewer).
+  if (path === '/api/terminal/history' && method === 'GET') {
+    const q = url.searchParams.get('q') ?? '';
+    const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') ?? '50', 10) || 50));
+    const principal = url.searchParams.get('principal');
+    const store = terminalHistoryStore();
+    let entries = store ? (q ? store.search(q, 1000) : store.recent(1000)) : [];
+    if (principal === 'human' || principal === 'ai') {
+      entries = entries.filter((e) => e.principal === principal);
+    }
+    ctx.json(res, 200, { entries: entries.slice(0, limit), total: store?.count ?? 0 });
     return true;
   }
 
@@ -576,6 +684,21 @@ export async function handleTerminalRoutes(
       cols: session.cols,
     });
     ctx.json(res, 200, { ok: true, rows: session.rows, cols: session.cols });
+    return true;
+  }
+
+  // session command list (R4-A8): in-memory per-session commands with
+  // real exit codes — feeds the terminal's gutter decorations. Reports
+  // integrated:false for non-bash sessions (honest: no markers there).
+  if (rest === '/commands' && method === 'GET') {
+    const session = getSessionOr404(ctx, res, id);
+    if (!session) return true;
+    const tracker = commandTrackers.get(id);
+    const limit = Math.min(500, Math.max(1, parseInt(url.searchParams.get('limit') ?? '200', 10) || 200));
+    ctx.json(res, 200, {
+      integrated: tracker !== undefined,
+      commands: tracker ? tracker.getCommands().slice(-limit).reverse() : [],
+    });
     return true;
   }
 

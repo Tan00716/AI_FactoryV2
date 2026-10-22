@@ -15,7 +15,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLang } from '../i18n';
 import { defaultApiBase, authHeaders } from '../api';
 import { Terminal } from 'xterm';
+import type { IMarker, IDecoration } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
+import {
+  scanShellMarkers,
+  groupEntriesBySession,
+  flattenGroups,
+  type HistoryEntryDto,
+} from '../terminalHistory';
 import 'xterm/css/xterm.css';
 
 const API_BASE = defaultApiBase();
@@ -54,6 +61,18 @@ export function TerminalPanel() {
   const [bootNonce, setBootNonce] = useState(0);
   const reconnect = useCallback(() => setBootNonce((n) => n + 1), []);
 
+  // R4-A8: shell-integration 装饰与历史搜索.
+  const termRef = useRef<Terminal | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const pendingMarkerRef = useRef<IMarker | null>(null);
+  const markersRef = useRef<Array<{ marker: IMarker; exitCode: number }>>([]);
+  const decorationsRef = useRef<IDecoration[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState('');
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntryDto[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historySel, setHistorySel] = useState(0);
+
   const connLabel = (() => {
     switch (status.conn) {
       case 'connected': return t('terminal.status.connected');
@@ -70,6 +89,68 @@ export function TerminalPanel() {
       default: return '#f85149';
     }
   })();
+
+  // R4-A8: 跨会话历史搜索 (服务端 fuzzy, history.jsonl 持久化).
+  const fetchHistory = useCallback(async (q: string) => {
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/terminal/history?q=${encodeURIComponent(q)}&limit=50`,
+        { headers: authHeaders() },
+      );
+      if (res.ok) {
+        const body = (await res.json()) as { entries: HistoryEntryDto[] };
+        setHistoryEntries(Array.isArray(body.entries) ? body.entries : []);
+        setHistorySel(0);
+      }
+    } catch {
+      /* 网络抖动: 保留旧结果 */
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    const timer = setTimeout(() => void fetchHistory(historyQuery), 150);
+    return () => clearTimeout(timer);
+  }, [historyOpen, historyQuery, fetchHistory]);
+
+  // R4-A8: 把选中的历史命令插入当前终端 (不带换行, 用户可再编辑).
+  const insertHistoryEntry = useCallback(async (entry: HistoryEntryDto) => {
+    const id = sessionIdRef.current;
+    if (!id) return;
+    try {
+      await fetch(`${API_BASE}/terminal/sessions/${id}/input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ data: entry.command }),
+      });
+    } catch {
+      /* ignore */
+    }
+    setHistoryOpen(false);
+    termRef.current?.focus();
+  }, []);
+
+  // R4-A8: 在命令装饰标记之间跳转 (Alt 冲突留给 readline, 用按钮触发).
+  const jumpMarker = useCallback((dir: 1 | -1) => {
+    const term = termRef.current;
+    if (!term) return;
+    const live = markersRef.current.filter((m) => !m.marker.isDisposed);
+    if (live.length === 0) return;
+    const viewportTop = term.buffer.active.viewportY;
+    const rows = term.rows;
+    let target: number | null = null;
+    if (dir === 1) {
+      const next = live.find((m) => m.marker.line > viewportTop + rows - 1);
+      target = next ? next.marker.line : null;
+    } else {
+      const prev = [...live].reverse().find((m) => m.marker.line < viewportTop);
+      target = prev ? prev.marker.line : null;
+    }
+    if (target !== null) term.scrollToLine(target);
+  }, []);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -89,6 +170,7 @@ export function TerminalPanel() {
     term.open(host);
     fit.fit();
     term.focus();
+    termRef.current = term;
 
     term.writeln(t('terminal.banner'));
     term.writeln(t('terminal.connecting'));
@@ -112,10 +194,62 @@ export function TerminalPanel() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
+      // R4-A8: shell-integration 装饰. 标记混在输出流里, 按段写入,
+      // 在 C(命令开始)处 registerMarker(0)(相对光标, 正好落在命令
+      // 行), 在 D(命令结束)处按退出码挂 overview-ruler 装饰
+      // (绿=成功, 红=失败). 标记被 xterm 的 OSC 解析器消费, 不可见.
+      const writeWithMarkers = (text: string): void => {
+        let pos = 0;
+        for (const m of scanShellMarkers(text)) {
+          if (m.index > pos) term.write(text.slice(pos, m.index));
+          if (m.kind === 'C') {
+            const old = pendingMarkerRef.current;
+            pendingMarkerRef.current = null;
+            if (old && !old.isDisposed) {
+              try { old.dispose(); } catch { /* ignore */ }
+            }
+            try {
+              pendingMarkerRef.current = term.registerMarker(0) ?? null;
+            } catch {
+              pendingMarkerRef.current = null;
+            }
+          } else if (m.kind === 'D') {
+            const pm = pendingMarkerRef.current;
+            pendingMarkerRef.current = null;
+            const code = /^\d+$/.test(m.payload) ? parseInt(m.payload, 10) : NaN;
+            if (pm && !pm.isDisposed && Number.isFinite(code)) {
+              try {
+                const deco = term.registerDecoration({
+                  marker: pm,
+                  overviewRulerOptions: { color: code === 0 ? '#3fb950' : '#f85149' },
+                });
+                if (deco) {
+                  decorationsRef.current.push(deco);
+                  markersRef.current.push({ marker: pm, exitCode: code });
+                  while (markersRef.current.length > 300) {
+                    const oldest = markersRef.current.shift();
+                    try { oldest?.marker.dispose(); } catch { /* ignore */ }
+                  }
+                  while (decorationsRef.current.length > 300) {
+                    const od = decorationsRef.current.shift();
+                    try { od?.dispose(); } catch { /* ignore */ }
+                  }
+                }
+              } catch {
+                /* 装饰是 best-effort */
+              }
+            } else if (pm && !pm.isDisposed) {
+              try { pm.dispose(); } catch { /* ignore */ }
+            }
+          }
+          pos = m.index + m.length;
+        }
+        if (pos < text.length) term.write(text.slice(pos));
+      };
       const handleFrame = (frame: SseFrame): void => {
         if (frame.event === 'output') {
           try {
-            term.write(b64ToText((JSON.parse(frame.data) as { b64: string }).b64));
+            writeWithMarkers(b64ToText((JSON.parse(frame.data) as { b64: string }).b64));
           } catch {
             /* malformed frame — ignore */
           }
@@ -196,6 +330,7 @@ export function TerminalPanel() {
           return;
         }
         sessionId = created.id;
+        sessionIdRef.current = created.id;
         setStatus({
           conn: 'connected',
           sessionShort: created.id.slice(0, 8),
@@ -283,6 +418,22 @@ export function TerminalPanel() {
       ro.disconnect();
       clearInterval(pollTimer);
       if (resizeTimer) clearTimeout(resizeTimer);
+      // R4-A8: 收掉本会话的装饰与标记
+      const pm = pendingMarkerRef.current;
+      pendingMarkerRef.current = null;
+      if (pm && !pm.isDisposed) {
+        try { pm.dispose(); } catch { /* ignore */ }
+      }
+      for (const d of decorationsRef.current) {
+        try { d.dispose(); } catch { /* ignore */ }
+      }
+      decorationsRef.current = [];
+      for (const m of markersRef.current) {
+        try { m.marker.dispose(); } catch { /* ignore */ }
+      }
+      markersRef.current = [];
+      termRef.current = null;
+      sessionIdRef.current = null;
       const id = sessionId;
       term.dispose();
       if (id) {
@@ -295,8 +446,11 @@ export function TerminalPanel() {
     };
   }, [bootNonce]);
 
+  const historyGroups = groupEntriesBySession(historyEntries);
+  const historyFlat = flattenGroups(historyGroups);
+
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
       <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)' }}>
         <b>{t('terminal.title')}</b> <span className="muted">{t('terminal.subtitle')}</span>
       </div>
@@ -317,6 +471,16 @@ export function TerminalPanel() {
         <span>{t('terminal.status.cwd')}: <span style={{ fontFamily: 'monospace' }}>{status.cwd ?? '—'}</span></span>
         <span>{t('terminal.status.exitCode')}: <b style={{ color: 'var(--fg)' }}>{status.exitCode ?? '—'}</b></span>
         <span style={{ flex: 1 }} />
+        {/* R4-A8: 命令装饰跳转 + 历史搜索 */}
+        <button onClick={() => jumpMarker(-1)} style={{ fontSize: 12 }} title={t('terminal.history.prevCommand')}>
+          ↑
+        </button>
+        <button onClick={() => jumpMarker(1)} style={{ fontSize: 12 }} title={t('terminal.history.nextCommand')}>
+          ↓
+        </button>
+        <button onClick={() => setHistoryOpen(true)} style={{ fontSize: 12 }}>
+          {t('terminal.history.open')}
+        </button>
         <span>
           <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: connColor, marginRight: 6 }} />
           {connLabel}
@@ -327,6 +491,111 @@ export function TerminalPanel() {
           </button>
         )}
       </div>
+      {/* R4-A8: 历史命令搜索浮层 (跨会话 fuzzy, ↑↓ 导航, 回车插入) */}
+      {historyOpen && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 40,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: 'min(560px, 90%)',
+            maxHeight: '70%',
+            display: 'flex',
+            flexDirection: 'column',
+            background: 'var(--bg)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            boxShadow: '0 8px 32px rgba(0,0,0,0.45)',
+            zIndex: 20,
+          }}
+        >
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'center' }}>
+            <b style={{ fontSize: 13 }}>{t('terminal.history.title')}</b>
+            <span style={{ flex: 1 }} />
+            <button onClick={() => setHistoryOpen(false)} style={{ fontSize: 12 }}>
+              {t('terminal.history.close')}
+            </button>
+          </div>
+          <div style={{ padding: '8px 12px' }}>
+            <input
+              autoFocus
+              value={historyQuery}
+              onChange={(e) => setHistoryQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  setHistorySel((s) => Math.min(s + 1, historyFlat.length - 1));
+                } else if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setHistorySel((s) => Math.max(s - 1, 0));
+                } else if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const hit = historyFlat[historySel];
+                  if (hit) void insertHistoryEntry(hit);
+                } else if (e.key === 'Escape') {
+                  setHistoryOpen(false);
+                }
+              }}
+              placeholder={t('terminal.history.searchPlaceholder')}
+              style={{ width: '100%', fontSize: 13, padding: '6px 8px' }}
+            />
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              {t('terminal.history.insertHint')}
+            </div>
+          </div>
+          <div style={{ overflowY: 'auto', padding: '0 12px 12px' }}>
+            {historyLoading && <div className="muted" style={{ fontSize: 12 }}>…</div>}
+            {!historyLoading && historyFlat.length === 0 && (
+              <div className="muted" style={{ fontSize: 12 }}>
+                {historyQuery ? t('terminal.history.empty') : t('terminal.history.noHistory')}
+              </div>
+            )}
+            {historyGroups.map((g) => (
+              <div key={g.key} style={{ marginTop: 8 }}>
+                <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>{g.label}</div>
+                {g.entries.map((e) => {
+                  const idx = historyFlat.indexOf(e);
+                  const selected = idx === historySel;
+                  return (
+                    <div
+                      key={e.id}
+                      onClick={() => void insertHistoryEntry(e)}
+                      onMouseEnter={() => setHistorySel(idx)}
+                      style={{
+                        display: 'flex',
+                        gap: 8,
+                        alignItems: 'baseline',
+                        padding: '4px 8px',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        background: selected ? 'var(--hover)' : 'transparent',
+                        fontSize: 12,
+                      }}
+                    >
+                      <span
+                        title={e.exitCode === 0 ? t('terminal.history.exitOk') : t('terminal.history.exitFail', { code: e.exitCode })}
+                        style={{
+                          display: 'inline-block',
+                          width: 8,
+                          height: 8,
+                          borderRadius: '50%',
+                          flexShrink: 0,
+                          background: e.exitCode === 0 ? '#3fb950' : '#f85149',
+                        }}
+                      />
+                      <code style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {e.command.split('\n')[0]}
+                        {e.command.includes('\n') ? ' ⏎' : ''}
+                      </code>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

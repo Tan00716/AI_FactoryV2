@@ -1,0 +1,1 @@
+{"description":"Terminal shell integration (R4-A8): OSC 133 command markers, per-command exit codes, persistent fuzzy-searchable command history","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/termhistory","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

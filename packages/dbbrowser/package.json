@@ -1,0 +1,1 @@
+{"description":"Database browser core (JetBrains Database tool style): query console with dangerous-statement guard, paged table editor, schema diff, DDL generation, ER graph. Deterministic, zero model keys.","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/dbbrowser","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

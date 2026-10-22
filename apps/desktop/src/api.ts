@@ -892,6 +892,98 @@ export interface RefactorAnalyzeInput {
   newName?: string;
   otherFiles?: string[];
 }
+
+/** R4-S2 DAP 调试器 API 类型。 */
+export interface DebugLaunchConfig {
+  name: string;
+  request: 'launch' | 'attach';
+  adapter: 'node';
+  program?: string;
+  args: string[];
+  cwd?: string;
+  env: Record<string, string>;
+  stopOnEntry: boolean;
+  port?: number;
+  address: string;
+}
+export interface DebugBreakpointInput {
+  file: string;
+  line: number;
+  column?: number;
+  condition?: string;
+  logMessage?: string;
+}
+export interface DebugStartSessionInput {
+  projectId: string;
+  targetDir?: string;
+  configName?: string;
+  config?: {
+    name?: string;
+    type?: string;
+    request?: string;
+    program?: string;
+    args?: string[];
+    cwd?: string;
+    env?: Record<string, string>;
+    stopOnEntry?: boolean;
+    port?: number;
+    address?: string;
+  };
+  breakpoints?: DebugBreakpointInput[];
+}
+export interface DebugBreakpoint {
+  id: number;
+  verified: boolean;
+  line?: number;
+  file: string;
+}
+export interface DebugSessionStarted {
+  sessionId: string;
+  name: string;
+  request: 'launch' | 'attach';
+  state: string;
+  createdAt: string;
+  breakpoints: DebugBreakpoint[];
+}
+export interface DebugSessionSummary {
+  sessionId: string;
+  name: string;
+  request: 'launch' | 'attach';
+  state: 'starting' | 'running' | 'paused' | 'terminated';
+  stopReason?: string;
+  stopThreadId?: number;
+  createdAt: string;
+  exited: boolean;
+}
+export interface DebugOutputLine {
+  seq: number;
+  category: string;
+  output: string;
+}
+export interface DebugStackFrame {
+  id: number;
+  name: string;
+  source?: { name?: string; path?: string };
+  line: number;
+  column: number;
+}
+export interface DebugScope {
+  name: string;
+  variablesReference: number;
+  expensive: boolean;
+  presentationHint?: string;
+}
+export interface DebugVariable {
+  name: string;
+  value: string;
+  type?: string;
+  variablesReference: number;
+}
+export interface DebugEvalResult {
+  result: string;
+  type?: string;
+  variablesReference: number;
+}
 export interface RefactorWarning {
   code: string;
   message: string;
@@ -914,6 +1006,139 @@ export interface RefactorApplyResponse {
   proposalId: string;
   applied: string[];
   skipped: string[];
+}
+/** R4-A7 性能剖析：V8 CPU profile（火焰图）/ 堆快照。 */
+export interface ProfilerFlameNode {
+  name: string;
+  value: number;
+  self: number;
+  children: ProfilerFlameNode[];
+}
+export interface ProfilerHotspot {
+  functionName: string;
+  url: string;
+  line: number;
+  selfUs: number;
+  totalUs: number;
+  selfPct: number;
+  totalPct: number;
+}
+export interface ProfilerCpuResult {
+  script: string;
+  args: string[];
+  durationMs: number;
+  sampleCount: number;
+  totalUs: number;
+  partial: boolean;
+  hotspots: ProfilerHotspot[];
+  flame: ProfilerFlameNode;
+}
+export interface ProfilerConstructorStat {
+  constructor: string;
+  count: number;
+  selfBytes: number;
+  selfPct: number;
+}
+export interface ProfilerHeapResult {
+  script: string;
+  durationMs: number;
+  totalBytes: number;
+  nodeCount: number;
+  top: ProfilerConstructorStat[];
+}
+/** R4-A5 数据库浏览器。 */
+export interface DbBrowserConnection {
+  name: string;
+  kind: 'sqlite' | 'postgres';
+  env: 'dev' | 'staging' | 'prod';
+}
+export interface DbBrowserQueryResult {
+  columns: string[];
+  rows: Array<Record<string, unknown>>;
+  rowCount: number;
+  truncated: boolean;
+  durationMs: number;
+  changes?: number;
+}
+export interface DbBrowserQueryResponse {
+  verdict: 'read' | 'write' | 'destructive' | 'blocked';
+  result: DbBrowserQueryResult;
+}
+export interface DbBrowserTablePage {
+  table: string;
+  columns: string[];
+  rows: Array<Record<string, unknown>>;
+  page: number;
+  pageSize: number;
+  totalRows: number;
+  totalPages: number;
+}
+export interface DbBrowserColumnDef {
+  name: string;
+  type: string;
+  notNull: boolean;
+  pk: number;
+  defaultValue: string | null;
+}
+export interface DbBrowserTableDef {
+  name: string;
+  columns: DbBrowserColumnDef[];
+  indexes: Array<{ name: string; unique: boolean; columns: string[] }>;
+  foreignKeys: Array<{ column: string; refTable: string; refColumn: string }>;
+}
+export interface DbBrowserSchema {
+  dialect: 'sqlite' | 'postgres';
+  tables: DbBrowserTableDef[];
+  views: Array<{ name: string; sql: string | null }>;
+}
+export interface DbBrowserSchemaDiff {
+  addTables: DbBrowserTableDef[];
+  addColumns: Array<{ table: string; column: DbBrowserColumnDef }>;
+  droppedTables: string[];
+  droppedColumns: Array<{ table: string; column: string }>;
+  ddl: string[];
+  notes: string[];
+}
+export interface DbBrowserErGraph {
+  nodes: Array<{ id: string; label: string; columns: string[]; pk: string[] }>;
+  edges: Array<{ from: string; to: string; label: string }>;
+}
+/** R4-A6 HTTP/REST 调试客户端。 */
+export interface HttpRunInput {
+  text: string;
+  environment?: string;
+  environments?: Record<string, { vars: Record<string, string> }>;
+  variables?: Record<string, string>;
+  timeoutMs?: number;
+  projectId?: string;
+}
+export interface HttpAssertionView {
+  passed: boolean;
+  detail: string;
+}
+export interface HttpRunResultView {
+  id: string;
+  name: string;
+  method: string;
+  url: string;
+  blocked?: boolean;
+  blockedReason?: string;
+  status?: number;
+  statusText?: string;
+  bodyText?: string;
+  durationMs?: number;
+  bytes?: number;
+  assertions: HttpAssertionView[];
+  ok: boolean;
+  error?: string;
+}
+export interface HttpRunResponse {
+  environment: string | null;
+  results: HttpRunResultView[];
+}
+export interface HttpEnvironmentsResponse {
+  root: string;
+  environments: Record<string, { vars: Record<string, string> }>;
 }
 export interface FlakyRecordResponse {
   projectId: string;
@@ -1455,4 +1680,153 @@ export const api = {
   /** R4-S3：读取 proposal（预览刷新）。 */
   refactorProposal: (proposalId: string) =>
     req<RefactorProposalResponse>(`/api/refactor/proposals/${encodeURIComponent(proposalId)}`),
+  /** R4-A7 性能剖析：CPU profile（真实 V8 采样 + 火焰图数据）。 */
+  profilerCpu: (input: { script: string; args?: string[]; timeoutMs?: number; sampleIntervalUs?: number }) =>
+    req<ProfilerCpuResult>('/api/profiler/cpu', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R4-A7 性能剖析：堆快照（真实 v8.writeHeapSnapshot 解析摘要）。 */
+  profilerHeap: (input: { script: string; args?: string[]; timeoutMs?: number }) =>
+    req<ProfilerHeapResult>('/api/profiler/heap', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R4-A6 HTTP/REST 调试客户端：发送 .http 文件（走出站防火墙）。 */
+  httpRun: (input: HttpRunInput) =>
+    req<HttpRunResponse>('/api/http/run', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R4-A6：读取环境文件。 */
+  httpEnvironments: (root?: string) =>
+    req<HttpEnvironmentsResponse>(`/api/http/environments${root ? `?root=${encodeURIComponent(root)}` : ''}`),
+  /** R4-A6：保存环境文件。 */
+  httpSaveEnvironments: (root: string | undefined, environments: Record<string, { vars: Record<string, string> }>) =>
+    req<HttpEnvironmentsResponse>('/api/http/environments', {
+      method: 'PUT',
+      body: JSON.stringify({ root, environments }),
+    }),
+  /** R4-A5 数据库浏览器：连接列表。 */
+  dbConnections: () =>
+    req<{ connections: DbBrowserConnection[] }>('/api/db-browser/connections'),
+  /** R4-A5：注册连接（sqlite 路径被服务端 jail 在数据目录内）。 */
+  dbRegister: (input: { name: string; kind: 'sqlite'; path: string; env?: string } | { name: string; kind: 'postgres'; host?: string; port?: number; user: string; database: string; env?: string }) =>
+    req<DbBrowserConnection>('/api/db-browser/connections', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R4-A5：注销连接。 */
+  dbDeregister: (name: string) =>
+    req<{ ok: boolean }>(`/api/db-browser/connections/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  /** R4-A5：查询控制台（单语句，守卫：read/write/destructive/blocked）。 */
+  dbQuery: (input: { connection: string; sql: string }) =>
+    reqWithStatus<DbBrowserQueryResponse>('/api/db-browser/query', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R4-A5：表列表。 */
+  dbTables: (connection: string) =>
+    req<{ tables: Array<{ name: string; type: 'table' | 'view' }> }>(
+      `/api/db-browser/tables?connection=${encodeURIComponent(connection)}`,
+    ),
+  /** R4-A5：表数据分页（过滤/排序走服务端校验）。 */
+  dbTablePage: (connection: string, name: string, q: { page?: number; pageSize?: number; orderBy?: string; orderDir?: string; filter?: string }) => {
+    const p = new URLSearchParams({ connection, name });
+    if (q.page !== undefined) p.set('page', String(q.page));
+    if (q.pageSize !== undefined) p.set('pageSize', String(q.pageSize));
+    if (q.orderBy) p.set('orderBy', q.orderBy);
+    if (q.orderDir) p.set('orderDir', q.orderDir);
+    if (q.filter) p.set('filter', q.filter);
+    return req<DbBrowserTablePage>(`/api/db-browser/table?${p.toString()}`);
+  },
+  /** R4-A5：行编辑写回（pk 定位，服务端复读验证）。 */
+  dbUpdateRow: (input: { connection: string; table: string; pk: Record<string, unknown>; patch: Record<string, unknown> }) =>
+    req<{ row: Record<string, unknown> | null; changes: number }>('/api/db-browser/row', {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+  /** R4-A5：schema 内省。 */
+  dbSchema: (connection: string) =>
+    req<DbBrowserSchema>(`/api/db-browser/schema?connection=${encodeURIComponent(connection)}`),
+  /** R4-A5：schema 对比（加法 DDL；删除只报告不脚本化）。 */
+  dbSchemaDiff: (source: string, target: string) =>
+    req<DbBrowserSchemaDiff>('/api/db-browser/schema/diff', {
+      method: 'POST',
+      body: JSON.stringify({ source, target }),
+    }),
+  /** R4-A5：DDL 生成。 */
+  dbDdl: (connection: string, table?: string) =>
+    req<{ ddl: string }>(
+      `/api/db-browser/ddl?connection=${encodeURIComponent(connection)}${table ? `&table=${encodeURIComponent(table)}` : ''}`,
+    ),
+  /** R4-A5：ER 关系图（外键拓扑）。 */
+  dbEr: (connection: string) =>
+    req<DbBrowserErGraph>(`/api/db-browser/er?connection=${encodeURIComponent(connection)}`),
+  /** R4-A5：破坏性语句申请票据（守卫 destructive 才可进）。 */
+  dbDestructiveRequest: (input: { connection: string; sql: string }) =>
+    req<{ ticketId: string; status: string; approveVia: string }>('/api/db-browser/destructive/request', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R4-A5：票据批准（decided_by 必填）。 */
+  dbDestructiveApprove: (ticketId: string, decidedBy: string) =>
+    req<{ ticketId: string; status: string }>('/api/db-browser/destructive/approve', {
+      method: 'POST',
+      body: JSON.stringify({ ticketId, decided_by: decidedBy }),
+    }),
+  /** R4-A5：票据执行（单次消费，绑定 connection+语句 sha256）。 */
+  dbDestructiveExecute: (input: { ticketId: string; connection: string; sql: string }) =>
+    reqWithStatus<{ ok: boolean; changes: number; durationMs: number }>('/api/db-browser/destructive/execute', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /* -- R4-S2 DAP 调试器 ------------------------------------------------ */
+  /** 调试配置（GET /api/debug/configs）：读 .vscode/launch.json（viewer）。 */
+  debugConfigs: (projectId: string) =>
+    req<{ configurations: DebugLaunchConfig[]; note?: string }>(
+      `/debug/configs?projectId=${encodeURIComponent(projectId)}`,
+    ),
+  /** 启动调试会话（POST /api/debug/sessions）：写 operator。 */
+  debugStartSession: (input: DebugStartSessionInput) =>
+    req<DebugSessionStarted>('/debug/sessions', { method: 'POST', body: JSON.stringify(input) }),
+  /** 会话列表（GET /api/debug/sessions）：读 viewer。 */
+  debugSessions: () => req<{ sessions: DebugSessionSummary[] }>('/debug/sessions'),
+  /** 会话状态（GET /api/debug/sessions/:id）：读 viewer。 */
+  debugSession: (sessionId: string) =>
+    req<{ session: DebugSessionSummary }>(`/debug/sessions/${encodeURIComponent(sessionId)}`),
+  /** 目标输出（GET /api/debug/sessions/:id/output）：读 viewer。 */
+  debugOutput: (sessionId: string, since = 0) =>
+    req<{ lines: DebugOutputLine[]; latestSeq: number }>(
+      `/debug/sessions/${encodeURIComponent(sessionId)}/output?since=${since}`,
+    ),
+  /** 设置断点（POST /api/debug/sessions/:id/breakpoints）：写 operator。 */
+  debugSetBreakpoints: (sessionId: string, breakpoints: DebugBreakpointInput[]) =>
+    req<{ breakpoints: DebugBreakpoint[] }>(`/debug/sessions/${encodeURIComponent(sessionId)}/breakpoints`, {
+      method: 'POST',
+      body: JSON.stringify({ breakpoints }),
+    }),
+  /** 单步/继续/暂停（POST …/continue|next|step-in|step-out|pause）：写 operator。 */
+  debugStep: (sessionId: string, action: 'continue' | 'next' | 'step-in' | 'step-out' | 'pause') =>
+    req<{ ok: boolean }>(`/debug/sessions/${encodeURIComponent(sessionId)}/${action}`, { method: 'POST' }),
+  /** 调用栈（GET …/stack）：读 viewer。 */
+  debugStack: (sessionId: string, threadId = 1) =>
+    req<{ stackFrames: DebugStackFrame[]; totalFrames: number }>(
+      `/debug/sessions/${encodeURIComponent(sessionId)}/stack?threadId=${threadId}`,
+    ),
+  /** 作用域（GET …/scopes）：读 viewer。 */
+  debugScopes: (sessionId: string, frameId: number) =>
+    req<{ scopes: DebugScope[] }>(`/debug/sessions/${encodeURIComponent(sessionId)}/scopes?frameId=${frameId}`),
+  /** 变量（GET …/variables）：读 viewer。 */
+  debugVariables: (sessionId: string, ref: number) =>
+    req<{ variables: DebugVariable[] }>(`/debug/sessions/${encodeURIComponent(sessionId)}/variables?ref=${ref}`),
+  /** 求值（POST …/evaluate）：写 operator。 */
+  debugEvaluate: (sessionId: string, expression: string, frameId?: number) =>
+    req<DebugEvalResult>(`/debug/sessions/${encodeURIComponent(sessionId)}/evaluate`, {
+      method: 'POST',
+      body: JSON.stringify({ expression, frameId }),
+    }),
+  /** 结束会话（DELETE /api/debug/sessions/:id）：写 operator。 */
+  debugStopSession: (sessionId: string) =>
+    req<{ ok: boolean }>(`/debug/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
 };

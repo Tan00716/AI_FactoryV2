@@ -40,6 +40,9 @@ import { EditorPanel } from './components/EditorPanel';
 import { ChangesPanel, createChangesApi } from './components/ChangesPanel';
 import { StabilityPanel } from './components/StabilityPanel';
 import { RefactorPanel } from './components/RefactorPanel';
+import { DebugPanel } from './components/DebugPanel';
+import { ProfilerPanel } from './components/ProfilerPanel';
+import { HttpPanel } from './components/HttpPanel';
 import { DashboardPanel, createDashboardApi } from './components/DashboardPanel';
 import { OpsPanel } from './components/OpsPanel';
 import { FinalReportPanel } from './components/FinalReportPanel';
@@ -81,7 +84,7 @@ function IdeShell() {
   /** Batch 15: API identity label for the top bar (role / local mode /
    *  unknown when whoami cannot be fetched — displayed as-is, never guessed). */
   const [apiIdentityLabel, setApiIdentityLabel] = useState('');
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor' | 'Profiler' | 'HTTP' | 'Debug'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   /**
    * Design panel → editor jump (task ⑨): the Design panel dispatches an
@@ -244,7 +247,7 @@ function IdeShell() {
         <main className="center">
           {bootError && <div className="banner err">{bootError}</div>}
           <div className="center-tabs">
-            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab', 'Coverage', 'Recipes', 'Design', 'Updates', 'Refactor'] as const).map((name) => (
+            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab', 'Coverage', 'Recipes', 'Design', 'Updates', 'Refactor', 'Profiler', 'HTTP', 'Debug'] as const).map((name) => (
               <button key={name} className={centerTab === name ? 'active' : ''} onClick={() => setCenterTab(name)}>{t(`tab.${name.toLowerCase().replace('/', '')}` as const)}</button>
             ))}
           </div>
@@ -360,6 +363,12 @@ function IdeShell() {
             <UpdatePanel api={updateApi} />
           ) : centerTab === 'Refactor' ? (
             <RefactorPanel projectId={projectId} />
+          ) : centerTab === 'Profiler' ? (
+            <ProfilerPanel />
+          ) : centerTab === 'HTTP' ? (
+            <HttpPanel />
+          ) : centerTab === 'Debug' ? (
+            <DebugPanel projectId={projectId} />
           ) : (
             <EditorPanel openRequest={editorOpenRequest} />
           )}
