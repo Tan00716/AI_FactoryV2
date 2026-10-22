@@ -9,7 +9,7 @@
  * results, EVALUATE completes.
  */
 import type { Agent, Task } from '@ai-factory/core';
-import { scanForSecrets } from '@ai-factory/memory';
+import { assertPromptSafe } from './pre-send-scan';
 import { route, type DataClass, type RouteDecision, type RouteRequest } from '@ai-factory/model-router';
 import { ApprovalManager, InMemoryApprovalStore } from '@ai-factory/approvals';
 import { sanitizeUntrusted } from '@ai-factory/security';
@@ -232,7 +232,7 @@ function defaultStepFn(ctx: DefaultStepContext): StepFn {
         };
 
       case 'ACT': {
-        const prompt = buildPrompt(agent, task, attachments);
+        let prompt = buildPrompt(agent, task, attachments);
         // INV-26 / §46.2: credentials must never enter a prompt. "A prompt
         // that contains a secret has already leaked even if the log is
         // redacted afterwards, so the input is checked BEFORE sending."
@@ -242,8 +242,12 @@ function defaultStepFn(ctx: DefaultStepContext): StepFn {
         // at all. The prompt is deterministic, so the distinct errorSignature
         // below cannot be cleared by retrying and the run escalates through
         // the normal stagnation path instead of silently retrying.
+        // R4-S1: the scan now goes through the shared pre-send engine
+        // (24 pattern families + audit PROMPT_SECRET_BLOCKED + HIGH
+        // notification via the injected sinks); in redact mode the run
+        // continues with the sanitized prompt.
         try {
-          scanForSecrets(prompt);
+          prompt = assertPromptSafe(prompt, { adapter: adapter.name });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           return {

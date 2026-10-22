@@ -762,6 +762,47 @@ export interface MutationRunStatus {
   error: string | null;
   report: MutationReportSummary | null;
 }
+/** 依赖升级顾问（第四轮 R4-B10）——服务端 /api/depscan 的形状。 */
+export type DepscanGrade = 'up-to-date' | 'patch' | 'minor' | 'major' | 'prerelease' | 'downgrade' | 'unknown';
+export interface DepscanCveHit {
+  id: string;
+  severity: string;
+  note?: string;
+}
+export interface DepscanAdvice {
+  name: string;
+  current: string;
+  declaredRange: string;
+  dev: boolean;
+  wanted: string | null;
+  latest: string | null;
+  grade: DepscanGrade;
+  changelogUrl?: string;
+  cves: DepscanCveHit[];
+  reviewFirst: boolean;
+}
+export interface DepscanPlan {
+  generatedAt: string;
+  registrySource: string;
+  snapshotDate: string | null;
+  advisories: DepscanAdvice[];
+  commands: string[];
+  summary: {
+    total: number;
+    upToDate: number;
+    patch: number;
+    minor: number;
+    major: number;
+    unknown: number;
+    cveAffected: number;
+  };
+}
+export interface DepscanSnapshot {
+  source: string;
+  snapshotDate: string | null;
+  packageCount: number;
+  honestBoundary: string;
+}
 /** 间歇失败检测（第三轮③）——服务端 /api/flaky 的形状。 */
 export type FlakyStatus = 'flaky' | 'always-failing' | 'stable' | 'insufficient-data';
 export interface FlakyTestEntry {
@@ -799,6 +840,80 @@ export interface FlakyState {
   runs: FlakyRunSummary[];
   total: number;
   counts: { flaky: number; alwaysFailing: number; stable: number; insufficientData: number };
+}
+/** R4-B9 TODO 追踪：服务端 TodoItem / TodoPattern 的桌面侧形状。 */
+export type TodoSeverity = 'error' | 'warning' | 'info';
+export interface TodoItem {
+  file: string;
+  line: number;
+  column: number;
+  severity: TodoSeverity;
+  tag: string;
+  message: string;
+}
+export interface TodoPattern {
+  name: string;
+  regexp: string;
+  severity: TodoSeverity;
+  enabled: boolean;
+  builtin: boolean;
+}
+export interface TodoPatternInput {
+  name: string;
+  regexp: string;
+  severity: TodoSeverity;
+  enabled?: boolean;
+}
+export interface TodoScanStats {
+  filesScanned: number;
+  linesScanned: number;
+  items: number;
+  truncated: boolean;
+  skippedBinary: number;
+  durationMs: number;
+}
+export interface TodoScanResponse {
+  root: string;
+  patterns: TodoPattern[];
+  items: TodoItem[];
+  stats: TodoScanStats;
+}
+/** R4-S3 确定性重构：桌面侧形状（服务端原样）。 */
+export type RefactorOpName = 'extract-variable' | 'extract-method' | 'inline-variable' | 'rename-symbol';
+export interface RefactorAnalyzeInput {
+  projectId: string;
+  targetDir?: string;
+  file: string;
+  op: RefactorOpName;
+  selection?: { start: number; end: number };
+  lines?: { startLine: number; endLine: number };
+  offset?: number;
+  name?: string;
+  newName?: string;
+  otherFiles?: string[];
+}
+export interface RefactorWarning {
+  code: string;
+  message: string;
+}
+export interface RefactorProposalItem {
+  id: string;
+  file: string;
+  diff: string;
+  warnings: RefactorWarning[];
+}
+export interface RefactorProposalResponse {
+  proposalId: string;
+  projectId: string;
+  op: RefactorOpName;
+  createdAt?: string;
+  warnings: RefactorWarning[];
+  items: RefactorProposalItem[];
+}
+export interface RefactorApplyResponse {
+  proposalId: string;
+  applied: string[];
+  skipped: string[];
 }
 export interface FlakyRecordResponse {
   projectId: string;
@@ -1256,6 +1371,14 @@ export const api = {
   /** 查询变异测试运行状态（GET /api/mutation/runs/:runId）：读 viewer。 */
   mutationRunStatus: (runId: string) =>
     req<MutationRunStatus>(`/mutation/runs/${encodeURIComponent(runId)}`),
+  /** 依赖升级快照元数据（GET /api/depscan/snapshot）：读 viewer。 */
+  depscanSnapshot: () =>
+    req<DepscanSnapshot>('/depscan/snapshot'),
+  /** 生成依赖升级计划（POST /api/depscan/advise）：写 operator。 */
+  depscanAdvise: (projectId: string, p: { dir?: string; source?: 'snapshot' | 'live' } = {}) =>
+    req<{ projectId: string; plan: DepscanPlan }>(
+      '/depscan/advise', { method: 'POST', body: JSON.stringify({ projectId, ...p }) },
+    ),
   /** 两层忽略文件状态（GET /api/ignores?projectId=）：读 viewer。 */
   ignores: (projectId: string) =>
     req<IgnoreFilesState>(`/ignores?projectId=${encodeURIComponent(projectId)}`),
@@ -1297,4 +1420,39 @@ export const api = {
       `/runtime/runs/${encodeURIComponent(runId)}/resume`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
+  /** R4-B9 TODO 追踪：全项目扫描（服务端快照）。 */
+  todos: (root?: string) =>
+    req<TodoScanResponse>(`/todos${root ? `?root=${encodeURIComponent(root)}` : ''}`),
+  /** R4-B9：单个文件的 TODO 项（编辑器 gutter / overview ruler 用）。 */
+  todoFileItems: (path: string, root?: string) =>
+    req<{ root: string; items: TodoItem[] }>(
+      `/todos/file?path=${encodeURIComponent(path)}${root ? `&root=${encodeURIComponent(root)}` : ''}`,
+    ),
+  /** R4-B9：更新自定义模式（operator；服务端会话级生效，重启回默认）。 */
+  updateTodoConfig: (patterns: TodoPatternInput[], root?: string) =>
+    req<TodoScanResponse>('/todos', {
+      method: 'PUT',
+      body: JSON.stringify({ ...(root ? { root } : {}), patterns }),
+    }),
+  /** R4-B9：恢复默认模式（operator）。 */
+  resetTodoConfig: (root?: string) =>
+    req<TodoScanResponse>('/todos/reset', {
+      method: 'POST',
+      body: JSON.stringify(root ? { root } : {}),
+    }),
+  /** R4-S3 确定性重构：分析（preview，只读）→ proposal。 */
+  refactorAnalyze: (input: RefactorAnalyzeInput) =>
+    req<RefactorProposalResponse>('/api/refactor/analyze', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R4-S3：应用 proposal 中被接受的条目（drift 则 409）。 */
+  refactorApply: (proposalId: string, acceptedIds: string[]) =>
+    reqWithStatus<RefactorApplyResponse>('/api/refactor/apply', {
+      method: 'POST',
+      body: JSON.stringify({ proposalId, acceptedIds }),
+    }),
+  /** R4-S3：读取 proposal（预览刷新）。 */
+  refactorProposal: (proposalId: string) =>
+    req<RefactorProposalResponse>(`/api/refactor/proposals/${encodeURIComponent(proposalId)}`),
 };

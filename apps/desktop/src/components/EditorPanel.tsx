@@ -9,7 +9,7 @@
  * Diff views for the Change Review UI (§66) live in DiffViewer.tsx.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { defaultApiBase, authHeaders } from '../api';
+import { defaultApiBase, authHeaders, api, type TodoItem } from '../api';
 import { useLang } from '../i18n';
 import monaco, { languageOf } from '../monacoSetup';
 import { editorCursor } from '../editorCursor';
@@ -127,6 +127,8 @@ export function EditorPanel({
       automaticLayout: true,
       minimap: { enabled: false },
       fontSize: 13,
+      // R4-B9: glyph margin hosts TODO/FIXME markers (todo-glyph-* CSS).
+      glyphMargin: true,
       // R3-T9: Monaco 内置粘性滚动 (VS Code stickyScroll 式), 不做自定义吸顶.
       stickyScroll: { enabled: readStickyScrollPref(), maxLineCount: 10 },
     });
@@ -183,6 +185,37 @@ export function EditorPanel({
     setDirs((d) => ({ ...d, [dir]: { ...cache, expanded: !cache.expanded } }));
   };
 
+  // R4-B9 TODO gutter + overview-ruler markers. Best-effort: a failed
+  // fetch clears stale markers but never breaks editing.
+  const todoDecorIdsRef = useRef<string[]>([]);
+  const refreshTodoDecorations = useCallback(
+    async (editor: monaco.editor.IStandaloneCodeEditor, path: string) => {
+      const colors: Record<TodoItem['severity'], string> = {
+        error: '#f14c4c',
+        warning: '#cca700',
+        info: '#3794ff',
+      };
+      try {
+        const { items } = await api.todoFileItems(path);
+        const decs = items.slice(0, 200).map((it) => ({
+          range: new monaco.Range(it.line, 1, it.line, 1),
+          options: {
+            glyphMarginClassName: `todo-glyph todo-glyph-${it.severity}`,
+            glyphMarginHoverMessage: { value: `**${it.tag}**${it.message ? ` — ${it.message}` : ''}` },
+            overviewRuler: {
+              color: colors[it.severity],
+              position: monaco.editor.OverviewRulerLane.Right,
+            },
+          },
+        }));
+        todoDecorIdsRef.current = editor.deltaDecorations(todoDecorIdsRef.current, decs);
+      } catch {
+        todoDecorIdsRef.current = editor.deltaDecorations(todoDecorIdsRef.current, []);
+      }
+    },
+    [],
+  );
+
   const openFile = useCallback(async (path: string) => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -206,6 +239,8 @@ export function EditorPanel({
       editorCursor.line = 1;
       setDirty(false);
       setStatus('');
+      // R4-B9: refresh TODO gutter markers for the newly opened file.
+      void refreshTodoDecorations(editor, path);
     } catch (e) {
       setErr(e instanceof Error ? e.message : t('editor.openFailed'));
       setStatus('');

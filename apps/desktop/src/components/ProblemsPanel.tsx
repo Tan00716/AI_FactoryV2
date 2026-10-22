@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { defaultApiBase, authHeaders, api, type FlakyState, type FlakyStatus, type MutationReportSummary, type MutationRunRequest, type MutationRunStatus } from '../api';
+import { defaultApiBase, authHeaders, api, type FlakyState, type FlakyStatus, type MutationReportSummary, type MutationRunRequest, type MutationRunStatus, type DepscanAdvice, type DepscanPlan } from '../api';
 import { useLang } from '../i18n';
 
 /**
@@ -411,6 +411,123 @@ function MutationSection({ projectId }: { projectId: string }) {
   );
 }
 
+/**
+ * Dependency-upgrade advisor section (round-4 task R4-B10) — npm-outdated
+ * style: per-dep safety grading (patch/minor/major), CHANGELOG links, CVE
+ * cross-reference against the offline snapshot, and a copy-pasteable
+ * upgrade plan. Explicit operator action; majors and CVE-affected deps are
+ * flagged for review before applying.
+ */
+function DepscanSection({ projectId }: { projectId: string }) {
+  const { t } = useLang();
+  const [open, setOpen] = useState(false);
+  const [plan, setPlan] = useState<DepscanPlan | null>(null);
+  const [snapshotNote, setSnapshotNote] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const runAdvise = useCallback(async () => {
+    setBusy(true);
+    setErr(null);
+    setCopied(false);
+    try {
+      const snap = await api.depscanSnapshot();
+      setSnapshotNote(`${snap.source} · ${snap.packageCount} pkgs`);
+      const r = await api.depscanAdvise(projectId, {});
+      setPlan(r.plan);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (open && !plan) void runAdvise();
+  }, [open, plan, runAdvise]);
+
+  const gradePill = (g: DepscanAdvice['grade']) => {
+    const cls = g === 'major' ? 'warn' : g === 'patch' ? 'ok' : '';
+    return <span className={`pill ${cls}`}>{t(`depscan.grade.${g}`)}</span>;
+  };
+
+  const copyPlan = useCallback(async () => {
+    if (!plan || plan.commands.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(plan.commands.join('\n'));
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }, [plan]);
+
+  const s = plan?.summary;
+  return (
+    <div className="depscan-box" style={{ margin: '6px 0', borderTop: '1px solid var(--border, #333)' }}>
+      <button className="link" onClick={() => setOpen((v) => !v)}>
+        {t('depscan.title')}
+        {s && s.total > 0 ? ` (${s.patch + s.minor + s.major}/${s.total})` : ''} {open ? '▾' : '▸'}
+      </button>
+      {open && (
+        <div>
+          <div className="muted">{t('depscan.honestNote')}</div>
+          {snapshotNote && <div className="muted">{snapshotNote}</div>}
+          {err && <span className="pill warn">{err}</span>}
+          {plan ? (
+            <div style={{ margin: '6px 0' }}>
+              <div>
+                <strong>{t('depscan.summary', {
+                  total: String(s?.total ?? 0),
+                  patch: String(s?.patch ?? 0),
+                  minor: String(s?.minor ?? 0),
+                  major: String(s?.major ?? 0),
+                  cve: String(s?.cveAffected ?? 0),
+                })}</strong>
+              </div>
+              <div className="problems-list">
+                {plan.advisories.filter((a) => a.grade !== 'up-to-date').map((a) => (
+                  <div key={a.name} className="problem-row">
+                    <span className="mono">{a.name}</span>
+                    <span className="muted">{a.current} → {a.latest ?? '?'}</span>
+                    {gradePill(a.grade)}
+                    {a.wanted && a.wanted !== a.latest && (
+                      <span className="muted">{t('depscan.wanted', { version: a.wanted })}</span>
+                    )}
+                    {a.cves.map((c) => (
+                      <span key={c.id} className="pill warn" title={c.note ?? ''}>{c.id}</span>
+                    ))}
+                    {a.reviewFirst && <span className="pill warn">{t('depscan.reviewFirst')}</span>}
+                    {a.changelogUrl && (
+                      <a href={a.changelogUrl} target="_blank" rel="noreferrer">{t('depscan.changelog')}</a>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {plan.commands.length > 0 && (
+                <div style={{ marginTop: 6 }}>
+                  <div className="muted">{t('depscan.planLabel')}</div>
+                  <pre className="mono" style={{ whiteSpace: 'pre-wrap' }}>{plan.commands.join('\n')}</pre>
+                  <button className="pill" onClick={() => void copyPlan()}>
+                    {copied ? t('depscan.copied') : t('depscan.copyPlan')}
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            !err && <div className="muted">{t('depscan.empty')}</div>
+          )}
+          <div style={{ margin: '6px 0' }}>
+            <button className="pill" disabled={busy} onClick={() => void runAdvise()}>
+              {t('depscan.refresh')}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 async function apiReq<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${defaultApiBase()}${path}`, {
     ...init,
@@ -644,6 +761,7 @@ export function ProblemsPanel({ projectId }: { projectId: string }) {
       {err && <span className="pill warn">{err}</span>}
       <FlakySection projectId={projectId} />
       <MutationSection projectId={projectId} />
+      <DepscanSection projectId={projectId} />
       {visible.length === 0 && !err && <div className="muted">{t('problems.empty')}</div>}
       <div className="problems-list">
         {visible.map((d, i) => {

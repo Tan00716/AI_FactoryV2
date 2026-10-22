@@ -20,6 +20,7 @@
  *                   (sliding window counter → §81 'security-issue')
  */
 export * from './credentials';
+export * from './secret-patterns';
 export * from './injection';
 export * from './scanner';
 export * from './sandbox';

@@ -70,7 +70,7 @@ import {
 import { NotificationEngine } from '@ai-factory/notifications';
 import { PersistentNotificationEngine } from './notification-store';
 import { createSecretBrokerFromEnv } from '@ai-factory/secrets';
-import { CheckpointLog, OperationLedger } from '@ai-factory/runtime';
+import { CheckpointLog, OperationLedger, setPreSendScanSinks } from '@ai-factory/runtime';
 import type { StepIntentStore, TargetLedgerQuery } from '@ai-factory/runtime';
 import type { RouteContext } from './routes/context';
 import { FactoryPolicyStore } from '@ai-factory/employee-factory';
@@ -180,6 +180,7 @@ import { handleNotificationRoutes } from './routes/notifications';
 import { handleAuditExportRoutes } from './routes/audit-export';
 import { handleTaskTemplateRoutes } from './routes/task-templates';
 import { handleSweepRoutes } from './routes/sweep';
+import { handleTodoScanRoutes } from './routes/todo-scan';
 import { TaskTemplateStore } from './task-template-store';
 import { handleEventRoutes } from './routes/events';
 import { handleActivityRoutes } from './routes/activity';
@@ -197,12 +198,20 @@ import {
   validateProjectPath,
 } from './routes/backup';
 import { handleRetentionRoutes } from './routes/retention';
-import { resolveInspectionRoot } from './inspections';
+import { resolveInspectionRoot, BUILTIN_VULNERABLE, versionInRange, setExtraCheckerProvider } from './inspections';
 import { handleAutoBackupRoutes, syncAutoBackupPolicy } from './routes/auto-backup';
 import { handleQualityRoutes, setImpactGateAnalyzer, setFlakyGateLinkage, setMutationGateLinkage } from './routes/quality';
 import { handleImpactRoutes, analyzeGateWorkingTree } from './routes/impact';
 import { handleFlakyRoutes, runFlakyGateLinkage } from './routes/flaky';
 import { handleMutationRoutes, runMutationGateLinkage, setMutationInspectionRootResolver } from './routes/mutation';
+import { handleRefactorRoutes, setRefactorInspectionRootResolver } from './routes/refactor';
+import { handleSsrRoutes, setSsrInspectionRootResolver, ssrCheckerProvider } from './routes/ssr';
+import {
+  handleDepscanRoutes,
+  setDepscanCveMatcher,
+  setDepscanInspectionRootResolver,
+  setDepscanLiveRegistryGate,
+} from './routes/depscan';
 import { handleIgnoresRoutes } from './routes/ignores';
 import { handleEgressRoutes } from './routes/egress';
 import { assertEgressAllowed, setEgressBlockSinks } from './egress';
@@ -655,6 +664,40 @@ setMutationGateLinkage((args) => runMutationGateLinkage(args));
  * so the real resolveInspectionRoot is injected here.
  */
 setMutationInspectionRootResolver((root) => resolveInspectionRoot(root));
+
+/**
+ * Structural search-and-replace wiring (round-4 task R4-A4) — same
+ * setter-injection pattern: the route must not value-import
+ * ../inspections, so the real resolveInspectionRoot is injected here,
+ * and saved asInspection templates run as the 'ssr-template' checker.
+ */
+setSsrInspectionRootResolver((root) => resolveInspectionRoot(root));
+setExtraCheckerProvider((root) => ssrCheckerProvider(root));
+
+/**
+ * Dependency upgrade advisor (round-4 task R4-B10) — same setter-injection
+ * pattern: the route must not value-import ../inspections (dual-mode
+ * import rule), so the jail resolver, the CVE matcher (built from the
+ * hand-maintained blacklist snapshot), and the live-registry egress gate
+ * are injected here. The registry provider defaults to the bundled
+ * offline snapshot; live mode is explicit opt-in + egress-gated.
+ */
+setDepscanInspectionRootResolver((root) => resolveInspectionRoot(root));
+setDepscanCveMatcher((name, version) =>
+  BUILTIN_VULNERABLE.filter((r) => r.package === name && versionInRange(version, r.range)).map(
+    (r) => ({ id: r.id, severity: r.severity, note: r.note }),
+  ),
+);
+setDepscanLiveRegistryGate((host) => assertEgressAllowed(`https://${host}/`, { source: 'depscan-live-registry' }));
+
+/**
+ * Deterministic refactoring (round-4 task R4-S3) — same setter-injection
+ * pattern: the route must not value-import ../inspections (dual-mode
+ * import rule), so the real resolveInspectionRoot is injected here.
+ * Preview proposals are computed in-memory (side-effect free); apply is
+ * guarded by a sha256 drift check (409 REFACTOR_DRIFT).
+ */
+setRefactorInspectionRootResolver((root) => resolveInspectionRoot(root));
 
 /**
  * Shadow checkpoints (third-wave task ⑦) — installs the two observer
@@ -1154,6 +1197,16 @@ setEgressBlockSinks({
     notify.emit(event);
   },
 });
+// R4-S1: pre-send prompt secret gate — a blocked prompt lands in the audit
+// trail (PROMPT_SECRET_BLOCKED / PROMPT_SECRET_REDACTED) and the block also
+// raises a HIGH notification via the rules engine. Best-effort sinks: the
+// gate blocks even with no sinks installed.
+setPreSendScanSinks({
+  audit: (action, detail) => audit.record('system', action, 'prompt', 'pre-send-scan', detail),
+  notify: (event) => {
+    notify.emit(event);
+  },
+});
 setFetchTextGuard((url) => assertEgressAllowed(url, { source: 'web-search' }));
 setMcpHttpGuard((url) => assertEgressAllowed(url, { source: 'mcp-http' }));
 
@@ -1382,6 +1435,7 @@ const server = createServer(async (req, res) => {
     if (await handleAuditExportRoutes(req, res, url, routeCtx)) return;
     if (await handleTaskTemplateRoutes(req, res, url, routeCtx)) return;
     if (await handleSweepRoutes(req, res, url, routeCtx)) return;
+    if (await handleTodoScanRoutes(req, res, url, routeCtx)) return;
     if (await handleEventRoutes(req, res, url, routeCtx)) return;
     if (await handleActivityRoutes(req, res, url, routeCtx)) return;
     if (await handleBackupRoutes(req, res, url, routeCtx)) return;
@@ -1391,6 +1445,9 @@ const server = createServer(async (req, res) => {
     if (await handleImpactRoutes(req, res, url, routeCtx)) return;
     if (await handleFlakyRoutes(req, res, url, routeCtx)) return;
     if (await handleMutationRoutes(req, res, url, routeCtx)) return;
+    if (await handleRefactorRoutes(req, res, url, routeCtx)) return;
+    if (await handleSsrRoutes(req, res, url, routeCtx)) return;
+    if (await handleDepscanRoutes(req, res, url, routeCtx)) return;
     if (await handleIgnoresRoutes(req, res, url, routeCtx)) return;
     if (await handleCoverageRoutes(req, res, url, routeCtx)) return;
     if (await handleContextProviderRoutes(req, res, url, routeCtx)) return;

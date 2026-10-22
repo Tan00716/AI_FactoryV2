@@ -37,8 +37,9 @@
  * temp+rename writes. A corrupt store is fail-closed (accessors throw,
  * routes answer 500) — never silently running with half a history.
  *
- * Pure node builtins (+ type-only imports): tests may import it straight
- * from src under node's type-stripping ESM loader.
+ * Pure node builtins (+ type-only imports, plus the @ai-factory/security
+ * secret-pattern table): tests may import it straight from src under node's
+ * type-stripping ESM loader (the workspace package resolves to its dist).
  */
 import { createHash } from 'node:crypto';
 import {
@@ -306,61 +307,17 @@ function suppressedByNosec(line: string, kind: string): boolean {
 // ---------------------------------------------------------------------------
 // secret-scan checker (gitleaks-style, deterministic pattern set)
 // ---------------------------------------------------------------------------
-
-export interface SecretPattern {
-  /** Stable rule id, e.g. 'aws-access-key'. */
-  name: string;
-  re: RegExp;
-  /**
-   * 'specific': unambiguous token shape (fires even in test files — a real
-   * AWS key in a fixture is still a leak if the repo is real).
-   * 'generic': assignment-shaped heuristics (skipped in test files and
-   * when the value looks like a placeholder; too noisy otherwise).
-   */
-  kind: 'specific' | 'generic';
-}
-
-/**
- * ~20 pattern families. No entropy scoring: entropy finds too many false
- * positives to be useful without a model to arbitrate.
- */
-export const SECRET_PATTERNS: SecretPattern[] = [
-  { name: 'aws-access-key', kind: 'specific', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
-  { name: 'aws-secret-key', kind: 'specific', re: /aws_secret_access_key\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}["']?/ },
-  { name: 'github-pat-classic', kind: 'specific', re: /\bghp_[A-Za-z0-9]{36}\b/ },
-  { name: 'github-pat-fine-grained', kind: 'specific', re: /\bgithub_pat_[A-Za-z0-9_]{82}\b/ },
-  { name: 'github-token', kind: 'specific', re: /\b(?:gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b/ },
-  { name: 'private-key', kind: 'specific', re: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/ },
-  { name: 'slack-token', kind: 'specific', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
-  { name: 'slack-webhook', kind: 'specific', re: /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]{8,}\/B[A-Z0-9]{8,}\/[A-Za-z0-9]{24,}/ },
-  { name: 'stripe-live-key', kind: 'specific', re: /\bsk_live_[A-Za-z0-9]{16,}\b/ },
-  { name: 'google-api-key', kind: 'specific', re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
-  { name: 'jwt-token', kind: 'specific', re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/ },
-  { name: 'sendgrid-key', kind: 'specific', re: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/ },
-  { name: 'npm-token', kind: 'specific', re: /\bnpm_[A-Za-z0-9]{36}\b/ },
-  { name: 'pypi-token', kind: 'specific', re: /\bpypi-[A-Za-z0-9_-]{40,}\b/ },
-  { name: 'telegram-bot-token', kind: 'specific', re: /\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b/ },
-  { name: 'openai-key', kind: 'specific', re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/ },
-  { name: 'generic-api-key', kind: 'generic', re: /\b(api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key)\s*[:=]\s*["']?([^"'\s]{8,})["']?/i },
-  { name: 'generic-password', kind: 'generic', re: /\b(password|passwd|pwd)\s*[:=]\s*["']([^"'\s]{8,})["']/i },
-  { name: 'bearer-token', kind: 'generic', re: /\bAuthorization\s*[:=]\s*["']Bearer\s+[A-Za-z0-9._~-]{16,}["']/i },
-  { name: 'basic-auth-url', kind: 'generic', re: /:\/\/[^/\s:@]+:[^/\s:@]{4,}@/ },
-  { name: 'db-connection-string', kind: 'generic', re: /\b(?:mongodb|postgres|mysql|redis):\/\/[^/\s:@]+:[^/\s:@]{4,}@/i },
-];
-
-const PLACEHOLDER_RE =
-  /example|sample|placeholder|dummy|xxx|\.\.\.|<[^>]*>|\$\{|process\.env|your[_-]|changeme|redacted|\*\*\*/i;
-
-/** True when the matched text looks like documentation, not a real secret. */
-export function isPlaceholderValue(s: string): boolean {
-  return PLACEHOLDER_RE.test(s);
-}
-
-/** Mask a matched secret for safe display/audit: first 4 + last 2 only. */
-export function maskSecret(s: string): string {
-  if (s.length <= 8) return s.slice(0, 2) + '…' + s.slice(-1);
-  return s.slice(0, 4) + '…' + s.slice(-2);
-}
+// R4-S1: the pattern table lives in @ai-factory/security now (single source
+// of truth shared with the runtime pre-send prompt gate). Re-exported here
+// so existing importers of this module keep working.
+import {
+  SECRET_PATTERNS,
+  isPlaceholderValue,
+  maskSecret,
+  type SecretPattern,
+} from '@ai-factory/security';
+export { SECRET_PATTERNS, isPlaceholderValue, maskSecret };
+export type { SecretPattern };
 
 /** secret-scan: hardcoded secrets, severity always 'error' (a match is definite enough to block on). */
 export const secretScanChecker: Checker = {
@@ -525,7 +482,18 @@ export const sastPatternsChecker: Checker = {
 };
 
 /** All built-in checkers by name (the extensible registry). */
-export function builtinCheckers(profile: InspectionProfile): Checker[] {
+/**
+ * Extension hook for checkers that live outside this module (round-4 A4:
+ * the SSR template checker in routes/ssr.ts). Setter-injected so this
+ * module keeps zero value-imports of route code (dual-mode import rule).
+ */
+let extraCheckerProvider: ((root: string) => Checker[]) | null = null;
+
+export function setExtraCheckerProvider(fn: ((root: string) => Checker[]) | null): void {
+  extraCheckerProvider = fn;
+}
+
+export function builtinCheckers(profile: InspectionProfile, root?: string): Checker[] {
   const enabled = (name: string): boolean => profile.checkers[name] !== false;
   const out: Checker[] = [];
   if (enabled('todo-fixme')) out.push(todoFixmeChecker);
@@ -535,6 +503,15 @@ export function builtinCheckers(profile: InspectionProfile): Checker[] {
   // Security checkers (task wave2-④): appended, existing checkers untouched.
   if (enabled('secret-scan')) out.push(secretScanChecker);
   if (enabled('sast-patterns')) out.push(sastPatternsChecker);
+  // SSR template checker (round-4 A4): only when a root is supplied, the
+  // provider is wired (production index.ts), and the profile enables it.
+  if (root && extraCheckerProvider && enabled('ssr-template')) {
+    try {
+      out.push(...extraCheckerProvider(root));
+    } catch {
+      // A broken provider must not abort the inspection run.
+    }
+  }
   return out;
 }
 
@@ -553,7 +530,7 @@ export interface InspectionProfile {
   dependencyAudit: boolean;
 }
 
-export const KNOWN_CHECKERS = ['todo-fixme', 'long-file', 'long-function', 'console-log', 'secret-scan', 'sast-patterns'] as const;
+export const KNOWN_CHECKERS = ['todo-fixme', 'long-file', 'long-function', 'console-log', 'secret-scan', 'sast-patterns', 'ssr-template'] as const;
 
 export function defaultInspectionProfile(): InspectionProfile {
   return {
@@ -561,7 +538,7 @@ export function defaultInspectionProfile(): InspectionProfile {
     name: 'default',
     maxFileLines: 1000,
     maxFunctionLines: 150,
-    checkers: { 'todo-fixme': true, 'long-file': true, 'long-function': true, 'console-log': true, 'secret-scan': true, 'sast-patterns': true },
+    checkers: { 'todo-fixme': true, 'long-file': true, 'long-function': true, 'console-log': true, 'secret-scan': true, 'sast-patterns': true, 'ssr-template': true },
     licenseAudit: true,
     dependencyAudit: true,
   };
@@ -1441,7 +1418,7 @@ function sortFindings(fs: Finding[]): Finding[] {
 export function runInspection(root: string, projectId: string): InspectionRunResult {
   const started = Date.now();
   const { profile, source, note } = loadInspectionProfile(root);
-  const checkers = builtinCheckers(profile);
+  const checkers = builtinCheckers(profile, root);
   const files = collectSourceFiles(root);
   const collected: Finding[] = [];
   for (const f of files) {

@@ -23,6 +23,7 @@ export type NotificationEventType =
   | 'SECURITY_SCAN_BLOCKED'
   | 'SCOPE_VIOLATION_DETECTED'
   | 'EGRESS_BLOCKED'
+  | 'PROMPT_SECRET_BLOCKED'
   | 'UPDATE_AVAILABLE'
   | 'GENERIC';
 

@@ -29,6 +29,7 @@ export * from './pty-session';
 export * from './adapters';
 export * from './adapter-contract';
 export * from './runner';
+export * from './pre-send-scan';
 export * from './export-approval';
 export * from './run-states';
 export * from './failures';

@@ -34,6 +34,7 @@ import {
   type AdapterSession,
   type AdapterSessionOptions,
 } from './adapter-contract';
+import { assertPromptSafe } from './pre-send-scan';
 
 export { CodexAdapterError } from './codex-transport';
 export type { CodexTransport } from './codex-transport';
@@ -127,6 +128,9 @@ export class StubAdapter implements AdapterContract {
   }
 
   async invoke(_input: AdapterInput): Promise<AdapterOutput> {
+    // R4-S1: pre-send secret gate — runs before any scripted response is
+    // served, so a secret-bearing prompt never reaches even the stub "model".
+    assertPromptSafe(_input.prompt, { adapter: this.name });
     return this.nextOutput();
   }
 
@@ -401,9 +405,16 @@ export class CodexAdapter implements AdapterContract {
   }
 
   async invoke(input: AdapterInput): Promise<AdapterOutput> {
+    // R4-S1: pre-send secret gate — the choke point. No prompt reaches the
+    // Codex app-server (the real model vendor boundary) unexamined; in
+    // redact mode the sanitized prompt is what gets sent.
+    const safeInput: AdapterInput = {
+      ...input,
+      prompt: assertPromptSafe(input.prompt, { adapter: this.name }),
+    };
     const transport = await this.connect();
     try {
-      return await this.withTimeout('turn', this.invokeEphemeral(transport, input));
+      return await this.withTimeout('turn', this.invokeEphemeral(transport, safeInput));
     } finally {
       transport.close();
     }

@@ -175,6 +175,17 @@ export const DEFAULT_RULES: NotificationRule[] = [
       )(e),
   },
   {
+    id: 'prompt-secret-blocked',
+    eventTypes: ['PROMPT_SECRET_BLOCKED'],
+    build: (e) =>
+      outcome(
+        `Prompt blocked: ${label(e)}`,
+        `A prompt about to be sent to ${detail(e, 'adapter') || 'a model adapter'} was blocked because it contained a suspected raw secret (patterns: ${detail(e, 'patterns') || 'unknown'}). ` +
+          `The secret never left the process. Remove the secret from the prompt, or switch the pre-send gate to redact mode if the value is intentional.`,
+        'HIGH',
+      )(e),
+  },
+  {
     id: 'needs-human-raised',
     eventTypes: ['NEEDS_HUMAN_RAISED'],
     build: (e) =>

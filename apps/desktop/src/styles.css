@@ -482,3 +482,39 @@ button.ghost:hover { background: rgba(88,166,255,.12); }
 .pill.warn { background: #9e6a03; color: #fff; }
 button.linklike { background: none; border: none; padding: 0; color: var(--accent, #58a6ff); cursor: pointer; font-size: inherit; text-decoration: underline; }
 .error-banner { background: #5a1f1f; color: #ffd7d7; border: 1px solid #a33; border-radius: 6px; padding: 8px; margin-bottom: 12px; }
+
+/* R4-B9 TODO tracker panel */
+.todo-panel { padding: 4px 2px; }
+.todo-toolbar { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+.todo-list { margin-top: 6px; }
+.todo-row { display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); padding: 3px 0; cursor: pointer; background: none; border-left: none; border-right: none; border-top: none; color: inherit; font: inherit; width: 100%; text-align: left; }
+.todo-row:hover { background: var(--bg3); }
+.todo-file { font-family: monospace; font-size: 12px; white-space: nowrap; }
+.todo-msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-config { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
+.todo-config-title { font-weight: 600; margin-bottom: 4px; }
+.todo-pattern-row { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
+.todo-add { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+.todo-add input, .todo-add select { font: inherit; }
+.todo-honest { margin-top: 8px; font-size: 12px; }
+
+/* R4-B9 TODO gutter markers (Monaco glyph margin) */
+.monaco-editor .glyph-margin .todo-glyph { display: flex; align-items: center; justify-content: center; }
+.todo-glyph-error::after, .todo-glyph-warning::after, .todo-glyph-info::after { content: ''; width: 7px; height: 7px; border-radius: 50%; display: block; }
+.todo-glyph-error::after { background: #f14c4c; }
+.todo-glyph-warning::after { background: #cca700; }
+.todo-glyph-info::after { background: #3794ff; }
+
+/* R4-S3 deterministic refactoring panel */
+.refactor-panel { padding: 4px 2px; }
+.refactor-panel h2 { margin: 4px 0; }
+.refactor-note { font-size: 12px; opacity: 0.85; margin: 4px 0 10px; }
+.refactor-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 10px; }
+.refactor-form label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.refactor-form input, .refactor-form select, .refactor-form textarea { font: inherit; min-width: 120px; }
+.refactor-item { border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin: 8px 0; }
+.refactor-item-head { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.refactor-item-head code { font-family: monospace; }
+.refactor-diff { font-family: monospace; font-size: 12px; white-space: pre-wrap; background: var(--bg3); border-radius: 4px; padding: 8px; margin: 6px 0 0; max-height: 320px; overflow: auto; }
+.refactor-warnings { color: var(--warn, #cca700); font-size: 12px; margin: 4px 0; padding-left: 18px; }
+.refactor-actions { display: flex; gap: 8px; margin-top: 8px; }

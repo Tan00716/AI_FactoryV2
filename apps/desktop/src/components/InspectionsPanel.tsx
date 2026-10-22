@@ -10,6 +10,8 @@ export interface InspectionFinding {
   file: string;
   line: number | null;
   message: string;
+  /** Opaque per-checker payload; ssr-template findings carry quick-fix data. */
+  detail?: string;
 }
 
 export interface InspectionProfile {
@@ -110,6 +112,17 @@ export interface InspectionHistoryEntry {
   baselineEstablished: boolean;
 }
 
+export interface SsrTemplateView {
+  id: string;
+  name: string;
+  description?: string;
+  version: 1;
+  search: Record<string, unknown>;
+  replace?: Record<string, unknown>;
+  asInspection?: boolean;
+  severity?: 'info' | 'warning' | 'error';
+}
+
 export interface InspectionsApi {
   overview(projectId: string, root?: string): Promise<{
     profile: InspectionProfile;
@@ -130,6 +143,15 @@ export interface InspectionsApi {
     builtIn: { snapshot: string; count: number };
   }>;
   saveSecurityRules(projectId: string, root: string, rules: SecurityRulesView): Promise<SecurityRulesView>;
+  /** Structural search & replace (round-4 A4). */
+  ssrTemplates(projectId: string, root?: string): Promise<{ builtins: SsrTemplateView[]; saved: SsrTemplateView[] }>;
+  ssrSaveTemplate(projectId: string, root: string, template: Record<string, unknown>): Promise<{ template: SsrTemplateView }>;
+  ssrDeleteTemplate(projectId: string, root: string, id: string): Promise<{ deleted: string }>;
+  ssrQuickFix(
+    projectId: string,
+    root: string,
+    quickfix: { templateId: string; file: string; startLine: number },
+  ): Promise<{ applied: boolean; file: string; diff: string }>;
 }
 
 export function createInspectionsApi(base: string): InspectionsApi {
@@ -181,6 +203,25 @@ export function createInspectionsApi(base: string): InspectionsApi {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ projectId, root, rules }),
       }).then((r) => r.rules),
+    ssrTemplates: (projectId, root) => req<{ builtins: SsrTemplateView[]; saved: SsrTemplateView[] }>(`/ssr/templates${q(projectId, root)}`),
+    ssrSaveTemplate: (projectId, root, template) =>
+      req<{ template: SsrTemplateView }>('/ssr/templates', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, root, template }),
+      }),
+    ssrDeleteTemplate: (projectId, root, id) =>
+      req<{ deleted: string }>(`/ssr/templates/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, root }),
+      }),
+    ssrQuickFix: (projectId, root, quickfix) =>
+      req<{ applied: boolean; file: string; diff: string }>('/ssr/quickfix', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, root, ...quickfix }),
+      }),
   };
 }
 
@@ -232,13 +273,146 @@ function LineChart(props: { series: Array<{ label: string; color: string; points
   );
 }
 
-const CHECKER_IDS = ['todo-fixme', 'long-file', 'long-function', 'console-log', 'secret-scan', 'sast-patterns'];
+const CHECKER_IDS = ['todo-fixme', 'long-file', 'long-function', 'console-log', 'secret-scan', 'sast-patterns', 'ssr-template'];
 
 const SEV_COLOR: Record<'info' | 'warning' | 'error', string> = {
   error: '#f85149',
   warning: '#d29922',
   info: '#58a6ff',
 };
+
+/**
+ * Structural search template manager (round-4 A4): list built-ins, save
+ * them (or custom JSON templates) as inspections, toggle/delete saved.
+ */
+function SsrTemplatesManager({ api, projectId, root }: { api: InspectionsApi; projectId: string; root: string }) {
+  const { t } = useLang();
+  const [builtins, setBuiltins] = useState<SsrTemplateView[]>([]);
+  const [saved, setSaved] = useState<SsrTemplateView[]>([]);
+  const [json, setJson] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await api.ssrTemplates(projectId, root.trim() || undefined);
+      setBuiltins(r.builtins);
+      setSaved(r.saved);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    }
+  }, [api, projectId, root]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const saveAsInspection = useCallback(
+    async (tpl: SsrTemplateView, asInspection: boolean) => {
+      try {
+        await api.ssrSaveTemplate(projectId, root.trim() || '', { ...tpl, asInspection });
+        setMsg(t('ssr.saved', { id: tpl.id }));
+        await refresh();
+      } catch (e) {
+        setMsg(t('ssr.saveFailed', { message: e instanceof Error ? e.message : String(e) }));
+      }
+    },
+    [api, projectId, root, refresh, t],
+  );
+
+  const deleteTemplate = useCallback(
+    async (id: string) => {
+      try {
+        await api.ssrDeleteTemplate(projectId, root.trim() || '', id);
+        setMsg(t('ssr.deleted', { id }));
+        await refresh();
+      } catch (e) {
+        setMsg(t('ssr.saveFailed', { message: e instanceof Error ? e.message : String(e) }));
+      }
+    },
+    [api, projectId, root, refresh, t],
+  );
+
+  const addCustom = useCallback(async () => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      setMsg(t('ssr.badJson'));
+      return;
+    }
+    try {
+      await api.ssrSaveTemplate(projectId, root.trim() || '', parsed as Record<string, unknown>);
+      setJson('');
+      setMsg(t('ssr.savedCustom'));
+      await refresh();
+    } catch (e) {
+      setMsg(t('ssr.saveFailed', { message: e instanceof Error ? e.message : String(e) }));
+    }
+  }, [api, projectId, root, json, refresh, t]);
+
+  return (
+    <details className="card" style={{ padding: '8px 12px', marginBottom: 6 }}>
+      <summary style={{ cursor: 'pointer', fontSize: 13 }}>
+        {t('ssr.templatesTitle')} <span className="muted">({t('ssr.templatesHint')})</span>
+      </summary>
+      <div style={{ fontSize: 12, marginTop: 8 }}>
+        <div className="muted" style={{ marginBottom: 4 }}>{t('ssr.builtins')}</div>
+        <ul style={{ margin: '4px 0 8px', paddingLeft: 18 }}>
+          {builtins.map((b) => {
+            const isSaved = saved.some((s) => s.id === b.id);
+            return (
+              <li key={b.id} style={{ marginBottom: 4 }}>
+                <strong>{b.id}</strong> — {b.name}{' '}
+                <span className="muted">{b.description}</span>{' '}
+                {!isSaved && (
+                  <button style={{ fontSize: 11, marginLeft: 4 }} onClick={() => void saveAsInspection(b, true)}>
+                    {t('ssr.saveAsInspection')}
+                  </button>
+                )}
+                {isSaved && <span className="muted">({t('ssr.alreadySaved')})</span>}
+              </li>
+            );
+          })}
+        </ul>
+        <div className="muted" style={{ marginBottom: 4 }}>{t('ssr.savedList')}</div>
+        {saved.length === 0 ? (
+          <div className="muted">{t('ssr.noSaved')}</div>
+        ) : (
+          <ul style={{ margin: '4px 0 8px', paddingLeft: 18 }}>
+            {saved.map((s) => (
+              <li key={s.id} style={{ marginBottom: 4 }}>
+                <strong>{s.id}</strong> — {s.name}{' '}
+                <label style={{ fontSize: 11 }}>
+                  <input
+                    type="checkbox"
+                    checked={s.asInspection !== false}
+                    onChange={(e) => void saveAsInspection(s, e.target.checked)}
+                  />{' '}
+                  {t('ssr.asInspection')}
+                </label>{' '}
+                <button style={{ fontSize: 11, marginLeft: 4 }} onClick={() => void deleteTemplate(s.id)}>
+                  {t('ssr.delete')}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="muted" style={{ marginBottom: 4 }}>{t('ssr.customJson')}</div>
+        <textarea
+          value={json}
+          onChange={(e) => setJson(e.target.value)}
+          rows={4}
+          style={{ width: '100%', fontFamily: 'monospace', fontSize: 11 }}
+          placeholder='{"id":"my-tpl","name":"...","version":1,"search":{"kind":"method"},"replace":{"op":"rename","to":"x"}}'
+        />
+        <div style={{ marginTop: 4 }}>
+          <button className="primary" onClick={() => void addCustom()}>{t('ssr.addCustom')}</button>
+        </div>
+        {msg && <div className="muted" style={{ marginTop: 6 }}>{msg}</div>}
+      </div>
+    </details>
+  );
+}
 
 export function InspectionsPanel({ api, projectId }: { api: InspectionsApi; projectId: string }) {
   const { t } = useLang();
@@ -405,6 +579,36 @@ export function InspectionsPanel({ api, projectId }: { api: InspectionsApi; proj
     [api, projectId, root, secRules, t],
   );
 
+  /** One-click quick-fix for an ssr-template finding (round-4 A4). */
+  const quickFixSsr = useCallback(
+    async (f: InspectionFinding) => {
+      if (!f.detail) return;
+      let d: { templateId?: string; file?: string; startLine?: number };
+      try {
+        d = JSON.parse(f.detail);
+      } catch {
+        setMsg(t('ssr.badDetail'));
+        return;
+      }
+      if (!d.templateId || !d.file || typeof d.startLine !== 'number') {
+        setMsg(t('ssr.badDetail'));
+        return;
+      }
+      try {
+        const r = await api.ssrQuickFix(projectId, root.trim() || '', {
+          templateId: d.templateId,
+          file: d.file,
+          startLine: d.startLine,
+        });
+        setMsg(t('ssr.fixed', { file: r.file }));
+        await doRun();
+      } catch (e) {
+        setMsg(t('ssr.fixFailed', { message: e instanceof Error ? e.message : String(e) }));
+      }
+    },
+    [api, projectId, root, t, doRun],
+  );
+
   const addCustomRule = useCallback(async () => {
     if (!secRules || !newRule.package.trim() || !newRule.range.trim()) return;
     try {
@@ -546,6 +750,8 @@ export function InspectionsPanel({ api, projectId }: { api: InspectionsApi; proj
         </div>
       )}
 
+      <SsrTemplatesManager api={api} projectId={projectId} root={root} />
+
       {run && (
         <>
           <div className="muted" style={{ fontSize: 12, margin: '12px 0 6px' }}>
@@ -571,7 +777,16 @@ export function InspectionsPanel({ api, projectId }: { api: InspectionsApi; proj
                 <ul style={{ fontSize: 12, margin: '6px 0 0', paddingLeft: 18 }}>
                   {findings.slice(0, 50).map((f) => (
                     <li key={f.id}>
-                      <span className="muted">{f.file}{f.line ? `:${f.line}` : ''}</span> — {f.message}
+                      <span className="muted">{f.file}{f.line ? `:${f.line}` : ''}</span> — {f.message}{' '}
+                      {f.checker === 'ssr-template' && f.detail && (
+                        <button
+                          onClick={() => void quickFixSsr(f)}
+                          title={t('ssr.quickFixHint')}
+                          style={{ fontSize: 11, marginLeft: 4 }}
+                        >
+                          {t('ssr.quickFix')}
+                        </button>
+                      )}
                     </li>
                   ))}
                   {findings.length > 50 && <li className="muted">…{t('inspections.more', { n: findings.length - 50 })}</li>}
