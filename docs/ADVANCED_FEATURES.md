@@ -1004,10 +1004,91 @@ Batch 48 跨 chunk 脱敏器的 longest-first 判定
 carry/holdback 逻辑不变，落盘映射回原始坐标；
 `OSC_MAX_LEN=65536` 封顶 pending 增长；+3 回归测试。
 
+## 60. 全局快捷键体系 + which-key（第五轮一）
+
+**是什么**：给所有命令配快捷键的统一体系——每个命令一个 ID（如 `palette.toggle`、`language.switch`、`go.tab.*`、`bookmark.toggle`），默认键与用户自定义层合并生效。按组合键序列时，前缀等待会自动弹出 which-key 弹窗，列出可接的按键，不用背键位。
+
+**怎么用**：设置里的快捷键面板可搜索、重绑、删除、按命令重置；冲突时后绑定的胜出，被覆盖的在冲突告警区具名列出，不静默丢弃。多键序列超时默认 1 秒（可调 200–5000 毫秒）。配置经服务端持久化（`GET/PUT/DELETE /api/keybindings`，另有 `/api/keybindings/schema`）。
+
+**诚实边界**：快捷键只在桌面端生效，服务端只存配置、无键盘上下文；Monaco 编辑器内置键不接管；输入框内无修饰键永不拦截；`mod` 按平台解析（Mac 上是 ⌘，Windows/Linux 上是 Ctrl）。
+
+## 61. 声明式任务运行器（第五轮一）
+
+**是什么**：VS Code tasks.json 兼容的任务运行器——在 `.ai-factory/tasks.json` 里声明构建/测试/监听任务，用 `dependsOn` 写链式依赖。规划失败、未知依赖或有环时整份拒绝、什么都不跑；运行输出经已注册的问题匹配器解析成诊断，进 Problems 面板。
+
+**怎么用**：`GET /api/tasks/list` 看解析后的任务；`POST /api/tasks/run` 跑一条链（任一任务失败/被拒/超时则 fail-closed 中断，依赖方不执行）；`GET /api/tasks/runs` 看最近 20 条运行记录；`PUT /api/tasks` 写 tasks.json。
+
+**诚实边界**：任务命令走现有 exec 安全策略（白名单/deny pattern/控制目录守卫），不另开执行通道；`type:"shell"` 是引号感知分词后直跑，不是 `/bin/sh`；单任务超时默认 60 秒（可配 1–300 秒）、输出 2MB 上限。注意：`GET /api/tasks`（bare）是旧的项目任务端点，运行器列表是 `GET /api/tasks/list`。
+
+## 62. 三路合并冲突编辑器（第五轮一）
+
+**是什么**：git 合并冲突的三栏解决器——ours/base/theirs 对齐展示（自研 diff3），逐块选 ours/theirs/both/自定义文本；复杂冲突如实标"需人工"；写回前先做影子检查点，可回滚。
+
+**怎么用**：Merge 面板选仓库 → 看冲突文件列表 → analyze 看对齐 → 逐块解决 → resolve 写回（可选 stage，即 `git add`）。若文件在 analyze 之后被改动过，`409 MERGE_DRIFT` 拒绝写入，先重新 analyze。
+
+**诚实边界**：diff3 对齐是启发式行对齐，不冒充权威；diff3 风格标记（`|||||||`）明确拒绝、不误读；stage 只做 `git add`，永不 commit/push；二进制/超 512KB/符号链接/路径逃逸/非 git 仓库全部拒绝。
+
+## 63. Git blame 行内标注 + Timeline（第五轮一）
+
+**是什么**：编辑器当前行的内联 blame 标注（短 hash · 作者 · 日期），外加 Timeline 中心面板——git log 与 Local History 快照融合的时间线，可点选两个时间点做 unified diff 对比。
+
+**怎么用**：打开文件即见行标注；Timeline 面板点选两个时间点 → `/api/timeline/diff` 看 diff；非 git 目录的 timeline 只显示快照。
+
+**诚实边界**：blame/时间线是请求时刻快照；未提交行标注"未提交"，不归因；非 git 目录 `/api/blame` 返回 `409 NOT_A_GIT_REPO`；大文件 blame 上限 2000 行（`truncated` 标记），diff 上限 6000 行/512KB；快照时间来自文件名 epoch，git 时间是 author-time。
+
+## 64. Unicode 混淆/不可见字符高亮（第五轮一）
+
+**是什么**：Trojan Source 防护——扫描文件里的双向控制字符（9 种）、零宽字符（4 种）和形近混淆字符（53 项手维护子集，覆盖拉丁/西里尔/希腊），编辑器内联三类高亮 + 悬停显示码点与字符名；同时作为 `unicode-trojan` 检查器接入 inspections。
+
+**怎么用**：打开文件自动标注；`POST /api/trojan/scan` 可扫内联文本或 jail 路径；`trojan-scan-ignore` 可整文件抑制。
+
+**诚实边界**：confusables 是 53 项手维护子集，不是 Unicode 全量；形近只在混合脚本 token 内触发；U+FEFF 仅文件首字符豁免；只标注、不自动改写。
+
+## 65. 代码片段库（第五轮二）
+
+**是什么**：触发词 + Tab 展开的代码片段——支持 `$1`/`${1:default}`/`$0` 占位符与 Tab 跳转、`${DATE}`/`${TIME}`/`${FILENAME}` 内置变量；按语言分组，7 个内置片段只读，插件可通过注册表贡献。
+
+**怎么用**：编辑器输入触发词 → Monaco 补全出现片段 → Tab 展开、Tab 在占位符间跳转；Snippets 面板增删改自己的片段（存 `.ai-factory/snippets.json`）；`GET /api/snippets/schema` 看格式。
+
+**诚实边界**：展开是纯文本替换，绝不执行代码；嵌套占位符校验拒绝；未知 `${NAME}` 展开为空、不猜；Tab 永不拦截（只通过补全出现）；manifest 级 `contributes.snippets` 不在 v1。
+
+## 66. 拼写检查（第五轮二）
+
+**是什么**：标识符拼写检查——按驼峰/下划线分词，查人工维护的英文词典子集；波浪线标注 + 悬停给编辑距离建议；InspectionsPanel 里可一键"加入词典"。
+
+**怎么用**：打开文件自动标注；项目词典 `.ai-factory/spell-dictionary.txt` 经 `GET/POST/DELETE /api/spell/dictionary` 管理；`spell-check-ignore` 整文件抑制。
+
+**诚实边界**：词典是人工维护子集，不是完整英语词典；v1 只做英文，中文分词明确不做；全大写 token 按缩略词跳过（未知缩略词是已知漏报类）；只标注、不改写；项目级检查不带修改建议。
+
+## 67. 搜索编辑器（第五轮二）
+
+**是什么**：把全项目搜索结果开成可保存的 `.code-search` 文件——查询头（query/regex/大小写/glob）+ 按文件分组的结果，可折叠、点击跳转；文件存盘后可重新打开复现搜索、重新运行刷新。
+
+**怎么用**：搜索面板填条件 → "在编辑器中打开" 保存到 `.ai-factory/searches/`；`POST /api/codesearch/search` 可直调搜索（字面/正则/glob 三种模式）。
+
+**诚实边界**：结果是查询时刻快照，文件改动后必须显式重新运行；无索引、按需 walk（大树比索引引擎慢）；默认 2000 命中、硬上限 10000，超限 `truncated` 标记；二进制/symlink/超大文件跳过或诚实标记。
+
+## 68. 书签（第五轮二）
+
+**是什么**：行/文件/目录三级书签 + 数字字母助记直达——0-9 默认绑 `ctrl+数字`，a-z 可绑；书签面板按目录分组，可重命名/删除；行书签存 5 行上下文，文件变更后在 ±300 行内按上下文重定位。
+
+**怎么用**：`bookmark.toggle` 开关光标行书签（走快捷键体系，可重绑）；面板设助记、跳转；`POST /api/bookmarks/toggle` 幂等；服务端持久化到 `AI_FACTORY_DATA_DIR/bookmarks.json`，按项目 root 隔离。
+
+**诚实边界**：找不到上下文时标"已漂移"且不跳转；改名/删除文件后书签不跟随（resolve 404，须手动删）；助记每项目 root 全局唯一，`ctrl+数字` 冲突走快捷键冲突告警；每 root 上限 500；v1 无跨机同步。
+
+## 69. 草稿文件（第五轮二）
+
+**是什么**：独立于项目的临时草稿区——选语言新建草稿，按语言享完整高亮；typescript/javascript 可一键运行（走共享 exec 安全通道），json/markdown/plaintext 仅编辑。
+
+**怎么用**：Scratches 面板新建/重命名/删除/按语言过滤；`POST /api/scratches/:id/run` 运行；草稿存 `AI_FACTORY_DATA_DIR/scratches/`，关闭 IDE 不丢失。
+
+**诚实边界**：草稿永不进项目树（不进 git/索引/快照）；不审计；运行=执行任意代码，仅用户明确触发；草稿内容不受 pre-send 密钥扫描保护（面板有警示，勿粘贴密钥）；只有 node 白名单语言可运行；无云同步。
+
 ---
 
 *版本 0.2.0（2026-10-18）。2026-10-21 补录：加强波（一/二）、
 第三波（一/二）、第二轮（一/二）功能（§12–§41）；
 2026-10-21 补录：第三轮（一/二）功能（§42–§49）；
-2026-10-22 补录：第四轮（一/二）功能（§50–§59）。
+2026-10-22 补录：第四轮（一/二）功能（§50–§59）；
+2026-10-23 补录：第五轮（一/二）功能（§60–§69）。
 英文版见 ADVANCED_FEATURES.en.md。*

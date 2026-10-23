@@ -1137,10 +1137,91 @@ coordinate space (control bytes are zero-width), carry/holdback logic
 unchanged, writes map back to raw coordinates; `OSC_MAX_LEN=65536`
 bounds pending growth; +3 regression tests.
 
+## 60. Global keybinding system + which-key (fifth round, part 1)
+
+**What**: one keybinding system for every command — each command has an ID (`palette.toggle`, `language.switch`, `go.tab.*`, `bookmark.toggle`, …) with default keys merged with a user layer. When you press a chord-sequence prefix, a which-key popup lists the keys you can press next, so nothing needs to be memorized.
+
+**How**: the Keybindings settings panel lets you search, rebind, delete, and reset per command; conflicts resolve last-binding-wins and the overridden binding is named in the conflict-warning zone, never silently dropped. Chord-sequence timeout defaults to 1s (adjustable 200–5000ms). The configuration persists through the server (`GET/PUT/DELETE /api/keybindings`, plus `/api/keybindings/schema`).
+
+**Honest boundaries**: keybindings only take effect in the desktop app — the server only stores and validates the configuration and has no keyboard context; Monaco's built-in editor keys are never hijacked; unmodified keys are never intercepted inside input fields; `mod` resolves per platform (⌘ on macOS, Ctrl on Windows/Linux).
+
+## 61. Declarative task runner (fifth round, part 1)
+
+**What**: a VS Code tasks.json-compatible task runner — declare build/test/watch tasks in `.ai-factory/tasks.json` and chain them with `dependsOn`. If planning fails, a dependency is unknown, or a cycle is detected, the whole plan is rejected and nothing runs; task output is parsed by registered problem matchers into diagnostics in the Problems panel.
+
+**How**: `GET /api/tasks/list` shows the parsed tasks; `POST /api/tasks/run` runs a chain (a failed/denied/timed-out task stops the chain fail-closed and dependents never execute); `GET /api/tasks/runs` shows the last 20 run records; `PUT /api/tasks` writes tasks.json.
+
+**Honest boundaries**: task commands go through the existing exec security policy (allowlist/deny patterns/control-dir guard) — no new execution channel; `type:"shell"` tokenizes quote-aware and runs directly, it is not `/bin/sh`; per-task timeout defaults to 60s (configurable 1–300s) and output is capped at 2MB. Note: bare `GET /api/tasks` is the legacy project-tasks endpoint; the runner's list is `GET /api/tasks/list`.
+
+## 62. Three-way merge conflict editor (fifth round, part 1)
+
+**What**: a three-pane solver for git merge conflicts — ours/base/theirs aligned side by side (hand-rolled diff3), with per-hunk take-ours / take-theirs / take-both / custom-text; genuinely tricky conflicts are labeled "needs manual review"; a shadow checkpoint is taken before write-back so you can roll back.
+
+**How**: open the Merge panel, pick a repo, see the conflicted files, analyze the alignment, resolve hunk by hunk, then resolve to write back (optional stage, i.e. `git add`). If the file changed after analyze, `409 MERGE_DRIFT` refuses the write — analyze again first.
+
+**Honest boundaries**: diff3 alignment is a heuristic line alignment, not an authority; diff3-style markers (`|||||||`) are explicitly rejected, never misread; staging is only `git add`, never commit/push; binary files, files over 512KB, symlinks, path escapes, and non-git directories are all refused.
+
+## 63. Git blame inline annotations + Timeline (fifth round, part 1)
+
+**What**: inline blame on the current editor line (short hash · author · date), plus a Timeline center panel — a fused git-log × Local-History-snapshot timeline where you can pick two points and diff them as unified diff.
+
+**How**: annotations appear when you open a file; in the Timeline panel pick two points and `/api/timeline/diff` shows the diff; in a non-git directory the timeline only shows snapshots.
+
+**Honest boundaries**: blame and the timeline are snapshots of the request moment; uncommitted lines are labeled "uncommitted" and never attributed; `/api/blame` on a non-git directory returns `409 NOT_A_GIT_REPO`; blame is capped at 2000 lines on large files (`truncated` flag), diffs at 6000 lines / 512KB; snapshot times come from filename epochs while git times are author-time.
+
+## 64. Unicode confusable / invisible character highlighting (fifth round, part 1)
+
+**What**: Trojan Source protection — scans files for bidirectional control characters (9 kinds), zero-width characters (4 kinds), and lookalike confusable characters (a 53-item hand-maintained subset covering Latin/Cyrillic/Greek), with three-color inline highlighting in the editor plus hover showing code point and character name; also exposed as the `unicode-trojan` inspections checker.
+
+**How**: files are annotated automatically when opened; `POST /api/trojan/scan` can scan inline text or a jailed path; `trojan-scan-ignore` suppresses a whole file.
+
+**Honest boundaries**: the confusables list is a 53-item hand-maintained subset, not the full Unicode table; lookalikes only trigger inside mixed-script tokens; U+FEFF is exempted only as a file's first character; annotations only, nothing is auto-rewritten.
+
+## 65. Snippet library (fifth round, part 2)
+
+**What**: trigger-word + Tab-expanding code snippets — `$1`/`${1:default}`/`$0` placeholders with Tab navigation and `${DATE}`/`${TIME}`/`${FILENAME}` built-in variables; grouped by language, 7 read-only built-in snippets, and plugins can contribute via the registry.
+
+**How**: type a trigger word in the editor → the snippet appears in Monaco completion → Tab expands it and jumps between placeholders; the Snippets panel adds/edits/deletes your own snippets (stored in `.ai-factory/snippets.json`); `GET /api/snippets/schema` documents the format.
+
+**Honest boundaries**: expansion is pure text substitution and never executes code; nested placeholders are rejected by validation; unknown `${NAME}` expands to empty rather than guessed; Tab is never intercepted (snippets only appear through completion); manifest-level `contributes.snippets` is not in v1.
+
+## 66. Spell check (fifth round, part 2)
+
+**What**: identifier spell checking — tokenizes by camelCase/underscore and looks words up in a hand-maintained English dictionary subset; wavy underlines with edit-distance suggestions on hover; one-click "add to dictionary" quick fix in the Inspections panel.
+
+**How**: files are annotated when opened; the project dictionary `.ai-factory/spell-dictionary.txt` is managed via `GET/POST/DELETE /api/spell/dictionary`; `spell-check-ignore` suppresses a whole file.
+
+**Honest boundaries**: the dictionary is a hand-maintained subset, not a complete English lexicon; v1 is English only — Chinese word segmentation is explicitly out of scope; ALL-CAPS tokens are skipped as abbreviations (unknown abbreviations are a documented miss class); annotations only, nothing auto-rewritten; project-level checks don't carry suggestions.
+
+## 67. Search editor (fifth round, part 2)
+
+**What**: opens full-project search results as a saveable `.code-search` file — a query header (query/regex/case-sensitivity/glob) plus per-file grouped results that fold and click-through; saved files can be reopened to reproduce the search and re-run to refresh.
+
+**How**: fill in the search panel and "Open in editor" to save under `.ai-factory/searches/`; `POST /api/codesearch/search` searches directly (literal/regex/glob modes).
+
+**Honest boundaries**: results are a snapshot of the query moment — you must explicitly re-run after files change; no index, walks on demand (slower than indexed engines on large trees); default 2000 hits, hard cap 10000, over-limit results flagged `truncated`; binaries/symlinks/oversized files are skipped or honestly flagged.
+
+## 68. Bookmarks (fifth round, part 2)
+
+**What**: line/file/directory bookmarks with alphanumeric mnemonics for instant jumps — 0-9 default to `ctrl+digit`, a-z are bindable; the Bookmarks panel groups by directory and renames/deletes; line bookmarks keep 5 lines of context and re-locate by context within ±300 lines when the file changes.
+
+**How**: `bookmark.toggle` toggles a bookmark on the cursor line (goes through the keybinding system, rebindable); set mnemonics and jump in the panel; `POST /api/bookmarks/toggle` is idempotent; persisted server-side in `AI_FACTORY_DATA_DIR/bookmarks.json`, isolated per project root.
+
+**Honest boundaries**: when no context is found the bookmark is flagged "drifted" and never jumps; renames/deletes are not followed (resolve 404s — delete manually); mnemonics are unique per project root and `ctrl+digit` conflicts go through the keybinding conflict warnings; 500 bookmarks per root; no cross-machine sync in v1.
+
+## 69. Scratch files (fifth round, part 2)
+
+**What**: a project-independent scratch area — create drafts by language with full syntax highlighting; typescript/javascript run with one click through the shared exec safety channel; json/markdown/plaintext are edit-only.
+
+**How**: the Scratches panel creates/renames/deletes/filters by language; `POST /api/scratches/:id/run` runs it; drafts live in `AI_FACTORY_DATA_DIR/scratches/` and survive IDE restarts.
+
+**Honest boundaries**: drafts never enter the project tree (no git/index/snapshots); not audited; running executes arbitrary code and only ever happens on explicit user trigger; scratch content is NOT covered by the pre-send prompt secret scan (the panel warns you — don't paste secrets); only node-whitelisted languages can run; no cloud sync.
+
 ---
 
 *Version 0.2.0 (2026-10-18). Supplemented 2026-10-21: hardening waves
 (1/2), third wave (parts 1/2), second round (parts 1/2) — §12–§41;
 supplemented 2026-10-21: third round (parts 1/2) — §42–§49;
-supplemented 2026-10-22: fourth round (parts 1/2) — §50–§59.
+supplemented 2026-10-22: fourth round (parts 1/2) — §50–§59;
+supplemented 2026-10-23: fifth round (parts 1/2) — §60–§69.
 中文版见 ADVANCED_FEATURES.md。*
