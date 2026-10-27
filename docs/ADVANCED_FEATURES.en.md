@@ -1217,6 +1217,86 @@ bounds pending growth; +3 regression tests.
 
 **Honest boundaries**: drafts never enter the project tree (no git/index/snapshots); not audited; running executes arbitrary code and only ever happens on explicit user trigger; scratch content is NOT covered by the pre-send prompt secret scan (the panel warns you — don't paste secrets); only node-whitelisted languages can run; no cloud sync.
 
+## 70. Plugin system and extension API (sixth round, part 1)
+
+**What**: a local subset of the VS Code extension API — local extension install and management, with no cloud marketplace of its own. Extensions live in `<root>/.ai-factory/extensions/<name>/` and can contribute four kinds: commands, panels, checkers, and context providers. Extension code runs in a node:vm sandbox (code generation disabled, no require/process/Buffer/eval; arguments and results cross only as JSON strings), with a permission whitelist of exactly 4 items: commands.execute, panels.contribute, checkers.contribute, providers.contribute.
+
+**How**: the Extensions panel installs/enables/disables/uninstalls; `GET /api/extensions` lists installed extensions (including broken dirs), `POST /api/extensions/install` (inline) and `install-from-dir` (jailed, symlinks refused) install; commands run via `POST /api/extensions/:name/commands/:cmd/run`, providers resolve via `providers/:id/resolve`. Three built-in example extensions cover three kinds: hello-command (command), info-panel (panel), marker-checker (checker).
+
+**Honest boundaries**: v1 implements only an API subset, not the full VS Code extension API; no cloud marketplace, no auto-update; the vm sandbox blocks naive escapes but is not a multi-tenant security boundary, and installing itself requires operator permission; caps: main 256KB, 50 commands, 20 panels/checkers/providers each.
+
+## 71. Git interactive rebase editor + stash management (sixth round, part 1)
+
+**What**: a visual porcelain wrapper around `git rebase -i`, plus visual stash management. Rebase todos support pick/reword/squash/fixup/drop drag-reordering; stash supports view/apply/drop/by-name management. Every rewriting operation takes a shadow checkpoint snapshot first and can roll back; semantic conflicts are not resolved here — they still go through the three-way merge editor.
+
+**How**: reorder todos in the Rebase panel and submit; `GET /api/rebase/todos?repo=&base=` fetches base..HEAD as pick lines, `POST /api/rebase/start` (returns a checkpointId), abort/continue/skip, `POST /api/rebase/restore` restores from the shadow checkpoint; stash via `GET /api/stash` and `POST /api/stash/push|apply|pop|drop`.
+
+**Honest boundaries**: porcelain-level operations only, no filter-branch/filter-repo history rewriting; reword accepts a single line in v1; a conflicted stash pop keeps the entry; when the shadow checkpoint is unavailable the rebase request is refused with 503 — history is never rewritten bare.
+
+## 72. File watching triggers (sixth round, part 1)
+
+**What**: file-change triggers — watch a directory tree, debounce and coalesce changes, then run a tasks.json declarative chain. Rules live in `<root>/.ai-factory/watch.json` (tmp+rename atomic writes) and fire through exactly the same task channel as a manual run; trigger history is an in-process ring (50 entries) while the rules themselves persist.
+
+**How**: the Watch panel (bottom bar) creates rules (glob match, target chain label, debounce ms), enables/disables, and `POST /api/watch/activate` starts all; `GET /api/watch/rules`, `GET /api/watch/triggers` (history), and `GET /api/watch/status` report state.
+
+**Honest boundaries**: triggers only — no incremental compilation; every trigger runs the whole chain; a chain run serializes per rule (a trigger arriving mid-run queues at most one, later ones coalesce into it); watchers live in the server process, so restart requires "start all" to recover; 5000 watched directories fail-closed; more than 200 files in one window coalesce into a burst trigger with a label; recipe apply is never auto-triggered (approval gate).
+
+## 73. Parallel task queue (sixth round, part 1)
+
+**What**: a background task queue — multiple tasks run in parallel or queue, with live status (queued/running/succeeded/failed/cancelled) and per-task cancel. It reuses the fifth-round task runner (tasks.json) execution channel and exec safety policy — no second execution channel; output is parsed through the problem matchers.
+
+**How**: the Queue panel (bottom bar) submits, watches the queue, cancels, and inspects output; `POST /api/taskqueue/submit`, `GET /api/taskqueue/jobs`, `GET /api/taskqueue/jobs/:id/log`, `POST /api/taskqueue/jobs/:id/cancel`, and `PUT /api/taskqueue/config` tune the concurrency cap.
+
+**Honest boundaries**: jobs live only in the server process — queued/running jobs are lost on restart, with no persistent recovery; tasks inside one job run in dependency-topological order serially; parallelism happens between jobs only; default concurrency cap 4 (capped by CPU count logic), configurable 1–32, overflow queues FIFO; the job log is a 512KB sliding window (oldest bytes dropped and marked), not a full transcript; per-job diagnostics cap at 200 entries; cancel kills the whole POSIX process group, degrading on Windows to killing only the direct child.
+
+## 74. Task scheduling / scheduled tasks (sixth round, part 1)
+
+**What**: an increment on the existing scheduler — it can now schedule tasks.json declarative chains, adding a task-runner job type, once-only schedules, and overlap skipping. Schedules persist in `AI_FACTORY_DATA_DIR/schedules.json` and survive restarts; per-schedule recentRuns records cap at 50; cron is parsed in UTC, stated twice — in the API (`cronTimezone: 'UTC'`) and in the UI.
+
+**How**: the Schedules panel creates cron/interval/once schedules (four job types), pauses/resumes/triggers-now/deletes/views run history; `POST /api/schedules` creates, `GET /api/schedules/:id/runs` lists records (newest first); a once schedule parks itself after firing, and creating one in the past is refused.
+
+**Honest boundaries**: fires only while the server runs — no system-level daemon; misses are never caught up (only recorded as missed); cron granularity is 1 minute minimum, interval 60 seconds minimum, sub-minute intervals are out of v1; when the previous run has not finished, the slot is recorded as skipped (SCHEDULE_SKIPPED audit + run record), never queued or piled up; a bad root or missing label only records a failure, never crashes; an unwired task-runner job fails closed and never executes.
+
+## 75. Rules file tiered management UI (sixth round, part 2)
+
+**What**: two-tier rule management — global `~/.ai-factory/rules/rules.json` and project `<root>/.ai-factory/rules.json`, with priority and merge relationships shown explicitly; a project rule of the same name overrides the global one, annotated both ways (global list marks overriddenBy, effective entries mark overrides). AGENTS.md / .cursorrules / .clinerules at the project root are shown read-only and never rewritten.
+
+**How**: the Rules panel adds/edits/enables/disables/reorders whole tiers (ids must be an exact permutation of the tier, else 400); `GET /api/rules?root=` shows the four-part view (global/project/compat/effective), `POST /api/rules`, `PATCH /api/rules`, `DELETE /api/rules`, and `POST /api/rules/order` manage.
+
+**Honest boundaries**: compat files are read-only in v1 — the panel has no edit entry for them; rule content gets no semantic validation; caps are 200 rules per tier, 64KB per rule, 512KB compat truncation; rule changes are audited (RULE_ADDED/UPDATED/DELETED/REORDERED); rules themselves drive no execution channel.
+
+## 76. Custom slash commands (sixth round, part 2)
+
+**What**: an extension of the W-B slash command mechanism, not a second parser. Three bindings: template (existing W-B behavior, deterministic `{args}` / `{args:N}` expansion), command (alias for a command-palette command id), and task (alias for a tasks.json chain label, executed through exactly the same policy/audit/record channel as a manual run). User tier `AI_FACTORY_DATA_DIR/slash-commands.json` (W-B file compatible as-is) and project tier `<root>/.ai-factory/slash-commands.json`; resolution order is project > user > builtin.
+
+**How**: the Slash Commands panel adds/edits/enables/disables/deletes/test-runs; `GET /api/commands` (merged list + warnings), `POST /api/commands` manages, `POST /api/commands/execute` runs; the command palette gains a slash group (fetched on open, disabled items skipped); task-binding args append only to the requested task — dependency tasks keep their declared args.
+
+**Honest boundaries**: slash commands are only aliases + arg templates — no natural-language parsing; builtin-name conflicts still default to 409, and an explicit `override: true` is required to cover one, with warnings on both the list and execute responses; disabled commands are listed but execute with 409; task bindings never modify tasks.json or dependency-task args; command bindings return only a descriptor server-side and are dispatched by the desktop — the server never executes a desktop command.
+
+## 77. .env / environment variable visual management (sixth round, part 2)
+
+**What**: a visual .env editor — parsing (comments/blanks/`export ` prefix/single-double quotes/inline comments/duplicate keys last-wins) plus round-trip writes (only set/delete lines change; everything else is preserved byte-for-byte). The security line is enforced in code, not UI: list responses are fully masked, plaintext leaves only via `/reveal`; secret warnings reuse the same SECRET_PATTERNS table as the pre-send gate.
+
+**How**: the .env panel shows the key table, per-line reveal/hide, suspected-secret badges, add/edit/delete, missing-key validation, load-into-task, and a gitignore hint; `GET /api/env` lists, `GET /api/env/reveal` reveals, `POST /api/env` writes; loading into a task environment is a one-run in-memory overlay only — it never writes tasks.json, and a task's own options.env wins over overlay values.
+
+**Honest boundaries**: an editor, not a secret vault (values are stored plaintext in .env); reveal is pinned to the operator role (viewers never get it, even on GET) and audits only key names, never values; write/load audits record key names only; warnings are advisory and never block a save (.env is a legitimate home for secrets); v1 does not support multi-line quoted values or lines without `=` (parsed as invalid lines, warned, preserved verbatim on write); file cap 512KB; a .env missing from .gitignore only prompts — it is never rewritten automatically.
+
+## 78. Vim mode (sixth round, part 2)
+
+**What**: a Vim key layer for the editor — normal/insert/visual/visual-line/command-line modes, registered through the fifth-round keybinding registry (`vim.toggle` command, no default key — users bind it themselves), not a second binding system. Off by default, persisted in localStorage, with the mode shown as a pill in the editor toolbar.
+
+**How**: toggle from the editor toolbar or the `vim.toggle` command; motions (h j k l, w W b B e E, 0 ^ $, gg G, f F t T, %), operators (d c y including dd cc yy) + counts, editing (x X r p P i a A I o O J D C Y), visual d x y c and o to swap the anchor; u goes through Monaco undo, Ctrl+R through Monaco redo; command-line `:w` saves.
+
+**Honest boundaries**: v1 has no macros, named registers, search (/ ? n N), `.` repeat, marks, text objects, visual-block, `:q` or any other Ex command (command line is `:w` only, everything else reports E492); when Vim is on and the editor is focused, unmodified keys are consumed by the Vim layer first and never trigger global which-key sequences, while Ctrl/Cmd/Alt chords still go through the keybinding registry.
+
+## 79. Data file preview (sixth round, part 2)
+
+**What**: a read-only table preview of data files — JSONL/NDJSON parsed line by line as JSON objects, CSV parsed in RFC 4180 shape (quoted fields, doubled-quote escapes, commas/newlines inside quotes, first record as header). Columns are the union of keys in first-appearance order; sorting is numeric-aware with nulls last and stable; filtering is a case-insensitive substring over any column; pagination defaults to 100, cap 500.
+
+**How**: the DataPreview panel loads by relative path, sorts by clicking column headers, filters, and pages; `POST /api/datapreview/preview` (inspection-root jail gives 403 on escape, 413 over the 64MB file cap, fail-closed 400/404/415 for directory/missing/bad format).
+
+**Honest boundaries**: read-only preview, no edits, no write-back; this is a file preview, not a database browser (it connects to no database); caps are 100,000 rows, 200 columns, 64MB files, 4096 characters per cell — overflows truncate with a label; malformed rows are skipped and counted, never format-guessed; previews are snapshots — reload after the file changes.
+
 ---
 
 *Version 0.2.0 (2026-10-18). Supplemented 2026-10-21: hardening waves
@@ -1224,4 +1304,5 @@ bounds pending growth; +3 regression tests.
 supplemented 2026-10-21: third round (parts 1/2) — §42–§49;
 supplemented 2026-10-22: fourth round (parts 1/2) — §50–§59;
 supplemented 2026-10-23: fifth round (parts 1/2) — §60–§69.
+supplemented 2026-10-27: sixth round (parts 1/2) — §70–§79.
 中文版见 ADVANCED_FEATURES.md。*

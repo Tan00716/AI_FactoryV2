@@ -1084,6 +1084,86 @@ carry/holdback 逻辑不变，落盘映射回原始坐标；
 
 **诚实边界**：草稿永不进项目树（不进 git/索引/快照）；不审计；运行=执行任意代码，仅用户明确触发；草稿内容不受 pre-send 密钥扫描保护（面板有警示，勿粘贴密钥）；只有 node 白名单语言可运行；无云同步。
 
+## 70. 插件系统与扩展 API（第六轮一）
+
+**是什么**：VS Code 扩展 API 的本地子集——本地扩展安装/管理，不自建云端市场。扩展装到 `<root>/.ai-factory/extensions/<name>/`，可贡献四类：命令、面板、检查器、上下文提供器。扩展代码跑在 node:vm 受限沙盒里（禁用代码生成、无 require/process/Buffer/eval，参数与结果只以 JSON 字符串进出），权限白名单只有 4 项：commands.execute、panels.contribute、checkers.contribute、providers.contribute。
+
+**怎么用**：Extensions 面板安装/启用/停用/卸载；`GET /api/extensions` 列出已装扩展（含损坏目录），`POST /api/extensions/install`（内联）与 `install-from-dir`（目录安装，jail 内、拒绝符号链接）两种安装方式；命令经 `POST /api/extensions/:name/commands/:cmd/run` 执行，提供器经 `providers/:id/resolve` 解析。内置三类示例扩展：hello-command（命令）、info-panel（面板）、marker-checker（检查器）。
+
+**诚实边界**：v1 只实现 API 子集，不兼容完整 VS Code 扩展 API；无云端市场、无自动更新；vm 沙盒挡朴素逃逸，但不是多租户安全边界，安装本身需操作员权限；上限：main 256KB、命令 50 个、面板/检查器/提供器各 20 个。
+
+## 71. Git rebase 编辑器 + stash 管理（第六轮一）
+
+**是什么**：`git rebase -i` 的可视化 porcelain 封装 + stash 可视化管理。rebase todo 支持 pick/reword/squash/fixup/drop 拖拽排序；stash 支持查看/应用/删除/按名管理。任何改写操作前必做影子检查点快照，失败可回滚；语义冲突不由本功能解决，仍走三路合并编辑器。
+
+**怎么用**：Rebase 面板改 todo 顺序后提交；`GET /api/rebase/todos?repo=&base=` 取 base..HEAD 的 pick 行，`POST /api/rebase/start`（返回 checkpointId）、abort/continue/skip、`POST /api/rebase/restore` 从影子检查点还原；stash 经 `GET /api/stash`、`POST /api/stash/push|apply|pop|drop` 管理。
+
+**诚实边界**：只做 porcelain 级操作，不做 filter-branch/filter-repo 级历史改写；reword v1 只接受单行；冲突的 stash pop 保留条目；影子检查点不可用时变基请求以 503 拒绝，绝不裸写历史。
+
+## 72. 文件监听联动（第六轮一）
+
+**是什么**：文件变化触发器——监听目录树，变化经防抖与合并后触发 tasks.json 声明式任务链。规则存 `<root>/.ai-factory/watch.json`（tmp+rename 原子写），触发走与手动运行完全相同的任务通道；触发记录是进程内 ring（50 条），规则本身持久化。
+
+**怎么用**：Watch 面板（底部栏）新建规则（glob 匹配、目标链 label、防抖毫秒）、启用/停用、`POST /api/watch/activate` 全部启动；`GET /api/watch/rules`、`GET /api/watch/triggers`（触发历史）、`GET /api/watch/status` 查看监听状态。
+
+**诚实边界**：仅触发器，不做增量编译，每次触发完整跑一遍链；同规则链运行串行化（运行中再触发只排队一个，后续合并进它）；监听活在服务端进程内，重启后需点"全部启动"恢复；监听上限 5000 目录 fail-closed；单窗口超 200 文件合并为 burst 触发并标注；配方 apply 永不自动触发（审批门控）。
+
+## 73. 多任务并行队列（第六轮一）
+
+**是什么**：后台任务队列——多任务并行/排队执行，状态（排队/运行中/成功/失败/已取消）实时可见，单个任务可取消。复用第五轮任务运行器（tasks.json）执行通道与 exec 安全策略，不另开执行通道；输出复用问题匹配器解析。
+
+**怎么用**：Queue 面板（底部栏）提交任务、看队列、取消、查输出；`POST /api/taskqueue/submit`、`GET /api/taskqueue/jobs`、`GET /api/taskqueue/jobs/:id/log`、`POST /api/taskqueue/jobs/:id/cancel`、`PUT /api/taskqueue/config` 调并发上限。
+
+**诚实边界**：作业只存在于服务端进程内，重启后排队/运行中作业丢失，无持久化恢复；同一作业内的链任务按依赖拓扑顺序串行执行，并行只发生在作业之间；默认并发上限 4（CPU 数封顶逻辑内），可配 1–32，超限 FIFO 排队；作业日志是 512KB 滑动窗口（丢最旧字节并标记），不是完整 transcript；作业诊断每作业封顶 200 条；取消杀整个 POSIX 进程组，Windows 上退化为只杀直接子进程。
+
+## 74. 任务计划 / 定时任务（第六轮一）
+
+**是什么**：在既有调度器上的增量——可调度 tasks.json 声明式任务链，新增 task-runner 任务类型、once 单次调度、防重叠跳过。调度持久化在 `AI_FACTORY_DATA_DIR/schedules.json`，重启恢复；每调度 recentRuns 执行记录上限 50 条；cron 按 UTC 解析，API 与 UI 双重明示 `cronTimezone: 'UTC'`。
+
+**怎么用**：Schedules 面板新建 cron/interval/once 调度（四种 job 类型）、暂停/恢复/立即触发/删除/查看执行记录；`POST /api/schedules` 创建，`GET /api/schedules/:id/runs` 查记录（最新在前）；once 调度触发后自动停放，过去时间创建即拒绝。
+
+**诚实边界**：仅服务端运行时触发，无系统级守护进程；错过不补跑（只记 missed）；cron 最小粒度 1 分钟，interval 最小 60 秒，秒级间隔不在 v1；上一轮未跑完时本次记 skipped（审计 SCHEDULE_SKIPPED + 执行记录），不排队、不堆积；坏 root 或不存在的 label 只记失败不崩溃；未接线时 task-runner 任务 fail-closed，绝不执行。
+
+## 75. 规则文件分级管理 UI（第六轮二）
+
+**是什么**：规则文件的两级管理——全局级 `~/.ai-factory/rules/rules.json` 与项目级 `<root>/.ai-factory/rules.json`，优先级与合并关系明确展示；项目级同名规则覆盖全局级，覆盖关系双向标注（全局列表标 overriddenBy、生效条目标 overrides）。AGENTS.md / .cursorrules / .clinerules 在项目 root 只读展示，绝不改写。
+
+**怎么用**：规则面板增删改/启用停用/整级重排（ids 须为该级全排列，否则 400）；`GET /api/rules?root=` 看四段视图（全局/项目/兼容/生效），`POST /api/rules`、`PATCH /api/rules`、`DELETE /api/rules`、`POST /api/rules/order` 管理。
+
+**诚实边界**：兼容文件 v1 只读，面板无编辑入口；规则内容不做语义校验；每级上限 200 条、单条 64KB、兼容文件截断 512KB；规则变更记审计（RULE_ADDED/UPDATED/DELETED/REORDERED）；规则本身不驱动任何执行通道。
+
+## 76. 自定义斜杠命令（第六轮二）
+
+**是什么**：在 W-B 斜杠命令机制上的扩展，不另起解析器。三种绑定：template（W-B 既有行为，`{args}` / `{args:N}` 确定性展开）、command（命令面板命令 id 的别名）、task（tasks.json 链 label 的别名，执行走与手动运行完全相同的策略/审计/记录通道）。用户级 `AI_FACTORY_DATA_DIR/slash-commands.json`（W-B 文件原样兼容）与项目级 `<root>/.ai-factory/slash-commands.json` 两级，解析顺序 project > user > builtin。
+
+**怎么用**：斜杠命令面板新增/编辑/启用/停用/删除/试运行；`GET /api/commands`（合并列表 + 告警）、`POST /api/commands` 管理、`POST /api/commands/execute` 执行；命令面板新增 slash 分组（打开时拉取，跳过停用项）；task 绑定的参数只追加到被请求的任务，依赖任务保持声明参数。
+
+**诚实边界**：斜杠命令只是别名 + 参数模板，不做自然语言解析；内置名冲突默认仍 409，显式 `override: true` 才允许覆盖，且列表与执行响应都带 warning；停用命令照常列出、执行 409；task 绑定不改 tasks.json、不改依赖任务参数；command 绑定在服务端只返回描述符，由桌面端分发，服务端不执行桌面命令。
+
+## 77. .env 可视化管理（第六轮二）
+
+**是什么**：.env 文件的可视化编辑器——解析（注释/空行/`export ` 前缀/单双引号/行内注释/重复键 last-wins）与往返写（只改动 set/delete 的行，其余字节级保留）。安全红线在代码层 enforced：列表响应值全部脱敏，明文只走 `/reveal`；密钥告警复用与 pre-send 门同一张 SECRET_PATTERNS 表。
+
+**怎么用**：.env 面板看键值表、逐行揭示/隐藏、疑似密钥徽标、新增/编辑/删除、缺失校验、加载到任务、gitignore 提示；`GET /api/env` 列表、`GET /api/env/reveal` 揭示、`POST /api/env` 写；加载到任务环境只做单次运行的内存覆盖，绝不写入 tasks.json，任务自身 options.env 优先于覆盖值。
+
+**诚实边界**：只做编辑器，不做密钥保险库（值明文存 .env）；揭示钉为 operator 角色（GET 也不给 viewer），审计只记键名不记值；写/加载审计只记键名；告警是建议性的，不阻止保存（.env 本就是密钥的合法居所）；v1 不支持多行引号值与无 `=` 的行（解析为 invalid 行并告警，写时原样保留）；文件上限 512KB；.env 未进 .gitignore 时只提示，不自动改写。
+
+## 78. Vim 模式（第六轮二）
+
+**是什么**：编辑器的 Vim 键位层——normal/insert/visual/visual-line/命令行五种模式，走第五轮快捷键体系注册表（`vim.toggle` 命令，无默认键，用户自绑），不另起一套键绑定。默认关闭，localStorage 持久化，模式显示在编辑器工具栏 pill 里。
+
+**怎么用**：编辑器工具栏开关或 `vim.toggle` 命令开启；motion（h j k l、w W b B e E、0 ^ $、gg G、f F t T、%）、operator（d c y 含 dd cc yy）+ count、编辑（x X r p P i a A I o O J D C Y）、visual 下 d x y c、o 换锚点；u 走 Monaco undo、Ctrl+R 走 Monaco redo；命令行 `:w` 保存。
+
+**诚实边界**：v1 不含宏、命名寄存器、搜索（/ ? n N）、`.` 重复、marks、文本对象、visual-block、`:q` 及其他 Ex 命令（命令行仅 `:w`，其它报 E492）；Vim 开启且编辑器聚焦时，无修饰键先由 Vim 层消费，不触发全局 which-key 序列，Ctrl/Cmd/Alt 组合键仍走快捷键注册表。
+
+## 79. 数据文件预览（第六轮二）
+
+**是什么**：数据文件的表格只读预览——JSONL/NDJSON 逐行解析 JSON 对象，CSV 按 RFC 4180 形状解析（引号字段、双引号转义、引号内逗号/换行，首记录为表头）。列为首次出现顺序的键并集；排序数值感知、null 排最后且稳定；过滤为任意列子串（不区分大小写）；分页默认 100、上限 500。
+
+**怎么用**：DataPreview 面板输相对路径加载、列头点击排序、过滤、分页、每页条数；`POST /api/datapreview/preview`（inspection-root jail 越狱 403、文件 64MB 上限 413、目录/缺失/格式错误 fail-closed）。
+
+**诚实边界**：只读预览，无编辑、无写回；这是文件预览，不是数据库浏览器（不连数据库）；行数上限 100,000、列数上限 200、文件上限 64MB、单格上限 4096 字符，超了截断并标注；畸形行只跳过并计数，不猜格式；预览是快照语义，文件变化需重新加载。
+
 ---
 
 *版本 0.2.0（2026-10-18）。2026-10-21 补录：加强波（一/二）、
@@ -1091,4 +1171,5 @@ carry/holdback 逻辑不变，落盘映射回原始坐标；
 2026-10-21 补录：第三轮（一/二）功能（§42–§49）；
 2026-10-22 补录：第四轮（一/二）功能（§50–§59）；
 2026-10-23 补录：第五轮（一/二）功能（§60–§69）。
+2026-10-27 补录：第六轮（一/二）功能（§70–§79）。
 英文版见 ADVANCED_FEATURES.en.md。*
