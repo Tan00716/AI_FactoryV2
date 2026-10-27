@@ -51,8 +51,10 @@ export interface MutantRunOptions {
   timeoutMs: number;
   /** Cap on captured child output bytes. */
   maxOutputBytes: number;
-  /** When true (default), run `node --check` on the mutated file first;
-   * syntax errors become the 'invalid' verdict instead of 'killed'. */
+  /** When true (default), run `node --check` on the mutated file first
+   * (JS only — skipped for TypeScript, whose checkSyntax does not
+   * type-strip); syntax errors become the 'invalid' verdict instead
+   * of 'killed'. */
   nodeCheck: boolean;
 }
 

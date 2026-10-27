@@ -6,8 +6,10 @@ import { TodoPanel } from './TodoPanel';
 import { DbBrowserPanel } from './DbBrowserPanel';
 import { TasksPanel } from './TasksPanel';
 import { BookmarksPanel } from './BookmarksPanel';
+import { QueuePanel } from './QueuePanel';
+import { WatchPanel } from './WatchPanel';
 
-const TABS = ['AI Activity', 'Terminal', 'Tests', 'Problems', 'TODO', 'Database', 'Tasks', 'Bookmarks', 'Logs', 'Evidence'] as const;
+const TABS = ['AI Activity', 'Terminal', 'Tests', 'Problems', 'TODO', 'Database', 'Tasks', 'Queue', 'Watch', 'Bookmarks', 'Logs', 'Evidence'] as const;
 
 /** Tab 标题 i18n：内部标识保持英文原值，展示层翻译。 */
 const TAB_TITLE_KEYS: Record<string, string> = {
@@ -18,6 +20,8 @@ const TAB_TITLE_KEYS: Record<string, string> = {
   TODO: 'bottom.tab.todos',
   Database: 'bottom.tab.database',
   Tasks: 'bottom.tab.tasks',
+  Queue: 'bottom.tab.queue',
+  Watch: 'bottom.tab.watch',
   Bookmarks: 'bottom.tab.bookmarks',
   Logs: 'bottom.tab.logs',
   Evidence: 'bottom.tab.evidence',
@@ -157,6 +161,8 @@ export function BottomPanel({ projectId }: { projectId: string }) {
         {tab === 'TODO' && <TodoPanel />}
         {tab === 'Database' && <DbBrowserPanel />}
         {tab === 'Tasks' && <TasksPanel projectId={projectId} />}
+        {tab === 'Queue' && <QueuePanel projectId={projectId} />}
+        {tab === 'Watch' && <WatchPanel />}
         {tab === 'Bookmarks' && <BookmarksPanel />}
         {tab === 'Logs' && <div className="muted">{t('bottom.logsEmpty')} <span className="pill">{t('bottom.stubBadge')}</span></div>}
         {tab === 'Evidence' && <div className="muted">{t('bottom.evidenceEmpty')}</div>}

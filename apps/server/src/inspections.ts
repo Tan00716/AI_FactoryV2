@@ -508,10 +508,16 @@ export function builtinCheckers(profile: InspectionProfile, root?: string): Chec
   // Legacy coupling (documented, round-5 A5): 'ssr-template' and
   // 'unicode-trojan' share the 'ssr-template' gate. 'spell-check'
   // (round-5 A7) has its own gate so it can be toggled independently.
+  // Round-6 R6-S1: extension checkers (names 'ext:<ext>:<id>') gate on
+  // 'extensions' so they can be toggled independently of the legacy set.
   if (root && extraCheckerProvider) {
     try {
       for (const c of extraCheckerProvider(root)) {
-        const gate = c.name === 'spell-check' ? 'spell-check' : 'ssr-template';
+        const gate = c.name === 'spell-check'
+          ? 'spell-check'
+          : c.name.startsWith('ext:')
+            ? 'extensions'
+            : 'ssr-template';
         if (enabled(gate)) out.push(c);
       }
     } catch {
@@ -536,7 +542,7 @@ export interface InspectionProfile {
   dependencyAudit: boolean;
 }
 
-export const KNOWN_CHECKERS = ['todo-fixme', 'long-file', 'long-function', 'console-log', 'secret-scan', 'sast-patterns', 'ssr-template', 'spell-check'] as const;
+export const KNOWN_CHECKERS = ['todo-fixme', 'long-file', 'long-function', 'console-log', 'secret-scan', 'sast-patterns', 'ssr-template', 'spell-check', 'extensions'] as const;
 
 export function defaultInspectionProfile(): InspectionProfile {
   return {
@@ -544,7 +550,7 @@ export function defaultInspectionProfile(): InspectionProfile {
     name: 'default',
     maxFileLines: 1000,
     maxFunctionLines: 150,
-    checkers: { 'todo-fixme': true, 'long-file': true, 'long-function': true, 'console-log': true, 'secret-scan': true, 'sast-patterns': true, 'ssr-template': true, 'spell-check': true },
+    checkers: { 'todo-fixme': true, 'long-file': true, 'long-function': true, 'console-log': true, 'secret-scan': true, 'sast-patterns': true, 'ssr-template': true, 'spell-check': true, 'extensions': true },
     licenseAudit: true,
     dependencyAudit: true,
   };

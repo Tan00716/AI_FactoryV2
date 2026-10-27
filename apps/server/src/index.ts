@@ -223,7 +223,9 @@ import {
   setSpellInspectionRootResolver,
   spellCheckerProvider,
 } from './routes/spell';
-import { handleTaskRunnerRoutes, setTaskRunnerDeps } from './routes/tasks';
+import { handleTaskRunnerRoutes, setTaskRunnerDeps, runTaskChainForScheduler, runTaskChainByLabel } from './routes/tasks';
+import { handleWatchRoutes, setWatchDeps } from './routes/watch';
+import { handleTaskQueueRoutes, setTaskQueueDeps } from './routes/taskqueue';
 import { handleBookmarkRoutes, setBookmarkDataDirResolver, setBookmarkInspectionRootResolver } from './routes/bookmarks';
 import { handleScratchRoutes, setScratchDeps } from './routes/scratch';
 import {
@@ -255,9 +257,18 @@ import {
   setBlameInspectionRootResolver,
 } from './routes/blame';
 import {
+  handleRebaseRoutes,
+  setRebaseInspectionRootResolver,
+} from './routes/rebase';
+import {
   handleSnippetRoutes,
   setSnippetInspectionRootResolver,
 } from './routes/snippets';
+import {
+  handleExtensionRoutes,
+  setExtensionInspectionRootResolver,
+  extensionCheckerProvider,
+} from './routes/extensions';
 import { handleIgnoresRoutes } from './routes/ignores';
 import { handleEgressRoutes } from './routes/egress';
 import { assertEgressAllowed, setEgressBlockSinks } from './egress';
@@ -299,7 +310,7 @@ import {
   initBackupScheduler,
   TICK_MS,
 } from './routes/backup-scheduler';
-import { handleScheduleRoutes, initTaskScheduler, taskScheduler, scheduleStore } from './routes/schedules';
+import { handleScheduleRoutes, initTaskScheduler, taskScheduler, scheduleStore, setScheduleTaskRunner } from './routes/schedules';
 import { SCHEDULER_TICK_MS } from './scheduler';
 import { handleAuthorizationTicketRoutes } from './routes/authorization-tickets';
 import { handleDbRoutes } from './routes/db';
@@ -759,6 +770,10 @@ setBookmarkDataDirResolver(() => process.env.AI_FACTORY_DATA_DIR ?? 'data');
 // on the desktop. Route must not value-import ../inspections (dual-mode
 // rule), so the jail resolver is injected here.
 setSnippetInspectionRootResolver((root) => resolveInspectionRoot(root));
+// Round-6 R6-S1: extension system. Extensions live per project at
+// <root>/.ai-factory/extensions/<name>/; the jail resolver is injected
+// here (route must not value-import ../inspections, dual-mode rule).
+setExtensionInspectionRootResolver((root) => resolveInspectionRoot(root));
 // Round-5 R5-S2: the declarative task runner reuses the /api/exec safety
 // policy (deny patterns + binary whitelist + control-dir guard) — no new
 // execution channel. Problem output is parsed with the project's matchers
@@ -778,6 +793,40 @@ setTaskRunnerDeps({
     const cfg = problemMatcherStore().get(projectId);
     return cfg.customs[name] ?? builtinMatcher(name);
   },
+});
+// Round-6 R6-S3: file-watch triggers run tasks.json chains through the
+// SAME runner seam as a manual POST /api/tasks/run (runTaskChainByLabel).
+// The tree walk skips ignored paths via the two-tier ignore gate, so a
+// watch rule never fires on files the project already ignores.
+setWatchDeps({
+  resolveRoot: (root) => resolveInspectionRoot(root),
+  shouldIgnore: (root, abs, isDir) => isIgnoredSync(root, abs, true, isDir),
+  runChain: (label, root, projectId, actor, ctx) => runTaskChainByLabel(label, root, projectId, actor, ctx),
+});
+// Round-6 R6-S5: scheduled task-runner jobs execute through the same
+// declarative runner (same policy, audit, and run records as a manual
+// POST /api/tasks/run). The scheduler needs a route context for audit,
+// which initTaskScheduler supplies at boot — this setter only carries
+// the executor function. Must run before initTaskScheduler below.
+setScheduleTaskRunner((label, root, projectId) =>
+  runTaskChainForScheduler(label, root, projectId, makeRouteCtx()),
+);
+// Round-6 R6-S4: background task queue reuses the SAME exec safety
+// policy as the sync task runner (no new execution channel). Matcher
+// output is parsed but NOT stored globally — job diagnostics live on
+// the job record, partitioned per job, so a queue parse never clobbers
+// the sync runner's 'tasks' snapshot.
+setTaskQueueDeps({
+  resolveRoot: (root) => resolveInspectionRoot(root),
+  checkCommandPolicy: (command) => checkCommandPolicy(command),
+  commandHitsControlDir: (cwd, tokens) => commandHitsControlDir(cwd, tokens),
+  resolveCwd: (cwd) => resolveExecCwd(cwd),
+  resolveMatchers: (projectId) => resolveMatchers(projectId),
+  getMatcher: (projectId, name) => {
+    const cfg = problemMatcherStore().get(projectId);
+    return cfg.customs[name] ?? builtinMatcher(name);
+  },
+  parseOutput: (defs, text) => parseOutput(text, defs, 'tasks'),
 });
 // Round-5 R5-B10: scratch files live in the user data dir
 // (AI_FACTORY_DATA_DIR/scratches/), never in a project tree. Runs reuse
@@ -802,6 +851,7 @@ setExtraCheckerProvider((root) => [
   ...ssrCheckerProvider(root),
   ...trojanCheckerProvider(root),
   ...spellCheckerProvider(root),
+  ...extensionCheckerProvider(root),
 ]);
 
 /**
@@ -836,6 +886,16 @@ setProfilerInspectionRootResolver((root) => resolveInspectionRoot(root));
  * timeline = git log fused with Local History snapshots, newest first.
  */
 setBlameInspectionRootResolver((root) => resolveInspectionRoot(root));
+
+/**
+ * Interactive rebase + stash (round-6 task R6-S2) — same setter-injection
+ * pattern: routes/rebase must not value-import ../inspections
+ * (dual-mode import rule), so the jail resolver is injected here.
+ * Rebase = `git rebase -i` driven by generated sequence-editor/message
+ * scripts, with a shadow checkpoint taken before any mutation; stash =
+ * porcelain list/show/push/apply/pop/drop.
+ */
+setRebaseInspectionRootResolver((root) => resolveInspectionRoot(root));
 
 /**
  * Deterministic refactoring (round-4 task R4-S3) — same setter-injection
@@ -1618,13 +1678,17 @@ const server = createServer(async (req, res) => {
     if (await handleBookmarkRoutes(req, res, url, routeCtx)) return;
     if (await handleHttpClientRoutes(req, res, url, routeCtx)) return;
     if (await handleTaskRunnerRoutes(req, res, url, routeCtx)) return;
+    if (await handleWatchRoutes(req, res, url, routeCtx)) return;
+    if (await handleTaskQueueRoutes(req, res, url, routeCtx)) return;
     if (await handleScratchRoutes(req, res, url, routeCtx)) return;
     if (await handleDepscanRoutes(req, res, url, routeCtx)) return;
     if (await handleProfilerRoutes(req, res, url, routeCtx)) return;
     if (await handleKeybindingRoutes(req, res, url, routeCtx)) return;
     if (await handleBlameRoutes(req, res, url, routeCtx)) return;
     if (await handleMerge3Routes(req, res, url, routeCtx)) return;
+    if (await handleRebaseRoutes(req, res, url, routeCtx)) return;
     if (await handleSnippetRoutes(req, res, url, routeCtx)) return;
+    if (await handleExtensionRoutes(req, res, url, routeCtx)) return;
     if (await handleIgnoresRoutes(req, res, url, routeCtx)) return;
     if (await handleCoverageRoutes(req, res, url, routeCtx)) return;
     if (await handleContextProviderRoutes(req, res, url, routeCtx)) return;

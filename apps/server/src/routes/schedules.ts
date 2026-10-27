@@ -2,11 +2,24 @@
  * Schedule routes — the general task scheduler's HTTP surface.
  *
  *   GET    /api/schedules                 list schedules
- *   POST   /api/schedules                 create {name, kind, cronExpr|intervalMs, job}
+ *   POST   /api/schedules                 create {name, kind, cronExpr|intervalMs|runAt, job}
  *   GET    /api/schedules/:id             one schedule
+ *   GET    /api/schedules/:id/runs        recent execution records (R6-S5)
  *   PATCH  /api/schedules/:id             update {name?, status?} (pause/resume)
  *   DELETE /api/schedules/:id             delete
  *   POST   /api/schedules/:id/trigger     fire now (manual trigger)
+ *
+ * R6-S5 additions: the 'task-runner' job (a declarative tasks.json chain
+ * run through the SAME policy as POST /api/tasks/run), the 'once' kind
+ * (fires exactly once, then parks itself), overlap skips (a slot that
+ * fires while the previous run is still in progress is recorded as
+ * skipped, never queued), and per-schedule execution records.
+ *
+ * TIMEZONE HONESTY: cron expressions are evaluated in UTC (the
+ * pre-existing scheduler semantics — changing them would silently shift
+ * every existing schedule, including backups). The list response carries
+ * both cronTimezone ('UTC') and the server's local timezone so the UI
+ * can label them without guessing.
  *
  * RBAC: the centralized gate (auth.ts requiredRoleFor) gives GET →
  * viewer and every other method → operator for this prefix — no
@@ -41,6 +54,20 @@ const PREFIX = '/api/schedules';
 
 let scheduler: TaskScheduler | null = null;
 let store: ScheduleStore | null = null;
+
+/**
+ * R6-S5: the task-runner chain executor, setter-injected by index.ts
+ * from routes/tasks.ts (dual-mode rule: this module must not value-import
+ * routes/tasks — it is imported from src by tests). Null = unwired, and
+ * task-runner jobs then fail closed.
+ */
+let taskRunner: ((label: string, root?: string, projectId?: string) => Promise<{ ok: boolean; summary: string }>) | null = null;
+
+export function setScheduleTaskRunner(
+  fn: ((label: string, root?: string, projectId?: string) => Promise<{ ok: boolean; summary: string }>) | null,
+): void {
+  taskRunner = fn;
+}
 
 /** Real webhook fetch: node builtins only, timeout-guarded, no redirects. */
 function fetchWebhookReal(url: string, opts: WebhookFetchOpts): Promise<{ status: number; body: string }> {
@@ -160,6 +187,21 @@ function parseJob(raw: unknown): ScheduleJob {
     return job;
   }
   if (j['type'] === 'backup') return { type: 'backup' };
+  if (j['type'] === 'task-runner') {
+    if (typeof j['label'] !== 'string' || !j['label'].trim()) {
+      throw new Error('task-runner job requires label');
+    }
+    const job: ScheduleJob = { type: 'task-runner', label: j['label'].trim() };
+    if (j['root'] !== undefined) {
+      if (typeof j['root'] !== 'string') throw new Error('task-runner root must be a string');
+      job.root = j['root'];
+    }
+    if (j['projectId'] !== undefined) {
+      if (typeof j['projectId'] !== 'string') throw new Error('task-runner projectId must be a string');
+      job.projectId = j['projectId'];
+    }
+    return job;
+  }
   throw new Error(`unknown job type: ${String(j['type'])}`);
 }
 
@@ -212,6 +254,10 @@ export function initTaskScheduler(ctx: RouteContext): TaskScheduler {
       }),
     fetchWebhook: fetchWebhookReal,
     isOffline: () => networkMode().isOffline(),
+    // R6-S5: task-runner jobs execute through the declarative runner.
+    // The fn is setter-injected by index.ts; null stays null and the
+    // scheduler fails those jobs closed (see scheduler.ts).
+    runTaskChain: taskRunner ?? undefined,
   });
   return scheduler;
 }
@@ -248,7 +294,13 @@ export async function handleScheduleRoutes(
 
   // GET /api/schedules — list.
   if (method === 'GET' && path === PREFIX) {
-    ctx.json(res, 200, { schedules: store.list() });
+    ctx.json(res, 200, {
+      schedules: store.list(),
+      // Cron expressions are evaluated in UTC (pre-existing semantics);
+      // serverTimezone is the host's local zone, for display only.
+      cronTimezone: 'UTC',
+      serverTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
     return true;
   }
 
@@ -257,8 +309,8 @@ export async function handleScheduleRoutes(
     const body = await ctx.readBody(req);
     try {
       const kind = body['kind'];
-      if (kind !== 'cron' && kind !== 'interval') {
-        ctx.json(res, 400, { error: "kind must be 'cron' or 'interval'" });
+      if (kind !== 'cron' && kind !== 'interval' && kind !== 'once') {
+        ctx.json(res, 400, { error: "kind must be 'cron', 'interval' or 'once'" });
         return true;
       }
       const job = parseJob(body['job']);
@@ -275,6 +327,7 @@ export async function handleScheduleRoutes(
         kind,
         cronExpr: typeof body['cronExpr'] === 'string' ? body['cronExpr'] : undefined,
         intervalMs: typeof body['intervalMs'] === 'number' ? body['intervalMs'] : undefined,
+        runAt: typeof body['runAt'] === 'string' ? body['runAt'] : undefined,
         job,
         createdBy: actorOf(body),
       });
@@ -299,6 +352,14 @@ export async function handleScheduleRoutes(
     const s = store.get(id);
     if (!s) return notFound(), true;
     ctx.json(res, 200, { schedule: s });
+    return true;
+  }
+
+  // GET /api/schedules/:id/runs — R6-S5 execution records, newest first.
+  if (method === 'GET' && seg2 === 'runs') {
+    const s = store.get(id);
+    if (!s) return notFound(), true;
+    ctx.json(res, 200, { runs: [...(s.recentRuns ?? [])].reverse() });
     return true;
   }
 

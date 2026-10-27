@@ -89,11 +89,13 @@ const MAX_RUN_RECORDS = 20;
 class TaskRouteError extends Error {
   readonly code: string;
   readonly status: number;
-  constructor(message: string, code: string, status = 400) {
+  readonly details?: unknown;
+  constructor(message: string, code: string, status = 400, details?: unknown) {
     super(message);
     this.name = 'TaskRouteError';
     this.code = code;
     this.status = status;
+    this.details = details;
   }
 }
 
@@ -188,6 +190,44 @@ function recordRun(chain: TaskChainResult): void {
 export function resetTaskRunRecords(): void {
   runRecords.length = 0;
   runSeq = 0;
+}
+
+/**
+ * Run one tasks.json chain by label, end to end. Exported for reuse by
+ * the watch trigger route (round-6 task R6-S3): a watch fire runs exactly
+ * the same chain a manual POST /api/tasks/run would run — same policy,
+ * same matchers, same audit — never a second execution channel.
+ * Thin wrapper over the shared executeChain (also used by POST
+ * /api/tasks/run and the R6-S5 scheduler seam): failures are returned as
+ * data (not thrown) so a background trigger can record them instead of
+ * crashing the watcher.
+ */
+export type ChainRunOutcome =
+  | { ok: true; chain: TaskChainResult }
+  | { ok: false; status: number; code: string; error: string; errors?: string[] };
+
+export async function runTaskChainByLabel(
+  label: string,
+  root: string,
+  projectId: string,
+  actor: string,
+  ctx: RouteContext,
+): Promise<ChainRunOutcome> {
+  try {
+    const chain = await executeChain(label, root, projectId, ctx, actor);
+    return { ok: true, chain };
+  } catch (e) {
+    if (e instanceof TaskRouteError) {
+      return {
+        ok: false,
+        status: e.status,
+        code: e.code,
+        error: e.message,
+        ...(e.details !== undefined ? { errors: e.details as string[] } : {}),
+      };
+    }
+    throw e;
+  }
 }
 
 /**
@@ -410,6 +450,72 @@ function tasksFilePath(root: string): string {
   return join(root, TASKS_FILE);
 }
 
+/**
+ * Shared chain execution (used by POST /api/tasks/run and, via
+ * runTaskChainForScheduler, by R6-S5 scheduled task-runner jobs).
+ * Throws TaskRouteError for plan/file failures; the caller maps it.
+ */
+async function executeChain(
+  label: string,
+  root: string,
+  projectId: string,
+  ctx: RouteContext,
+  actor: string,
+): Promise<TaskChainResult> {
+  const d = needDeps();
+  let text: string;
+  try {
+    text = readFileSync(tasksFilePath(root), 'utf8');
+  } catch {
+    throw new TaskRouteError('no tasks file for this project', 'no-tasks-file', 404);
+  }
+  const parsed = parseTasksJson(text);
+  if (parsed.errors.length > 0) {
+    throw new TaskRouteError('tasks file has validation errors', 'invalid-tasks', 400, parsed.errors);
+  }
+  const planned = planRun(parsed.tasks, [label]);
+  if (planned.errors.length > 0) {
+    throw new TaskRouteError('cannot plan task run', 'plan-failed', 400, planned.errors);
+  }
+  const flat = flattenPlan(planned.plan);
+  ctx.audit.record(actor, 'TASK_CHAIN_STARTED', 'task', label, {
+    chain: flat.map((t) => t.label),
+  });
+  const chain = await executePlan(d, planned.plan, root, projectId, ctx, actor);
+  recordRun(chain);
+  return chain;
+}
+
+/**
+ * R6-S5 scheduler seam: run a declarative task chain through the exact
+ * same policy + audit + record path as POST /api/tasks/run. The caller
+ * (routes/schedules.ts, setter-injected from index.ts) supplies the
+ * route context; root is server-jailed here, never trusted raw.
+ */
+export async function runTaskChainForScheduler(
+  label: string,
+  rawRoot: string | undefined,
+  projectId: string | undefined,
+  ctx: RouteContext,
+): Promise<{ ok: boolean; summary: string }> {
+  try {
+    const root = resolveRoot(rawRoot);
+    const chain = await executeChain(label, root, projectIdOf(projectId), ctx, 'scheduler');
+    if (chain.ok) {
+      return { ok: true, summary: `task chain "${label}" ok (${chain.results.length} tasks)` };
+    }
+    return {
+      ok: false,
+      summary: `task chain "${label}" stopped at "${chain.stoppedAt}"`,
+    };
+  } catch (e) {
+    if (e instanceof TaskRouteError) {
+      return { ok: false, summary: e.message };
+    }
+    throw e;
+  }
+}
+
 export async function handleTaskRunnerRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -485,7 +591,6 @@ export async function handleTaskRunnerRoutes(
 
     // ---- run ----------------------------------------------------------
     if (path === `${PREFIX}/run` && method === 'POST') {
-      const d = needDeps();
       const body = await ctx.readBody(req);
       const label = body['label'];
       if (typeof label !== 'string' || label.length === 0) {
@@ -496,30 +601,20 @@ export async function handleTaskRunnerRoutes(
       const projectId = projectIdOf(body['projectId']);
       const actor = (body['actor'] as string | undefined) ?? 'human';
 
-      let text: string;
       try {
-        text = readFileSync(tasksFilePath(root), 'utf8');
-      } catch {
-        ctx.json(res, 404, { error: 'no tasks file for this project', code: 'no-tasks-file' });
-        return true;
+        const chain = await executeChain(label, root, projectId, ctx, actor);
+        ctx.json(res, 200, chain);
+      } catch (e) {
+        if (e instanceof TaskRouteError) {
+          ctx.json(res, e.status, {
+            error: e.message,
+            code: e.code,
+            ...(e.details !== undefined ? { errors: e.details } : {}),
+          });
+        } else {
+          throw e;
+        }
       }
-      const parsed = parseTasksJson(text);
-      if (parsed.errors.length > 0) {
-        ctx.json(res, 400, { error: 'tasks file has validation errors', errors: parsed.errors, code: 'invalid-tasks' });
-        return true;
-      }
-      const planned = planRun(parsed.tasks, [label]);
-      if (planned.errors.length > 0) {
-        ctx.json(res, 400, { error: 'cannot plan task run', errors: planned.errors, code: 'plan-failed' });
-        return true;
-      }
-      const flat = flattenPlan(planned.plan);
-      ctx.audit.record(actor, 'TASK_CHAIN_STARTED', 'task', label, {
-        chain: flat.map((t) => t.label),
-      });
-      const chain = await executePlan(d, planned.plan, root, projectId, ctx, actor);
-      recordRun(chain);
-      ctx.json(res, 200, chain);
       return true;
     }
   } catch (e) {

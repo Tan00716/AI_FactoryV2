@@ -1,0 +1,1 @@
+{"description":"VS Code-style extension API, local subset: manifest validation, vm sandbox, project-local store (round-6 R6-S1)","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/extensions","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

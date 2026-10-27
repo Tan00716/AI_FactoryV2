@@ -41,10 +41,13 @@ import { ChangesPanel, createChangesApi } from './components/ChangesPanel';
 import { StabilityPanel } from './components/StabilityPanel';
 import { RefactorPanel } from './components/RefactorPanel';
 import { MergePanel } from './components/MergePanel';
+import { RebasePanel } from './components/RebasePanel';
 import { SearchPanel } from './components/SearchPanel';
 import SnippetsPanel from './components/SnippetsPanel';
+import ExtensionsPanel from './components/ExtensionsPanel';
 import { initSnippets } from './snippets/manager';
 import { ScratchesPanel } from './components/ScratchesPanel';
+import { SchedulesPanel } from './components/SchedulesPanel';
 import { DebugPanel } from './components/DebugPanel';
 import { TimelinePanel } from './components/TimelinePanel';
 import { ProfilerPanel } from './components/ProfilerPanel';
@@ -93,7 +96,7 @@ function IdeShell() {
   /** Batch 15: API identity label for the top bar (role / local mode /
    *  unknown when whoami cannot be fetched — displayed as-is, never guessed). */
   const [apiIdentityLabel, setApiIdentityLabel] = useState('');
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor' | 'Profiler' | 'HTTP' | 'Debug' | 'Timeline' | 'Keybindings' | 'Merge' | 'Search' | 'Scratches' | 'Snippets'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor' | 'Profiler' | 'HTTP' | 'Debug' | 'Timeline' | 'Keybindings' | 'Merge' | 'Search' | 'Scratches' | 'Snippets' | 'Schedules' | 'Rebase' | 'Extensions'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   /**
    * Design panel → editor jump (task ⑨): the Design panel dispatches an
@@ -270,7 +273,7 @@ function IdeShell() {
         <main className="center">
           {bootError && <div className="banner err">{bootError}</div>}
           <div className="center-tabs">
-            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab', 'Coverage', 'Recipes', 'Design', 'Updates', 'Refactor', 'Profiler', 'HTTP', 'Debug', 'Timeline', 'Keybindings', 'Merge', 'Search', 'Scratches', 'Snippets'] as const).map((name) => (
+            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab', 'Coverage', 'Recipes', 'Design', 'Updates', 'Refactor', 'Profiler', 'HTTP', 'Debug', 'Timeline', 'Keybindings', 'Merge', 'Search', 'Scratches', 'Snippets', 'Schedules', 'Rebase', 'Extensions'] as const).map((name) => (
               <button key={name} className={centerTab === name ? 'active' : ''} onClick={() => setCenterTab(name)}>{t(`tab.${name.toLowerCase().replace('/', '')}` as const)}</button>
             ))}
           </div>
@@ -398,12 +401,18 @@ function IdeShell() {
             <KeybindingSettings />
           ) : centerTab === 'Merge' ? (
             <MergePanel />
+          ) : centerTab === 'Rebase' ? (
+            <RebasePanel />
           ) : centerTab === 'Search' ? (
             <SearchPanel />
           ) : centerTab === 'Scratches' ? (
             <ScratchesPanel />
           ) : centerTab === 'Snippets' ? (
             <SnippetsPanel projectRoot={projects.find((pr) => pr.id === projectId)?.path ?? ''} />
+          ) : centerTab === 'Extensions' ? (
+            <ExtensionsPanel projectRoot={projects.find((pr) => pr.id === projectId)?.path ?? ''} />
+          ) : centerTab === 'Schedules' ? (
+            <SchedulesPanel />
           ) : (
             <EditorPanel openRequest={editorOpenRequest} />
           )}

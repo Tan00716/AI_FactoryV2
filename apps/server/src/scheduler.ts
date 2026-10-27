@@ -160,7 +160,7 @@ export const SCHEDULER_TICK_MS = 30_000;
 /** Webhook bodies larger than this are truncated before sanitize+store. */
 export const WEBHOOK_BODY_LIMIT = 64 * 1024;
 
-export type ScheduleKind = 'cron' | 'interval';
+export type ScheduleKind = 'cron' | 'interval' | 'once';
 export type ScheduleStatus = 'active' | 'paused';
 
 export interface RunTaskJob {
@@ -199,7 +199,35 @@ export interface BackupJob {
   type: 'backup';
 }
 
-export type ScheduleJob = RunTaskJob | WebhookJob | BackupJob;
+/**
+ * R6-S5: run a declarative task-runner chain (R5-S2 tasks.json) through
+ * the SAME exec safety policy as POST /api/tasks/run — no new execution
+ * channel. The chain runs via the injected runTaskChain dep; when it is
+ * absent the job fails closed instead of executing anything.
+ */
+export interface TaskRunnerJob {
+  type: 'task-runner';
+  /** Label of the task in the project's .ai-factory/tasks.json. */
+  label: string;
+  /** Project root (server-jailed); omitted = the server's default root. */
+  root?: string;
+  projectId?: string;
+}
+
+export type ScheduleJob = RunTaskJob | WebhookJob | BackupJob | TaskRunnerJob;
+
+/** One execution record, persisted with the schedule (newest last, capped). */
+export interface ScheduleRunRecord {
+  firedAt: string;
+  trigger: 'tick' | 'manual';
+  ok: boolean;
+  /** True when the slot fired while a previous run was still in progress. */
+  skipped: boolean;
+  summary: string;
+}
+
+/** Execution records kept per schedule (older entries are dropped). */
+export const MAX_RECENT_RUNS = 50;
 
 export interface Schedule {
   id: string;
@@ -207,6 +235,8 @@ export interface Schedule {
   kind: ScheduleKind;
   cronExpr: string | null;
   intervalMs: number | null;
+  /** R6-S5: one-time fire time (kind 'once' only); null otherwise. */
+  runAt: string | null;
   job: ScheduleJob;
   status: ScheduleStatus;
   createdBy: string;
@@ -219,6 +249,8 @@ export interface Schedule {
   /** Sanitized snippet of the last webhook body (null for other jobs). */
   lastOutput: string | null;
   runCount: number;
+  /** R6-S5: recent execution records (ok/failed/skipped), newest last. */
+  recentRuns: ScheduleRunRecord[];
 }
 
 export interface CreateScheduleInput {
@@ -226,6 +258,8 @@ export interface CreateScheduleInput {
   kind: ScheduleKind;
   cronExpr?: string;
   intervalMs?: number;
+  /** R6-S5: required for kind 'once', must be a future ISO timestamp. */
+  runAt?: string;
   job: ScheduleJob;
   createdBy?: string;
 }
@@ -267,6 +301,9 @@ function isValidJob(job: unknown): job is ScheduleJob {
     return typeof j['url'] === 'string' && j['url'].trim().length > 0;
   }
   if (j['type'] === 'backup') return true;
+  if (j['type'] === 'task-runner') {
+    return typeof j['label'] === 'string' && j['label'].trim().length > 0;
+  }
   return false;
 }
 
@@ -276,7 +313,7 @@ function isValidSchedule(s: unknown): s is Schedule {
   return (
     typeof r['id'] === 'string' &&
     typeof r['name'] === 'string' &&
-    (r['kind'] === 'cron' || r['kind'] === 'interval') &&
+    (r['kind'] === 'cron' || r['kind'] === 'interval' || r['kind'] === 'once') &&
     (r['status'] === 'active' || r['status'] === 'paused') &&
     isValidJob(r['job']) &&
     typeof r['runCount'] === 'number'
@@ -285,7 +322,7 @@ function isValidSchedule(s: unknown): s is Schedule {
 
 /** Next slot for a schedule, strictly after `from`. */
 export function computeNextRun(
-  s: Pick<Schedule, 'kind' | 'cronExpr' | 'intervalMs'>,
+  s: Pick<Schedule, 'kind' | 'cronExpr' | 'intervalMs' | 'runAt'>,
   from: Date,
 ): Date {
   if (s.kind === 'interval') {
@@ -293,6 +330,15 @@ export function computeNextRun(
       throw new ScheduleError(`interval must be >= ${MIN_INTERVAL_MS} ms`);
     }
     return new Date(from.getTime() + s.intervalMs);
+  }
+  if (s.kind === 'once') {
+    if (!s.runAt) throw new ScheduleError('one-time schedule requires runAt');
+    const at = new Date(s.runAt);
+    if (Number.isNaN(at.getTime())) throw new ScheduleError(`invalid runAt: ${s.runAt}`);
+    if (at.getTime() <= from.getTime()) {
+      throw new ScheduleError('one-time schedule time is in the past');
+    }
+    return at;
   }
   if (!s.cronExpr) throw new ScheduleError('cron schedule requires cronExpr');
   return nextCronTime(s.cronExpr, from);
@@ -305,6 +351,9 @@ function validateJob(job: ScheduleJob): void {
     if (job.goal !== undefined && job.goal.length > 8000) {
       throw new ScheduleError('run-task goal too long (max 8000)');
     }
+  } else if (job.type === 'task-runner') {
+    if (!job.label.trim()) throw new ScheduleError('task-runner job requires a label');
+    if (job.label.length > 200) throw new ScheduleError('task-runner label too long (max 200)');
   } else if (job.type === 'webhook') {
     let u: URL;
     try {
@@ -357,7 +406,11 @@ export class ScheduleStore {
     try {
       const raw = JSON.parse(readFileSync(this.path, 'utf8')) as { schedules?: unknown[] };
       for (const s of raw.schedules ?? []) {
-        if (isValidSchedule(s)) map.set(s.id, s);
+        if (isValidSchedule(s)) {
+          // Schedules persisted before R6-S5 have no recentRuns array.
+          if (!Array.isArray(s.recentRuns)) s.recentRuns = [];
+          map.set(s.id, s);
+        }
       }
     } catch {
       // Fail-closed: serve empty, refuse writes — never silently drop schedules.
@@ -396,6 +449,7 @@ export class ScheduleStore {
     validateJob(input.job);
     let cronExpr: string | null = null;
     let intervalMs: number | null = null;
+    let runAt: string | null = null;
     if (input.kind === 'cron') {
       if (!input.cronExpr) throw new ScheduleError('cron schedule requires cronExpr');
       parseCronExpr(input.cronExpr); // validates; throws ScheduleError
@@ -405,6 +459,14 @@ export class ScheduleStore {
         throw new ScheduleError(`interval must be >= ${MIN_INTERVAL_MS} ms`);
       }
       intervalMs = Math.floor(input.intervalMs);
+    } else if (input.kind === 'once') {
+      if (!input.runAt) throw new ScheduleError('one-time schedule requires runAt');
+      const at = new Date(input.runAt);
+      if (Number.isNaN(at.getTime())) throw new ScheduleError(`invalid runAt: ${input.runAt}`);
+      if (at.getTime() <= Date.now()) {
+        throw new ScheduleError('one-time schedule time must be in the future');
+      }
+      runAt = at.toISOString();
     } else {
       throw new ScheduleError(`unknown schedule kind: ${String(input.kind)}`);
     }
@@ -415,17 +477,19 @@ export class ScheduleStore {
       kind: input.kind,
       cronExpr,
       intervalMs,
+      runAt,
       job: input.job,
       status: 'active',
       createdBy: input.createdBy ?? 'human',
       createdAt: nowIso(),
       updatedAt: nowIso(),
-      nextRunAt: computeNextRun({ kind: input.kind, cronExpr, intervalMs }, now).toISOString(),
+      nextRunAt: computeNextRun({ kind: input.kind, cronExpr, intervalMs, runAt }, now).toISOString(),
       lastRunAt: null,
       lastStatus: null,
       lastError: null,
       lastOutput: null,
       runCount: 0,
+      recentRuns: [],
     };
     this.load().set(s.id, s);
     this.persist();
@@ -462,6 +526,7 @@ export class ScheduleStore {
     id: string,
     result: { ok: boolean; error?: string | null; output?: string | null },
     at: Date,
+    trigger: 'tick' | 'manual' = 'tick',
   ): Schedule {
     const s = this.load().get(id);
     if (!s) throw new ScheduleError(`schedule not found: ${id}`);
@@ -470,7 +535,53 @@ export class ScheduleStore {
     s.lastError = result.ok ? null : (result.error ?? 'unknown error').slice(0, 500);
     if (result.output !== undefined) s.lastOutput = result.output;
     s.runCount += 1;
-    s.nextRunAt = computeNextRun(s, at).toISOString();
+    s.recentRuns.push({
+      firedAt: at.toISOString(),
+      trigger,
+      ok: result.ok,
+      skipped: false,
+      summary: (result.ok ? 'ok' : (result.error ?? 'unknown error')).slice(0, 500),
+    });
+    while (s.recentRuns.length > MAX_RECENT_RUNS) s.recentRuns.shift();
+    if (s.kind === 'once') {
+      // One-time schedules fire exactly once, then park themselves.
+      s.status = 'paused';
+      s.nextRunAt = null;
+    } else {
+      // Never move the slot backwards: a skip may already have advanced
+      // it past this firing's own computed slot (slow run overlapping
+      // a later tick), and a manual trigger must not pull it earlier.
+      const computed = computeNextRun(s, at);
+      const kept = s.nextRunAt ? new Date(s.nextRunAt) : null;
+      s.nextRunAt = kept && kept.getTime() > computed.getTime() ? s.nextRunAt : computed.toISOString();
+    }
+    s.updatedAt = nowIso();
+    this.persist();
+    return s;
+  }
+
+  /**
+   * R6-S5: record an overlap skip — the slot fired while a previous run
+   * was still in progress, so nothing executed. The slot still advances
+   * (runs never pile up), and the skip is visible in recentRuns.
+   */
+  recordSkip(id: string, at: Date, trigger: 'tick' | 'manual'): Schedule {
+    const s = this.load().get(id);
+    if (!s) throw new ScheduleError(`schedule not found: ${id}`);
+    s.recentRuns.push({
+      firedAt: at.toISOString(),
+      trigger,
+      ok: false,
+      skipped: true,
+      summary: 'skipped: previous run still in progress',
+    });
+    while (s.recentRuns.length > MAX_RECENT_RUNS) s.recentRuns.shift();
+    if (s.kind === 'once') {
+      s.status = 'paused';
+      s.nextRunAt = null;
+    } else {
+      s.nextRunAt = computeNextRun(s, at).toISOString();
+    }
     s.updatedAt = nowIso();
     this.persist();
     return s;
@@ -480,7 +591,20 @@ export class ScheduleStore {
   advanceMissed(id: string, at: Date): Schedule {
     const s = this.load().get(id);
     if (!s) throw new ScheduleError(`schedule not found: ${id}`);
-    s.nextRunAt = computeNextRun(s, at).toISOString();
+    s.recentRuns.push({
+      firedAt: at.toISOString(),
+      trigger: 'tick',
+      ok: false,
+      skipped: false,
+      summary: 'missed slot (server was down — not backfilled)',
+    });
+    while (s.recentRuns.length > MAX_RECENT_RUNS) s.recentRuns.shift();
+    if (s.kind === 'once') {
+      s.status = 'paused';
+      s.nextRunAt = null;
+    } else {
+      s.nextRunAt = computeNextRun(s, at).toISOString();
+    }
     s.updatedAt = nowIso();
     this.persist();
     return s;
@@ -523,6 +647,16 @@ export interface SchedulerDeps {
   runBackup(): { backupId: string };
   fetchWebhook(url: string, opts: WebhookFetchOpts): Promise<{ status: number; body: string }>;
   /**
+   * R6-S5: run a declarative task-runner chain (R5-S2). Setter-injected
+   * by the route layer from routes/tasks.ts; when absent, task-runner
+   * jobs fail closed instead of executing anything.
+   */
+  runTaskChain?: (
+    label: string,
+    root?: string,
+    projectId?: string,
+  ) => Promise<{ ok: boolean; summary: string }>;
+  /**
    * Offline-mode gate (wired by routes/schedules.ts to the network-mode
    * store). Kept as an injected function — not an import — so this
    * module stays pure (node builtins + @ai-factory/security) and the
@@ -534,6 +668,8 @@ export interface SchedulerDeps {
 
 export class TaskScheduler {
   private readonly deps: SchedulerDeps;
+  /** R6-S5: schedule ids with a job currently executing (overlap guard). */
+  private readonly running = new Set<string>();
 
   constructor(deps: SchedulerDeps) {
     this.deps = deps;
@@ -597,11 +733,25 @@ export class TaskScheduler {
   }
 
   private async fireSchedule(s: Schedule, trigger: 'tick' | 'manual', at: Date): Promise<JobResult> {
+    // R6-S5 overlap guard: a slot that fires while the previous run is
+    // still in progress is SKIPPED (recorded + audited), never queued —
+    // runs must never pile up.
+    if (this.running.has(s.id)) {
+      this.deps.store.recordSkip(s.id, at, trigger);
+      this.deps.audit.record('system', 'SCHEDULE_SKIPPED', 'schedule', s.id, {
+        name: s.name,
+        trigger,
+      });
+      return { ok: false, summary: 'skipped: previous run still in progress' };
+    }
+    this.running.add(s.id);
     let result: JobResult;
     try {
       result = await this.executeJob(s);
     } catch (e) {
       result = { ok: false, summary: `job failed: ${e instanceof Error ? e.message : String(e)}` };
+    } finally {
+      this.running.delete(s.id);
     }
     const recordOutput = result.ok && s.job.type === 'webhook' ? result.output ?? null : undefined;
     this.deps.store.recordRun(
@@ -612,6 +762,7 @@ export class TaskScheduler {
         output: recordOutput,
       },
       at,
+      trigger,
     );
     this.deps.audit.record('system', 'SCHEDULE_FIRED', 'schedule', s.id, {
       name: s.name,
@@ -635,6 +786,15 @@ export class TaskScheduler {
 
   private async executeJob(s: Schedule): Promise<JobResult> {
     const job = s.job;
+    if (job.type === 'task-runner') {
+      // R6-S5: declarative task-runner chain through the SAME policy as
+      // POST /api/tasks/run. Unwired = fail closed, never execute.
+      if (!this.deps.runTaskChain) {
+        return { ok: false, summary: 'task runner not wired; refusing to execute' };
+      }
+      const r = await this.deps.runTaskChain(job.label, job.root, job.projectId);
+      return { ok: r.ok, summary: r.summary };
+    }
     if (job.type === 'run-task') {
       const task = this.deps.createTask({
         title: job.title,

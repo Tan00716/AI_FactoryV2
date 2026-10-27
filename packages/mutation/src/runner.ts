@@ -11,8 +11,12 @@
  *  - killed   — tests failed (non-zero exit or TAP "not ok")
  *  - survived — tests passed with the mutant applied
  *  - timeout  — the test command exceeded timeoutMs (circuit breaker)
- *  - invalid  — the mutated file fails `node --check` (syntax error);
- *               excluded from the score, like Stryker's compile errors
+ *  - invalid  — the mutated file fails `node --check` (JS syntax error) or
+ *               fails to parse at import (loader SyntaxError naming the
+ *               file); excluded from the score, like Stryker's compile errors.
+ *               For TypeScript targets the --check gate is skipped (Node's
+ *               checkSyntax does not type-strip) and only the import-time
+ *               classifier applies.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -89,6 +93,14 @@ function tailBytes(s: string, max: number): string {
 }
 
 function runNodeCheck(mutatedFileAbs: string): { ok: boolean; output: string } {
+  // Node's --check path (checkSyntax) does not type-strip: on Node 24 it
+  // rejects even a valid typed .ts file ("Unexpected token ':'"), so the
+  // gate would misclassify every typed mutant as 'invalid'. Skip the gate
+  // for TypeScript; genuinely broken mutants are still caught after the
+  // test run by the loader-SyntaxError classifier in runMutantTests.
+  if (/\.(mts|cts|ts)$/.test(mutatedFileAbs)) {
+    return { ok: true, output: 'node --check skipped for TypeScript (checkSyntax does not type-strip)' };
+  }
   try {
     const r = spawnSync(process.execPath, ['--check', mutatedFileAbs], {
       encoding: 'utf8',

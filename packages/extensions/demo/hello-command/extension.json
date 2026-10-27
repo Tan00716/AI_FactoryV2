@@ -1,0 +1,1 @@
+{"author":"ai-factory samples","contributes":{"checkers":[],"commands":[{"description":"Returns 'hello <name>' for the given name argument.","id":"hello.echo","title":"Echo a greeting"}],"panels":[],"providers":[]},"description":"Sample extension: contributes one command that echoes its argument.","name":"hello-command","permissions":["commands.execute"],"version":"1.0.0"}

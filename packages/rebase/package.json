@@ -1,0 +1,1 @@
+{"dependencies":{},"description":"Interactive rebase todo editor + stash management core: todo parsing, porcelain git ops, rebase lifecycle (R6-S2)","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/rebase","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

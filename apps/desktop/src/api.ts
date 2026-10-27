@@ -898,6 +898,35 @@ export interface ScratchRunResult {
   runner: string;
   language: string;
 }
+/** R6-S5 任务计划：服务端 Schedule 的桌面侧形状。 */
+export interface ScheduleItem {
+  id: string;
+  name: string;
+  kind: 'cron' | 'interval' | 'once';
+  cronExpr: string | null;
+  intervalMs: number | null;
+  runAt: string | null;
+  job: Record<string, unknown>;
+  status: 'active' | 'paused';
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastStatus: 'ok' | 'failed' | null;
+  lastError: string | null;
+  lastOutput: string | null;
+  runCount: number;
+  recentRuns: ScheduleRunRecord[];
+}
+/** R6-S5：单条执行记录（ok/failed/skipped）。 */
+export interface ScheduleRunRecord {
+  firedAt: string;
+  trigger: 'tick' | 'manual';
+  ok: boolean;
+  skipped: boolean;
+  summary: string;
+}
 export interface TodoItem {
   file: string;
   line: number;
@@ -918,6 +947,31 @@ export interface BookmarkDtoItem {
   label: string;
   tags: string[];
   createdAt: number;
+}
+/** R6-S1 扩展系统：服务端 ExtensionInfo 的桌面侧形状。 */
+export interface ExtensionDto {
+  name: string;
+  version: string;
+  description: string;
+  author?: string;
+  permissions: string[];
+  enabled: boolean;
+  commands: Array<{ id: string; title: string; description?: string }>;
+  panels: Array<{ id: string; title: string; sections: Array<{ heading?: string; text: string }> }>;
+  checkers: Array<{ id: string; title: string; pattern: string; message: string; severity?: string }>;
+  providers: Array<{ id: string; prefix: string; description?: string }>;
+}
+export interface ExtensionPanelDto {
+  extension: string;
+  id: string;
+  title: string;
+  sections: Array<{ heading?: string; text: string }>;
+}
+export interface ExtensionProviderDto {
+  extension: string;
+  id: string;
+  prefix: string;
+  description?: string;
 }
 export type BookmarkDto = BookmarkDtoItem[];
 export interface BookmarkInputDto {
@@ -940,6 +994,51 @@ export interface BookmarkResolveDto {
   path: string;
   line?: number;
   drifted: boolean;
+}
+/** R6-S3 文件监听联动：规则与触发记录的桌面端视图。 */
+export interface WatchRuleView {
+  id: string;
+  name: string;
+  globs: string[];
+  action: { type: 'task'; label: string };
+  debounceMs: number;
+  enabled: boolean;
+  active: boolean;
+  watchedDirs: number;
+}
+export interface WatchRuleInput {
+  id?: string;
+  name: string;
+  globs: string[];
+  action: { type: 'task'; label: string };
+  debounceMs?: number;
+  enabled?: boolean;
+}
+export interface WatchRulesResponse {
+  rules: WatchRuleView[];
+  missing: boolean;
+}
+export interface WatchTriggerView {
+  id: string;
+  ruleId: string;
+  ruleName: string;
+  root: string;
+  files: string[];
+  burst: boolean;
+  startedAt: string;
+  finishedAt: string;
+  status: string;
+  chainOk: boolean;
+  stoppedAt: string | null;
+  failedLabels: string[];
+  error: string | null;
+}
+export interface WatchStatusView {
+  root: string;
+  rules: number;
+  enabled: number;
+  active: Array<{ id: string; name: string; watchedDirs: number }>;
+  triggers: number;
 }
 export interface TodoPattern {
   name: string;
@@ -1141,6 +1240,49 @@ export interface MergeResolveResponse {
   stageError: string | null;
   checkpointId: string;
   sha256: string;
+}
+/** R6-S2：rebase todo 行（reword 的 message 仅单行）。 */
+export type RebaseTodoAction = 'pick' | 'reword' | 'squash' | 'fixup' | 'drop';
+export interface RebaseTodoInput {
+  action: RebaseTodoAction;
+  hash: string;
+  subject: string;
+  message?: string;
+}
+export interface RebaseTodosResponse {
+  repo: string;
+  base: string;
+  baseSha: string;
+  head: string;
+  commits: { hash: string; subject: string }[];
+  todos: RebaseTodoInput[];
+}
+export interface RebaseResultResponse {
+  status: 'completed' | 'conflict' | 'failed' | 'in-progress';
+  headBefore: string;
+  headAfter: string;
+  conflictedFiles: string[];
+  stderr: string;
+  checkpointId?: string;
+}
+export interface RebaseStatusResponse {
+  repo: string;
+  inProgress: boolean;
+  head: string;
+  todoRaw: string | null;
+  conflictedFiles: string[];
+}
+/** R6-S2：stash 条目。 */
+export interface StashEntry {
+  index: string;
+  position: number;
+  message: string;
+}
+export interface StashApplyResponse {
+  index: string;
+  outcome: 'applied' | 'conflict' | 'failed';
+  conflictedFiles: string[];
+  stderr: string;
 }
 /** R5-A4 Timeline 响应（git 提交 × local-history 快照融合）。 */
 export type TimelineEntryDto =
@@ -1362,6 +1504,51 @@ export interface TaskRunsResponse {
     startedAt: string;
     finishedAt: string;
   }>;
+}
+/** R6-S4 后台任务队列：作业摘要（列表端点，不含日志字节）。 */
+export interface QueueJobView {
+  id: string;
+  label: string;
+  chain: string[];
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  cancelRequested: boolean;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  exitCode: number | null;
+  currentTask: string | null;
+  completedTaskCount: number;
+  taskCount: number;
+  diagnosticsAdded: number;
+  logTruncated: boolean;
+  error?: string;
+}
+export interface QueueJobTaskView {
+  label: string;
+  status: 'ok' | 'failed' | 'denied' | 'timeout' | 'cancelled' | 'skipped';
+  exitCode: number | null;
+  durationMs: number;
+  diagnosticsAdded: number;
+  error?: string;
+}
+export interface QueueJobDiagnosticView {
+  file: string;
+  line: number;
+  column: number;
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+  matcher: string;
+}
+export interface QueueJobsResponse {
+  jobs: QueueJobView[];
+  config: { maxConcurrency: number };
+  running: number;
+  queued: number;
+}
+export interface QueueJobDetailResponse {
+  job: QueueJobView;
+  tasks: QueueJobTaskView[];
+  diagnostics: QueueJobDiagnosticView[];
 }
 export interface FlakyRecordResponse {
   projectId: string;
@@ -2015,6 +2202,57 @@ export const api = {
       `/api/snippets?root=${encodeURIComponent(root)}`,
       { method: 'PUT', body: JSON.stringify({ snippets }) },
     ),
+  /** R6-S1 扩展系统：列表（含损坏目录）。 */
+  extensionsList: (root?: string) =>
+    req<{ root: string; installed: ExtensionDto[]; broken: Array<{ name: string; error: string }> }>(
+      `/api/extensions${root ? `?root=${encodeURIComponent(root)}` : ''}`,
+    ),
+  /** R6-S1 扩展系统：内联安装（manifest + main.js）。 */
+  extensionsInstall: (root: string, manifest: unknown, main: string) =>
+    req<{ extension: ExtensionDto }>('/api/extensions/install', {
+      method: 'POST',
+      body: JSON.stringify({ root, manifest, main }),
+    }),
+  /** R6-S1 扩展系统：从项目内目录安装。 */
+  extensionsInstallFromDir: (root: string, sourceDir: string) =>
+    req<{ extension: ExtensionDto }>('/api/extensions/install-from-dir', {
+      method: 'POST',
+      body: JSON.stringify({ root, sourceDir }),
+    }),
+  /** R6-S1 扩展系统：启用/禁用。 */
+  extensionsSetEnabled: (name: string, root: string, enabled: boolean) =>
+    req<{ extension: ExtensionDto }>(`/api/extensions/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, {
+      method: 'POST',
+      body: JSON.stringify({ root }),
+    }),
+  /** R6-S1 扩展系统：卸载。 */
+  extensionsUninstall: (name: string, root?: string) =>
+    req<{ ok: boolean; removed: string }>(
+      `/api/extensions/${encodeURIComponent(name)}${root ? `?root=${encodeURIComponent(root)}` : ''}`,
+      { method: 'DELETE' },
+    ),
+  /** R6-S1 扩展系统：运行扩展命令（沙盒内执行）。 */
+  extensionsRunCommand: (name: string, command: string, root: string, args: unknown) =>
+    req<{ extension: string; command: string; result: unknown; logs: string[] }>(
+      `/api/extensions/${encodeURIComponent(name)}/commands/${encodeURIComponent(command)}/run`,
+      { method: 'POST', body: JSON.stringify({ root, args }) },
+    ),
+  /** R6-S1 扩展系统：已启用扩展贡献的面板。 */
+  extensionsPanels: (root?: string) =>
+    req<{ root: string; panels: ExtensionPanelDto[] }>(
+      `/api/extensions/panels${root ? `?root=${encodeURIComponent(root)}` : ''}`,
+    ),
+  /** R6-S1 扩展系统：已启用扩展贡献的上下文提供器。 */
+  extensionsProviders: (root?: string) =>
+    req<{ root: string; providers: ExtensionProviderDto[] }>(
+      `/api/extensions/providers${root ? `?root=${encodeURIComponent(root)}` : ''}`,
+    ),
+  /** R6-S1 扩展系统：运行扩展上下文提供器。 */
+  extensionsResolveProvider: (name: string, provider: string, root: string, query: string) =>
+    req<{ extension: string; provider: string; items: Array<{ label: string; text: string }>; logs: string[] }>(
+      `/api/extensions/${encodeURIComponent(name)}/providers/${encodeURIComponent(provider)}/resolve`,
+      { method: 'POST', body: JSON.stringify({ root, query }) },
+    ),
   /** R5-B10 草稿文件：列表（含语言注册表）。 */
   scratchesList: () =>
     req<{ scratches: ScratchMeta[]; languages: ScratchLanguageDef[] }>('/api/scratches'),
@@ -2041,6 +2279,32 @@ export const api = {
     req<{ run: ScratchRunResult }>(`/api/scratches/${encodeURIComponent(id)}/run`, {
       method: 'POST',
     }),
+  /** R6-S5 任务计划：调度列表（附时区标注）。 */
+  schedulesList: () =>
+    req<{ schedules: ScheduleItem[]; cronTimezone: string; serverTimezone: string }>('/api/schedules'),
+  /** R6-S5：新建调度。 */
+  scheduleCreate: (input: { name: string; kind: 'cron' | 'interval' | 'once'; cronExpr?: string; intervalMs?: number; runAt?: string; job: Record<string, unknown> }) =>
+    req<{ schedule: ScheduleItem }>('/api/schedules', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R6-S5：改名 / 暂停 / 恢复。 */
+  scheduleUpdate: (id: string, patch: { name?: string; status?: 'active' | 'paused' }) =>
+    req<{ schedule: ScheduleItem }>(`/api/schedules/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  /** R6-S5：删除调度。 */
+  scheduleDelete: (id: string) =>
+    req<{ deleted: boolean }>(`/api/schedules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** R6-S5：立即触发一次。 */
+  scheduleTrigger: (id: string) =>
+    req<{ result: { ok: boolean; summary: string } }>(`/api/schedules/${encodeURIComponent(id)}/trigger`, {
+      method: 'POST',
+    }),
+  /** R6-S5：执行记录（最新在前）。 */
+  scheduleRuns: (id: string) =>
+    req<{ runs: ScheduleRunRecord[] }>(`/api/schedules/${encodeURIComponent(id)}/runs`),
   /** R4-A5 数据库浏览器：连接列表。 */
   dbConnections: () =>
     req<{ connections: DbBrowserConnection[] }>('/api/db-browser/connections'),
@@ -2198,6 +2462,72 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
+  /** R6-S2 交互式 rebase：base..HEAD 的 todo 行（读 viewer）。 */
+  rebaseTodos: (repo: string | undefined, base: string) =>
+    req<RebaseTodosResponse>(
+      `/api/rebase/todos?${repo ? `repo=${encodeURIComponent(repo)}&` : ''}base=${encodeURIComponent(base)}`,
+    ),
+  /** R6-S2：rebase 进行中状态（读 viewer）。 */
+  rebaseStatus: (repo?: string) =>
+    req<RebaseStatusResponse>(`/api/rebase/status${repo ? `?repo=${encodeURIComponent(repo)}` : ''}`),
+  /** R6-S2：开始 rebase（脏树/进行中则拒；写前影子检查点）。 */
+  rebaseStart: (input: { repo?: string; base: string; todos: RebaseTodoInput[] }) =>
+    req<RebaseResultResponse>('/api/rebase/start', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R6-S2：中止/继续/跳过进行中的 rebase（写 operator）。 */
+  rebaseAbort: (repo?: string) =>
+    req<RebaseResultResponse>('/api/rebase/abort', {
+      method: 'POST',
+      body: JSON.stringify({ ...(repo ? { repo } : {}) }),
+    }),
+  rebaseContinue: (repo?: string) =>
+    req<RebaseResultResponse>('/api/rebase/continue', {
+      method: 'POST',
+      body: JSON.stringify({ ...(repo ? { repo } : {}) }),
+    }),
+  rebaseSkip: (repo?: string) =>
+    req<RebaseResultResponse>('/api/rebase/skip', {
+      method: 'POST',
+      body: JSON.stringify({ ...(repo ? { repo } : {}) }),
+    }),
+  /** R6-S2：从影子检查点恢复工作区文件（写 operator）。 */
+  rebaseRestore: (repo: string | undefined, checkpointId: string) =>
+    req<{ restoredId: string; sha: string; leftInPlace: string[] }>('/api/rebase/restore', {
+      method: 'POST',
+      body: JSON.stringify({ ...(repo ? { repo } : {}), checkpointId }),
+    }),
+  /** R6-S2 stash：列表（读 viewer）。 */
+  stashList: (repo?: string) =>
+    req<{ repo: string; entries: StashEntry[] }>(`/api/stash${repo ? `?repo=${encodeURIComponent(repo)}` : ''}`),
+  /** R6-S2 stash：单个 diff（读 viewer）。 */
+  stashShow: (repo: string | undefined, index: string) =>
+    req<{ repo: string; index: string; diff: string }>(
+      `/api/stash/show?${repo ? `repo=${encodeURIComponent(repo)}&` : ''}index=${encodeURIComponent(index)}`,
+    ),
+  /** R6-S2 stash：存入（写 operator）。 */
+  stashPush: (repo: string | undefined, message: string, includeUntracked?: boolean) =>
+    req<{ entry: StashEntry }>('/api/stash/push', {
+      method: 'POST',
+      body: JSON.stringify({ ...(repo ? { repo } : {}), message, includeUntracked: includeUntracked === true }),
+    }),
+  /** R6-S2 stash：应用/弹出/删除（写 operator）。 */
+  stashApply: (repo: string | undefined, index: string) =>
+    req<StashApplyResponse>('/api/stash/apply', {
+      method: 'POST',
+      body: JSON.stringify({ ...(repo ? { repo } : {}), index }),
+    }),
+  stashPop: (repo: string | undefined, index: string) =>
+    req<StashApplyResponse>('/api/stash/pop', {
+      method: 'POST',
+      body: JSON.stringify({ ...(repo ? { repo } : {}), index }),
+    }),
+  stashDrop: (repo: string | undefined, index: string) =>
+    req<{ dropped: string }>('/api/stash/drop', {
+      method: 'POST',
+      body: JSON.stringify({ ...(repo ? { repo } : {}), index }),
+    }),
   /** R5-S2 声明式任务运行器：列出 .ai-factory/tasks.json 的任务。 */
   tasksList: (root?: string) =>
     req<TasksListResponse>(`/api/tasks/list${root ? `?root=${encodeURIComponent(root)}` : ''}`),
@@ -2215,6 +2545,34 @@ export const api = {
     }),
   /** R5-S2：最近的运行记录。 */
   tasksRuns: () => req<TaskRunsResponse>('/api/tasks/runs'),
+  /** R6-S4 后台任务队列：提交一个 tasks.json 标签链为后台作业。 */
+  queueSubmit: (label: string, projectId: string, root?: string) =>
+    req<{ job: QueueJobView }>('/api/taskqueue/submit', {
+      method: 'POST',
+      body: JSON.stringify({ label, projectId, ...(root ? { root } : {}) }),
+    }),
+  /** R6-S4：作业列表 + 并发配置 + 计数。 */
+  queueJobs: () => req<QueueJobsResponse>('/api/taskqueue/jobs'),
+  /** R6-S4：作业详情（逐任务结果 + 作业内诊断）。 */
+  queueJob: (id: string) => req<QueueJobDetailResponse>(`/api/taskqueue/jobs/${encodeURIComponent(id)}`),
+  /** R6-S4：作业日志（512KB 滑动窗口，超限截断并标记）。 */
+  queueLog: (id: string) =>
+    req<{ jobId: string; log: string; truncated: boolean; byteLength: number }>(
+      `/api/taskqueue/jobs/${encodeURIComponent(id)}/log`,
+    ),
+  /** R6-S4：取消作业（排队中立即取消；运行中杀进程组）。 */
+  queueCancel: (id: string) =>
+    req<{ job: QueueJobView; result: string }>(`/api/taskqueue/jobs/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  /** R6-S4：并发配置读取/设置（1–32）。 */
+  queueConfig: () => req<{ maxConcurrency: number; running: number; queued: number }>('/api/taskqueue/config'),
+  queueSetConfig: (maxConcurrency: number) =>
+    req<{ maxConcurrency: number; running: number; queued: number }>('/api/taskqueue/config', {
+      method: 'PUT',
+      body: JSON.stringify({ maxConcurrency }),
+    }),
   /** R5-B9 书签：按项目 root 列出。 */
   bookmarksList: (root?: string) =>
     req<{ root: string; bookmarks: BookmarkDto }>(
@@ -2250,4 +2608,55 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ id, ...(root ? { root } : {}) }),
     }),
+  /** R6-S3 文件监听联动：列出 watch 规则（+ active 状态）。 */
+  watchRules: (root?: string) =>
+    req<WatchRulesResponse>(`/api/watch/rules${root ? `?root=${encodeURIComponent(root)}` : ''}`),
+  /** R6-S3：新建 watch 规则（服务端 fail-closed 校验，非法 400）。 */
+  watchCreate: (rule: WatchRuleInput, root?: string) =>
+    req<{ rule: WatchRuleView }>('/api/watch/rules', {
+      method: 'POST',
+      body: JSON.stringify({ rule, ...(root ? { root } : {}) }),
+    }),
+  /** R6-S3：替换 watch 规则（active 规则会重启监听）。 */
+  watchUpdate: (id: string, rule: WatchRuleInput, root?: string) =>
+    req<{ rule: WatchRuleView }>(`/api/watch/rules/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ rule, ...(root ? { root } : {}) }),
+    }),
+  /** R6-S3：删除 watch 规则（先停监听）。 */
+  watchDelete: (id: string, root?: string) =>
+    req<{ ok: boolean }>(
+      `/api/watch/rules/${encodeURIComponent(id)}${root ? `?root=${encodeURIComponent(root)}` : ''}`,
+      { method: 'DELETE' },
+    ),
+  /** R6-S3：启动一条规则的监听。 */
+  watchEnable: (id: string, root?: string) =>
+    req<{ ok: boolean; watchedDirs: number }>(`/api/watch/rules/${encodeURIComponent(id)}/enable`, {
+      method: 'POST',
+      body: JSON.stringify({ ...(root ? { root } : {}) }),
+    }),
+  /** R6-S3：停止一条规则的监听。 */
+  watchDisable: (id: string, root?: string) =>
+    req<{ ok: boolean; wasActive: boolean }>(`/api/watch/rules/${encodeURIComponent(id)}/disable`, {
+      method: 'POST',
+      body: JSON.stringify({ ...(root ? { root } : {}) }),
+    }),
+  /** R6-S3：启动该项目全部已启用规则。 */
+  watchActivate: (root?: string) =>
+    req<{ started: string[]; failed: Array<{ id: string; error: string }> }>('/api/watch/activate', {
+      method: 'POST',
+      body: JSON.stringify({ ...(root ? { root } : {}) }),
+    }),
+  /** R6-S3：停止该项目全部监听。 */
+  watchDeactivate: (root?: string) =>
+    req<{ stopped: number }>('/api/watch/deactivate', {
+      method: 'POST',
+      body: JSON.stringify({ ...(root ? { root } : {}) }),
+    }),
+  /** R6-S3：触发记录（最新在前）。 */
+  watchTriggers: (root?: string) =>
+    req<{ triggers: WatchTriggerView[] }>(`/api/watch/triggers${root ? `?root=${encodeURIComponent(root)}` : ''}`),
+  /** R6-S3：监听状态摘要。 */
+  watchStatus: (root?: string) =>
+    req<WatchStatusView>(`/api/watch/status${root ? `?root=${encodeURIComponent(root)}` : ''}`),
 };
