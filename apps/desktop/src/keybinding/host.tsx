@@ -8,6 +8,7 @@ import {
   PALETTE_TOGGLE_COMMAND,
   LANGUAGE_SWITCH_COMMAND,
   BOOKMARK_TOGGLE_COMMAND,
+  VIM_TOGGLE_COMMAND,
   BOOKMARK_MNEMONICS,
   bookmarkJumpCommand,
   commandTitleKey,
@@ -56,6 +57,8 @@ export function KeybindingHost() {
       // Digits get ctrl+<digit> defaults (JetBrains-style); letters are left
       // unbound so the user assigns them (conflicts warn via S1, never silent).
       m.registry.registerCommand({ id: BOOKMARK_TOGGLE_COMMAND, title: 'Toggle bookmark at cursor', source: 'builtin' });
+      // R6-B9: Vim toggle rides the S1 registry — no private listeners.
+      m.registry.registerCommand({ id: VIM_TOGGLE_COMMAND, title: 'Toggle Vim mode', source: 'builtin' });
       for (const mn of BOOKMARK_MNEMONICS) {
         m.registry.registerCommand({
           id: bookmarkJumpCommand(mn),

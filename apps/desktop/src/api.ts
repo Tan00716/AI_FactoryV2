@@ -898,6 +898,31 @@ export interface ScratchRunResult {
   runner: string;
   language: string;
 }
+/** R6-B10 数据文件预览：服务端分页视图的桌面侧形状。 */
+export interface DataPreviewPage {
+  format: 'jsonl' | 'csv';
+  columns: string[];
+  columnsTruncated: boolean;
+  totalRows: number;
+  filteredRows: number;
+  malformedRows: number;
+  truncated: boolean;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  rows: Array<Array<string | null>>;
+}
+/** R6-B10 数据文件预览：预览请求。 */
+export interface DataPreviewRequest {
+  root?: string;
+  path: string;
+  format?: 'jsonl' | 'csv';
+  page?: number;
+  pageSize?: number;
+  sortColumn?: string;
+  sortDir?: 'asc' | 'desc';
+  filter?: string;
+}
 /** R6-S5 任务计划：服务端 Schedule 的桌面侧形状。 */
 export interface ScheduleItem {
   id: string;
@@ -926,6 +951,52 @@ export interface ScheduleRunRecord {
   ok: boolean;
   skipped: boolean;
   summary: string;
+}
+/** R6-A7 自定义斜杠命令：服务端形状（内置无 kind/target/enabled/source）。 */
+export interface SlashCommandInfo {
+  name: string;
+  description: string;
+  usage?: string;
+  template?: string;
+  kind?: 'template' | 'command' | 'task';
+  target?: string;
+  enabled?: boolean;
+  source?: 'user' | 'project';
+  shadowsBuiltin?: boolean;
+  shadowsUser?: boolean;
+}
+export interface SlashListResponse {
+  builtins: SlashCommandInfo[];
+  custom: SlashCommandInfo[];
+  warnings: string[];
+}
+export interface SlashManageInput {
+  op: 'add' | 'remove' | 'update' | 'enable' | 'disable';
+  name: string;
+  scope?: 'user' | 'project';
+  root?: string;
+  kind?: 'template' | 'command' | 'task';
+  target?: string;
+  template?: string;
+  description?: string;
+  enabled?: boolean;
+  override?: boolean;
+}
+export interface SlashExecuteResult {
+  type: string;
+  name?: string;
+  text?: string;
+  message?: string;
+  commandId?: string;
+  args?: string;
+  label?: string;
+  expandedArgs?: string[];
+  chain?: { ok: boolean; results: { label: string; status: string; output: string }[]; stoppedAt: string | null };
+  warning?: string;
+  builtins?: SlashCommandInfo[];
+  custom?: SlashCommandInfo[];
+  warnings?: string[];
+  error?: string;
 }
 export interface TodoItem {
   file: string;
@@ -972,6 +1043,43 @@ export interface ExtensionProviderDto {
   id: string;
   prefix: string;
   description?: string;
+}
+/** R6-A6 规则文件：服务端 ManagedRule / CompatFile / EffectiveRule 的桌面侧形状。 */
+export interface RuleDto {
+  id: string;
+  name: string;
+  scope: 'global' | 'project';
+  content: string;
+  enabled: boolean;
+  order: number;
+  createdAt: number;
+  updatedAt: number;
+  overriddenBy?: string | null;
+}
+export interface RuleCompatDto {
+  source: 'agents' | 'cursorrules' | 'clinerules';
+  file: string;
+  content: string;
+  sizeBytes: number;
+  truncated: boolean;
+}
+export interface RuleEffectiveDto {
+  name: string;
+  content: string;
+  enabled: boolean;
+  scope: 'global' | 'project';
+  source: 'managed' | 'agents' | 'cursorrules' | 'clinerules';
+  id: string;
+  readOnly: boolean;
+  overrides: string[];
+  overriddenBy: string | null;
+}
+export interface RulesViewDto {
+  root: string;
+  global: RuleDto[];
+  project: RuleDto[];
+  compat: RuleCompatDto[];
+  effective: RuleEffectiveDto[];
 }
 export type BookmarkDto = BookmarkDtoItem[];
 export interface BookmarkInputDto {
@@ -1039,6 +1147,28 @@ export interface WatchStatusView {
   enabled: number;
   active: Array<{ id: string; name: string; watchedDirs: number }>;
   triggers: number;
+}
+/** R6-A8 .env 管理：桌面端视图（值永远是脱敏后的 masked 串）。 */
+export interface EnvEntryView {
+  key: string;
+  masked: string;
+  occurrences: number;
+  secret: boolean;
+  patterns: string[];
+}
+export interface EnvWarning {
+  kind: 'secret-like' | 'duplicate' | 'parse-error';
+  key?: string;
+  line?: number;
+  message: string;
+  patterns?: string[];
+}
+export interface EnvListResponse {
+  file: string;
+  exists: boolean;
+  entries: EnvEntryView[];
+  warnings: EnvWarning[];
+  gitignore: { ignored: boolean; hasGitignore: boolean };
 }
 export interface TodoPattern {
   name: string;
@@ -2247,12 +2377,47 @@ export const api = {
     req<{ root: string; providers: ExtensionProviderDto[] }>(
       `/api/extensions/providers${root ? `?root=${encodeURIComponent(root)}` : ''}`,
     ),
+  /** R6-B10 数据文件预览：只读表格预览（JSONL/NDJSON/CSV）。 */
+  datapreviewPreview: (body: DataPreviewRequest) =>
+    req<DataPreviewPage>('/api/datapreview/preview', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   /** R6-S1 扩展系统：运行扩展上下文提供器。 */
   extensionsResolveProvider: (name: string, provider: string, root: string, query: string) =>
     req<{ extension: string; provider: string; items: Array<{ label: string; text: string }>; logs: string[] }>(
       `/api/extensions/${encodeURIComponent(name)}/providers/${encodeURIComponent(provider)}/resolve`,
       { method: 'POST', body: JSON.stringify({ root, query }) },
     ),
+  /** R6-A6 规则文件：两级 + 兼容 + 生效视图。 */
+  rulesView: (root?: string) =>
+    req<RulesViewDto>(
+      `/api/rules${root ? `?root=${encodeURIComponent(root)}` : ''}`,
+    ),
+  /** R6-A6 规则文件：新增托管规则。 */
+  rulesAdd: (input: { scope: 'global' | 'project'; name: string; content: string; order?: number; root?: string }) =>
+    req<{ rule: RuleDto }>('/api/rules', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R6-A6 规则文件：改名/改内容/启用停用/排序。 */
+  rulesPatch: (id: string, scope: 'global' | 'project', patch: { name?: string; content?: string; enabled?: boolean; order?: number }, root?: string) =>
+    req<{ rule: RuleDto }>(
+      `/api/rules?id=${encodeURIComponent(id)}&scope=${scope}${root ? `&root=${encodeURIComponent(root)}` : ''}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+    ),
+  /** R6-A6 规则文件：删除托管规则。 */
+  rulesDelete: (id: string, scope: 'global' | 'project', root?: string) =>
+    req<{ deleted: string }>(
+      `/api/rules?id=${encodeURIComponent(id)}&scope=${scope}${root ? `&root=${encodeURIComponent(root)}` : ''}`,
+      { method: 'DELETE' },
+    ),
+  /** R6-A6 规则文件：整级重排（ids 为该级全部 id 的排列）。 */
+  rulesOrder: (scope: 'global' | 'project', ids: string[], root?: string) =>
+    req<{ rules: RuleDto[] }>('/api/rules/order', {
+      method: 'POST',
+      body: JSON.stringify({ scope, ids, ...(root ? { root } : {}) }),
+    }),
   /** R5-B10 草稿文件：列表（含语言注册表）。 */
   scratchesList: () =>
     req<{ scratches: ScratchMeta[]; languages: ScratchLanguageDef[] }>('/api/scratches'),
@@ -2305,6 +2470,21 @@ export const api = {
   /** R6-S5：执行记录（最新在前）。 */
   scheduleRuns: (id: string) =>
     req<{ runs: ScheduleRunRecord[] }>(`/api/schedules/${encodeURIComponent(id)}/runs`),
+  /** R6-A7 自定义斜杠命令：列表（内置 + 自定义 + 冲突告警）。 */
+  slashList: (root?: string) =>
+    req<SlashListResponse>(`/api/commands${root ? `?root=${encodeURIComponent(root)}` : ''}`),
+  /** R6-A7：管理自定义斜杠命令（add/remove/update/enable/disable）。 */
+  slashManage: (input: SlashManageInput) =>
+    req<{ ok: boolean; command?: SlashCommandInfo; warning?: string }>('/api/commands', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R6-A7：执行斜杠命令（input 含前导 /；task 绑定需 root）。 */
+  slashExecute: (input: string, opts?: { root?: string; projectId?: string }) =>
+    req<SlashExecuteResult>('/api/commands/execute', {
+      method: 'POST',
+      body: JSON.stringify({ input, ...(opts?.root ? { root: opts.root } : {}), ...(opts?.projectId ? { projectId: opts.projectId } : {}) }),
+    }),
   /** R4-A5 数据库浏览器：连接列表。 */
   dbConnections: () =>
     req<{ connections: DbBrowserConnection[] }>('/api/db-browser/connections'),
@@ -2656,7 +2836,35 @@ export const api = {
   /** R6-S3：触发记录（最新在前）。 */
   watchTriggers: (root?: string) =>
     req<{ triggers: WatchTriggerView[] }>(`/api/watch/triggers${root ? `?root=${encodeURIComponent(root)}` : ''}`),
-  /** R6-S3：监听状态摘要。 */
+/** R6-S3：监听状态摘要。 */
   watchStatus: (root?: string) =>
     req<WatchStatusView>(`/api/watch/status${root ? `?root=${encodeURIComponent(root)}` : ''}`),
+  /** R6-A8 .env 管理：列表（值全部脱敏）+ 告警 + gitignore 提示。 */
+  envList: (root?: string, file?: string) =>
+    req<EnvListResponse>(
+      `/api/env?${new URLSearchParams({ ...(root ? { root } : {}), ...(file ? { file } : {}) }).toString()}`,
+    ),
+  /** R6-A8：揭示单个值（明文，服务端审计 + operator 角色）。 */
+  envReveal: (key: string, root?: string, file?: string) =>
+    req<{ key: string; value: string }>(
+      `/api/env/reveal?${new URLSearchParams({ key, ...(root ? { root } : {}), ...(file ? { file } : {}) }).toString()}`,
+    ),
+  /** R6-A8：设置/删除变量（往返保留注释与空行）。 */
+  envUpdate: (input: { set?: Array<{ key: string; value: string }>; delete?: string[] }, root?: string, file?: string) =>
+    req<EnvListResponse>('/api/env/entries', {
+      method: 'POST',
+      body: JSON.stringify({ ...input, ...(root ? { root } : {}), ...(file ? { file } : {}) }),
+    }),
+  /** R6-A8：缺失键校验。 */
+  envValidate: (required: string[], root?: string, file?: string) =>
+    req<{ file: string; exists: boolean; missing: string[]; warnings: EnvWarning[] }>('/api/env/validate', {
+      method: 'POST',
+      body: JSON.stringify({ required, ...(root ? { root } : {}), ...(file ? { file } : {}) }),
+    }),
+  /** R6-A8：显式加载到任务环境（单次运行，内存覆盖，不持久化）。 */
+  envLoad: (label: string, root?: string, file?: string) =>
+    req<{ ok: boolean; chain: unknown }>('/api/env/load', {
+      method: 'POST',
+      body: JSON.stringify({ label, ...(root ? { root } : {}), ...(file ? { file } : {}) }),
+    }),
 };

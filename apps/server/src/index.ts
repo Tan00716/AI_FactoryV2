@@ -126,7 +126,7 @@ import {
 } from './routes/project-guard';
 import { handleReviewRoutes } from './routes/review';
 import { handlePlanModeRoutes } from './routes/plan-mode';
-import { handleCommandRoutes } from './routes/commands';
+import { handleCommandRoutes, setSlashCommandDeps } from './routes/commands';
 import { handleHookRoutes } from './routes/hooks';
 import { handleSessionRoutes } from './routes/sessions';
 import { handleSessionWorktreeRoutes } from './routes/session-worktrees';
@@ -223,9 +223,10 @@ import {
   setSpellInspectionRootResolver,
   spellCheckerProvider,
 } from './routes/spell';
-import { handleTaskRunnerRoutes, setTaskRunnerDeps, runTaskChainForScheduler, runTaskChainByLabel } from './routes/tasks';
+import { handleTaskRunnerRoutes, setTaskRunnerDeps, runTaskChainForScheduler, runTaskChainByLabel, runTaskChainWithEnv } from './routes/tasks';
 import { handleWatchRoutes, setWatchDeps } from './routes/watch';
 import { handleTaskQueueRoutes, setTaskQueueDeps } from './routes/taskqueue';
+import { handleEnvRoutes, setEnvDeps } from './routes/env';
 import { handleBookmarkRoutes, setBookmarkDataDirResolver, setBookmarkInspectionRootResolver } from './routes/bookmarks';
 import { handleScratchRoutes, setScratchDeps } from './routes/scratch';
 import {
@@ -269,6 +270,14 @@ import {
   setExtensionInspectionRootResolver,
   extensionCheckerProvider,
 } from './routes/extensions';
+import {
+  handleDataPreviewRoutes,
+  setDataPreviewRootResolver,
+} from './routes/datapreview';
+import {
+  handleRulesRoutes,
+  setRulesInspectionRootResolver,
+} from './routes/rules';
 import { handleIgnoresRoutes } from './routes/ignores';
 import { handleEgressRoutes } from './routes/egress';
 import { assertEgressAllowed, setEgressBlockSinks } from './egress';
@@ -774,6 +783,15 @@ setSnippetInspectionRootResolver((root) => resolveInspectionRoot(root));
 // <root>/.ai-factory/extensions/<name>/; the jail resolver is injected
 // here (route must not value-import ../inspections, dual-mode rule).
 setExtensionInspectionRootResolver((root) => resolveInspectionRoot(root));
+// Round-6 R6-A6: tiered rule files. Global rules live in
+// ~/.ai-factory/rules/rules.json; project rules in <root>/.ai-factory/
+// rules.json. Compat files (AGENTS.md etc.) are read-only. Same
+// setter-injection pattern as the other jailed routes.
+setRulesInspectionRootResolver((root) => resolveInspectionRoot(root));
+// Round-6 R6-B10: data-file preview. One workspace file rendered as a
+// read-only table (JSONL/NDJSON/CSV); the jail resolver is injected here
+// (route must not value-import ../inspections, dual-mode rule).
+setDataPreviewRootResolver((root) => resolveInspectionRoot(root));
 // Round-5 R5-S2: the declarative task runner reuses the /api/exec safety
 // policy (deny patterns + binary whitelist + control-dir guard) — no new
 // execution channel. Problem output is parsed with the project's matchers
@@ -794,6 +812,15 @@ setTaskRunnerDeps({
     return cfg.customs[name] ?? builtinMatcher(name);
   },
 });
+// Round-6 R6-A7: custom slash commands resolve project scope through the
+// same root jail, and task bindings run through the same task runner as
+// a manual POST /api/tasks/run (with operator args appended to the
+// requested task only). No new execution channel.
+setSlashCommandDeps({
+  resolveRoot: (root) => resolveInspectionRoot(root),
+  runTaskChain: (label, root, projectId, actor, ctx, extraArgs) =>
+    runTaskChainByLabel(label, root, projectId, actor, ctx, extraArgs),
+});
 // Round-6 R6-S3: file-watch triggers run tasks.json chains through the
 // SAME runner seam as a manual POST /api/tasks/run (runTaskChainByLabel).
 // The tree walk skips ignored paths via the two-tier ignore gate, so a
@@ -802,6 +829,15 @@ setWatchDeps({
   resolveRoot: (root) => resolveInspectionRoot(root),
   shouldIgnore: (root, abs, isDir) => isIgnoredSync(root, abs, true, isDir),
   runChain: (label, root, projectId, actor, ctx) => runTaskChainByLabel(label, root, projectId, actor, ctx),
+});
+// Round-6 R6-A8: .env management. The load action runs a tasks.json
+// chain through the SAME runner seam as a manual POST /api/tasks/run,
+// with the .env merged in-memory only (never persisted); a task's own
+// options.env wins over the overlay.
+setEnvDeps({
+  resolveRoot: (root) => resolveInspectionRoot(root),
+  runChain: (label, root, projectId, actor, ctx, env) =>
+    runTaskChainWithEnv(label, root, projectId, actor, ctx, env),
 });
 // Round-6 R6-S5: scheduled task-runner jobs execute through the same
 // declarative runner (same policy, audit, and run records as a manual
@@ -1680,6 +1716,7 @@ const server = createServer(async (req, res) => {
     if (await handleTaskRunnerRoutes(req, res, url, routeCtx)) return;
     if (await handleWatchRoutes(req, res, url, routeCtx)) return;
     if (await handleTaskQueueRoutes(req, res, url, routeCtx)) return;
+    if (await handleEnvRoutes(req, res, url, routeCtx)) return;
     if (await handleScratchRoutes(req, res, url, routeCtx)) return;
     if (await handleDepscanRoutes(req, res, url, routeCtx)) return;
     if (await handleProfilerRoutes(req, res, url, routeCtx)) return;
@@ -1689,6 +1726,8 @@ const server = createServer(async (req, res) => {
     if (await handleRebaseRoutes(req, res, url, routeCtx)) return;
     if (await handleSnippetRoutes(req, res, url, routeCtx)) return;
     if (await handleExtensionRoutes(req, res, url, routeCtx)) return;
+    if (await handleDataPreviewRoutes(req, res, url, routeCtx)) return;
+    if (await handleRulesRoutes(req, res, url, routeCtx)) return;
     if (await handleIgnoresRoutes(req, res, url, routeCtx)) return;
     if (await handleCoverageRoutes(req, res, url, routeCtx)) return;
     if (await handleContextProviderRoutes(req, res, url, routeCtx)) return;

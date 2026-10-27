@@ -177,7 +177,7 @@ export async function handlePluginRoutes(
           throw new PluginManifestError(`slash command name collision: /${c.name} already exists`);
         }
         existing.add(c.name);
-        customs.push({ name: c.name, description: c.description, template: c.template });
+        customs.push({ name: c.name, description: c.description, template: c.template, kind: 'template', target: '', enabled: true });
         installed.slashCommands.push({ name: c.name, description: c.description, template: c.template });
       }
       if (caps.slashCommands.length > 0) {
@@ -328,7 +328,7 @@ function setPluginEnabled(
     const names = new Set(customs.map((c) => c.name));
     for (const sc of rec.capabilities.slashCommands) {
       if (!names.has(sc.name)) {
-        customs.push({ name: sc.name, description: sc.description, template: sc.template });
+        customs.push({ name: sc.name, description: sc.description, template: sc.template, kind: 'template', target: '', enabled: true });
       }
     }
     saveCustomCommands(customs);

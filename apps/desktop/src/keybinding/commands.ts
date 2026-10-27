@@ -17,7 +17,8 @@ export const BUILTIN_TABS = [
   'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch',
   'Collab', 'Coverage', 'Recipes', 'Design', 'Updates', 'Refactor', 'Profiler',
   'HTTP', 'Debug', 'Timeline', 'Snippets', 'Keybindings', 'Merge', 'Search',
-  'Scratches', 'Schedules', 'Rebase', 'Extensions',
+  'Scratches', 'Schedules', 'Rebase', 'Extensions', 'DataPreview', 'Rules', 'Env',
+  'Slash',
 ] as const;
 
 /** Same key derivation as the tab buttons in App.tsx / CommandPalette.tsx. */
@@ -37,6 +38,13 @@ export function tabNameForCommand(commandId: string): string | null {
 
 export const PALETTE_TOGGLE_COMMAND = 'palette.toggle';
 export const LANGUAGE_SWITCH_COMMAND = 'language.switch';
+
+/**
+ * R6-B9 Vim mode toggle. No default keys (Vim users bind it themselves;
+ * conflicts warn via S1, never silent). EditorPanel listens for this id
+ * and flips its Vim layer; the toolbar checkbox does the same.
+ */
+export const VIM_TOGGLE_COMMAND = 'vim.toggle';
 
 /**
  * R5-B9 bookmark commands. `bookmark.toggle` flips the line bookmark at the
@@ -59,6 +67,7 @@ export function mnemonicForJumpCommand(commandId: string): string | null {
 export function commandTitleKey(commandId: string): string | null {
   if (commandId === PALETTE_TOGGLE_COMMAND) return 'keybinding.cmd.palette.toggle';
   if (commandId === LANGUAGE_SWITCH_COMMAND) return 'keybinding.cmd.language.switch';
+  if (commandId === VIM_TOGGLE_COMMAND) return 'editor.vim.toggle';
   if (commandId === BOOKMARK_TOGGLE_COMMAND) return 'bookmark.cmd.toggle';
   if (mnemonicForJumpCommand(commandId)) return 'bookmark.cmd.jump';
   const tab = tabNameForCommand(commandId);

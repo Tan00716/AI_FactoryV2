@@ -70,6 +70,7 @@ import {
   flattenPlan,
   parseTasksJson,
   planRun,
+  quoteArg,
   shellCommandLine,
   type PlannedTask,
   type TaskChainResult,
@@ -212,9 +213,13 @@ export async function runTaskChainByLabel(
   projectId: string,
   actor: string,
   ctx: RouteContext,
+  // R6-A7: slash-command task bindings append operator-supplied args to
+  // the REQUESTED task only (dependencies run with their declared args).
+  // Undefined = no extra args (watch/scheduler callers unchanged).
+  extraArgs?: string[],
 ): Promise<ChainRunOutcome> {
   try {
-    const chain = await executeChain(label, root, projectId, ctx, actor);
+    const chain = await executeChain(label, root, projectId, ctx, actor, undefined, extraArgs);
     return { ok: true, chain };
   } catch (e) {
     if (e instanceof TaskRouteError) {
@@ -234,8 +239,13 @@ export async function runTaskChainByLabel(
  * Build the argv for a task AFTER the policy check. 'shell' joins the
  * command string (quote-aware) and lets the policy tokenize; 'process'
  * forbids embedded arguments and passes args verbatim.
+ * R6-A7 extraArgs: appended AFTER the declared args. For 'shell' tasks
+ * the whole line (declared + extra) is policy-tokenized, so extra args
+ * are still gated; for 'process' tasks the binary is still the declared
+ * one, only trailing args are operator-supplied.
  */
-function buildArgv(d: TaskRunnerDeps, task: TaskDef): string[] {
+function buildArgv(d: TaskRunnerDeps, task: TaskDef, extraArgs?: string[]): string[] {
+  const extra = extraArgs ?? [];
   if (task.type === 'process') {
     const tokens = d.checkCommandPolicy(task.command);
     if (tokens.length !== 1) {
@@ -244,9 +254,10 @@ function buildArgv(d: TaskRunnerDeps, task: TaskDef): string[] {
         'process-args-in-command',
       );
     }
-    return [tokens[0], ...task.args];
+    return [tokens[0], ...task.args, ...extra];
   }
-  return d.checkCommandPolicy(shellCommandLine(task));
+  const line = shellCommandLine(task) + (extra.length > 0 ? ` ${extra.map(quoteArg).join(' ')}` : '');
+  return d.checkCommandPolicy(line);
 }
 
 function runOne(
@@ -292,6 +303,14 @@ async function executePlan(
   projectId: string,
   ctx: RouteContext,
   actor: string,
+  // R6-A8: explicit .env overlay for a single run. The overlay is
+  // in-memory only (never persisted) and a task's own options.env wins
+  // over it, so a task's explicit config is never silently overridden.
+  envOverlay?: Record<string, string>,
+  // R6-A7: slash-command extra args, applied to the requested task only
+  // (targetLabel). Dependencies always run with their declared args.
+  extraArgs?: string[],
+  targetLabel?: string,
 ): Promise<TaskChainResult> {
   const startedAt = new Date().toISOString();
   const results: TaskRunResult[] = [];
@@ -315,7 +334,7 @@ async function executePlan(
           if (!(await runNode(dep))) return false;
         }
       }
-      const res = await runTask(d, node.task, root, projectId);
+      const res = await runTask(d, node.task, root, projectId, envOverlay, label === targetLabel ? extraArgs : undefined);
       results.push(res);
       ctx.audit.record(actor, res.status === 'ok' ? 'TASK_RAN' : 'TASK_FAILED', 'task', label, {
         status: res.status,
@@ -345,6 +364,8 @@ async function runTask(
   task: TaskDef,
   root: string,
   projectId: string,
+  envOverlay?: Record<string, string>,
+  extraArgs?: string[],
 ): Promise<TaskRunResult> {
   const t0 = Date.now();
   const fail = (status: TaskRunResult['status'], error: string): TaskRunResult => ({
@@ -368,7 +389,7 @@ async function runTask(
 
   let argv: string[];
   try {
-    argv = buildArgv(d, task);
+    argv = buildArgv(d, task, extraArgs);
   } catch (e) {
     // TaskRouteError (our own shape violations) or the injected exec
     // policy's denial (ExecPolicyDenied) — both are refusals, never runs.
@@ -383,7 +404,7 @@ async function runTask(
   const timeoutMs = task.options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let ran: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean };
   try {
-    ran = await runOne(argv, cwd, task.options.env, timeoutMs);
+    ran = await runOne(argv, cwd, { ...(envOverlay ?? {}), ...(task.options.env ?? {}) }, timeoutMs);
   } catch (e) {
     return fail('failed', `spawn failed: ${(e as Error).message}`);
   }
@@ -461,6 +482,9 @@ async function executeChain(
   projectId: string,
   ctx: RouteContext,
   actor: string,
+  envOverlay?: Record<string, string>,
+  // R6-A7: slash-command extra args for the requested task only.
+  extraArgs?: string[],
 ): Promise<TaskChainResult> {
   const d = needDeps();
   let text: string;
@@ -480,10 +504,43 @@ async function executeChain(
   const flat = flattenPlan(planned.plan);
   ctx.audit.record(actor, 'TASK_CHAIN_STARTED', 'task', label, {
     chain: flat.map((t) => t.label),
+    ...(extraArgs && extraArgs.length > 0 ? { extraArgs: extraArgs.slice(0, 20) } : {}),
   });
-  const chain = await executePlan(d, planned.plan, root, projectId, ctx, actor);
+  const chain = await executePlan(d, planned.plan, root, projectId, ctx, actor, envOverlay, extraArgs, label);
   recordRun(chain);
   return chain;
+}
+
+/**
+ * R6-A8 seam: run a declarative task chain with an explicit .env
+ * overlay (the "load into task environment" action). Same policy,
+ * audit and record path as POST /api/tasks/run; the overlay is
+ * in-memory only and is never written to tasks.json or any file.
+ * The caller (routes/env.ts) audits the key names only, never values.
+ */
+export async function runTaskChainWithEnv(
+  label: string,
+  root: string,
+  projectId: string,
+  actor: string,
+  ctx: RouteContext,
+  env: Record<string, string>,
+): Promise<ChainRunOutcome> {
+  try {
+    const chain = await executeChain(label, root, projectId, ctx, actor, env);
+    return { ok: true, chain };
+  } catch (e) {
+    if (e instanceof TaskRouteError) {
+      return {
+        ok: false,
+        status: e.status,
+        code: e.code,
+        error: e.message,
+        ...(e.details !== undefined ? { errors: e.details as string[] } : {}),
+      };
+    }
+    throw e;
+  }
 }
 
 /**

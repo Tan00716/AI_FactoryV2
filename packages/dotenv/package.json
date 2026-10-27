@@ -1,0 +1,1 @@
+{"dependencies":{},"description":".env file parser and roundtrip editor: comments and blank lines preserved (R6-A8)","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/dotenv","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

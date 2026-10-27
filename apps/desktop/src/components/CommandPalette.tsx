@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type TaskSummary, type OrgNode } from '../api';
 import { useLang } from '../i18n';
 import { flattenAgents, rankMatches, type PaletteAgent } from '../utils/cmdk';
-import { onCommand, PALETTE_TOGGLE_COMMAND } from '../keybinding/commands';
+import { onCommand, dispatchCommand, PALETTE_TOGGLE_COMMAND } from '../keybinding/commands';
 
 /**
  * Command palette (Cmd+K / Ctrl+K), VS Code / Cursor style.
@@ -26,7 +26,7 @@ export function tabI18nKey(name: string): string {
   return `tab.${name.toLowerCase().replace('/', '')}`;
 }
 
-type EntryKind = 'tab' | 'action' | 'task' | 'agent';
+type EntryKind = 'tab' | 'action' | 'task' | 'agent' | 'slash';
 
 interface PaletteEntry {
   id: string;
@@ -48,7 +48,7 @@ interface CommandPaletteProps {
   onCreateTask: () => void;
 }
 
-const GROUP_ORDER: EntryKind[] = ['tab', 'action', 'task', 'agent'];
+const GROUP_ORDER: EntryKind[] = ['tab', 'action', 'task', 'agent', 'slash'];
 
 export function CommandPalette(props: CommandPaletteProps) {
   const { t, lang, setLang } = useLang();
@@ -66,12 +66,15 @@ export function CommandPalette(props: CommandPaletteProps) {
     if (id === PALETTE_TOGGLE_COMMAND) setOpen((o) => !o);
   }), []);
 
-  // Reset + focus whenever opened.
+  // Reset + focus whenever opened; custom slash commands load for the
+  // palette's slash group (R6-A7: palette-searchable custom commands).
+  const [slash, setSlash] = useState<import('../api').SlashCommandInfo[]>([]);
   useEffect(() => {
     if (open) {
       setQuery('');
       setActiveIdx(0);
       setStatus('');
+      api.slashList().then((r) => setSlash(r.custom)).catch(() => setSlash([]));
       // Focus after paint so the input exists in the DOM.
       const id = window.setTimeout(() => inputRef.current?.focus(), 0);
       return () => window.clearTimeout(id);
@@ -164,9 +167,37 @@ export function CommandPalette(props: CommandPaletteProps) {
         run: () => props.onSelectAgent(a.id),
       });
     }
+    for (const c of slash) {
+      if (c.enabled === false) continue;
+      list.push({
+        id: `slash:${c.name}`,
+        kind: 'slash',
+        label: `/${c.name}`,
+        hint: c.description || c.kind,
+        searchText: `/${c.name} ${c.description ?? ''} ${c.kind ?? ''}`,
+        closeAfter: false,
+        run: async () => {
+          try {
+            const res = await api.slashExecute(`/${c.name}`);
+            if (res.type === 'command' && res.commandId) {
+              dispatchCommand(res.commandId);
+              setStatus(`${res.commandId}${res.args ? ` ${res.args}` : ''}`);
+            } else if (res.type === 'task') {
+              setStatus(`/${c.name}: ${res.chain?.ok ? 'ok' : 'failed'}`);
+            } else if (res.type === 'template') {
+              setStatus((res.text ?? '').slice(0, 200));
+            } else {
+              setStatus(res.message ?? res.error ?? '');
+            }
+          } catch (err) {
+            setStatus(t('cmdk.status.actionFail', { error: err instanceof Error ? err.message : String(err) }));
+          }
+        },
+      });
+    }
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.tasks, props.org, agents, t, lang]);
+  }, [props.tasks, props.org, agents, slash, t, lang]);
 
   const visible: PaletteEntry[] = useMemo(() => {
     if (query.trim() === '') return entries;
@@ -209,6 +240,7 @@ export function CommandPalette(props: CommandPaletteProps) {
     kind === 'tab' ? t('cmdk.group.go')
     : kind === 'action' ? t('cmdk.group.actions')
     : kind === 'task' ? t('cmdk.group.tasks')
+    : kind === 'slash' ? t('cmdk.group.slash')
     : t('cmdk.group.agents');
 
   return (

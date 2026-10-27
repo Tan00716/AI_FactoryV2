@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { dispatchCommand } from '../keybinding/commands';
 
 interface CommandInfo {
   name: string;
@@ -18,6 +19,11 @@ interface ExecuteResult {
   builtins?: CommandInfo[];
   custom?: CommandInfo[];
   error?: string;
+  commandId?: string;
+  args?: string;
+  label?: string;
+  chain?: { ok: boolean; results: { label: string; status: string; output: string }[]; stoppedAt: string | null };
+  warning?: string;
 }
 
 const DEFAULT_BASE = defaultApiBase();
@@ -79,6 +85,9 @@ export function SlashCommandBar({ onNavigateTab }: { onNavigateTab: (tab: string
       setResult(r);
       setOpen(true);
       if (r.type === 'plan') setValue('');
+      // R6-A7: a command binding is dispatched by the desktop (the
+      // server only returns the descriptor — it runs no desktop command).
+      if (r.type === 'command' && r.commandId) dispatchCommand(r.commandId);
     } catch (e) {
       setResult({ type: 'error', error: (e as Error).message });
       setOpen(true);
@@ -161,6 +170,25 @@ export function SlashCommandBar({ onNavigateTab }: { onNavigateTab: (tab: string
               <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{result.text}</pre>
             </div>
           )}
+          {result.type === 'command' && (
+            <div>
+              <code>/{result.name}</code> <span className="muted">→ {result.commandId} {result.args}</span>
+            </div>
+          )}
+          {result.type === 'task' && (
+            <div>
+              <code>/{result.name}</code>{' '}
+              <span className="muted">
+                {result.label}: {result.chain?.ok ? 'ok' : 'failed'}
+              </span>
+              {(result.chain?.results ?? []).map((r) => (
+                <div key={r.label} className="muted">
+                  {r.label} [{r.status}]: {(r.output || '').trim().slice(0, 200)}
+                </div>
+              ))}
+            </div>
+          )}
+          {result.warning && <div className="muted">{result.warning}</div>}
           <button className="link-btn" onClick={() => { setOpen(false); setResult(null); }}>
             ✕
           </button>

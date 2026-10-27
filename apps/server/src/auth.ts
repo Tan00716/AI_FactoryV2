@@ -497,6 +497,10 @@ export function requiredRoleFor(method: string, path: string): ApiRole | null {
   // mint reports. The export verifies the chain first and refuses (409)
   // on a broken/truncated chain, so it is strictly stronger than listing.
   if (path === '/api/audit/export') return 'operator';
+  // R6-A8 .env reveal: the list endpoint only ever serves masked values,
+  // but /reveal serves one plaintext value — operator, not viewer,
+  // even though it is a GET (same shape as the policy-validate carve-out).
+  if (path === '/api/env/reveal' && method === 'GET') return 'operator';
   return method === 'GET' ? 'viewer' : 'operator';
 }
 

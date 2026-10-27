@@ -1,0 +1,1 @@
+{"dependencies":{},"description":"Read-only table preview for data files: JSONL/NDJSON row parsing and CSV record parsing plus sort/filter/paginate (R6-B10)","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/datapreview","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

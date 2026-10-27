@@ -13,7 +13,9 @@ import { defaultApiBase, authHeaders, api, type TodoItem, type TrojanHit, type S
 import { useLang } from '../i18n';
 import monaco, { languageOf } from '../monacoSetup';
 import { editorCursor } from '../editorCursor';
-import { BOOKMARK_TOGGLE_COMMAND, onCommand } from '../keybinding/commands';
+import { BOOKMARK_TOGGLE_COMMAND, VIM_TOGGLE_COMMAND, onCommand } from '../keybinding/commands';
+import { VimController } from '../vim';
+import type { VimMode } from '../vim';
 import { BOOKMARKS_CHANGED_EVENT } from './BookmarksPanel';
 
 const API_BASE = defaultApiBase();
@@ -48,6 +50,17 @@ const FILE_NESTING_RULES: Array<{ parent: string; children: string[] }> = [
   { parent: '*.js', children: ['*.test.js', '*.spec.js'] },
   { parent: '*.jsx', children: ['*.test.jsx', '*.spec.jsx'] },
 ];
+
+const VIM_MODE_KEY = 'ai-factory.editor.vimMode';
+
+/** R6-B9: Vim layer is opt-in and off by default (never disturbs typing). */
+function readVimPref(): boolean {
+  try {
+    return localStorage.getItem(VIM_MODE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 const STICKY_SCROLL_KEY = 'ai-factory.editor.stickyScroll';
 
@@ -111,6 +124,15 @@ export function EditorPanel({
   const savingRef = useRef(false);
   // R3-T9 Sticky scroll: Monaco 内置吸顶 (默认开, localStorage 持久化).
   const [stickyOn, setStickyOn] = useState<boolean>(readStickyScrollPref);
+  // R6-B9 Vim key layer (default off, localStorage 持久化, 模式显示在工具栏).
+  const [vimOn, setVimOn] = useState<boolean>(readVimPref);
+  const vimOnRef = useRef(vimOn);
+  vimOnRef.current = vimOn;
+  const [vimMode, setVimMode] = useState<VimMode>('normal');
+  const [vimMessage, setVimMessage] = useState<string | null>(null);
+  const [vimCommandLine, setVimCommandLine] = useState<string | null>(null);
+  const vimControllerRef = useRef<VimController | null>(null);
+  const saveFileRef = useRef<() => void>(() => {});
   // R3-T6 Local History: per-save snapshot browser + restore.
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<SnapshotMeta[]>([]);
@@ -143,6 +165,64 @@ export function EditorPanel({
       if (openPathRef.current) editorCursor.line = e.position.lineNumber;
       // R5-A4: current-line blame annotation (best-effort).
       renderBlameLine(editor, e.position.lineNumber);
+      // R6-B9: an explicit (mouse) cursor move cancels a pending Vim
+      // operator — but not the controller's own applies (guarded).
+      const vc = vimControllerRef.current;
+      if (vimOnRef.current && vc && !vc.isApplying() && e.reason === monaco.editor.CursorChangeReason.Explicit) {
+        vc.cancelPending();
+      }
+    });
+    // R6-B9: Vim key layer over Monaco. The controller resyncs from the
+    // model before every key, so clicks and external edits never stale it.
+    // Vim-prefix-first: unmodified editor keystrokes are consumed here
+    // before the global which-key sequences see them (the global manager
+    // ignores unmodified keys in editable targets anyway); modified
+    // chords pass through to the S1 registry.
+    const vimController = new VimController(
+      {
+        getValue: () => editor.getValue(),
+        executeEdits: (_source, edits) => {
+          editor.executeEdits(
+            _source,
+            edits.map((ed) => ({
+              range: new monaco.Range(
+                ed.range.startLineNumber,
+                ed.range.startColumn,
+                ed.range.endLineNumber,
+                ed.range.endColumn,
+              ),
+              text: ed.text,
+            })),
+          );
+        },
+        setPosition: (pos) => editor.setPosition(pos),
+        setSelection: (sel) => editor.setSelection(sel),
+        getPosition: () => editor.getPosition(),
+        trigger: (source, handlerId, payload) => editor.trigger(source, handlerId, payload),
+        updateOptions: (opts) => editor.updateOptions(opts),
+      },
+      {
+        onModeChange: (m) => setVimMode(m),
+        onMessage: (msg) => setVimMessage(msg),
+        onCommandLine: (cmd) => setVimCommandLine(cmd),
+        onSave: () => void saveFileRef.current(),
+      },
+    );
+    vimControllerRef.current = vimController;
+    if (readVimPref()) vimController.reset(editor.getValue());
+    editor.onKeyDown((e) => {
+      if (!vimOnRef.current) return;
+      const browser = e.browserEvent as KeyboardEvent;
+      const handled = vimController.handleKey({
+        key: browser.key,
+        ctrl: browser.ctrlKey,
+        meta: browser.metaKey,
+        alt: browser.altKey,
+      });
+      if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
     });
     // An open-request may have arrived while the Editor tab was unmounted.
     const pending = openRequestRef.current;
@@ -169,6 +249,7 @@ export function EditorPanel({
       window.removeEventListener('ai-factory:trigger-snippet-suggest', onSuggest);
       editor.dispose();
       editorRef.current = null;
+      vimControllerRef.current = null;
     };
   }, []);
 
@@ -420,6 +501,8 @@ export function EditorPanel({
       editorCursor.path = path;
       editorCursor.line = 1;
       setDirty(false);
+      // R6-B9: a newly opened file gets a fresh Vim state (normal mode).
+      if (vimOnRef.current) vimControllerRef.current?.reset(body.content);
       setStatus('');
       // R4-B9: refresh TODO gutter markers for the newly opened file.
       void refreshTodoDecorations(editor, path);
@@ -519,6 +602,33 @@ export function EditorPanel({
       setSaving(false);
     }
   }, [openPath, loadHistory]);
+  saveFileRef.current = saveFile;
+
+  // R6-B9 Vim toggle: toolbar checkbox and the S1 `vim.toggle` command
+  // share this one function (no private listeners elsewhere).
+  const toggleVim = useCallback(() => {
+    setVimOn((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(VIM_MODE_KEY, next ? '1' : '0');
+      } catch {
+        /* storage unavailable — session-only */
+      }
+      const ed = editorRef.current;
+      const vc = vimControllerRef.current;
+      if (next && ed && vc) {
+        vc.reset(ed.getValue());
+        ed.focus();
+      } else if (vc) {
+        vc.suspend();
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => onCommand((id) => {
+    if (id === VIM_TOGGLE_COMMAND) toggleVim();
+  }), [toggleVim]);
 
   // R3-T6: keep the history drawer in sync with the open file.
   useEffect(() => {
@@ -693,6 +803,21 @@ export function EditorPanel({
           <input type="checkbox" checked={stickyOn} onChange={toggleSticky} />
           {t('editor.stickyScroll')}
         </label>
+        <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }} title={t('editor.vimModeHint')}>
+          <input type="checkbox" checked={vimOn} onChange={toggleVim} />
+          {t('editor.vimMode')}
+        </label>
+        {vimOn && (
+          <span className="pill" style={{ fontFamily: 'monospace' }}>
+            {vimCommandLine ?? (
+              vimMode === 'normal' ? t('editor.vim.modeNormal')
+                : vimMode === 'insert' ? t('editor.vim.modeInsert')
+                : vimMode === 'visual' ? t('editor.vim.modeVisual')
+                : t('editor.vim.modeVisualLine')
+            )}
+          </span>
+        )}
+        {vimOn && vimMessage && <span className="muted" style={{ fontSize: 12 }}>{vimMessage}</span>}
         {openPath && (
           <>
             <span className="pill" style={{ fontFamily: 'monospace' }}>{openPath}</span>
