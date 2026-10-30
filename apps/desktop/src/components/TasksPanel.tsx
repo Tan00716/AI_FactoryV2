@@ -8,6 +8,7 @@ import {
 } from '../api';
 import { useLang } from '../i18n';
 import { CascadeTimelinePanel } from './CascadeTimelinePanel';
+import { DagGraphPanel } from './DagGraphPanel';
 
 /**
  * Declarative task runner panel (round-5 task R5-S2) — VS Code Tasks style.
@@ -218,6 +219,8 @@ export function TasksPanel({ projectId }: { projectId: string }) {
           ))}
         </div>
       )}
+
+      {tasks.length > 0 && <DagGraphPanel projectId={projectId} tasks={tasks} />}
 
       {runErr && <div className="pill warn">{t('tasks.runFailed', { message: runErr })}</div>}
 

@@ -23,7 +23,7 @@ export const CENTER_TABS = [
   'Design', 'Updates', 'Refactor', 'Profiler', 'HTTP', 'Debug', 'Timeline',
   'Keybindings', 'Merge', 'Search', 'Scratches', 'Snippets', 'Schedules',
   'Rebase', 'Extensions', 'Rules', 'DataPreview', 'Env', 'Slash',
-  'Diagnostics', 'LangSrv',
+  'Diagnostics', 'LangSrv', 'Notebook', 'Webhooks', 'Remote', 'TestExplorer',
 ] as const;
 
 export type CenterTab = (typeof CENTER_TABS)[number];

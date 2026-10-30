@@ -1,0 +1,1 @@
+{"dependencies":{},"description":"Remote development access: SSH/WSL/container/local connection model, probe, file and exec transports, port forwards (R7-#1)","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/remote","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

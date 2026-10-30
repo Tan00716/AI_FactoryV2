@@ -133,6 +133,8 @@ import { handleSessionWorktreeRoutes } from './routes/session-worktrees';
 import { handleSearchRoutes } from './routes/search';
 import { getCodeIndexService, handleCodeIndexRoutes } from './routes/codeindex';
 import { handleLangSrvRoutes } from './routes/langsrv';
+import { handleTestExplorerRoutes } from './routes/testexplorer';
+import { handleRemoteRoutes, setRemoteExecPolicy } from './routes/remote';
 import { getRepoMapService, handleRepoMapRoutes } from './routes/repomap';
 import { handleAttachmentRoutes } from './routes/attachments';
 import { handleMetricsRoutes, recordHealthLatency } from './routes/metrics';
@@ -227,10 +229,12 @@ import {
 import { handleTaskRunnerRoutes, setTaskRunnerDeps, setTimelineCheckpointProvider, runTaskChainForScheduler, runTaskChainByLabel, runTaskChainWithEnv } from './routes/tasks';
 import { ShadowCheckpointStore } from './shadow-checkpoints';
 import { handleWatchRoutes, setWatchDeps } from './routes/watch';
+import { handleWebhookRoutes, setWebhookDeps } from './routes/webhooks';
 import { handleTaskQueueRoutes, setTaskQueueDeps } from './routes/taskqueue';
 import { handleEnvRoutes, setEnvDeps } from './routes/env';
 import { handleBookmarkRoutes, setBookmarkDataDirResolver, setBookmarkInspectionRootResolver } from './routes/bookmarks';
 import { handleScratchRoutes, setScratchDeps } from './routes/scratch';
+import { handleNotebookRoutes, setNotebookDeps } from './routes/notebooks';
 import {
   handleHttpClientRoutes,
   setHttpClientEgressGate,
@@ -884,6 +888,13 @@ setWatchDeps({
   shouldIgnore: (root, abs, isDir) => isIgnoredSync(root, abs, true, isDir),
   runChain: (label, root, projectId, actor, ctx) => runTaskChainByLabel(label, root, projectId, actor, ctx),
 });
+// Round-7 R7-#5: webhook events run tasks.json chains through the SAME
+// runner seam as a manual POST /api/tasks/run. The receiver itself
+// authenticates by HMAC (see routes/webhooks.ts), not by API token.
+setWebhookDeps({
+  resolveRoot: (root) => resolveInspectionRoot(root),
+  runChain: (label, root, projectId, actor, ctx) => runTaskChainByLabel(label, root, projectId, actor, ctx),
+});
 // Round-6 R6-A8: .env management. The load action runs a tasks.json
 // chain through the SAME runner seam as a manual POST /api/tasks/run,
 // with the .env merged in-memory only (never persisted); a task's own
@@ -925,6 +936,15 @@ setTaskQueueDeps({
 // stages the content in an isolated temp dir outside the control-plane
 // data dir so the guard never trips on the store itself.
 setScratchDeps({
+  resolveDataDir: () => process.env.AI_FACTORY_DATA_DIR ?? 'data',
+  checkCommandPolicy: (command) => checkCommandPolicy(command),
+  commandHitsControlDir: (cwd, tokens) => commandHitsControlDir(cwd, tokens),
+});
+// Round-7 R7-#2: notebooks live in the user data dir
+// (AI_FACTORY_DATA_DIR/notebooks/), never in a project tree. Cell runs
+// reuse the SAME exec safety policy as scratch runs (no new channel);
+// each code cell runs as its own `node` process, no shared kernel.
+setNotebookDeps({
   resolveDataDir: () => process.env.AI_FACTORY_DATA_DIR ?? 'data',
   checkCommandPolicy: (command) => checkCommandPolicy(command),
   commandHitsControlDir: (cwd, tokens) => commandHitsControlDir(cwd, tokens),
@@ -1512,6 +1532,8 @@ setEgressBlockSinks({
 });
 // V3-#10: diagnostics config snapshot — auth mode (never a token value)
 // + egress summary (already viewer-visible via /api/egress/config).
+// R7-#1: remote exec uses the same command policy as /api/exec.
+setRemoteExecPolicy((command) => checkCommandPolicy(command));
 setDiagnosticsConfigProvider(() => {
   const g = egressStore().getGlobal();
   return {
@@ -1551,6 +1573,17 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
     const method = req.method ?? 'GET';
+
+    // Round-7 R7-#5: the webhook receiver authenticates by HMAC, not by
+    // API token — external senders cannot present a Bearer token — so
+    // it is dispatched BEFORE the token gate below. Narrow by design:
+    // only this exact path+method bypasses the gate, and the handler
+    // verifies signature + timestamp window + nonce before any work
+    // and audits every outcome. All other /api/webhooks/* paths fall
+    // through to the gate and the normal dispatch below.
+    if (method === 'POST' && path === '/api/webhooks/receive') {
+      if (await handleWebhookRoutes(req, res, url, makeRouteCtx())) return;
+    }
 
     // API token gate (checklist B + Batch 15 RBAC): the single
     // pre-dispatch point. Everything under /api except GET /api/health
@@ -1745,6 +1778,8 @@ const server = createServer(async (req, res) => {
     if (await handleSessionWorktreeRoutes(req, res, url, routeCtx)) return;
     if (await handleCodeIndexRoutes(req, res, url, routeCtx)) return;
     if (await handleLangSrvRoutes(req, res, url, routeCtx)) return;
+    if (await handleTestExplorerRoutes(req, res, url, routeCtx)) return;
+    if (await handleRemoteRoutes(req, res, url, routeCtx)) return;
     if (await handleRepoMapRoutes(req, res, url, routeCtx)) return;
     if (await handleSearchRoutes(req, res, url, routeCtx)) return;
     if (await handleAttachmentRoutes(req, res, url, routeCtx)) return;
@@ -1808,9 +1843,11 @@ const server = createServer(async (req, res) => {
     if (await handleHttpClientRoutes(req, res, url, routeCtx)) return;
     if (await handleTaskRunnerRoutes(req, res, url, routeCtx)) return;
     if (await handleWatchRoutes(req, res, url, routeCtx)) return;
+    if (await handleWebhookRoutes(req, res, url, routeCtx)) return;
     if (await handleTaskQueueRoutes(req, res, url, routeCtx)) return;
     if (await handleEnvRoutes(req, res, url, routeCtx)) return;
     if (await handleScratchRoutes(req, res, url, routeCtx)) return;
+    if (await handleNotebookRoutes(req, res, url, routeCtx)) return;
     if (await handleDepscanRoutes(req, res, url, routeCtx)) return;
     if (await handleProfilerRoutes(req, res, url, routeCtx)) return;
     if (await handleKeybindingRoutes(req, res, url, routeCtx)) return;

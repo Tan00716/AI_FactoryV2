@@ -1016,6 +1016,55 @@ export interface ScratchRunResult {
   runner: string;
   language: string;
 }
+/** R7-#2 笔记本：单元格输出（单流，截断标注）。 */
+export interface NotebookCellOutput {
+  kind: 'stdout' | 'stderr';
+  text: string;
+  truncated: boolean;
+}
+/** R7-#2 笔记本：单元格运行记录。 */
+export interface NotebookCellRun {
+  ok: boolean;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  ranAt: string;
+}
+/** R7-#2 笔记本：单元格。 */
+export interface NotebookCell {
+  id: string;
+  kind: 'code' | 'markdown';
+  language: string;
+  source: string;
+  outputs: NotebookCellOutput[];
+  run: NotebookCellRun | null;
+}
+/** R7-#2 笔记本：列表元数据。 */
+export interface NotebookMeta {
+  id: string;
+  name: string;
+  language: string;
+  cellCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+/** R7-#2 笔记本：完整文档。 */
+export interface NotebookDoc extends NotebookMeta {
+  version: 1;
+  cells: NotebookCell[];
+}
+/** R7-#2 笔记本：单格 / 顺序运行结果摘要。 */
+export interface NotebookCellRunResult {
+  ok: boolean;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  truncated: boolean;
+  durationMs: number;
+  runner: string;
+  language: string;
+}
 /** R6-B10 数据文件预览：服务端分页视图的桌面侧形状。 */
 export interface DataPreviewPage {
   format: 'jsonl' | 'csv';
@@ -1309,6 +1358,39 @@ export interface DiagnosticsPreview {
   noticeEn: string;
   estimatedSections: Array<{ section: string; detail: string }>;
   requiresConfirm: boolean;
+}
+/** R7-#1: remote connection view (mirrors @ai-factory/remote; keyPath is a path reference, never key material). */
+export interface RemoteConnectionView {
+  id: string;
+  name: string;
+  kind: 'ssh' | 'wsl' | 'container' | 'local';
+  host: string | null;
+  port: number | null;
+  username: string | null;
+  keyPath: string | null;
+  containerName: string | null;
+  distro: string | null;
+  remoteRoot: string;
+  status: 'unknown' | 'online' | 'offline' | 'error';
+  lastProbeAt: string | null;
+  lastProbeMs: number | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface RemoteProbeResult {
+  online: boolean;
+  latencyMs: number;
+  reason: 'ok' | 'transport-unavailable' | 'command-failed' | 'timeout' | 'output-too-large';
+  detail: string | null;
+}
+export interface RemoteForwardView {
+  connectionId: string;
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+  startedAt: string;
+  alive: boolean;
 }
 /** V3-#10: diagnostics bundle view (subset rendered by the panel). */
 export interface DiagnosticsBundleView {
@@ -1794,6 +1876,20 @@ export interface TaskChainResponse {
   startedAt: string;
   finishedAt: string;
 }
+/** R7-#4 DAG 图视图（GET /api/tasks/graph）。 */
+export interface TaskDagGraph {
+  label: string;
+  nodes: Array<{
+    label: string;
+    command: string;
+    dependsOn: string[];
+    level: number;
+    parallel: boolean;
+    status: string | null;
+  }>;
+  edges: Array<{ from: string; to: string }>;
+  lastRunId: string | null;
+}
 export interface TaskRunsResponse {
   runs: Array<{
     id: string;
@@ -2252,6 +2348,34 @@ export const api = {
     req<{ source: string; oldName: string; edits: Array<{ file: string; line: number; character: number; endLine: number; endCharacter: number; oldText: string; newText: string }> }>(
       '/langsrv/rename-preview', { method: 'POST', body: JSON.stringify(input) },
     ),
+  /** Round 7 #3 test explorer: discovery + scoped runs + rerun-failed. */
+  testexplorerDiscover: (root: string) =>
+    req<{
+      root: string;
+      packages: Array<{
+        name: string; path: string; rel: string;
+        files: Array<{ path: string; rel: string; cases: Array<{ name: string; fullName: string; line: number }>; skipped?: string }>;
+      }>;
+      totals: { packages: number; files: number; cases: number };
+      degraded: boolean; degradedReason?: string;
+    }>(`/testexplorer/discover?root=${encodeURIComponent(root)}`),
+  testexplorerRun: (input: { root: string; scope: unknown; timeoutMs?: number }) =>
+    req<{
+      runId: string; root: string; scope: string;
+      results: Array<{ file: string; name: string; fullName: string; status: string; durationMs: number; error?: string }>;
+      summary: { pass: number; fail: number; skip: number; todo: number; total: number; durationMs: number };
+      truncated: boolean; timedOut: boolean; runError?: string;
+      fileErrors?: Array<{ file: string; error: string }>;
+      note?: string; degraded?: boolean; degradedReason?: string;
+    }>('/testexplorer/run', { method: 'POST', body: JSON.stringify(input) }),
+  testexplorerRerunFailed: (input: { root: string; timeoutMs?: number }) =>
+    req<{
+      runId: string; root: string; scope: string; reran: number;
+      results: Array<{ file: string; name: string; fullName: string; status: string; durationMs: number; error?: string }>;
+      summary: { pass: number; fail: number; skip: number; todo: number; total: number; durationMs: number };
+      truncated: boolean; timedOut: boolean; runError?: string;
+      fileErrors?: Array<{ file: string; error: string }>;
+    }>('/testexplorer/rerun-failed', { method: 'POST', body: JSON.stringify(input) }),
   policyEffective: () => req<unknown>('/policy/effective'),
   mcpServers: () => req<{ servers?: Array<{ name: string; status?: string; [k: string]: unknown }> } | Array<{ name: string }>>('/mcp'),
   /** Batch 89：侧栏 SKILLS 摘要走真实数据（GET /api/skills）；拉取失败由调用方回退到硬编码文本，不猜测。 */
@@ -2726,6 +2850,73 @@ export const api = {
     req<{ run: ScratchRunResult }>(`/api/scratches/${encodeURIComponent(id)}/run`, {
       method: 'POST',
     }),
+  /** R7-#2 笔记本：列表（含语言注册表）。 */
+  notebooksList: () =>
+    req<{ notebooks: NotebookMeta[]; languages: ScratchLanguageDef[] }>('/api/notebooks'),
+  /** R7-#2 笔记本：新建。 */
+  notebookCreate: (input: { language: string; name?: string }) =>
+    req<{ notebook: NotebookMeta }>('/api/notebooks', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R7-#2 笔记本：读取完整文档。 */
+  notebookGet: (id: string) =>
+    req<{ notebook: NotebookDoc }>(`/api/notebooks/${encodeURIComponent(id)}`),
+  /** R7-#2 笔记本：重命名/改默认语言。 */
+  notebookUpdate: (id: string, patch: { name?: string; language?: string }) =>
+    req<{ notebook: NotebookMeta }>(`/api/notebooks/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+  /** R7-#2 笔记本：删除。 */
+  notebookDelete: (id: string) =>
+    req<{ ok: boolean }>(`/api/notebooks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** R7-#2 笔记本：加单元格。 */
+  notebookAddCell: (id: string, input: { kind: 'code' | 'markdown'; language?: string; source?: string; afterId?: string }) =>
+    req<{ notebook: NotebookDoc; cellId: string }>(`/api/notebooks/${encodeURIComponent(id)}/cells`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R7-#2 笔记本：改单元格源码。 */
+  notebookUpdateCell: (id: string, cellId: string, source: string) =>
+    req<{ notebook: NotebookDoc }>(`/api/notebooks/${encodeURIComponent(id)}/cells/${encodeURIComponent(cellId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ source }),
+    }),
+  /** R7-#2 笔记本：删单元格。 */
+  notebookDeleteCell: (id: string, cellId: string) =>
+    req<{ notebook: NotebookDoc }>(
+      `/api/notebooks/${encodeURIComponent(id)}/cells/${encodeURIComponent(cellId)}`,
+      { method: 'DELETE' },
+    ),
+  /** R7-#2 笔记本：移动单元格。 */
+  notebookMoveCell: (id: string, cellId: string, move: { direction: 'up' | 'down' } | { toIndex: number }) =>
+    req<{ notebook: NotebookDoc }>(
+      `/api/notebooks/${encodeURIComponent(id)}/cells/${encodeURIComponent(cellId)}/move`,
+      { method: 'POST', body: JSON.stringify(move) },
+    ),
+  /** R7-#2 笔记本：运行单个代码格（显式用户触发）。 */
+  notebookRunCell: (id: string, cellId: string) =>
+    req<{ notebook: NotebookDoc; run: NotebookCellRunResult }>(
+      `/api/notebooks/${encodeURIComponent(id)}/cells/${encodeURIComponent(cellId)}/run`,
+      { method: 'POST' },
+    ),
+  /** R7-#2 笔记本：顺序运行全部代码格，失败不中断后续格。 */
+  notebookRunAll: (id: string) =>
+    req<{ notebook: NotebookDoc; results: Array<{ cellId: string; skipped?: boolean; ok?: boolean; exitCode?: number | null; timedOut?: boolean; truncated?: boolean }> }>(
+      `/api/notebooks/${encodeURIComponent(id)}/run-all`,
+      { method: 'POST' },
+    ),
+  /** R7-#2 笔记本：清空全部输出。 */
+  notebookClearOutputs: (id: string) =>
+    req<{ notebook: NotebookDoc }>(`/api/notebooks/${encodeURIComponent(id)}/clear-outputs`, {
+      method: 'POST',
+    }),
+  /** R7-#2 笔记本：导出文档；stripOutputs 为 true 时不含输出。 */
+  notebookExport: (id: string, stripOutputs: boolean) =>
+    req<{ notebook: NotebookDoc; stripped: boolean }>(
+      `/api/notebooks/${encodeURIComponent(id)}/export${stripOutputs ? '?stripOutputs=1' : ''}`,
+    ),
   /** R6-S5 任务计划：调度列表（附时区标注）。 */
   schedulesList: () =>
     req<{ schedules: ScheduleItem[]; cronTimezone: string; serverTimezone: string }>('/api/schedules'),
@@ -3007,6 +3198,11 @@ export const api = {
     }),
   /** R5-S2：最近的运行记录。 */
   tasksRuns: () => req<TaskRunsResponse>('/api/tasks/runs'),
+  /** R7-#4 DAG 图：节点（含层级与上次运行状态）+ 边。 */
+  tasksGraph: (label: string, root?: string) =>
+    req<TaskDagGraph>(
+      `/api/tasks/graph?label=${encodeURIComponent(label)}${root ? `&root=${encodeURIComponent(root)}` : ''}`,
+    ),
   /** V3-#7 Cascade 时间线：详情（完整输出 + 关联检查点）。 */
   timelineDetail: (id: string) =>
     req<TimelineDetailResponse>(`/api/tasks/runs/${encodeURIComponent(id)}`),
@@ -3167,6 +3363,101 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ confirm: true }),
     }),
+  /** R7-#1：远程开发连接管理。 */
+  remoteConnections: () =>
+    req<{ connections: RemoteConnectionView }>('/api/remote/connections'),
+  remoteCreateConnection: (input: Record<string, unknown>) =>
+    req<{ connection: RemoteConnectionView }>('/api/remote/connections', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  remoteDeleteConnection: (id: string) =>
+    req<{ deleted: boolean }>(`/api/remote/connections/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  remoteProbe: (id: string) =>
+    req<{ connection: RemoteConnectionView; probe: RemoteProbeResult }>(
+      `/api/remote/connections/${encodeURIComponent(id)}/probe`,
+      { method: 'POST' },
+    ),
+  remoteDisconnect: (id: string) =>
+    req<{ connection: RemoteConnectionView; forwardsStopped: number }>(
+      `/api/remote/connections/${encodeURIComponent(id)}/disconnect`,
+      { method: 'POST' },
+    ),
+  remoteExec: (id: string, command: string) =>
+    req<{ stdout: string; stderr: string; exitCode: number }>(
+      `/api/remote/connections/${encodeURIComponent(id)}/exec`,
+      { method: 'POST', body: JSON.stringify({ command }) },
+    ),
+  remoteFiles: (id: string, rel: string) =>
+    req<{ path: string; entries: string[] }>(
+      `/api/remote/connections/${encodeURIComponent(id)}/files?path=${encodeURIComponent(rel)}`,
+    ),
+  remoteReadFile: (id: string, rel: string) =>
+    req<{ path: string; content: string }>(
+      `/api/remote/connections/${encodeURIComponent(id)}/file?path=${encodeURIComponent(rel)}`,
+    ),
+  remoteWriteFile: (id: string, rel: string, content: string) =>
+    req<{ written: boolean; path: string }>(
+      `/api/remote/connections/${encodeURIComponent(id)}/file`,
+      { method: 'POST', body: JSON.stringify({ path: rel, content }) },
+    ),
+  remoteForwards: (id: string) =>
+    req<{ forwards: RemoteForwardView[] }>(
+      `/api/remote/connections/${encodeURIComponent(id)}/forwards`,
+    ),
+  remoteStartForward: (id: string, localPort: number, remoteHost: string, remotePort: number) =>
+    req<{ forward: RemoteForwardView }>(
+      `/api/remote/connections/${encodeURIComponent(id)}/forwards`,
+      { method: 'POST', body: JSON.stringify({ localPort, remoteHost, remotePort }) },
+    ),
+  remoteStopForward: (id: string, localPort: number) =>
+    req<{ stopped: boolean }>(
+      `/api/remote/connections/${encodeURIComponent(id)}/forwards/${localPort}`,
+      { method: 'DELETE' },
+    ),
+  /** R7-#5：Webhook 端点列表（管理端，走 API token 门禁）。 */
+  webhookEndpoints: () =>
+    req<{
+      endpoints: Array<{
+        id: string; name: string; eventType: string; chainLabel: string;
+        root: string; projectId: string; enabled: boolean; createdAt: number;
+      }>;
+      secretConfigured: boolean;
+    }>('/api/webhooks/endpoints'),
+  /** R7-#5：新建 Webhook 端点（密钥不在端点字段里，来自服务端环境）。 */
+  webhookCreate: (input: {
+    id: string; name: string; eventType: string; chainLabel: string;
+    root: string; projectId: string; enabled?: boolean;
+  }) =>
+    req<{ endpoint: { id: string } }>('/api/webhooks/endpoints', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** R7-#5：替换 Webhook 端点（用于改名/改链/开关启用）。 */
+  webhookUpdate: (id: string, input: {
+    name: string; eventType: string; chainLabel: string;
+    root: string; projectId: string; enabled: boolean;
+  }) =>
+    req<{ endpoint: { id: string } }>(`/api/webhooks/endpoints/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+  /** R7-#5：删除 Webhook 端点。 */
+  webhookDelete: (id: string) =>
+    req<{ deleted: string }>(`/api/webhooks/endpoints/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  /** R7-#5：投递历史（进程内 ring，重启清空）。 */
+  webhookDeliveries: () =>
+    req<{
+      deliveries: Array<{
+        id: string; endpointId: string | null; eventType: string; eventId: string;
+        receivedAt: number; status: string; reason?: string;
+        chainOk?: boolean; chainError?: string;
+      }>;
+    }>('/api/webhooks/deliveries'),
   /** R6-A8：显式加载到任务环境（单次运行，内存覆盖，不持久化）。 */
   envLoad: (label: string, root?: string, file?: string) =>
     req<{ ok: boolean; chain: unknown }>('/api/env/load', {

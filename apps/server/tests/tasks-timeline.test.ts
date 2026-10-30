@@ -147,10 +147,15 @@ test('task timeline end to end over HTTP', async () => {
     // stoppedAt is the top-level requested node that stopped (deps nest
     // under it); the failing step itself is fail-step in results.
     assert.equal(run.body.stoppedAt, 'never-ran');
+    // R7-#4: the never-ran step is recorded as 'skipped' with the failed
+    // dependency named (previously it was absent from chain results and
+    // only backfilled by the timeline with a generic note).
     assert.deepEqual(
       run.body.results.map((r: any) => r.label),
-      ['step-one', 'fail-step'],
+      ['step-one', 'fail-step', 'never-ran'],
     );
+    assert.equal(run.body.results[2].status, 'skipped');
+    assert.match(run.body.results[2].error, /"fail-step"/);
 
     // 2. List view: one run, three step cards, outputs stripped, no root leak.
     const list = await api(srv.port, 'GET', '/api/tasks/runs');
@@ -166,12 +171,13 @@ test('task timeline end to end over HTTP', async () => {
     assert.equal(listed.steps[0].output, '');
     const runId = listed.id as string;
 
-    // 3. Detail view: full cards, skipped note, coverage, checkpoint links.
+    // 3. Detail view: full cards, skipped reason, coverage, checkpoint links.
     const detail = await api(srv.port, 'GET', `/api/tasks/runs/${runId}`);
     assert.equal(detail.status, 200);
     assert.match(detail.body.run.steps[0].output, /hello-from-step-one/);
     assert.equal(detail.body.run.steps[1].error, 'task exited with code 9');
-    assert.deepEqual(detail.body.run.steps[2].notes, ['not run: the chain stopped before this step']);
+    assert.equal(detail.body.run.steps[2].status, 'skipped');
+    assert.match(detail.body.run.steps[2].error, /"fail-step"/);
     assert.equal(detail.body.run.coverage, 'full');
     assert.deepEqual(detail.body.checkpoints, []);
     assert.equal(detail.body.checkpointError, null);

@@ -71,6 +71,29 @@ export interface RunPlanResult {
   errors: string[];
 }
 
+/** One node of a task DAG graph (R7-#4): planned shape + layout level. */
+export interface DagNode {
+  label: string;
+  command: string;
+  dependsOn: string[];
+  /** Longest-path depth: 0 = no dependencies, dependents sit one level higher. */
+  level: number;
+  /** True when this task's own dependsOrder is 'parallel'. */
+  parallel: boolean;
+}
+
+/** One DAG edge: `from` (dependency) must finish before `to` (dependent). */
+export interface DagEdge {
+  from: string;
+  to: string;
+}
+
+/** A planned DAG graph: nodes + edges, ready for visualization. */
+export interface DagGraph {
+  nodes: DagNode[];
+  edges: DagEdge[];
+}
+
 /** Recorded outcome of one executed task. */
 export interface TaskRunResult {
   label: string;

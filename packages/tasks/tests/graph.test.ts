@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { flattenPlan, planRun, quoteArg, shellCommandLine } from '../src/index.js';
+import { dagLevels, detectCycle, flattenPlan, planRun, quoteArg, shellCommandLine } from '../src/index.js';
 import type { TaskDef } from '../src/index.js';
 
 function def(label: string, dependsOn: string[] = [], dependsOrder: 'sequence' | 'parallel' = 'sequence'): TaskDef {
@@ -69,4 +69,61 @@ test('quoteArg quotes only when needed', () => {
   assert.equal(quoteArg('with space'), "'with space'");
   assert.equal(quoteArg("o'clock"), "'o'\\''clock'");
   assert.equal(shellCommandLine(def('x')), "echo x");
+});
+
+// R7-#4: save-time cycle detection (pure, no plan needed).
+
+test('detectCycle returns null for acyclic graphs', () => {
+  const tasks = [def('d', ['b', 'c']), def('b', ['a']), def('c', ['a']), def('a')];
+  assert.equal(detectCycle(tasks), null);
+});
+
+test('detectCycle returns null when a dependency is unknown (planRun still rejects it)', () => {
+  assert.equal(detectCycle([def('a', ['ghost'])]), null);
+});
+
+test('detectCycle reports a self-loop with the repeated label', () => {
+  assert.deepEqual(detectCycle([def('a', ['a'])]), ['a', 'a']);
+});
+
+test('detectCycle reports the cycle path for a multi-node cycle', () => {
+  const tasks = [def('a', ['b']), def('b', ['c']), def('c', ['b']), def('ok')];
+  const cycle = detectCycle(tasks);
+  assert.ok(cycle !== null);
+  assert.equal(cycle[0], cycle[cycle.length - 1]);
+  assert.deepEqual([...cycle].sort(), ['b', 'b', 'c'].sort());
+});
+
+test('detectCycle ignores tasks outside the cycle', () => {
+  const tasks = [def('x'), def('a', ['b']), def('b', ['a'])];
+  assert.deepEqual(detectCycle(tasks), ['a', 'b', 'a']);
+});
+
+// R7-#4: DAG graph levels + edges for visualization.
+
+test('dagLevels assigns longest-path levels for a diamond', () => {
+  const tasks = [def('d', ['b', 'c']), def('b', ['a']), def('c', ['a']), def('a')];
+  const r = planRun(tasks, ['d']);
+  assert.deepEqual(r.errors, []);
+  const g = dagLevels(r.plan);
+  const level = new Map(g.nodes.map((n) => [n.label, n.level]));
+  assert.equal(level.get('a'), 0);
+  assert.equal(level.get('b'), 1);
+  assert.equal(level.get('c'), 1);
+  assert.equal(level.get('d'), 2);
+  assert.deepEqual(
+    g.edges.map((e) => `${e.from}->${e.to}`).sort(),
+    ['a->b', 'a->c', 'b->d', 'c->d'].sort(),
+  );
+});
+
+test('dagLevels marks parallel nodes and keeps sequence levels', () => {
+  const tasks = [def('all', ['a', 'b'], 'parallel'), def('a'), def('b')];
+  const r = planRun(tasks, ['all']);
+  assert.deepEqual(r.errors, []);
+  const g = dagLevels(r.plan);
+  const all = g.nodes.find((n) => n.label === 'all');
+  assert.equal(all?.parallel, true);
+  assert.equal(all?.level, 1);
+  assert.equal(g.edges.length, 2);
 });

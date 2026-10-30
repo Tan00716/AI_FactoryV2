@@ -4,7 +4,11 @@
  *
  *   GET  /api/tasks/list?root=        list parsed tasks (.ai-factory/tasks.json)
  *   PUT  /api/tasks                  { root?, text } — validate + write
+ *                                    (R7-#4: dependency cycles rejected here,
+ *                                    fail-closed, before anything is saved)
  *   POST /api/tasks/run              { label, root?, projectId? } — run chain
+ *   GET  /api/tasks/graph?label=&root= DAG nodes + edges + last-run status
+ *                                    overlay for visualization (R7-#4)
  *   GET  /api/tasks/runs             recent run timelines (in-memory ring,
  *                                    step outputs stripped in list view)
  *   GET  /api/tasks/runs/:id         one timeline: full step cards +
@@ -31,6 +35,19 @@
  * list deliberately lives at /api/tasks/list so the two never collide
  * (the collision crashed the desktop: the runner's {tasks,errors,...}
  * object reached CommandPalette which expects TaskSummary[]).
+ *
+ * R7-#4 task dependency DAG: the planner already resolved dependsOn
+ * trees (R5-S2) with cycle rejection at plan time; this round adds the
+ * three missing pieces — (1) cycle detection at SAVE time so a cyclic
+ * file can never be written, (2) dependents of a failed task recorded
+ * explicitly as 'skipped' with the failed dependency named (previously
+ * they were silently absent from chain results; only the V3-#7 timeline
+ * backfilled them with a generic note), and (3) GET /api/tasks/graph
+ * for visualization (nodes with longest-path levels + edges + last-run
+ * status overlay). Execution still goes through the same executeChain:
+ * parallel branches run via dependsOrder 'parallel', diamonds run once
+ * (in-flight memo), and a linear chain (no dependsOn) behaves exactly
+ * as before.
  *
  * Execution safety: task commands go through the SAME policy as /api/exec —
  * deny patterns + binary whitelist + per-binary argv guards
@@ -86,6 +103,8 @@ import { dirname, join, normalize, relative } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
   DEFAULT_TIMEOUT_MS,
+  dagLevels,
+  detectCycle,
   flattenPlan,
   parseTasksJson,
   planRun,
@@ -410,21 +429,46 @@ async function executePlan(
   let ok = true;
   // In-flight memo: a shared dependency (diamond) runs exactly once, even
   // when two parallel branches reach it concurrently.
-  const inFlight = new Map<string, Promise<boolean>>();
+  // Outcome carries the root-cause failed labels: a node that itself
+  // fails reports [own label]; a node skipped because of dependencies
+  // propagates its dependencies' failed labels unchanged, so every
+  // skipped record names the task that actually failed, not an
+  // intermediate skipped node.
+  interface NodeOutcome { ok: boolean; failed: string[]; }
+  const inFlight = new Map<string, Promise<NodeOutcome>>();
 
-  const runNode = (node: PlannedTask): Promise<boolean> => {
+  const runNode = (node: PlannedTask): Promise<NodeOutcome> => {
     const label = node.task.label;
     const existing = inFlight.get(label);
     if (existing) return existing;
-    const p = (async (): Promise<boolean> => {
-      // Dependencies first (fail-closed: any failure stops the chain).
+    const p = (async (): Promise<NodeOutcome> => {
+      // Dependencies first (fail-closed: any failure skips this node and
+      // records it explicitly — R7-#4 — instead of leaving it absent).
+      let failedDeps: string[] = [];
       if (node.parallel) {
         const depResults = await Promise.all(node.dependsOn.map((dep) => runNode(dep)));
-        if (depResults.some((r) => !r)) return false;
+        failedDeps = depResults.flatMap((r) => r.failed);
       } else {
         for (const dep of node.dependsOn) {
-          if (!(await runNode(dep))) return false;
+          const r = await runNode(dep);
+          if (!r.ok) { failedDeps = r.failed; break; }
         }
+      }
+      if (failedDeps.length > 0) {
+        const skipped: TaskRunResult = {
+          label,
+          status: 'skipped',
+          exitCode: null,
+          durationMs: 0,
+          output: '',
+          truncated: false,
+          diagnosticsAdded: 0,
+          matchRate: 1,
+          error: `skipped: dependency "${failedDeps.join('", "')}" failed`,
+        };
+        results.push(skipped);
+        ctx.audit.record(actor, 'TASK_SKIPPED', 'task', label, { failedDeps });
+        return { ok: false, failed: failedDeps };
       }
       const res = await runTask(d, node.task, root, projectId, envOverlay, label === targetLabel ? extraArgs : undefined);
       results.push(res);
@@ -434,14 +478,14 @@ async function executePlan(
         durationMs: res.durationMs,
         ...(res.error ? { error: res.error } : {}),
       });
-      return res.status === 'ok';
+      return res.status === 'ok' ? { ok: true, failed: [] } : { ok: false, failed: [label] };
     })();
     inFlight.set(label, p);
     return p;
   };
 
   for (const node of plan) {
-    if (!(await runNode(node))) {
+    if (!(await runNode(node)).ok) {
       ok = false;
       stoppedAt = node.task.label;
       break;
@@ -728,6 +772,14 @@ export async function handleTaskRunnerRoutes(
         ctx.json(res, 400, { errors: parsed.errors, warnings: parsed.warnings, code: 'invalid-tasks' });
         return true;
       }
+      // R7-#4: a cyclic file must never be saved — reject with the cycle
+      // path in `error` (the desktop req() helper surfaces only `error`,
+      // so the path must live there, not only in `errors`).
+      const cycle = detectCycle(parsed.tasks);
+      if (cycle) {
+        ctx.json(res, 400, { error: `dependency cycle detected: ${cycle.join(' -> ')}`, code: 'cycle-detected' });
+        return true;
+      }
       mkdirSync(dirname(tasksFilePath(root)), { recursive: true });
       writeFileSync(tasksFilePath(root), text, 'utf8');
       const actor = (body['actor'] as string | undefined) ?? 'human';
@@ -839,6 +891,46 @@ export async function handleTaskRunnerRoutes(
       }
       // Wrong method on a timeline sub-path.
       ctx.json(res, 405, { error: 'method not allowed for this timeline path', code: 'bad-method' });
+      return true;
+    }
+
+    // ---- dag graph (R7-#4) -----------------------------------------
+    if (path === `${PREFIX}/graph` && method === 'GET') {
+      const label = url.searchParams.get('label');
+      if (!label) {
+        ctx.json(res, 400, { error: 'label is required', code: 'bad-label' });
+        return true;
+      }
+      const root = resolveRoot(url.searchParams.get('root') ?? undefined);
+      let text: string;
+      try {
+        text = readFileSync(tasksFilePath(root), 'utf8');
+      } catch {
+        ctx.json(res, 404, { error: 'no tasks file for this project', code: 'no-tasks-file' });
+        return true;
+      }
+      const parsed = parseTasksJson(text);
+      if (parsed.errors.length > 0) {
+        ctx.json(res, 400, { error: 'tasks file has validation errors', code: 'invalid-tasks', errors: parsed.errors });
+        return true;
+      }
+      const planned = planRun(parsed.tasks, [label]);
+      if (planned.errors.length > 0) {
+        ctx.json(res, 400, { error: 'cannot plan task run', code: 'plan-failed', errors: planned.errors });
+        return true;
+      }
+      const graph = dagLevels(planned.plan);
+      // Last-run status overlay: best-effort, from the process-local
+      // timeline ring (a restart clears it; nodes then report null).
+      const last = [...runRecords].reverse().find((r) => r.label === label);
+      const statusByLabel = new Map<string, string>();
+      if (last) for (const s of last.steps) statusByLabel.set(s.label, s.status);
+      ctx.json(res, 200, {
+        label,
+        nodes: graph.nodes.map((n) => ({ ...n, status: statusByLabel.get(n.label) ?? null })),
+        edges: graph.edges,
+        lastRunId: last?.id ?? null,
+      });
       return true;
     }
 

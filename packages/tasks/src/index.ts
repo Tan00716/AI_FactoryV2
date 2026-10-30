@@ -4,6 +4,9 @@
  * where the exec safety policy is enforced.
  */
 export type {
+  DagEdge,
+  DagGraph,
+  DagNode,
   DependsOrder,
   PlannedTask,
   RunPlanResult,
@@ -29,4 +32,4 @@ export {
   MIN_TIMEOUT_MS,
   parseTasksJson,
 } from './parse';
-export { flattenPlan, planRun, quoteArg, shellCommandLine } from './graph';
+export { dagLevels, detectCycle, flattenPlan, planRun, quoteArg, shellCommandLine } from './graph';

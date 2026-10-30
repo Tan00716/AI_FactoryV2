@@ -71,6 +71,10 @@ import { LanguageProvider, useLang } from './i18n';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { GoldenPathWizard } from './components/GoldenPathWizard';
 import { LangSrvPanel } from './components/LangSrvPanel';
+import { RemotePanel } from './components/RemotePanel';
+import { TestExplorerPanel } from './components/TestExplorerPanel';
+import { NotebookPanel } from './components/NotebookPanel';
+import { WebhooksPanel } from './components/WebhooksPanel';
 import {
   CENTER_TABS,
   DEFAULT_NAV_TIER_STATE,
@@ -126,7 +130,7 @@ function IdeShell() {
   const [authNotice, setAuthNotice] = useState('');
   const [rotatedTokenOnce, setRotatedTokenOnce] = useState<string | null>(null);
   const [rotating, setRotating] = useState(false);
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor' | 'Profiler' | 'HTTP' | 'Debug' | 'Timeline' | 'Keybindings' | 'Merge' | 'Search' | 'Scratches' | 'Snippets' | 'Schedules' | 'Rebase' | 'Extensions' | 'Rules' | 'DataPreview' | 'Env' | 'Slash' | 'Diagnostics' | 'LangSrv'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor' | 'Profiler' | 'HTTP' | 'Debug' | 'Timeline' | 'Keybindings' | 'Merge' | 'Search' | 'Scratches' | 'Snippets' | 'Schedules' | 'Rebase' | 'Extensions' | 'Rules' | 'DataPreview' | 'Env' | 'Slash' | 'Diagnostics' | 'LangSrv' | 'Notebook' | 'Webhooks' | 'Remote' | 'TestExplorer'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   /** V3-#3 tiered navigation: persisted, progressive disclosure. */
   const [navTier, setNavTier] = useState<NavTierState>(() =>
@@ -574,6 +578,14 @@ function IdeShell() {
             <DiagnosticsPanel />
           ) : centerTab === 'LangSrv' ? (
             <LangSrvPanel projectRoot={projects.find((pr) => pr.id === projectId)?.path ?? ''} />
+          ) : centerTab === 'TestExplorer' ? (
+            <TestExplorerPanel projectRoot={projects.find((pr) => pr.id === projectId)?.path ?? ''} />
+          ) : centerTab === 'Remote' ? (
+            <RemotePanel />
+          ) : centerTab === 'Notebook' ? (
+            <NotebookPanel />
+          ) : centerTab === 'Webhooks' ? (
+            <WebhooksPanel projectRoot={projects.find((pr) => pr.id === projectId)?.path ?? ''} />
           ) : centerTab === 'Schedules' ? (
             <SchedulesPanel />
           ) : (

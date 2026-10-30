@@ -3,7 +3,7 @@
  * dependsOn for the requested labels into executable plan trees.
  * Cycles and missing dependencies are validation errors: nothing runs.
  */
-import type { PlannedTask, RunPlanResult, TaskDef } from './types';
+import type { DagEdge, DagGraph, DagNode, PlannedTask, RunPlanResult, TaskDef } from './types';
 
 /**
  * Plan execution for the requested task labels. Each requested label
@@ -61,6 +61,81 @@ function buildNode(
     node.dependsOn.push(buildNode(dep, byLabel, planned, next));
   }
   return node;
+}
+
+/**
+ * R7-#4 — save-time cycle detection. Pure DFS over dependsOn edges;
+ * unknown dependencies are skipped here (planRun still rejects them at
+ * run time) so a dangling reference never masquerades as a cycle.
+ * Returns the cycle path with the repeated closing label (e.g.
+ * ['a', 'b', 'a']) or null when the graph is acyclic. The first cycle
+ * found in declaration order wins, deterministically.
+ */
+export function detectCycle(tasks: TaskDef[]): string[] | null {
+  const byLabel = new Map(tasks.map((t) => [t.label, t]));
+  const state = new Map<string, 'visiting' | 'done'>();
+  const dfs = (label: string, stack: string[]): string[] | null => {
+    const s = state.get(label);
+    if (s === 'done') return null;
+    if (s === 'visiting') {
+      const at = stack.indexOf(label);
+      return [...stack.slice(at), label];
+    }
+    state.set(label, 'visiting');
+    const task = byLabel.get(label);
+    if (task) {
+      for (const dep of task.dependsOn) {
+        if (!byLabel.has(dep)) continue;
+        const hit = dfs(dep, [...stack, label]);
+        if (hit) return hit;
+      }
+    }
+    state.set(label, 'done');
+    return null;
+  };
+  for (const t of tasks) {
+    const hit = dfs(t.label, []);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * R7-#4 — build the DAG graph for a planned run: one node per planned
+ * task (level = longest dependency chain beneath it) plus one edge per
+ * dependency. Callers must have run planRun first and checked errors:
+ * a cyclic or unknown-dependency plan has no meaningful levels.
+ */
+export function dagLevels(plan: PlannedTask[]): DagGraph {
+  const flat = flattenPlan(plan);
+  const byLabel = new Map(flat.map((t) => [t.label, t]));
+  const levelOf = (label: string, visiting: Set<string>): number => {
+    const task = byLabel.get(label);
+    if (!task || task.dependsOn.length === 0) return 0;
+    if (visiting.has(label)) return 0; // defensive: planRun already rejects cycles
+    const next = new Set(visiting);
+    next.add(label);
+    let best = 0;
+    for (const dep of task.dependsOn) {
+      if (!byLabel.has(dep)) continue;
+      best = Math.max(best, levelOf(dep, next) + 1);
+    }
+    return best;
+  };
+  const nodes: DagNode[] = flat.map((t) => ({
+    label: t.label,
+    command: t.type === 'process' ? t.command : `${t.command} ${t.args.join(' ')}`.trim(),
+    dependsOn: [...t.dependsOn],
+    level: levelOf(t.label, new Set()),
+    parallel: t.dependsOrder === 'parallel',
+  }));
+  const edges: DagEdge[] = [];
+  for (const n of nodes) {
+    for (const dep of n.dependsOn) {
+      if (byLabel.has(dep)) edges.push({ from: dep, to: n.label });
+    }
+  }
+  return { nodes, edges };
 }
 
 /**

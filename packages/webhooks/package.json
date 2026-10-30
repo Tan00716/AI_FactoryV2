@@ -1,0 +1,1 @@
+{"dependencies":{},"description":"Signed webhook receiver: HMAC verification, replay protection, event-to-chain mapping (R7-#5)","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/webhooks","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

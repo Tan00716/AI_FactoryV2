@@ -18,7 +18,7 @@ export const BUILTIN_TABS = [
   'Collab', 'Coverage', 'Recipes', 'Design', 'Updates', 'Refactor', 'Profiler',
   'HTTP', 'Debug', 'Timeline', 'Snippets', 'Keybindings', 'Merge', 'Search',
   'Scratches', 'Schedules', 'Rebase', 'Extensions', 'DataPreview', 'Rules', 'Env',
-  'Slash', 'Diagnostics', 'LangSrv',
+  'Slash', 'Diagnostics', 'LangSrv', 'Notebook', 'Webhooks', 'Remote', 'TestExplorer',
 ] as const;
 
 /** Same key derivation as the tab buttons in App.tsx / CommandPalette.tsx. */

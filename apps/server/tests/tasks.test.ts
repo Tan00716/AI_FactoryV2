@@ -173,11 +173,15 @@ test('a failing dependency stops the chain (fail-closed)', async () => {
   };
   assert.equal(body.ok, false);
   assert.equal(body.stoppedAt, 'after-boom');
-  // 'after-boom' itself never ran: only the failed dependency is recorded.
-  assert.deepEqual(body.results.map((r) => r.label), ['boom']);
+  // R7-#4: 'after-boom' never ran, but it IS recorded — as 'skipped'
+  // with the failed dependency named (previously it was silently absent).
+  assert.deepEqual(body.results.map((r) => r.label), ['boom', 'after-boom']);
   const boom = body.results[0];
   assert.equal(boom.status, 'failed');
   assert.equal(boom.exitCode, 3);
+  const skipped = body.results[1] as { status: string; error?: string };
+  assert.equal(skipped.status, 'skipped');
+  assert.ok((skipped.error ?? '').includes('"boom"'));
 });
 
 test('denied command never runs (policy honored)', async () => {
@@ -199,13 +203,22 @@ test('diamond dependency runs the shared base exactly once', async () => {
   assert.equal(labels.length, 4);
 });
 
-test('cycle is a 400 before anything runs', async () => {
-  await call('PUT', '/api/tasks', {
+test('cycle is a 400 at save time (R7-#4) and writes nothing', async () => {
+  await call('PUT', '/api/tasks', { text: VALID_TASKS });
+  const put = await call('PUT', '/api/tasks', {
     text: JSON.stringify({ tasks: [
       { label: 'x', command: 'echo x', dependsOn: ['y'] },
       { label: 'y', command: 'echo y', dependsOn: ['x'] },
     ] }),
   });
+  assert.equal(put.code, 400);
+  assert.equal((put.body as { code: string }).code, 'cycle-detected');
+  assert.match((put.body as { error: string }).error, /x -> y -> x/);
+  // The previously saved file is untouched by the rejected save.
+  const get = await call('GET', '/api/tasks/list');
+  assert.equal((get.body as { tasks: unknown[] }).tasks.length, 9);
+  // And planning still rejects a cycle at run time for any file that
+  // predates save-time detection (defense in depth).
   const c = await call('POST', '/api/tasks/run', { label: 'x', projectId: 'p1' });
   assert.equal(c.code, 400);
   assert.equal((c.body as { code: string }).code, 'plan-failed');

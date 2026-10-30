@@ -1,0 +1,1 @@
+{"dependencies":{},"description":"Notebook / interactive cells (round-7 task R7-#2): code + markdown cells, versionable JSON store, outputs separable","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/notebook","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}
