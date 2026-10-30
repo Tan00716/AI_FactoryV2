@@ -73,6 +73,8 @@ import { GoldenPathWizard } from './components/GoldenPathWizard';
 import { LangSrvPanel } from './components/LangSrvPanel';
 import { RemotePanel } from './components/RemotePanel';
 import { TestExplorerPanel } from './components/TestExplorerPanel';
+import { PrLinkPanel } from './components/PrLinkPanel';
+import { SettingsSyncPanel } from './components/SettingsSyncPanel';
 import { NotebookPanel } from './components/NotebookPanel';
 import { WebhooksPanel } from './components/WebhooksPanel';
 import {
@@ -130,7 +132,7 @@ function IdeShell() {
   const [authNotice, setAuthNotice] = useState('');
   const [rotatedTokenOnce, setRotatedTokenOnce] = useState<string | null>(null);
   const [rotating, setRotating] = useState(false);
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor' | 'Profiler' | 'HTTP' | 'Debug' | 'Timeline' | 'Keybindings' | 'Merge' | 'Search' | 'Scratches' | 'Snippets' | 'Schedules' | 'Rebase' | 'Extensions' | 'Rules' | 'DataPreview' | 'Env' | 'Slash' | 'Diagnostics' | 'LangSrv' | 'Notebook' | 'Webhooks' | 'Remote' | 'TestExplorer'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor' | 'Profiler' | 'HTTP' | 'Debug' | 'Timeline' | 'Keybindings' | 'Merge' | 'Search' | 'Scratches' | 'Snippets' | 'Schedules' | 'Rebase' | 'Extensions' | 'Rules' | 'DataPreview' | 'Env' | 'Slash' | 'Diagnostics' | 'LangSrv' | 'Notebook' | 'Webhooks' | 'Remote' | 'TestExplorer' | 'SettingsSync' | 'PrLink'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   /** V3-#3 tiered navigation: persisted, progressive disclosure. */
   const [navTier, setNavTier] = useState<NavTierState>(() =>
@@ -580,12 +582,16 @@ function IdeShell() {
             <LangSrvPanel projectRoot={projects.find((pr) => pr.id === projectId)?.path ?? ''} />
           ) : centerTab === 'TestExplorer' ? (
             <TestExplorerPanel projectRoot={projects.find((pr) => pr.id === projectId)?.path ?? ''} />
+          ) : centerTab === 'PrLink' ? (
+            <PrLinkPanel projectRoot={projects.find((pr) => pr.id === projectId)?.path ?? ''} projectId={projectId} />
           ) : centerTab === 'Remote' ? (
             <RemotePanel />
           ) : centerTab === 'Notebook' ? (
             <NotebookPanel />
           ) : centerTab === 'Webhooks' ? (
             <WebhooksPanel projectRoot={projects.find((pr) => pr.id === projectId)?.path ?? ''} />
+          ) : centerTab === 'SettingsSync' ? (
+            <SettingsSyncPanel />
           ) : centerTab === 'Schedules' ? (
             <SchedulesPanel />
           ) : (

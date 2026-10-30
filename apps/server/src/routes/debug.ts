@@ -4,10 +4,15 @@
  *   GET  /api/debug/configs?projectId=&targetDir=
  *     → 200 {configurations: NormalizedLaunchConfig[], note?}
  *         400 {error, code} on invalid launch.json
+ *   GET  /api/debug/adapters → 200 {adapters: AdapterInfo[]} (static registry, no spawn)
+ *   POST /api/debug/adapters/:kind/probe → 200 {kind, available, version?, detail}
+ *         400 unknown adapter kind
  *   POST /api/debug/sessions   {projectId, targetDir?, configName? | config?,
  *                               breakpoints?: [{file,line,column?,condition?,logMessage?}]}
  *     → 201 {sessionId, name, request, state, breakpoints}
- *         400 bad params / 404 unknown configName / 409 too many sessions /
+ *         400 bad params / bad breakpoint (incl. invalid condition syntax) /
+ *         404 unknown configName / 409 too many sessions /
+ *         501 python/go adapter registered but not driven /
  *         502 adapter spawn/handshake failure
  *   GET  /api/debug/sessions → 200 {sessions: [...]}
  *   GET  /api/debug/sessions/:id → 200 {session} | 404
@@ -39,7 +44,9 @@
  * Audit: DEBUG_SESSION_STARTED / DEBUG_SESSION_STOPPED / DEBUG_BREAKPOINTS_SET.
  *
  * HONEST BOUNDARIES (also rendered in the UI):
- *  - Node.js only (launch.json type node/pwa-node); other debug types are
+ *  - Only the Node.js adapter is driven. launch.json types python/debugpy
+ *    and go/delve normalize (round-7 R7-#7) but session launch refuses
+ *    them with 501 ADAPTER_NOT_IMPLEMENTED; other debug types are
  *    rejected, never reinterpreted.
  *  - launch runs the program under `node --inspect=127.0.0.1:0` on loopback;
  *    attach connects to an existing inspector on 127.0.0.1 (address field is
@@ -56,10 +63,16 @@ import {
   DebugClient,
   DebugError,
   LaunchConfigError,
+  classifyBreakpoint,
+  getAdapterInfo,
+  listAdapters,
   normalizeConfig,
   parseLaunchJson,
+  probeAdapter,
   resolveNodeAdapterScript,
   selectConfig,
+  validateConditionSyntax,
+  type AdapterKind,
   type NormalizedLaunchConfig,
   type SpawnFn,
 } from '@ai-factory/debugger';
@@ -150,6 +163,7 @@ interface DebugSession {
   id: string;
   name: string;
   request: 'launch' | 'attach';
+  adapter: AdapterKind;
   client: DebugClient;
   createdAt: string;
   state: 'starting' | 'running' | 'paused' | 'terminated';
@@ -187,6 +201,9 @@ function mapDebugError(e: unknown): DebugRouteError {
     return new DebugRouteError(e.message, 'bad-config', notFound ? 404 : 400);
   }
   if (e instanceof DebugError) {
+    if (e.code === 'ADAPTER_NOT_IMPLEMENTED') {
+      return new DebugRouteError(e.message, 'adapter-not-implemented', 501);
+    }
     if (e.code === 'ADAPTER_SPAWN_FAILED' || e.code === 'ADAPTER_EXITED') {
       return new DebugRouteError(`debug adapter failed: ${e.message}`, 'adapter-failed', 502);
     }
@@ -240,11 +257,37 @@ function loadLaunchConfigs(root: string): { configurations: NormalizedLaunchConf
   }
   const note =
     out.length === 0
-      ? `no supported (node) configurations found${skipped.length ? `; skipped: ${skipped.join(', ')}` : ''}`
+      ? `no supported configurations found${skipped.length ? `; skipped: ${skipped.join(', ')}` : ''}`
       : skipped.length
         ? `skipped unsupported configurations: ${skipped.join(', ')}`
         : undefined;
   return { configurations: out, note };
+}
+
+// ---------------------------------------------------------------------------
+// adapter registry (round-7 R7-#7)
+// ---------------------------------------------------------------------------
+
+async function handleGetAdapters(_req: IncomingMessage, res: ServerResponse, ctx: RouteContext): Promise<boolean> {
+  void _req;
+  ctx.json(res, 200, { adapters: listAdapters() });
+  return true;
+}
+
+async function handleProbeAdapter(_req: IncomingMessage, res: ServerResponse, ctx: RouteContext, kind: string): Promise<boolean> {
+  void _req;
+  try {
+    const info = getAdapterInfo(kind);
+    const probe = probeAdapter(info.kind);
+    ctx.json(res, 200, { ...probe, implemented: info.implemented, installHint: info.installHint });
+  } catch (e) {
+    const err = mapDebugError(e);
+    ctx.json(res, err.code === 'dap-error' ? 400 : err.status, {
+      error: err.message,
+      code: err.code === 'dap-error' ? 'unknown-adapter' : err.code,
+    });
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +398,18 @@ async function handleStartSession(req: IncomingMessage, res: ServerResponse, ctx
     return true;
   }
 
+  // Round-7 R7-#7: python/go configs normalize but are not driven. Refuse
+  // before spawning anything — never fall back to the Node adapter.
+  if (cfg.adapter !== 'node') {
+    const info = getAdapterInfo(cfg.adapter);
+    ctx.json(res, 501, {
+      error: `${info.displayName} is registered but not yet driven by this server (${info.installHint})`,
+      code: 'adapter-not-implemented',
+      adapter: info,
+    });
+    return true;
+  }
+
   const sessionId = randomUUID();
   const client = new DebugClient(resolveNodeAdapterScript(), {
     spawnFn: adapterSpawnFn ?? undefined,
@@ -364,6 +419,7 @@ async function handleStartSession(req: IncomingMessage, res: ServerResponse, ctx
     id: sessionId,
     name: cfg.name,
     request: cfg.request,
+    adapter: cfg.adapter,
     client,
     createdAt: new Date().toISOString(),
     state: 'starting',
@@ -452,6 +508,7 @@ function sessionSummary(s: DebugSession): Record<string, unknown> {
     sessionId: s.id,
     name: s.name,
     request: s.request,
+    adapter: s.adapter,
     state: s.state,
     stopReason: s.stopReason,
     stopThreadId: s.stopThreadId,
@@ -521,7 +578,15 @@ function parseAndJailBreakpoints(
     const arr = byFile.get(abs) ?? [];
     const bp: { line: number; column?: number; condition?: string; logMessage?: string } = { line: Math.floor(line) };
     if (typeof raw.column === 'number' && raw.column >= 1) bp.column = Math.floor(raw.column);
-    if (typeof raw.condition === 'string' && raw.condition) bp.condition = raw.condition.slice(0, 2000);
+    if (typeof raw.condition === 'string' && raw.condition) {
+      // Parse-only syntax check (never executed): a syntactically invalid
+      // condition is a 400 here, not a broken session later.
+      const syntaxErr = validateConditionSyntax(raw.condition.slice(0, 2000));
+      if (syntaxErr) {
+        throw new DebugRouteError(`invalid breakpoint condition at ${file}:${Math.floor(line)}: ${syntaxErr}`, 'bad-breakpoint');
+      }
+      bp.condition = raw.condition.slice(0, 2000);
+    }
     if (typeof raw.logMessage === 'string' && raw.logMessage) bp.logMessage = raw.logMessage.slice(0, 2000);
     arr.push(bp);
     byFile.set(abs, arr);
@@ -533,12 +598,17 @@ async function applyBreakpoints(
   root: string,
   client: DebugClient,
   byFile: Map<string, { line: number; column?: number; condition?: string; logMessage?: string }[]>,
-): Promise<{ id: number; verified: boolean; line?: number; file: string }[]> {
-  const out: { id: number; verified: boolean; line?: number; file: string }[] = [];
+): Promise<{ id: number; verified: boolean; line?: number; file: string; kind?: string }[]> {
+  const out: { id: number; verified: boolean; line?: number; file: string; kind?: string }[] = [];
   for (const [abs, bps] of byFile) {
     const rel = abs.startsWith(root + sep) ? abs.slice(root.length + 1) : basename(abs);
     const dapBps = await client.setBreakpoints({ path: abs }, bps);
-    for (const b of dapBps) out.push({ id: b.id, verified: b.verified, line: b.line, file: rel });
+    // DAP preserves request order, so zip by index when lengths agree.
+    for (let i = 0; i < dapBps.length; i += 1) {
+      const b = dapBps[i];
+      const kind = dapBps.length === bps.length ? classifyBreakpoint(bps[i]) : undefined;
+      out.push({ id: b.id, verified: b.verified, line: b.line, file: rel, kind });
+    }
   }
   return out;
 }
@@ -696,6 +766,9 @@ export async function handleDebugRoutes(
 
   try {
     if (method === 'GET' && path === `${PREFIX}/configs`) return await handleGetConfigs(req, res, url, ctx);
+    if (method === 'GET' && path === `${PREFIX}/adapters`) return await handleGetAdapters(req, res, ctx);
+    const probeMatch = /^\/api\/debug\/adapters\/([^/]+)\/probe$/.exec(path);
+    if (method === 'POST' && probeMatch) return await handleProbeAdapter(req, res, ctx, decodeURIComponent(probeMatch[1]));
     if (method === 'POST' && path === `${PREFIX}/sessions`) return await handleStartSession(req, res, ctx);
     if (method === 'GET' && path === `${PREFIX}/sessions`) return await handleListSessions(req, res, ctx);
 

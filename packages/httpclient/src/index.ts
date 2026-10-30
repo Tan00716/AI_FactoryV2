@@ -12,7 +12,37 @@ export {
   type HttpRunResult,
 } from './types';
 export { parseHttpFile } from './parse';
-export { mergeVariables, substituteVars, validateEnvironments } from './envs';
+export {
+  findUnresolvedVars,
+  mergeVariables,
+  substituteVars,
+  substituteVarsStrict,
+  substituteVarsStrictDeep,
+  validateEnvironments,
+} from './envs';
+export {
+  MAX_AUTH_PROFILES,
+  MAX_COLLECTIONS,
+  MAX_ENVIRONMENTS,
+  MAX_HISTORY,
+  MAX_REQUESTS_PER_COLLECTION,
+  REDACTED,
+  redactApiEnvironment,
+  stripAuthHeaders,
+  validateApiEnvironment,
+  validateAuthProfile,
+  validateCollection,
+  validateSavedRequest,
+  type ApiEnvironment,
+  type AuthKind,
+  type AuthProfile,
+  type HistoryEntry,
+  type HttpCollection,
+  type SavedRequest,
+} from './collections';
+export { applyAuth, redactHeaders, type ResolvedAuthProfile } from './auth';
+export { buildGraphqlBody, sendGraphqlRequest, type GraphqlRequest, type GraphqlResult } from './graphql';
+export { WS_MAX_FRAME_BYTES, WsError, wsConnect, type WsClient } from './ws';
 export {
   BODY_CAP_BYTES,
   DEFAULT_TIMEOUT_MS,

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   api,
+  type DebugAdapterInfo,
+  type DebugAdapterProbe,
   type DebugBreakpointInput,
   type DebugLaunchConfig,
   type DebugOutputLine,
@@ -20,10 +22,15 @@ import { useLang } from '../i18n';
  * inspect stack / scopes / variables, step, evaluate watch expressions.
  *
  * HONEST BOUNDARIES (rendered in the UI):
- *  - Node.js only (launch.json type node/pwa-node); other debug types are
- *    rejected, never reinterpreted.
+ *  - Only the Node.js adapter is driven. Python (debugpy) and Go (delve)
+ *    are registered placeholders: the registry reports whether their
+ *    binaries exist, but launching them returns 501 — never silently
+ *    reinterpreted as Node. Other debug types are rejected.
  *  - attach is loopback-only (127.0.0.1).
  *  - max 8 concurrent sessions, server-local; sessions die with the server.
+ *  - A breakpoint condition with invalid JS syntax is a 400 at set time;
+ *    a runtime evaluation error at hit time never breaks the session —
+ *    the breakpoint simply does not pause and the target keeps running.
  */
 export function DebugPanel({ projectId }: { projectId: string }) {
   const { t } = useLang();
@@ -40,7 +47,13 @@ export function DebugPanel({ projectId }: { projectId: string }) {
   const [bpFile, setBpFile] = useState('');
   const [bpLine, setBpLine] = useState('');
   const [bpCondition, setBpCondition] = useState('');
+  const [bpLogMessage, setBpLogMessage] = useState('');
   const [draftBps, setDraftBps] = useState<DebugBreakpointInput[]>([]);
+
+  // adapter registry (round-7 R7-#7): static list + on-demand probes
+  const [adapters, setAdapters] = useState<DebugAdapterInfo[]>([]);
+  const [probes, setProbes] = useState<Record<string, DebugAdapterProbe>>({});
+  const [probingKind, setProbingKind] = useState<string | null>(null);
 
   // live session views
   const [frames, setFrames] = useState<DebugStackFrame[]>([]);
@@ -81,10 +94,32 @@ export function DebugPanel({ projectId }: { projectId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
+  const loadAdapters = useCallback(async () => {
+    try {
+      const r = await api.debugAdapters();
+      setAdapters(r.adapters);
+    } catch {
+      /* adapter list is informational; a failed load must not break debugging */
+    }
+  }, []);
+
+  const probeAdapter = useCallback(async (kind: string) => {
+    setProbingKind(kind);
+    try {
+      const r = await api.debugProbeAdapter(kind);
+      setProbes((prev) => ({ ...prev, [kind]: r }));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setProbingKind(null);
+    }
+  }, []);
+
   useEffect(() => {
     loadConfigs();
+    loadAdapters();
     refreshSessions();
-  }, [loadConfigs, refreshSessions]);
+  }, [loadConfigs, loadAdapters, refreshSessions]);
 
   // poll the active session state + output
   useEffect(() => {
@@ -121,10 +156,19 @@ export function DebugPanel({ projectId }: { projectId: string }) {
       return;
     }
     setError(null);
-    setDraftBps((prev) => [...prev, { file: bpFile.trim(), line: Math.floor(line), condition: bpCondition.trim() || undefined }]);
+    setDraftBps((prev) => [
+      ...prev,
+      {
+        file: bpFile.trim(),
+        line: Math.floor(line),
+        condition: bpCondition.trim() || undefined,
+        logMessage: bpLogMessage.trim() || undefined,
+      },
+    ]);
     setBpFile('');
     setBpLine('');
     setBpCondition('');
+    setBpLogMessage('');
   };
 
   const startSession = async () => {
@@ -297,12 +341,43 @@ export function DebugPanel({ projectId }: { projectId: string }) {
       <p className="muted">{t('debug.honestNote')}</p>
       {error && <div className="banner err">{error}</div>}
 
+      {adapters.length > 0 && (
+        <div className="dbg-adapters">
+          <h4>{t('debug.adaptersTitle')}</h4>
+          <ul className="dbg-list">
+            {adapters.map((a) => {
+              const probe = probes[a.kind];
+              return (
+                <li key={a.kind}>
+                  <strong>{a.displayName}</strong>{' '}
+                  <span className="muted">
+                    ({a.driver === 'builtin' ? t('debug.adapterBuiltin') : t('debug.adapterExternal')}
+                    {a.implemented ? '' : ` — ${t('debug.adapterNotDriven')}`})
+                  </span>{' '}
+                  <button onClick={() => probeAdapter(a.kind)} disabled={probingKind === a.kind}>
+                    {probingKind === a.kind ? t('debug.adapterProbing') : t('debug.adapterProbe')}
+                  </button>
+                  {probe && (
+                    <span className="muted">
+                      {' '}
+                      {probe.available ? t('debug.adapterAvailable') : t('debug.adapterUnavailable')}
+                      {probe.version ? ` (${probe.version})` : ''} — {probe.detail}
+                      {!probe.available && probe.installHint ? ` ${probe.installHint}` : ''}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
       <div className="dbg-toolbar">
         <select value={configName} onChange={(e) => setConfigName(e.target.value)} disabled={busy || !!activeId}>
           <option value="">{t('debug.noConfig')}</option>
           {configs.map((c) => (
             <option key={c.name} value={c.name}>
-              {c.name} ({c.request})
+              {c.name} ({c.request}, {c.adapter})
             </option>
           ))}
         </select>
@@ -349,6 +424,7 @@ export function DebugPanel({ projectId }: { projectId: string }) {
             <input value={bpFile} onChange={(e) => setBpFile(e.target.value)} placeholder={t('debug.bpFilePh')} disabled={!!activeId} />
             <input value={bpLine} onChange={(e) => setBpLine(e.target.value)} placeholder={t('debug.bpLinePh')} disabled={!!activeId} />
             <input value={bpCondition} onChange={(e) => setBpCondition(e.target.value)} placeholder={t('debug.bpCondPh')} disabled={!!activeId} />
+            <input value={bpLogMessage} onChange={(e) => setBpLogMessage(e.target.value)} placeholder={t('debug.bpLogPh')} disabled={!!activeId} />
             <button onClick={addDraftBp} disabled={!!activeId}>{t('debug.bpAdd')}</button>
           </div>
           {draftBps.length === 0 ? (
@@ -359,6 +435,7 @@ export function DebugPanel({ projectId }: { projectId: string }) {
                 <li key={i}>
                   {b.file}:{b.line}
                   {b.condition ? ` ? ${b.condition}` : ''}
+                  {b.logMessage ? ` ${t('debug.bpLog')}: ${b.logMessage}` : ''}
                   <button onClick={() => setDraftBps((prev) => prev.filter((_, j) => j !== i))}>×</button>
                 </li>
               ))}

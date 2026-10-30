@@ -7,6 +7,9 @@ import {
   type DbBrowserSchema,
   type DbBrowserSchemaDiff,
   type DbBrowserTablePage,
+  type DbConnectionMeta,
+  type DbDriverInfo,
+  type DbQueryHistoryEntry,
 } from '../api';
 import { useLang } from '../i18n';
 
@@ -26,10 +29,58 @@ import { useLang } from '../i18n';
  *  - schema diff 的 DDL 只有加法；删除只报告、不生成脚本。
  */
 
-type SubTab = 'console' | 'tables' | 'schema' | 'diff' | 'ddl' | 'er';
+type SubTab = 'console' | 'tables' | 'schema' | 'diff' | 'ddl' | 'er' | 'history';
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * R7-#8 ER diagram layout (deterministic, pure): referenced tables in
+ * column 0, FK holders one column further per hop (cycle-guarded).
+ * Boxes 200x64, columns 230px apart, rows 92px apart.
+ */
+function layoutEr(er: DbBrowserErGraph): {
+  pos: Map<string, { x: number; y: number }>;
+  width: number;
+  height: number;
+} {
+  const ids = new Set(er.nodes.map((n) => n.id));
+  const targets = new Map<string, string[]>();
+  for (const e of er.edges) {
+    if (!ids.has(e.from) || !ids.has(e.to)) continue;
+    targets.set(e.from, [...(targets.get(e.from) ?? []), e.to]);
+  }
+  const depth = new Map<string, number>();
+  const visiting = new Set<string>();
+  const calc = (id: string): number => {
+    const done = depth.get(id);
+    if (done !== undefined) return done;
+    if (visiting.has(id)) return 0; // cycle guard: break the loop
+    visiting.add(id);
+    const ts = targets.get(id) ?? [];
+    const d = ts.length === 0 ? 0 : 1 + Math.max(...ts.map(calc));
+    visiting.delete(id);
+    depth.set(id, d);
+    return d;
+  };
+  for (const n of er.nodes) calc(n.id);
+  const columns = new Map<number, typeof er.nodes>();
+  for (const n of er.nodes) {
+    const d = depth.get(n.id) ?? 0;
+    columns.set(d, [...(columns.get(d) ?? []), n]);
+  }
+  const pos = new Map<string, { x: number; y: number }>();
+  let maxRows = 1;
+  for (const [d, nodes] of columns) {
+    maxRows = Math.max(maxRows, nodes.length);
+    nodes.forEach((n, i) => pos.set(n.id, { x: 10 + d * 230, y: 10 + i * 92 }));
+  }
+  return {
+    pos,
+    width: 10 + (columns.size > 0 ? Math.max(...columns.keys()) + 1 : 1) * 230,
+    height: 10 + maxRows * 92,
+  };
 }
 
 function Cell({ v }: { v: unknown }) {
@@ -67,6 +118,14 @@ export function DbBrowserPanel() {
   const [ddl, setDdl] = useState('');
   const [er, setEr] = useState<DbBrowserErGraph | null>(null);
 
+  // R7-#8 multi-connection + history.
+  const [drivers, setDrivers] = useState<DbDriverInfo[]>([]);
+  const [metas, setMetas] = useState<DbConnectionMeta[]>([]);
+  const [activeConn, setActiveConn] = useState<string | null>(null);
+  const [history, setHistory] = useState<DbQueryHistoryEntry[]>([]);
+  const [favOnly, setFavOnly] = useState(false);
+  const [rerunMsg, setRerunMsg] = useState<string | null>(null);
+
   const refreshConns = useCallback(async () => {
     try {
       const r = await api.dbConnections();
@@ -82,6 +141,110 @@ export function DbBrowserPanel() {
   useEffect(() => {
     void refreshConns();
   }, [refreshConns]);
+
+  // R7-#8: driver catalog + connection metadata (active, write mode).
+  const refreshMeta = useCallback(async () => {
+    try {
+      const [d, m] = await Promise.all([api.dbDrivers(), api.dbConnectionsMeta()]);
+      setDrivers(d.drivers);
+      setMetas(m.connections);
+      setActiveConn(m.active);
+    } catch (e) {
+      setMsg(t('dbb.loadFailed', { message: errMsg(e) }));
+    }
+  }, [t]);
+
+  useEffect(() => {
+    void refreshMeta();
+  }, [refreshMeta]);
+
+  const metaOf = useCallback(
+    (name: string): DbConnectionMeta | undefined => metas.find((m) => m.name === name),
+    [metas],
+  );
+
+  const setActive = useCallback(async () => {
+    if (!conn) return;
+    try {
+      await api.dbSetActive(conn);
+      await refreshMeta();
+      setMsg(t('dbb2.activeSet', { name: conn }));
+    } catch (e) {
+      setMsg(t('dbb2.activeFailed', { message: errMsg(e) }));
+    }
+  }, [conn, refreshMeta, t]);
+
+  const toggleWriteMode = useCallback(async () => {
+    if (!conn) return;
+    const cur = metaOf(conn);
+    if (!cur) return;
+    if (!cur.writeMode && !window.confirm(t('dbb2.writeModeConfirm', { name: conn }))) return;
+    try {
+      await api.dbWriteMode(conn, !cur.writeMode, true);
+      await refreshMeta();
+      setMsg(t(cur.writeMode ? 'dbb2.writeModeOff' : 'dbb2.writeModeOn', { name: conn }));
+    } catch (e) {
+      setMsg(t('dbb2.writeModeFailed', { message: errMsg(e) }));
+    }
+  }, [conn, metaOf, refreshMeta, t]);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const r = await api.dbHistory({ favoritesOnly: favOnly || undefined });
+      setHistory(r.entries);
+    } catch (e) {
+      setMsg(t('dbb.loadFailed', { message: errMsg(e) }));
+    }
+  }, [favOnly, t]);
+
+  const rerunHistory = useCallback(
+    async (id: string) => {
+      setRerunMsg(null);
+      try {
+        const r = await api.dbHistoryRerun(id);
+        setRerunMsg(t('dbb2.rerunOk', { verdict: r.body.verdict, n: String(r.body.result.rowCount) }));
+        await loadHistory();
+      } catch (e) {
+        setRerunMsg(t('dbb2.rerunFailed', { message: errMsg(e) }));
+      }
+    },
+    [loadHistory, t],
+  );
+
+  const favHistory = useCallback(
+    async (id: string, fav: boolean) => {
+      try {
+        await api.dbHistoryFavorite(id, fav);
+        await loadHistory();
+      } catch (e) {
+        setMsg(t('dbb.loadFailed', { message: errMsg(e) }));
+      }
+    },
+    [loadHistory, t],
+  );
+
+  const deleteHistory = useCallback(
+    async (id: string) => {
+      try {
+        await api.dbHistoryDelete(id);
+        await loadHistory();
+      } catch (e) {
+        setMsg(t('dbb.loadFailed', { message: errMsg(e) }));
+      }
+    },
+    [loadHistory, t],
+  );
+
+  const clearHistory = useCallback(async () => {
+    if (!window.confirm(t('dbb2.clearConfirm'))) return;
+    try {
+      const r = await api.dbHistoryClear();
+      setMsg(t('dbb2.cleared', { n: String(r.removed) }));
+      await loadHistory();
+    } catch (e) {
+      setMsg(t('dbb.loadFailed', { message: errMsg(e) }));
+    }
+  }, [loadHistory, t]);
 
   const register = useCallback(async () => {
     if (!regName.trim() || !regPath.trim()) return;
@@ -245,8 +408,9 @@ export function DbBrowserPanel() {
     if (tab === 'schema') void loadSchema();
     if (tab === 'ddl') void loadDdl();
     if (tab === 'er') void loadEr();
+    if (tab === 'history') void loadHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, conn]);
+  }, [tab, conn, favOnly]);
 
   useEffect(() => {
     if (tab === 'tables' && table) void loadPage(1);
@@ -260,6 +424,7 @@ export function DbBrowserPanel() {
     ['diff', t('dbb.tabDiff')],
     ['ddl', t('dbb.tabDdl')],
     ['er', t('dbb.tabEr')],
+    ['history', t('dbb2.tabHistory')],
   ];
 
   return (
@@ -281,6 +446,24 @@ export function DbBrowserPanel() {
         </select>
         <button onClick={register}>{t('dbb.register')}</button>
         <span className="muted">{t('dbb.sessionNote')}</span>
+      </div>
+      {/* R7-#8: active connection + write-mode gate + driver catalog. */}
+      <div className="dbb-row">
+        <span className="muted">
+          {t('dbb2.activeLabel', { name: activeConn ?? t('dbb2.none') })}
+          {conn && metaOf(conn)
+            ? ` · ${conn}: ${metaOf(conn)!.writeMode ? t('dbb2.writeOn') : t('dbb2.writeOff')}${metaOf(conn)!.readOnly ? ` · ${t('dbb2.readOnlyTag')}` : ''}`
+            : ''}
+        </span>
+        <button disabled={!conn} onClick={setActive}>
+          {t('dbb2.setActive')}
+        </button>
+        <button disabled={!conn || metaOf(conn)?.env === 'prod'} onClick={toggleWriteMode}>
+          {metaOf(conn)?.writeMode ? t('dbb2.writeDisable') : t('dbb2.writeEnable')}
+        </button>
+        <span className="muted" title={drivers.map((d) => `${d.kind}:${d.available ? 'ok' : 'unavailable'}`).join(' ')}>
+          {t('dbb2.driversNote')}
+        </span>
       </div>
       <div className="dbb-tabs">
         {tabs.map(([k, label]) => (
@@ -515,6 +698,46 @@ export function DbBrowserPanel() {
 
       {tab === 'er' && er && (
         <div className="dbb-er">
+          {/* R7-#8: SVG diagram (referenced tables left, FK holders right). */}
+          {(() => {
+            const lay = layoutEr(er);
+            return (
+              <svg width={lay.width} height={lay.height} style={{ background: '#111', borderRadius: 4 }}>
+                {er.edges.map((e, i) => {
+                  const a = lay.pos.get(e.from);
+                  const b = lay.pos.get(e.to);
+                  if (!a || !b) return null;
+                  return (
+                    <g key={i}>
+                      <line x1={a.x + 200} y1={a.y + 32} x2={b.x} y2={b.y + 32} stroke="#888" strokeWidth={1} />
+                      <text x={(a.x + 200 + b.x) / 2} y={(a.y + b.y) / 2 + 28} fill="#aaa" fontSize={11}>
+                        {e.label}
+                      </text>
+                    </g>
+                  );
+                })}
+                {er.nodes.map((n) => {
+                  const p = lay.pos.get(n.id);
+                  if (!p) return null;
+                  return (
+                    <g key={n.id}>
+                      <rect x={p.x} y={p.y} width={200} height={64} rx={4} fill="#1e2a38" stroke="#557" />
+                      <text x={p.x + 8} y={p.y + 20} fill="#fff" fontSize={13} fontWeight="bold">
+                        {n.label}
+                      </text>
+                      <text x={p.x + 8} y={p.y + 40} fill="#aaa" fontSize={11}>
+                        pk:[{n.pk.join(',') || '—'}]
+                      </text>
+                      <text x={p.x + 8} y={p.y + 56} fill="#aaa" fontSize={11}>
+                        {n.columns.slice(0, 4).join(', ')}
+                        {n.columns.length > 4 ? '…' : ''}
+                      </text>
+                    </g>
+                  );
+                })}
+              </svg>
+            );
+          })()}
           <div>
             <strong>{t('dbb.erNodes', { n: String(er.nodes.length) })}</strong>
             <ul>
@@ -539,10 +762,52 @@ export function DbBrowserPanel() {
               ))}
             </ul>
           </div>
+          <div className="muted">{t('dbb2.erNote')}</div>
+        </div>
+      )}
+
+      {tab === 'history' && (
+        <div className="dbb-history">
+          <div className="dbb-row">
+            <label>
+              <input type="checkbox" checked={favOnly} onChange={(e) => setFavOnly(e.target.checked)} />{' '}
+              {t('dbb2.favOnly')}
+            </label>
+            <button onClick={loadHistory}>{t('dbb2.refresh')}</button>
+            <button onClick={clearHistory}>{t('dbb2.clearAll')}</button>
+            <span className="muted">{t('dbb2.historyNote')}</span>
+          </div>
+          {rerunMsg && <div className="dbb-msg">{rerunMsg}</div>}
+          {history.length === 0 && <div className="muted">{t('dbb2.historyEmpty')}</div>}
+          <table className="dbb-grid">
+            <tbody>
+              {history.map((h) => (
+                <tr key={h.id}>
+                  <td>
+                    <span className={`pill verdict-${h.ok ? h.verdict : 'refused'}`}>
+                      {h.ok ? h.verdict : `refused:${h.errorCode ?? ''}`}
+                    </span>
+                    <div className="muted">
+                      {h.connection} · {new Date(h.createdAt).toLocaleString()}
+                      {h.rowCount !== null ? ` · ${h.rowCount} rows` : ''}
+                      {h.durationMs !== null ? ` · ${h.durationMs}ms` : ''}
+                    </div>
+                    <code>{h.sql.length > 120 ? h.sql.slice(0, 120) + '…' : h.sql}</code>
+                  </td>
+                  <td>
+                    <button onClick={() => rerunHistory(h.id)}>{t('dbb2.rerun')}</button>
+                    <button onClick={() => favHistory(h.id, !h.favorite)}>{h.favorite ? '★' : '☆'}</button>
+                    <button onClick={() => deleteHistory(h.id)}>{t('dbb2.delete')}</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
       <div className="dbb-honest muted">{t('dbb.honest')}</div>
+      <div className="dbb-honest muted">{t('dbb2.honest')}</div>
     </div>
   );
 }

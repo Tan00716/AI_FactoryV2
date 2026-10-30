@@ -230,13 +230,16 @@ import { handleTaskRunnerRoutes, setTaskRunnerDeps, setTimelineCheckpointProvide
 import { ShadowCheckpointStore } from './shadow-checkpoints';
 import { handleWatchRoutes, setWatchDeps } from './routes/watch';
 import { handleWebhookRoutes, setWebhookDeps } from './routes/webhooks';
+import { buildPrLinkProviderFromEnv, handlePrLinkRoutes, setPrLinkDeps } from './routes/prlink';
 import { handleTaskQueueRoutes, setTaskQueueDeps } from './routes/taskqueue';
 import { handleEnvRoutes, setEnvDeps } from './routes/env';
 import { handleBookmarkRoutes, setBookmarkDataDirResolver, setBookmarkInspectionRootResolver } from './routes/bookmarks';
 import { handleScratchRoutes, setScratchDeps } from './routes/scratch';
 import { handleNotebookRoutes, setNotebookDeps } from './routes/notebooks';
+import { defaultGlobalRulesDir, handleSettingsyncRoutes, setSettingsyncDeps } from './routes/settingsync';
 import {
   handleHttpClientRoutes,
+  setHttpApiDeps,
   setHttpClientEgressGate,
   setHttpClientRootResolver,
 } from './routes/httpclient';
@@ -895,6 +898,16 @@ setWebhookDeps({
   resolveRoot: (root) => resolveInspectionRoot(root),
   runChain: (label, root, projectId, actor, ctx) => runTaskChainByLabel(label, root, projectId, actor, ctx),
 });
+// Round-7 R7-#6: PR/Issue linkage. The provider is built once at boot
+// from the server environment (fixture > GitHub token > none); the
+// token value never leaves this closure and is never logged, audited,
+// returned, or stored. No provider means an honest unconfigured state,
+// not fabricated data.
+setPrLinkDeps({
+  resolveRoot: (root) => resolveInspectionRoot(root),
+  resolveDataDir: () => process.env.AI_FACTORY_DATA_DIR ?? 'data',
+  provider: buildPrLinkProviderFromEnv(),
+});
 // Round-6 R6-A8: .env management. The load action runs a tasks.json
 // chain through the SAME runner seam as a manual POST /api/tasks/run,
 // with the .env merged in-memory only (never persisted); a task's own
@@ -948,6 +961,14 @@ setNotebookDeps({
   resolveDataDir: () => process.env.AI_FACTORY_DATA_DIR ?? 'data',
   checkCommandPolicy: (command) => checkCommandPolicy(command),
   commandHitsControlDir: (cwd, tokens) => commandHitsControlDir(cwd, tokens),
+});
+// Round-7 R7-#10: settings sync reads the same files the owning
+// routes use (keybindings user layer in the data dir, global rules
+// store) — no new storage, no new credential: the remote token comes
+// from the environment at request time, never from disk.
+setSettingsyncDeps({
+  resolveDataDir: () => process.env.AI_FACTORY_DATA_DIR ?? 'data',
+  resolveGlobalRulesDir: () => defaultGlobalRulesDir(),
 });
 // Round-5 R5-S1: the keybinding user layer lives in the user data dir
 // (AI_FACTORY_DATA_DIR/keybindings.json) — the server has no keyboard
@@ -1031,6 +1052,10 @@ setDebugInspectionRootResolver((root) => resolveInspectionRoot(root));
  */
 setHttpClientEgressGate((url) => assertEgressAllowed(url, { source: 'http-client' }));
 setHttpClientRootResolver((root) => resolveInspectionRoot(root));
+// Round-7 R7-#9: API client deepening store (collections, API envs,
+// auth profile metadata, history) lives in the user data dir; secrets
+// live in the sibling http-api-secrets.json (0600), never in the store.
+setHttpApiDeps({ resolveDataDir: () => process.env.AI_FACTORY_DATA_DIR ?? 'data' });
 
 /**
  * Shadow checkpoints (third-wave task ⑦) — installs the two observer
@@ -1844,10 +1869,12 @@ const server = createServer(async (req, res) => {
     if (await handleTaskRunnerRoutes(req, res, url, routeCtx)) return;
     if (await handleWatchRoutes(req, res, url, routeCtx)) return;
     if (await handleWebhookRoutes(req, res, url, routeCtx)) return;
+    if (await handlePrLinkRoutes(req, res, url, routeCtx)) return;
     if (await handleTaskQueueRoutes(req, res, url, routeCtx)) return;
     if (await handleEnvRoutes(req, res, url, routeCtx)) return;
     if (await handleScratchRoutes(req, res, url, routeCtx)) return;
     if (await handleNotebookRoutes(req, res, url, routeCtx)) return;
+    if (await handleSettingsyncRoutes(req, res, url, routeCtx)) return;
     if (await handleDepscanRoutes(req, res, url, routeCtx)) return;
     if (await handleProfilerRoutes(req, res, url, routeCtx)) return;
     if (await handleKeybindingRoutes(req, res, url, routeCtx)) return;

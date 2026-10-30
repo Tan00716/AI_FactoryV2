@@ -45,3 +45,12 @@ export {
 } from './schema.js';
 export { DbBrowser, DbBlockedError, DbNeedsApprovalError } from './browser.js';
 export type { DbConnection, DbEnvironment } from './browser.js';
+export {
+  DRIVER_CATALOG,
+  MultiConnectionManager,
+  driverInfo,
+  stripSecretFields,
+} from './multiconn.js';
+export type { ConnectionMeta, DbKind, DriverInfo } from './multiconn.js';
+export { HISTORY_MAX_ENTRIES, HISTORY_MAX_SQL_CHARS, HistoryCorruptError, QueryHistory } from './history.js';
+export type { HistoryEntry, HistoryRecordInput, HistoryVerdict } from './history.js';

@@ -105,8 +105,12 @@ export interface NormalizedLaunchConfig {
   name: string;
   /** 'launch' | 'attach'. */
   request: 'launch' | 'attach';
-  /** Adapter kind. This package only ships 'node'. */
-  adapter: 'node';
+  /**
+   * Adapter kind. 'node' is builtin and driven; 'python'/'go' are
+   * registered placeholders (see adapters.ts) — normalized but never
+   * launched until a driver exists.
+   */
+  adapter: 'node' | 'python' | 'go';
   /** Absolute program path (launch only). */
   program?: string;
   /** Program argv (launch only). */

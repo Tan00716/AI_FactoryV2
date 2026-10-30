@@ -1,0 +1,1 @@
+{"dependencies":{},"description":"PR review and Issue linkage (R7-#6): local git reference parsing, remote provider abstraction, local review archive","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/prlink","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

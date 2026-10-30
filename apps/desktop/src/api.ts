@@ -1359,6 +1359,15 @@ export interface DiagnosticsPreview {
   estimatedSections: Array<{ section: string; detail: string }>;
   requiresConfirm: boolean;
 }
+/** R7-#10: one settings-sync diff entry (values are JSON, truncated by the panel for display). */
+export interface SettingsyncDiffEntry {
+  section: string;
+  key: string;
+  kind: 'added' | 'modified' | 'conflict' | 'removed';
+  currentValue: unknown;
+  incomingValue: unknown;
+  baseValue: unknown;
+}
 /** R7-#1: remote connection view (mirrors @ai-factory/remote; keyPath is a path reference, never key material). */
 export interface RemoteConnectionView {
   id: string;
@@ -1468,7 +1477,7 @@ export interface RefactorAnalyzeInput {
 export interface DebugLaunchConfig {
   name: string;
   request: 'launch' | 'attach';
-  adapter: 'node';
+  adapter: 'node' | 'python' | 'go';
   program?: string;
   args: string[];
   cwd?: string;
@@ -1516,10 +1525,27 @@ export interface DebugSessionStarted {
   createdAt: string;
   breakpoints: DebugBreakpoint[];
 }
+export interface DebugAdapterInfo {
+  kind: 'node' | 'python' | 'go';
+  displayName: string;
+  driver: 'builtin' | 'external';
+  implemented: boolean;
+  probeCandidates: { command: string; args: string[] }[];
+  installHint: string;
+}
+export interface DebugAdapterProbe {
+  kind: 'node' | 'python' | 'go';
+  available: boolean;
+  version?: string;
+  detail: string;
+  implemented: boolean;
+  installHint: string;
+}
 export interface DebugSessionSummary {
   sessionId: string;
   name: string;
   request: 'launch' | 'attach';
+  adapter?: string;
   state: 'starting' | 'running' | 'paused' | 'terminated';
   stopReason?: string;
   stopThreadId?: number;
@@ -1800,6 +1826,33 @@ export interface DbBrowserErGraph {
   nodes: Array<{ id: string; label: string; columns: string[]; pk: string[] }>;
   edges: Array<{ from: string; to: string; label: string }>;
 }
+/** R7-#8 数据库多连接：驱动目录、连接元数据、查询历史。 */
+export interface DbDriverInfo {
+  kind: string;
+  available: boolean;
+  note: string;
+}
+export interface DbConnectionMeta {
+  name: string;
+  kind: 'sqlite' | 'postgres';
+  env: 'dev' | 'staging' | 'prod';
+  readOnly: boolean;
+  writeMode: boolean;
+  createdAt: number;
+  driverNote: string;
+}
+export interface DbQueryHistoryEntry {
+  id: string;
+  connection: string;
+  sql: string;
+  verdict: 'read' | 'write' | 'destructive' | 'blocked' | 'refused';
+  ok: boolean;
+  errorCode: string | null;
+  rowCount: number | null;
+  durationMs: number | null;
+  favorite: boolean;
+  createdAt: number;
+}
 /** R4-A6 HTTP/REST 调试客户端。 */
 export interface HttpRunInput {
   text: string;
@@ -1836,6 +1889,75 @@ export interface HttpRunResponse {
 export interface HttpEnvironmentsResponse {
   root: string;
   environments: Record<string, { vars: Record<string, string> }>;
+}
+/** R7-#9 API client deepening views (secrets never appear in any of these). */
+export interface ApiSavedRequestView {
+  id: string;
+  name: string;
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body?: string;
+  authProfileId?: string | null;
+  environment?: string | null;
+}
+export interface ApiCollectionView {
+  id: string;
+  name: string;
+  requests: ApiSavedRequestView[];
+}
+export interface ApiAuthProfileView {
+  id: string;
+  name: string;
+  kind: 'bearer' | 'basic' | 'apikey' | 'oauth2';
+  username?: string;
+  headerName?: string;
+  secretSource: 'stored' | 'env' | null;
+  secretEnv?: string;
+  hasSecret: boolean;
+}
+export interface ApiEnvironmentView {
+  name: string;
+  vars: Record<string, string>;
+  secretNames: string[];
+}
+export interface ApiHistoryView {
+  id: string;
+  at: number;
+  rerunOf?: string;
+  collectionId?: string | null;
+  collectionName?: string | null;
+  requestName: string;
+  method: string;
+  urlTemplate: string;
+  environment?: string | null;
+  authProfileId?: string | null;
+  status?: number;
+  durationMs?: number;
+  blocked?: boolean;
+  ok: boolean;
+  error?: string;
+}
+export interface ApiSendInput {
+  method: string;
+  url: string;
+  headers?: Record<string, string>;
+  body?: string;
+  environment?: string;
+  authProfileId?: string;
+  variables?: Record<string, string>;
+  timeoutMs?: number;
+  collectionId?: string;
+  requestName?: string;
+}
+export interface ApiWsSessionView {
+  id: string;
+  url: string;
+  status: 'open' | 'closed';
+  closeCode?: number | null;
+  closeReason?: string | null;
+  connectedAt: number;
+  messageCount: number;
 }
 /** R5-S2 声明式任务运行器：任务定义视图。 */
 export interface TaskDefView {
@@ -2706,6 +2828,76 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ root, environments }),
     }),
+  /** R7-#9：集合 CRUD（请求内不含密钥；Authorization 须走 auth profile）。 */
+  apiCollections: () =>
+    req<{ collections: ApiCollectionView[] }>('/api/http/collections', {}),
+  apiCreateCollection: (collection: ApiCollectionView) =>
+    req<{ collection: ApiCollectionView }>('/api/http/collections', {
+      method: 'POST',
+      body: JSON.stringify({ collection }),
+    }),
+  apiUpdateCollection: (collection: ApiCollectionView) =>
+    req<{ collection: ApiCollectionView }>(`/api/http/collections/${encodeURIComponent(collection.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ collection }),
+    }),
+  apiDeleteCollection: (id: string) =>
+    req<{ ok: boolean }>(`/api/http/collections/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** R7-#9：auth profile（secret 只发往服务端，永不回显）。 */
+  apiAuthProfiles: () =>
+    req<{ profiles: ApiAuthProfileView[] }>('/api/http/auth-profiles', {}),
+  apiCreateAuthProfile: (profile: { id: string; name: string; kind: string; username?: string; headerName?: string; secretEnv?: string }, secret?: string) =>
+    req<{ profile: ApiAuthProfileView }>('/api/http/auth-profiles', {
+      method: 'POST',
+      body: JSON.stringify({ profile, ...(secret !== undefined ? { secret } : {}) }),
+    }),
+  apiDeleteAuthProfile: (id: string) =>
+    req<{ ok: boolean }>(`/api/http/auth-profiles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** R7-#9：API 环境（secret 值回显为 <redacted>）。 */
+  apiEnvironments: () =>
+    req<{ environments: ApiEnvironmentView[] }>('/api/http/api-environments', {}),
+  apiSaveApiEnvironment: (environment: ApiEnvironmentView, secrets?: Record<string, string>) =>
+    req<{ environment: ApiEnvironmentView }>('/api/http/api-environments', {
+      method: 'PUT',
+      body: JSON.stringify({ environment, ...(secrets ? { secrets } : {}) }),
+    }),
+  /** R7-#9：发送单请求（严格变量替换 + auth profile + 历史记录）。 */
+  apiSend: (input: ApiSendInput) =>
+    req<{ historyId: string; result: HttpRunResultView }>('/api/http/send', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  apiHistory: () =>
+    req<{ history: ApiHistoryView[] }>('/api/http/history', {}),
+  apiRerunHistory: (id: string) =>
+    req<{ historyId: string; rerunOf: string; result: HttpRunResultView }>(`/api/http/history/${encodeURIComponent(id)}/rerun`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  apiGraphql: (input: { endpoint: string; query: string; variables?: Record<string, unknown>; operationName?: string; environment?: string; authProfileId?: string }) =>
+    req<{ result: HttpRunResultView & { graphqlErrors?: Array<{ message: string }> } }>('/api/http/graphql', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  apiWsConnect: (url: string) =>
+    req<{ session: ApiWsSessionView; egressCheckedAs: string }>('/api/http/ws/connect', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
+  apiWsSessions: () =>
+    req<{ sessions: ApiWsSessionView[] }>('/api/http/ws/sessions', {}),
+  apiWsSend: (id: string, text: string) =>
+    req<{ ok: boolean }>(`/api/http/ws/${encodeURIComponent(id)}/send`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+  apiWsMessages: (id: string) =>
+    req<{ session: ApiWsSessionView; messages: Array<{ direction: 'in' | 'out'; text: string; at: number }> }>(`/api/http/ws/${encodeURIComponent(id)}/messages`, {}),
+  apiWsClose: (id: string) =>
+    req<{ session: ApiWsSessionView }>(`/api/http/ws/${encodeURIComponent(id)}/close`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   /** R5-S1 快捷键：读取用户层 keybindings.json。 */
   keybindingsGet: () =>
     req<{ keybindings: Array<{ command: string; key: string | null; when?: string }> }>('/api/keybindings'),
@@ -3032,6 +3224,51 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
+  /** R7-#8：驱动目录（sqlite/postgres 可用，其余诚实标注不可用）。 */
+  dbDrivers: () => req<{ drivers: DbDriverInfo[] }>('/api/db-browser/drivers'),
+  /** R7-#8：连接元数据 + 当前连接。 */
+  dbConnectionsMeta: () =>
+    req<{ active: string | null; connections: DbConnectionMeta[] }>('/api/db-browser/connections/meta'),
+  /** R7-#8：当前连接。 */
+  dbActive: () => req<{ active: string | null }>('/api/db-browser/active'),
+  /** R7-#8：切换当前连接。 */
+  dbSetActive: (name: string) =>
+    req<{ active: string }>('/api/db-browser/active', { method: 'POST', body: JSON.stringify({ name }) }),
+  /** R7-#8：写模式开关（开启需 confirm: true；prod 永不可开）。 */
+  dbWriteMode: (name: string, enabled: boolean, confirm: boolean) =>
+    req<{ name: string; writeMode: boolean; env: string }>(
+      `/api/db-browser/connections/${encodeURIComponent(name)}/write-mode`,
+      { method: 'POST', body: JSON.stringify({ enabled, confirm }) },
+    ),
+  /** R7-#8：查询历史（newest first；可按连接/仅收藏过滤）。 */
+  dbHistory: (q?: { connection?: string; favoritesOnly?: boolean }) => {
+    const p = new URLSearchParams();
+    if (q?.connection) p.set('connection', q.connection);
+    if (q?.favoritesOnly) p.set('favoritesOnly', '1');
+    const qs = p.toString();
+    return req<{ entries: DbQueryHistoryEntry[] }>(`/api/db-browser/history${qs ? `?${qs}` : ''}`);
+  },
+  /** R7-#8：重跑历史条目（记一条新历史，不覆盖旧条目）。 */
+  dbHistoryRerun: (id: string) =>
+    reqWithStatus<DbBrowserQueryResponse & { historyId: string }>(`/api/db-browser/history/${encodeURIComponent(id)}/rerun`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  /** R7-#8：收藏/取消收藏历史条目。 */
+  dbHistoryFavorite: (id: string, favorite: boolean) =>
+    req<{ entry: DbQueryHistoryEntry }>(`/api/db-browser/history/${encodeURIComponent(id)}/favorite`, {
+      method: 'POST',
+      body: JSON.stringify({ favorite }),
+    }),
+  /** R7-#8：删除单条历史。 */
+  dbHistoryDelete: (id: string) =>
+    req<{ ok: boolean }>(`/api/db-browser/history/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** R7-#8：清空历史（可限连接）。 */
+  dbHistoryClear: (connection?: string) =>
+    req<{ removed: number }>(
+      `/api/db-browser/history${connection ? `?connection=${encodeURIComponent(connection)}` : ''}`,
+      { method: 'DELETE' },
+    ),
   /* -- R4-S2 DAP 调试器 ------------------------------------------------ */
   /** 调试配置（GET /api/debug/configs）：读 .vscode/launch.json（viewer）。 */
   debugConfigs: (projectId: string) =>
@@ -3080,6 +3317,11 @@ export const api = {
   /** 结束会话（DELETE /api/debug/sessions/:id）：写 operator。 */
   debugStopSession: (sessionId: string) =>
     req<{ ok: boolean }>(`/debug/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
+  /** 调试适配器注册表（GET /api/debug/adapters）：读 viewer，不触发探针。 */
+  debugAdapters: () => req<{ adapters: DebugAdapterInfo[] }>('/debug/adapters'),
+  /** 探针单个适配器（POST /api/debug/adapters/:kind/probe）：写 operator（会 spawn 探针进程）。 */
+  debugProbeAdapter: (kind: string) =>
+    req<DebugAdapterProbe>(`/debug/adapters/${encodeURIComponent(kind)}/probe`, { method: 'POST' }),
   /** R5-A4 Git blame：逐行 blame（读 viewer）。 */
   blameFile: (path: string) =>
     req<BlameResponse>(`/api/blame?path=${encodeURIComponent(path)}`),
@@ -3363,6 +3605,40 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ confirm: true }),
     }),
+  /** R7-#10：设置同步 — 导出当前设置为同步文档。 */
+  settingsyncExport: () =>
+    req<{ doc: Record<string, unknown> }>('/api/settingsync/export'),
+  /** R7-#10：设置同步 — 导入前预览 diff（新增/修改/冲突/删除）。 */
+  settingsyncPreview: (doc: Record<string, unknown>) =>
+    req<{ entries: SettingsyncDiffEntry[]; summary: Record<string, number>; baseline: boolean }>('/api/settingsync/preview', {
+      method: 'POST',
+      body: JSON.stringify({ doc }),
+    }),
+  /** R7-#10：设置同步 — 应用导入（冲突/删除项需逐项 resolutions）。 */
+  settingsyncApply: (doc: Record<string, unknown>, resolutions: Record<string, string>) =>
+    req<{ applied: string[]; kept: string[] }>('/api/settingsync/apply', {
+      method: 'POST',
+      body: JSON.stringify({ doc, resolutions }),
+    }),
+  /** R7-#10：设置同步 — 私有远端配置（只返回 URL，不含 token）。 */
+  settingsyncRemoteGet: () =>
+    req<{ url: string | null; tokenConfigured: boolean }>('/api/settingsync/remote'),
+  /** R7-#10：设置同步 — 设置/清除私有远端 URL。 */
+  settingsyncRemotePut: (url: string | null) =>
+    req<{ url: string | null; tokenConfigured: boolean }>('/api/settingsync/remote', {
+      method: 'PUT',
+      body: JSON.stringify({ url }),
+    }),
+  /** R7-#10：设置同步 — 推送当前设置到私有远端。 */
+  settingsyncRemotePush: () =>
+    req<{ pushed: boolean; sections: string[] }>('/api/settingsync/remote/push', {
+      method: 'POST',
+    }),
+  /** R7-#10：设置同步 — 从私有远端拉取并预览（不应用）。 */
+  settingsyncRemotePull: () =>
+    req<{ doc: Record<string, unknown>; entries: SettingsyncDiffEntry[]; summary: Record<string, number>; baseline: boolean }>('/api/settingsync/remote/pull', {
+      method: 'POST',
+    }),
   /** R7-#1：远程开发连接管理。 */
   remoteConnections: () =>
     req<{ connections: RemoteConnectionView }>('/api/remote/connections'),
@@ -3458,6 +3734,30 @@ export const api = {
         chainOk?: boolean; chainError?: string;
       }>;
     }>('/api/webhooks/deliveries'),
+  /** R7-#6：PR/Issue 联动状态（无 provider 时 configured:false，绝不伪造数据）。 */
+  prlinkStatus: () =>
+    req<{ configured: boolean; provider: string | null; writesEnabled: boolean }>('/api/prlink/status'),
+  /** R7-#6：本地分支 + 提交引用（只读，git 本地解析）。 */
+  prlinkLocal: (root: string) =>
+    req<{ root: string; branch: string | null; commits: Array<{ hash: string; subject: string; author: string; date: string; references: Array<{ number: number; repo?: string; source: string }> }>; references: Array<{ number: number; repo?: string; source: string }> }>(`/api/prlink/local?root=${encodeURIComponent(root)}`),
+  /** R7-#6：本地引用经 provider 解析后的远端条目。 */
+  prlinkLinked: (root: string, repo: string) =>
+    req<{ configured: boolean; provider: string | null; items: Array<{ kind: string; number: number; repo: string; title: string; state: string; author: string; url: string; labels: string[] }> }>(`/api/prlink/linked?root=${encodeURIComponent(root)}&repo=${encodeURIComponent(repo)}`),
+  /** R7-#6：单条远端详情（评审摘录 + CI 摘要）。 */
+  prlinkDetail: (repo: string, number: number) =>
+    req<{ configured: boolean; provider: string | null; item: { kind: string; number: number; title: string; state: string; author: string; url: string }; reviews: Array<{ author: string; state: string; submittedAt: string; bodyExcerpt: string }>; checks: Array<{ name: string; status: string; conclusion: string; url: string }> }>(`/api/prlink/linked/${number}?repo=${encodeURIComponent(repo)}`),
+  /** R7-#6：本地评审存档列表（只存本地，永不发远端）。 */
+  prlinkLocalReviews: (repo: string, number: number) =>
+    req<{ reviews: Array<{ id: string; repo: string; number: number; file?: string; line?: number; body: string; author: string; createdAt: number }> }>(`/api/prlink/reviews/local?repo=${encodeURIComponent(repo)}&number=${number}`),
+  /** R7-#6：本地评审存档（本地写，不受远端写门禁约束，面板明示）。 */
+  prlinkAddLocalReview: (input: { repo: string; number: number; file?: string; line?: number; body: string }) =>
+    req<{ review: { id: string } }>('/api/prlink/reviews/local', { method: 'POST', body: JSON.stringify(input) }),
+  /** R7-#6：Issue 导入为 DRAFT 任务。 */
+  prlinkImportIssue: (input: { projectId: string; repo: string; number: number; title?: string; description?: string }) =>
+    req<{ task: { id: string } }>('/api/prlink/issues/import', { method: 'POST', body: JSON.stringify(input) }),
+  /** R7-#6：远端写（默认 403；需服务端 FACTORY_PRLINK_WRITES_ENABLED=1 + confirm:true）。 */
+  prlinkPostComment: (input: { repo: string; number: number; body: string; confirm: boolean }) =>
+    req<{ posted: { id: number; url: string } }>('/api/prlink/write/comment', { method: 'POST', body: JSON.stringify(input) }),
   /** R6-A8：显式加载到任务环境（单次运行，内存覆盖，不持久化）。 */
   envLoad: (label: string, root?: string, file?: string) =>
     req<{ ok: boolean; chain: unknown }>('/api/env/load', {

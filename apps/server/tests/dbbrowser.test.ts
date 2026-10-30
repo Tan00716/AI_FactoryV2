@@ -124,6 +124,13 @@ test('db-browser HTTP lifecycle', async () => {
     assert.equal(reg.status, 201, JSON.stringify(reg.body).slice(0, 300));
     assert.equal(reg.body!['env'], 'dev');
 
+    // R7-#8: writes are refused by default; enable write mode (confirmed).
+    const wm = await api(s, 'POST', '/api/db-browser/connections/shop/write-mode', {
+      enabled: true,
+      confirm: true,
+    });
+    assert.equal(wm.status, 200, JSON.stringify(wm.body).slice(0, 300));
+
     // 2. Jail: path escaping the data dir -> 403.
     const evil = await api(s, 'POST', '/api/db-browser/connections', {
       name: 'evil',
@@ -212,6 +219,11 @@ test('db-browser HTTP lifecycle', async () => {
       path: 'shop2.db',
     });
     assert.equal(reg2.status, 201);
+    const wm2 = await api(s, 'POST', '/api/db-browser/connections/shop2/write-mode', {
+      enabled: true,
+      confirm: true,
+    });
+    assert.equal(wm2.status, 200);
     await api(s, 'POST', '/api/db-browser/query', {
       connection: 'shop2',
       sql: 'CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL)',
@@ -287,6 +299,11 @@ test('db-browser HTTP lifecycle', async () => {
       path: 'prod.db',
     });
     assert.equal(seedp.status, 201);
+    const wmseed = await api(s, 'POST', '/api/db-browser/connections/prodseed/write-mode', {
+      enabled: true,
+      confirm: true,
+    });
+    assert.equal(wmseed.status, 200);
     const seedq = await api(s, 'POST', '/api/db-browser/query', {
       connection: 'prodseed',
       sql: 'CREATE TABLE t (a TEXT)',

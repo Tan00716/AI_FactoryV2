@@ -73,9 +73,14 @@ describe('normalizeConfig', () => {
     assert.equal(n.address, '127.0.0.1');
   });
 
-  it('rejects non-node debug types honestly', () => {
+  it('accepts debugpy as the python adapter placeholder (R7-#7 multi-language)', () => {
+    const n = normalizeConfig({ name: 'py', type: 'debugpy', request: 'launch', program: 'a.py' }, resolvePath);
+    assert.equal(n.adapter, 'python');
+  });
+
+  it('rejects unknown debug types honestly', () => {
     assert.throws(
-      () => normalizeConfig({ name: 'py', type: 'debugpy', request: 'launch', program: 'a.py' }, resolvePath),
+      () => normalizeConfig({ name: 'rb', type: 'ruby', request: 'launch', program: 'a.rb' }, resolvePath),
       /not supported/,
     );
   });

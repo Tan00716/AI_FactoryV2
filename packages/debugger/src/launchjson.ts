@@ -5,10 +5,12 @@
  * this package can actually serve. Pure functions — no FS access here;
  * the server route reads the file inside the project jail.
  *
- * Supported (honest boundary):
- *   - type "node" or "pwa-node", request "launch" → Node.js launch
- *   - type "node" or "pwa-node", request "attach" → Node.js attach (port)
- * Everything else (chrome, python, coreclr, compound, …) is reported as
+ * Supported (honest boundary, round-7 R7-#7):
+ *   - type "node" or "pwa-node" → Node.js (builtin, driven)
+ *   - type "python" or "debugpy" → Python (registered placeholder only;
+ *     the server route refuses to launch it with ADAPTER_NOT_IMPLEMENTED)
+ *   - type "go" or "delve" → Go (registered placeholder only, same rule)
+ * Everything else (chrome, coreclr, compound, …) is reported as
  * unsupported — never silently reinterpreted.
  */
 import { NormalizedLaunchConfig } from './types';
@@ -41,6 +43,15 @@ export interface RawConfig {
 }
 
 const NODE_TYPES = new Set(['node', 'pwa-node']);
+const PYTHON_TYPES = new Set(['python', 'debugpy']);
+const GO_TYPES = new Set(['go', 'delve']);
+
+function adapterForType(type: string): 'node' | 'python' | 'go' | null {
+  if (NODE_TYPES.has(type)) return 'node';
+  if (PYTHON_TYPES.has(type)) return 'python';
+  if (GO_TYPES.has(type)) return 'go';
+  return null;
+}
 
 /** Parse launch.json text. Throws LaunchConfigError on invalid JSON/shape. */
 export function parseLaunchJson(text: string): RawConfig[] {
@@ -82,9 +93,10 @@ export function normalizeConfig(
 ): NormalizedLaunchConfig {
   const name = String(raw.name ?? 'unnamed');
   const type = String(raw.type ?? '');
-  if (!NODE_TYPES.has(type)) {
+  const adapter = adapterForType(type);
+  if (!adapter) {
     throw new LaunchConfigError(
-      `configuration "${name}": debug type "${type || '<missing>'}" is not supported — only "node"/"pwa-node" (Node.js) for now`,
+      `configuration "${name}": debug type "${type || '<missing>'}" is not supported — only "node"/"pwa-node", "python"/"debugpy", "go"/"delve"`,
     );
   }
   const request = String(raw.request ?? 'launch');
@@ -110,7 +122,7 @@ export function normalizeConfig(
     return {
       name,
       request: 'launch',
-      adapter: 'node',
+      adapter,
       program: resolvePath(raw.program),
       args,
       cwd: raw.cwd && typeof raw.cwd === 'string' ? resolvePath(raw.cwd) : undefined,
@@ -126,7 +138,7 @@ export function normalizeConfig(
   return {
     name,
     request: 'attach',
-    adapter: 'node',
+    adapter,
     args: [],
     env: {},
     stopOnEntry: false,

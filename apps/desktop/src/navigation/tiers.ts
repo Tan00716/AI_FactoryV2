@@ -24,6 +24,7 @@ export const CENTER_TABS = [
   'Keybindings', 'Merge', 'Search', 'Scratches', 'Snippets', 'Schedules',
   'Rebase', 'Extensions', 'Rules', 'DataPreview', 'Env', 'Slash',
   'Diagnostics', 'LangSrv', 'Notebook', 'Webhooks', 'Remote', 'TestExplorer',
+  'PrLink', 'SettingsSync',
 ] as const;
 
 export type CenterTab = (typeof CENTER_TABS)[number];

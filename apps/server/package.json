@@ -30,6 +30,7 @@
     "@ai-factory/extensions": "0.1.0",
     "@ai-factory/factory-control": "0.1.0",
     "@ai-factory/git": "0.1.0",
+    "@ai-factory/httpclient": "0.1.0",
     "@ai-factory/ignores": "0.1.0",
     "@ai-factory/incidents": "0.1.0",
     "@ai-factory/keybinding": "0.1.0",
@@ -59,6 +60,7 @@
     "@ai-factory/runtime": "0.1.0",
     "@ai-factory/scratch": "0.1.0",
     "@ai-factory/notebook": "0.1.0",
+    "@ai-factory/settingsync": "0.1.0",
     "@ai-factory/search": "0.1.0",
     "@ai-factory/secrets": "0.1.0",
     "@ai-factory/security": "0.1.0",
@@ -75,6 +77,7 @@
     "@ai-factory/watch": "0.1.0",
     "@ai-factory/watchdog": "0.1.0",
     "@ai-factory/webhooks": "0.1.0",
+    "@ai-factory/prlink": "0.1.0",
     "@ai-factory/worktrees": "0.1.0"
   },
   "license": "Apache-2.0"

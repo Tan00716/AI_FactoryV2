@@ -10,7 +10,8 @@
  *
  * Covers: path non-match, validation 400s, jail refusal, launch.json
  * configs (missing/invalid/mixed types), session start (201) incl. unknown
- * configName 404 and non-node type rejection, breakpoint set, stack/scopes/
+ * configName 404 and registered-but-undriven adapter 501 (round-7 R7-#7),
+ * breakpoint set, stack/scopes/
  * variables/evaluate, step actions incl. NOT_PAUSED 409, output buffering,
  * session-dead 410, delete + 404 after.
  *
@@ -133,7 +134,10 @@ test('GET /configs requires projectId', async () => {
   assert.equal(body.code, 'bad-project');
 });
 
-test('GET /configs lists node configs and skips others honestly', async () => {
+test('GET /configs lists node configs and registered python placeholders honestly', async () => {
+  // Round-7 R7-#7 contract change: python/debugpy configs now normalize
+  // (adapter 'python') instead of being skipped; launch still refuses them
+  // with 501 (see the session test below). Truly unknown types are skipped.
   const { ctx, calls } = mockCtx({});
   await handleDebugRoutes(
     req('GET'),
@@ -143,10 +147,13 @@ test('GET /configs lists node configs and skips others honestly', async () => {
   );
   const { code, body } = lastBody(calls);
   assert.equal(code, 200);
-  const configs = body.configurations as { name: string; request: string }[];
-  assert.equal(configs.length, 1);
+  const configs = body.configurations as { name: string; request: string; adapter: string }[];
+  assert.equal(configs.length, 2);
   assert.equal(configs[0].name, 'run app');
-  assert.match(String(body.note ?? ''), /py thing/);
+  assert.equal(configs[0].adapter, 'node');
+  assert.equal(configs[1].name, 'py thing');
+  assert.equal(configs[1].adapter, 'python');
+  assert.equal(body.note, undefined);
 });
 
 test('GET /configs with invalid launch.json → 400', async () => {
@@ -186,15 +193,20 @@ test('POST /sessions with unknown configName → 404', async () => {
   assert.equal(body.code, 'bad-config');
 });
 
-test('POST /sessions rejects non-node debug types', async () => {
+test('POST /sessions refuses registered-but-undriven adapters with 501, never falls back to node', async () => {
+  // Round-7 R7-#7 contract change: python normalizes, but launch refuses
+  // with 501 ADAPTER_NOT_IMPLEMENTED (previously: 400 at normalize time).
   const { ctx, calls } = mockCtx({
     projectId: 'p1',
     config: { name: 'x', type: 'debugpy', request: 'launch', program: 'app.js' },
   });
   await handleDebugRoutes(req('POST'), {} as ServerResponse, url('/api/debug/sessions'), ctx);
   const { code, body } = lastBody(calls);
-  assert.equal(code, 400);
-  assert.equal(body.code, 'bad-config');
+  assert.equal(code, 501);
+  assert.equal(body.code, 'adapter-not-implemented');
+  const adapter = body.adapter as { kind: string; implemented: boolean };
+  assert.equal(adapter.kind, 'python');
+  assert.equal(adapter.implemented, false);
 });
 
 test('POST /sessions jails the program path', async () => {

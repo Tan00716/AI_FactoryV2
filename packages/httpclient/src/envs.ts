@@ -31,6 +31,47 @@ export function substituteVars(text: string, vars: Record<string, string>): stri
   );
 }
 
+/** Names of `{{var}}` placeholders in a text that have no value. */
+export function findUnresolvedVars(text: string, vars: Record<string, string>): string[] {
+  const missing: string[] = [];
+  for (const m of text.matchAll(/\{\{\s*([A-Za-z0-9_\-.]+)\s*\}\}/g)) {
+    const name = m[1];
+    if (!Object.prototype.hasOwnProperty.call(vars, name) && !missing.includes(name)) missing.push(name);
+  }
+  return missing;
+}
+
+/**
+ * Strict substitution (round-7 R7-#9): an unresolved placeholder fails
+ * the whole request with code 'unresolved-variable' naming the variable.
+ * The legacy lenient path stays for the .http file runner, whose
+ * contract (unknown left literal) existing tests pin down — the new
+ * send/GraphQL endpoints use this strict path so a missing variable can
+ * never silently go out as an empty value or a literal `{{name}}`.
+ */
+export function substituteVarsStrict(text: string, vars: Record<string, string>): string {
+  const missing = findUnresolvedVars(text, vars);
+  if (missing.length > 0) {
+    throw new HttpClientError(
+      `unresolved variable(s): ${missing.map((m) => `{{${m}}}`).join(', ')}`,
+      'unresolved-variable',
+    );
+  }
+  return substituteVars(text, vars);
+}
+
+/** Recursively strict-substitute string leaves of a JSON-shaped value. */
+export function substituteVarsStrictDeep(value: unknown, vars: Record<string, string>): unknown {
+  if (typeof value === 'string') return substituteVarsStrict(value, vars);
+  if (Array.isArray(value)) return value.map((v) => substituteVarsStrictDeep(v, vars));
+  if (typeof value === 'object' && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = substituteVarsStrictDeep(v, vars);
+    return out;
+  }
+  return value;
+}
+
 /** Validate an environments map (from the env file or request body). Fail-closed. */
 export function validateEnvironments(value: unknown): Record<string, HttpEnvironment> {
   if (value === undefined || value === null) return {};
