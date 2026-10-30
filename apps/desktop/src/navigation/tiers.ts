@@ -23,6 +23,7 @@ export const CENTER_TABS = [
   'Design', 'Updates', 'Refactor', 'Profiler', 'HTTP', 'Debug', 'Timeline',
   'Keybindings', 'Merge', 'Search', 'Scratches', 'Snippets', 'Schedules',
   'Rebase', 'Extensions', 'Rules', 'DataPreview', 'Env', 'Slash',
+  'Diagnostics', 'LangSrv',
 ] as const;
 
 export type CenterTab = (typeof CENTER_TABS)[number];
@@ -38,6 +39,7 @@ export const COMMON_TABS: readonly CenterTab[] = [
 export const EXPERT_TABS: readonly CenterTab[] = [
   'MCP', 'Observatory', 'Stability', 'Refactor', 'Profiler', 'Debug',
   'Keybindings', 'Merge', 'Rebase', 'Extensions', 'Rules', 'Env', 'Slash',
+  'Diagnostics',
 ];
 
 /** Everything else: team / quality / ops capabilities. */

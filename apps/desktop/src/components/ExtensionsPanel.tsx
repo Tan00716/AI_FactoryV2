@@ -17,6 +17,7 @@ const EMPTY_MANIFEST = `{
   "name": "my-extension",
   "version": "1.0.0",
   "description": "My extension",
+  "apiVersion": "1",
   "permissions": ["commands.execute"],
   "contributes": {
     "commands": [{ "id": "my.hello", "title": "Say hello" }]
@@ -42,6 +43,7 @@ export default function ExtensionsPanel(props: { projectRoot: string }) {
   const [queryText, setQueryText] = useState('');
   const [queryResult, setQueryResult] = useState('');
   const [status, setStatus] = useState('');
+  const [trustNeeded, setTrustNeeded] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -61,12 +63,26 @@ export default function ExtensionsPanel(props: { projectRoot: string }) {
     void reload();
   }, [reload]);
 
-  const onInstall = async () => {
+  const onInstall = async (withTrust = false) => {
     setStatus('');
+    setTrustNeeded(false);
     try {
       const parsed = JSON.parse(manifest) as unknown;
-      await api.extensionsInstall(props.projectRoot, parsed, main);
+      await api.extensionsInstall(props.projectRoot, parsed, main, withTrust || undefined);
       setStatus(t('extensions.installOk'));
+      await reload();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus(msg);
+      if (msg.includes('explicit trust decision') || msg.includes('trust-required')) setTrustNeeded(true);
+    }
+  };
+
+  const onSetTrust = async (extName: string, grant: boolean) => {
+    setStatus('');
+    try {
+      await api.extensionsSetTrust(extName, props.projectRoot, grant);
+      setStatus(grant ? t('extensions.trustTrustOk') : t('extensions.trustUntrustOk'));
       await reload();
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
@@ -125,10 +141,28 @@ export default function ExtensionsPanel(props: { projectRoot: string }) {
     }
   };
 
+  const trustLine = (ext: (typeof extensions)[number]): string => {
+    const tr = ext.trust;
+    const review =
+      tr.review === 'official' ? t('extensions.trustBadgeOfficial')
+      : tr.review === 'reviewed' ? t('extensions.trustBadgeReviewed')
+      : t('extensions.trustBadgeUnreviewed');
+    const sig =
+      tr.signature === 'valid' ? t('extensions.trustSigValid')
+      : tr.signature === 'invalid' ? t('extensions.trustSigInvalid')
+      : t('extensions.trustSigAbsent');
+    const trusted = tr.trusted
+      ? t('extensions.trustTrusted', { source: tr.trustSource ?? '' })
+      : t('extensions.trustUntrusted');
+    const api = tr.apiVersion === null ? t('extensions.trustLegacy') : `API v${tr.apiVersion}`;
+    return `${review} · ${sig} · ${trusted} · ${api}`;
+  };
+
   return (
     <div className="panel extensions-panel">
       <h2>{t('extensions.title')}</h2>
       <p className="hint">{t('extensions.honest')}</p>
+      <p className="hint">{t('extensions.trustWarning')}</p>
       {status !== '' && <p className="status">{status}</p>}
 
       <h3>{t('extensions.listTitle', { count: String(extensions.length) })}</h3>
@@ -143,8 +177,18 @@ export default function ExtensionsPanel(props: { projectRoot: string }) {
               checkers: String(ext.checkers.length),
               providers: String(ext.providers.length),
             })}</span>
+            <div className="hint">{trustLine(ext)}</div>
+            {ext.trust.warnings.map((w, i) => (
+              <div key={i} className="hint">{w}</div>
+            ))}
             <button onClick={() => void onToggle(ext)}>{ext.enabled ? t('extensions.disable') : t('extensions.enable')}</button>
             <button onClick={() => void onUninstall(ext)}>{t('extensions.uninstall')}</button>
+            {ext.trust.trusted && ext.trust.trustSource !== 'official' && ext.trust.trustSource !== 'signature' && (
+              <button onClick={() => void onSetTrust(ext.name, false)}>{t('extensions.trustUntrust')}</button>
+            )}
+            {!ext.trust.trusted && (
+              <button onClick={() => void onSetTrust(ext.name, true)}>{t('extensions.trustTrust')}</button>
+            )}
           </li>
         ))}
       </ul>
@@ -167,6 +211,9 @@ export default function ExtensionsPanel(props: { projectRoot: string }) {
         <textarea value={main} onChange={(e) => setMain(e.target.value)} rows={6} />
       </label>
       <button onClick={() => void onInstall()}>{t('extensions.install')}</button>
+      {trustNeeded && (
+        <button onClick={() => void onInstall(true)}>{t('extensions.trustInstallAnyway')}</button>
+      )}
       <label>{t('extensions.sourceDirLabel')}
         <input value={sourceDir} onChange={(e) => setSourceDir(e.target.value)} />
       </label>

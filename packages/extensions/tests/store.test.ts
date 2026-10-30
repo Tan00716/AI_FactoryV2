@@ -41,7 +41,7 @@ const MAIN = `api.registerCommand('demo.run', (args) => ({ ok: true }));`;
 describe('store', () => {
   it('installs, lists, disables, re-enables, uninstalls', () => {
     const r = root();
-    const info = installExtension(r, MANIFEST, MAIN);
+    const info = installExtension(r, MANIFEST, MAIN, { trust: true });
     assert.equal(info.enabled, true);
     assert.equal(listExtensions(r).length, 1);
     assert.equal(listExtensions(r)[0].name, 'demo-ext');
@@ -56,8 +56,8 @@ describe('store', () => {
   });
   it('refuses a second install of the same name', () => {
     const r = root();
-    installExtension(r, MANIFEST, MAIN);
-    assert.throws(() => installExtension(r, MANIFEST, MAIN), /already installed/);
+    installExtension(r, MANIFEST, MAIN, { trust: true });
+    assert.throws(() => installExtension(r, MANIFEST, MAIN, { trust: true }), /already installed/);
   });
   it('refuses a broken bundle at install time (handler mismatch)', () => {
     const r = root();
@@ -78,7 +78,7 @@ describe('store', () => {
   });
   it('reports broken directories without hiding the rest', () => {
     const r = root();
-    installExtension(r, MANIFEST, MAIN);
+    installExtension(r, MANIFEST, MAIN, { trust: true });
     const home = join(r, '.ai-factory', 'extensions', 'broken-ext');
     mkdirSync(home, { recursive: true });
     writeFileSync(join(home, 'extension.json'), '{not json', 'utf8');
@@ -90,7 +90,7 @@ describe('store', () => {
   });
   it('rejects a directory-name/manifest-name mismatch on read', () => {
     const r = root();
-    installExtension(r, MANIFEST, MAIN);
+    installExtension(r, MANIFEST, MAIN, { trust: true });
     const dir = join(r, '.ai-factory', 'extensions', 'demo-ext');
     const m = JSON.parse(readFileSync(join(dir, 'extension.json'), 'utf8')) as Record<string, unknown>;
     m.name = 'other-name';

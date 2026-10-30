@@ -421,6 +421,46 @@ export interface QuotaBucketView {
   freshness: string;
   collectedAt: string;
 }
+/** V3-#8 成本治理预算（策略层；费用/token 均为估算，除非用量源为 provider-reported）。 */
+export interface BudgetView {
+  id: string;
+  scope: 'task' | 'person' | 'project';
+  scopeKey: string;
+  unit: 'usd-estimate' | 'calls' | 'tokens-estimate';
+  limit: number;
+  period: 'daily' | 'weekly' | 'monthly' | 'all-time';
+  autoRenew: boolean;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface BudgetUsageView {
+  budget: BudgetView;
+  windowId: string;
+  used: number;
+  limit: number;
+  pct: number;
+  status: 'ok' | 'warned' | 'tripped' | 'released';
+}
+export interface BudgetDefaultsView {
+  policy: {
+    capEnabledByDefault: boolean;
+    autoRenewDefault: boolean;
+    warnAtPct: number;
+    defaultProjectBudget: { unit: string; limit: number; period: string };
+    defaultTaskBudget: { unit: string; limit: number; period: string };
+  };
+  conversionTable: {
+    unit: string;
+    description: string;
+    estimatedInputTokens: number;
+    estimatedOutputTokens: number;
+    estimatedCostUsd: number;
+    measured: boolean;
+    note: string;
+  }[];
+  basis: string;
+}
 /** §33 incident 列表项。 */
 export interface IncidentSummary {
   id: string;
@@ -1097,6 +1137,17 @@ export interface BookmarkDtoItem {
   tags: string[];
   createdAt: number;
 }
+/** V3-#9 扩展信任裁决：服务端 ExtensionTrust 的桌面侧形状。 */
+export interface ExtensionTrustDto {
+  apiVersion: string | null;
+  legacyApi: boolean;
+  signature: 'valid' | 'invalid' | 'absent';
+  review: 'official' | 'reviewed' | 'unreviewed';
+  trusted: boolean;
+  trustSource: 'official' | 'signature' | 'user' | 'local-dev' | null;
+  bundleSha256: string;
+  warnings: string[];
+}
 /** R6-S1 扩展系统：服务端 ExtensionInfo 的桌面侧形状。 */
 export interface ExtensionDto {
   name: string;
@@ -1109,6 +1160,8 @@ export interface ExtensionDto {
   panels: Array<{ id: string; title: string; sections: Array<{ heading?: string; text: string }> }>;
   checkers: Array<{ id: string; title: string; pattern: string; message: string; severity?: string }>;
   providers: Array<{ id: string; prefix: string; description?: string }>;
+  apiVersion: string | null;
+  trust: ExtensionTrustDto;
 }
 export interface ExtensionPanelDto {
   extension: string;
@@ -1247,6 +1300,45 @@ export interface EnvListResponse {
   entries: EnvEntryView[];
   warnings: EnvWarning[];
   gitignore: { ignored: boolean; hasGitignore: boolean };
+}
+/** V3-#10: diagnostics preview (includes/excludes + estimated sections). */
+export interface DiagnosticsPreview {
+  includes: string[];
+  excludes: string[];
+  noticeZh: string;
+  noticeEn: string;
+  estimatedSections: Array<{ section: string; detail: string }>;
+  requiresConfirm: boolean;
+}
+/** V3-#10: diagnostics bundle view (subset rendered by the panel). */
+export interface DiagnosticsBundleView {
+  meta: {
+    bundleVersion: number;
+    bundleId: string;
+    exportedAt: string;
+    appVersion: string;
+    serverVersion: string;
+    platform: string;
+    arch: string;
+    nodeVersion: string;
+  };
+  privacy: { includes: string[]; excludes: string[]; noticeZh: string; noticeEn: string };
+  auditSummary: {
+    totalRecords: number;
+    fromTs: string | null;
+    toTs: string | null;
+    byAction: Array<{ action: string; count: number }>;
+    recent: Array<{ id: string; ts: string; actor: string; action: string; entityType: string; entityId: string; result: string | null }>;
+  };
+  taskEvidence: { projectCount: number; taskCount: number; byStatus: Array<{ status: string; count: number }> };
+  configSnapshot: {
+    authMode: string;
+    egress: { enabled: boolean; defaultPolicy: string; ruleCount: number } | null;
+    egressUnavailableReason: string | null;
+  };
+  errorExcerpt: Array<{ id: string; ts: string; actor: string; action: string; entityType: string; entityId: string; result: string | null }>;
+  perfBaseline: { available: boolean; reason: string | null; tasks: Array<{ name: string; ms: number | null }>; taskCount: number };
+  reportHtml: string;
 }
 export interface TodoPattern {
   name: string;
@@ -1711,7 +1803,46 @@ export interface TaskRunsResponse {
     taskCount: number;
     startedAt: string;
     finishedAt: string;
+    steps: TimelineStepView[];
+    coverage: 'full' | 'partial';
+    coverageNote?: string;
+    supersededFrom: string | null;
+    supersededAt: string | null;
+    rollbackCount: number;
+    rerunOf?: string;
+    rerunFrom?: string;
+    checkpointTaskId: string;
   }>;
+}
+/** V3-#7 Cascade 时间线：一步一卡片（列表视图输出为空，详情视图含完整输出）。 */
+export interface TimelineStepView {
+  index: number;
+  label: string;
+  command: string | null;
+  status: 'ok' | 'failed' | 'denied' | 'timeout' | 'skipped' | 'superseded';
+  exitCode: number | null;
+  durationMs: number;
+  output: string;
+  outputBytes: number;
+  outputTruncated: boolean;
+  outputDigest: string;
+  diagnosticsAdded: number;
+  matchRate: number;
+  error?: string;
+  notes?: string[];
+  supersededAt: string | null;
+}
+/** V3-#7 时间线详情：完整步骤卡片 + 关联的影子检查点。 */
+export interface TimelineDetailResponse {
+  run: TaskRunsResponse['runs'][number];
+  checkpoints: Array<{
+    id: string;
+    createdAt: string;
+    label: string;
+    workspaceId: string;
+    workspacePath: string;
+  }>;
+  checkpointError: string | null;
 }
 /** R6-S4 后台任务队列：作业摘要（列表端点，不含日志字节）。 */
 export interface QueueJobView {
@@ -2099,6 +2230,28 @@ export const api = {
         durationMs: number;
       };
     }>('/codesearch/search', { method: 'POST', body: JSON.stringify(input) }),
+  /** V3-#6 precise code intelligence (LSP → semantic engine → heuristic). */
+  langsrvStatus: () => req<{ status: { semantic: string; lspConfigured: boolean; lspConnected: boolean; queries: number } }>('/langsrv/status'),
+  langsrvDefinition: (input: { root: string; file: string; line: number; character: number }) =>
+    req<{ source: string; locations: Array<{ file: string; line: number; character: number; endLine: number; endCharacter: number }>; warning?: string }>(
+      '/langsrv/definition', { method: 'POST', body: JSON.stringify(input) },
+    ),
+  langsrvReferences: (input: { root: string; file: string; line: number; character: number }) =>
+    req<{ source: string; references: Array<{ file: string; line: number; character: number; endLine: number; endCharacter: number; isDefinition: boolean; isWriteAccess: boolean }>; warning?: string }>(
+      '/langsrv/references', { method: 'POST', body: JSON.stringify(input) },
+    ),
+  langsrvHover: (input: { root: string; file: string; line: number; character: number }) =>
+    req<{ source: string; hover: { display: string; documentation?: string } | null; warning?: string }>(
+      '/langsrv/hover', { method: 'POST', body: JSON.stringify(input) },
+    ),
+  langsrvOutline: (input: { root: string; file: string }) =>
+    req<{ source: string; symbols: Array<{ name: string; kind: string; file: string; line: number; character: number; endLine: number; endCharacter: number }>; warning?: string }>(
+      '/langsrv/outline', { method: 'POST', body: JSON.stringify(input) },
+    ),
+  langsrvRenamePreview: (input: { root: string; file: string; line: number; character: number; newName: string }) =>
+    req<{ source: string; oldName: string; edits: Array<{ file: string; line: number; character: number; endLine: number; endCharacter: number; oldText: string; newText: string }> }>(
+      '/langsrv/rename-preview', { method: 'POST', body: JSON.stringify(input) },
+    ),
   policyEffective: () => req<unknown>('/policy/effective'),
   mcpServers: () => req<{ servers?: Array<{ name: string; status?: string; [k: string]: unknown }> } | Array<{ name: string }>>('/mcp'),
   /** Batch 89：侧栏 SKILLS 摘要走真实数据（GET /api/skills）；拉取失败由调用方回退到硬编码文本，不猜测。 */
@@ -2129,6 +2282,34 @@ export const api = {
   watchdogSelf: () => req<WatchdogSelf>('/watchdog/self'),
   /** §27 quota buckets 用量（unknown 字段保持缺失）。 */
   quotaBuckets: () => req<{ buckets: QuotaBucketView[] }>('/quota/buckets'),
+  /** V3-#8 成本治理预算：当前窗口用量（读 viewer）。 */
+  budgets: () => req<{ budgets: BudgetUsageView[]; counts: { total: number; tripped: number; warned: number; released: number }; basis: string }>('/quota/budgets'),
+  /** V3-#8 默认策略 + 占位换算表（读 viewer）。 */
+  budgetDefaults: () => req<BudgetDefaultsView>('/quota/budgets/defaults'),
+  /** V3-#8 新建预算（写 operator）。 */
+  createBudget: (b: { scope: string; scopeKey: string; unit: string; limit: number; period?: string }) =>
+    req<{ budget: BudgetView }>('/quota/budgets', { method: 'POST', body: JSON.stringify(b) }),
+  /** V3-#8 删除预算（写 operator）。 */
+  deleteBudget: (id: string) =>
+    req<{ deleted: string }>(`/quota/budgets/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** V3-#8 幂等应用项目默认预算（写 operator）。 */
+  applyBudgetDefaults: (projectId: string) =>
+    req<{ created: BudgetView[]; existing: BudgetView[] }>('/quota/budgets/apply-defaults', { method: 'POST', body: JSON.stringify({ projectId }) }),
+  /** V3-#8 记录用量（模拟/上报；写 operator）。 */
+  recordBudgetUsage: (id: string, u: { calls?: number; inputTokens?: number; outputTokens?: number; costUsd?: number; source?: string }) =>
+    req<{ touched: BudgetUsageView[]; warned: unknown[]; tripped: unknown[]; checkpoints: Record<string, { created: boolean; checkpointId?: string; reason?: string }> }>(
+      `/quota/budgets/${encodeURIComponent(id)}/usage`, { method: 'POST', body: JSON.stringify(u) },
+    ),
+  /** V3-#8 新调用是否放行（写 operator 亦可读：POST 诊断）。 */
+  checkBudget: (refs: { taskId?: string; personId?: string; projectId?: string }) =>
+    req<{ allowed: boolean; blocking: BudgetUsageView[] }>('/quota/budgets/check', { method: 'POST', body: JSON.stringify(refs) }),
+  /** V3-#8 一键放行（本窗口熔断清除，须填理由；写 operator）。 */
+  releaseBudget: (id: string, reason: string) =>
+    req<{ release: { budgetId: string; windowId: string; reason: string; releasedAt: string } }>(
+      `/quota/budgets/${encodeURIComponent(id)}/release`, { method: 'POST', body: JSON.stringify({ reason }) },
+    ),
+  /** V3-#8 放行记录（读 viewer）。 */
+  budgetOverrides: () => req<{ overrides: { budgetId: string; windowId: string; reason: string; releasedAt: string }[] }>('/quota/budgets/overrides'),
   /** §33 incidents 列表。 */
   incidents: () => req<{ incidents: IncidentSummary[] }>('/incidents'),
   /** §39 项目 Final Report（JSON 汇编结果）；lang 透传服务端叙述语言。 */
@@ -2432,12 +2613,18 @@ export const api = {
     req<{ root: string; installed: ExtensionDto[]; broken: Array<{ name: string; error: string }> }>(
       `/api/extensions${root ? `?root=${encodeURIComponent(root)}` : ''}`,
     ),
-  /** R6-S1 扩展系统：内联安装（manifest + main.js）。 */
-  extensionsInstall: (root: string, manifest: unknown, main: string) =>
+  /** R6-S1 扩展系统：内联安装（manifest + main.js）。V3-#9：未签名扩展需 trust: true，否则 409 trust-required。 */
+  extensionsInstall: (root: string, manifest: unknown, main: string, trust?: boolean, signature?: unknown) =>
     req<{ extension: ExtensionDto }>('/api/extensions/install', {
       method: 'POST',
-      body: JSON.stringify({ root, manifest, main }),
+      body: JSON.stringify({ root, manifest, main, trust, signature }),
     }),
+  /** V3-#9 扩展信任：授予/撤销对当前 bundle 的显式信任决定。 */
+  extensionsSetTrust: (name: string, root: string, grant: boolean) =>
+    req<{ ok: boolean; name: string; trusted: boolean; trust: ExtensionTrustDto }>(
+      `/api/extensions/${encodeURIComponent(name)}/${grant ? 'trust' : 'untrust'}`,
+      { method: 'POST', body: JSON.stringify({ root }) },
+    ),
   /** R6-S1 扩展系统：从项目内目录安装。 */
   extensionsInstallFromDir: (root: string, sourceDir: string) =>
     req<{ extension: ExtensionDto }>('/api/extensions/install-from-dir', {
@@ -2820,6 +3007,21 @@ export const api = {
     }),
   /** R5-S2：最近的运行记录。 */
   tasksRuns: () => req<TaskRunsResponse>('/api/tasks/runs'),
+  /** V3-#7 Cascade 时间线：详情（完整输出 + 关联检查点）。 */
+  timelineDetail: (id: string) =>
+    req<TimelineDetailResponse>(`/api/tasks/runs/${encodeURIComponent(id)}`),
+  /** V3-#7：回退到某步（后续步骤标记作废，历史不删除）。 */
+  timelineRollback: (id: string, stepLabel: string) =>
+    req<{ run: TaskRunsResponse['runs'][number]; superseded: string[] }>(
+      `/api/tasks/runs/${encodeURIComponent(id)}/rollback`,
+      { method: 'POST', body: JSON.stringify({ stepLabel }) },
+    ),
+  /** V3-#7：从某步重跑（新运行链到原运行，同一执行通道）。 */
+  timelineRerun: (id: string, stepLabel?: string) =>
+    req<{ run: TaskRunsResponse['runs'][number] | null; chain: TaskChainResponse }>(
+      `/api/tasks/runs/${encodeURIComponent(id)}/rerun`,
+      { method: 'POST', body: JSON.stringify({ ...(stepLabel ? { stepLabel } : {}) }) },
+    ),
   /** R6-S4 后台任务队列：提交一个 tasks.json 标签链为后台作业。 */
   queueSubmit: (label: string, projectId: string, root?: string) =>
     req<{ job: QueueJobView }>('/api/taskqueue/submit', {
@@ -2955,6 +3157,15 @@ export const api = {
     req<{ file: string; exists: boolean; missing: string[]; warnings: EnvWarning[] }>('/api/env/validate', {
       method: 'POST',
       body: JSON.stringify({ required, ...(root ? { root } : {}), ...(file ? { file } : {}) }),
+    }),
+  /** V3-#10：诊断包导出 — 预览清单（不生成包）与确认导出。 */
+  diagnosticsPreview: () =>
+    req<DiagnosticsPreview>('/api/diagnostics/preview'),
+  /** V3-#10：确认后导出诊断包（JSON + HTML 报告字符串）。 */
+  diagnosticsExport: () =>
+    req<{ bundle: DiagnosticsBundleView }>('/api/diagnostics/export', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
     }),
   /** R6-A8：显式加载到任务环境（单次运行，内存覆盖，不持久化）。 */
   envLoad: (label: string, root?: string, file?: string) =>

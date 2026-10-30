@@ -1,0 +1,1 @@
+{"dependencies":{},"description":"Cascade-style task-chain timeline: per-step cards, supersede-on-rollback, rerun linkage (V3-#7)","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/tasktimeline","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

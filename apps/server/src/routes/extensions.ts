@@ -1,17 +1,20 @@
 /**
- * Extension routes (round-6 R6-S1) — VS Code-style extension API, local subset.
+ * Extension routes (round-6 R6-S1, trust model V3-#9) — VS Code-style
+ * extension API, local subset.
  *
- *   GET    /api/extensions?root=                    list installed extensions (+ broken dirs)
- *   GET    /api/extensions/schema                   manifest schema documentation
+ *   GET    /api/extensions?root=                    list installed extensions (+ broken dirs, trust verdicts)
+ *   GET    /api/extensions/schema                   manifest schema + trust model documentation
  *   GET    /api/extensions/panels?root=             contributed panels of enabled extensions
  *   GET    /api/extensions/providers?root=          contributed context providers
- *   POST   /api/extensions/install                 {root, manifest, main} (inline install)
- *   POST   /api/extensions/install-from-dir        {root, sourceDir} (jailed, no symlinks)
- *   POST   /api/extensions/:name/enable            {root}
+ *   POST   /api/extensions/install                 {root, manifest, main, signature?, trust?} (inline install)
+ *   POST   /api/extensions/install-from-dir        {root, sourceDir} (jailed, no symlinks, local-dev trust)
+ *   POST   /api/extensions/:name/enable            {root} (trust-gated)
  *   POST   /api/extensions/:name/disable           {root}
+ *   POST   /api/extensions/:name/trust             {root} (record an explicit trust decision)
+ *   POST   /api/extensions/:name/untrust           {root} (revoke the trust decision)
  *   DELETE /api/extensions/:name?root=             uninstall
- *   POST   /api/extensions/:name/commands/:cmd/run {root, args}
- *   POST   /api/extensions/:name/providers/:id/resolve {root, query}
+ *   POST   /api/extensions/:name/commands/:cmd/run {root, args} (trust-gated)
+ *   POST   /api/extensions/:name/providers/:id/resolve {root, query} (trust-gated)
  *
  * Extensions are project-local: <root>/.ai-factory/extensions/<name>/.
  * Commands and providers execute in the node:vm sandbox
@@ -19,6 +22,13 @@
  * declarative and run no extension code. Checkers plug into inspections
  * via extensionCheckerProvider (wired in index.ts through
  * setExtraCheckerProvider, alongside SSR/Trojan/spell).
+ *
+ * Trust (V3-#9): the vm sandbox is NOT a security boundary, so trust is
+ * provenance + explicit decision, never a safety claim. Unsigned inline
+ * installs need { trust: true } or fail with 409 trust-required;
+ * enabling, running, or resolving an untrusted bundle fails the same
+ * way; a changed bundle voids prior trust until re-decided. Signed
+ * bundles install directly; a failed signature is fail-closed.
  *
  * Dual-mode import rule (AGENTS.md): value-imports only node builtins
  * and @ai-factory/extensions; the root jail comes via setter injection,
@@ -31,17 +41,26 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RouteContext } from './context';
 import type { Checker, Finding } from '../inspections';
 import {
+  EXTENSION_API_VERSION,
+  TrustRequiredError,
+  assertTrusted,
+  bundleSha256,
+  checkApiVersion,
   checkLine,
+  computeTrust,
   enabledExtensions,
   installExtension,
   installExtensionFromDir,
   listExtensionsVerbose,
   loadExtension,
   readExtension,
+  recordTrust,
+  revokeTrust,
   setExtensionEnabled,
   uninstallExtension,
   ExtensionError,
   type ExtensionInfo,
+  type ExtensionTrust,
 } from '@ai-factory/extensions';
 
 const PREFIX = '/api/extensions';
@@ -78,6 +97,10 @@ function jailPathInsideRoot(root: string, candidate: string): string {
 }
 
 function sendError(res: ServerResponse, ctx: RouteContext, e: unknown): boolean {
+  if (e instanceof TrustRequiredError) {
+    ctx.json(res, e.status, { error: e.message, code: 'trust-required', trust: e.trust });
+    return true;
+  }
   if (e instanceof ExtensionRouteError) {
     ctx.json(res, e.status, { error: e.message, code: 'extension-error' });
     return true;
@@ -103,7 +126,7 @@ function handleList(res: ServerResponse, url: URL, ctx: RouteContext): boolean {
 
 function handleSchema(res: ServerResponse, ctx: RouteContext): boolean {
   ctx.json(res, 200, {
-    manifest: 'extension.json: { name, version, description, author?, permissions?, contributes? }',
+    manifest: 'extension.json: { name, version, description, author?, permissions?, contributes?, apiVersion?, review? }',
     name: '^[a-z0-9][a-z0-9._-]{1,63}$',
     version: 'semver-like ^\\d+\\.\\d+\\.\\d+(-suffix)?$',
     permissions: ['commands.execute', 'panels.contribute', 'checkers.contribute', 'providers.contribute'],
@@ -115,9 +138,27 @@ function handleSchema(res: ServerResponse, ctx: RouteContext): boolean {
     },
     main: 'main.js: runs in a node:vm sandbox with only the `api` global (log, registerCommand, registerContextProvider). No require/process/Buffer/eval/Function. Handlers must be synchronous and return JSON values.',
     sandbox: 'code generation disabled, load timeout 2000ms, invoke timeout 5000ms, args/result capped at 64KB.',
+    sandboxNotABoundary: 'The vm sandbox limits the API surface and blocks naive escapes; it is NOT a multi-tenant security boundary. Trust below is provenance + explicit decision, never a safety claim.',
+    apiVersion: `Host extension API is v${EXTENSION_API_VERSION} (frozen; a future v2 would run a parallel period). Manifest apiVersion missing = legacy, treated as v1 with a warning. A declared major other than ${EXTENSION_API_VERSION} is rejected at install and at load.`,
+    trust: {
+      signature: 'Optional Ed25519 signature over the canonical bundle string (packages/extensions trust.ts), stored as signature.json. Valid + official key = review "official", auto-trusted. Valid + other key = auto-trusted. Invalid = install rejected (fail-closed). Absent = install needs { trust: true } or fails 409 trust-required.',
+      review: 'Manifest review is a claim only: honoured ("reviewed"/"official") solely with a valid signature, and "official" solely with the official key. Unsigned claims downgrade to "unreviewed" with a warning.',
+      localDev: 'install-from-dir (author present, source inside the project) installs directly and records a "local-dev" trust decision for the exact bundle hash.',
+      voidOnChange: 'Trust decisions are keyed by bundle hash: any change to extension.json or main.js voids prior trust until re-decided via POST /api/extensions/:name/trust.',
+      highRisk: 'High-risk bundles are blocked, not asked: a failed signature, a sandbox load failure, or an unknown permission all reject the install outright.',
+    },
     marketplace: 'none in v1: install is local-only (inline manifest+main, or a jailed local directory). No auto-update.',
   });
   return true;
+}
+
+/** Recompute the trust verdict for an installed bundle (used by the gates). */
+function trustFor(root: string, name: string): ExtensionTrust {
+  const { manifest, main, signature } = readExtension(root, name);
+  // A manually placed bundle with an unsupported API major is rejected
+  // at load too, not just at install — never silently run.
+  checkApiVersion(manifest);
+  return computeTrust(root, name, manifest, main, signature);
 }
 
 function handlePanels(res: ServerResponse, url: URL, ctx: RouteContext): boolean {
@@ -147,8 +188,15 @@ function handleProviders(res: ServerResponse, url: URL, ctx: RouteContext): bool
 async function handleInstall(req: IncomingMessage, res: ServerResponse, ctx: RouteContext): Promise<boolean> {
   const body = (await ctx.readBody(req)) as Record<string, unknown>;
   const root = resolveRoot(str(body.root));
-  const extension = installExtension(root, body.manifest, body.main);
+  const trusted = body.trust === true;
+  const extension = installExtension(root, body.manifest, body.main, {
+    signature: body.signature,
+    trust: trusted,
+  });
   ctx.audit.record('human', 'EXT_INSTALLED', 'extensions', root, { name: extension.name });
+  if (trusted) {
+    ctx.audit.record('human', 'EXT_TRUST_GRANTED', 'extensions', root, { name: extension.name, source: 'user' });
+  }
   ctx.json(res, 201, { extension });
   return true;
 }
@@ -170,7 +218,29 @@ async function handleInstallFromDir(req: IncomingMessage, res: ServerResponse, c
   }
   const extension = installExtensionFromDir(root, jailed);
   ctx.audit.record('human', 'EXT_INSTALLED', 'extensions', root, { name: extension.name });
+  ctx.audit.record('human', 'EXT_TRUST_GRANTED', 'extensions', root, { name: extension.name, source: 'local-dev' });
   ctx.json(res, 201, { extension });
+  return true;
+}
+
+async function handleTrust(
+  req: IncomingMessage,
+  res: ServerResponse,
+  name: string,
+  grant: boolean,
+  ctx: RouteContext,
+): Promise<boolean> {
+  const body = (await ctx.readBody(req)) as Record<string, unknown>;
+  const root = resolveRoot(str(body.root));
+  const { manifest, main } = readExtension(root, name);
+  if (grant) {
+    recordTrust(root, name, bundleSha256(manifest, main), 'user');
+    ctx.audit.record('human', 'EXT_TRUST_GRANTED', 'extensions', root, { name, source: 'user' });
+  } else {
+    revokeTrust(root, name);
+    ctx.audit.record('human', 'EXT_TRUST_REVOKED', 'extensions', root, { name });
+  }
+  ctx.json(res, 200, { ok: true, name, trusted: grant, trust: trustFor(root, name) });
   return true;
 }
 
@@ -183,6 +253,7 @@ async function handleEnable(
 ): Promise<boolean> {
   const body = (await ctx.readBody(req)) as Record<string, unknown>;
   const root = resolveRoot(str(body.root));
+  if (enable) assertTrusted(name, trustFor(root, name));
   const extension = setExtensionEnabled(root, name, enable);
   ctx.audit.record('human', enable ? 'EXT_ENABLED' : 'EXT_DISABLED', 'extensions', root, { name });
   ctx.json(res, 200, { extension });
@@ -208,6 +279,7 @@ async function handleRunCommand(
   const root = resolveRoot(str(body.root));
   const { manifest, main, state } = readExtension(root, name);
   if (!state.enabled) throw new ExtensionRouteError(`extension is disabled: ${name}`, 409);
+  assertTrusted(name, trustFor(root, name));
   let out;
   try {
     out = loadExtension(manifest, main).runCommand(command, body.args ?? {});
@@ -235,6 +307,7 @@ async function handleResolveProvider(
   const root = resolveRoot(str(body.root));
   const { manifest, main, state } = readExtension(root, name);
   if (!state.enabled) throw new ExtensionRouteError(`extension is disabled: ${name}`, 409);
+  assertTrusted(name, trustFor(root, name));
   const query = str(body.query);
   if (query === undefined) throw new ExtensionRouteError('query is required');
   let out;
@@ -324,6 +397,14 @@ export async function handleExtensionRoutes(
     const disableMatch = /^\/([^/]+)\/disable$/.exec(rest);
     if (req.method === 'POST' && disableMatch) {
       return await handleEnable(req, res, decodeURIComponent(disableMatch[1]), false, ctx);
+    }
+    const trustMatch = /^\/([^/]+)\/trust$/.exec(rest);
+    if (req.method === 'POST' && trustMatch) {
+      return await handleTrust(req, res, decodeURIComponent(trustMatch[1]), true, ctx);
+    }
+    const untrustMatch = /^\/([^/]+)\/untrust$/.exec(rest);
+    if (req.method === 'POST' && untrustMatch) {
+      return await handleTrust(req, res, decodeURIComponent(untrustMatch[1]), false, ctx);
     }
     const runMatch = /^\/([^/]+)\/commands\/([^/]+)\/run$/.exec(rest);
     if (req.method === 'POST' && runMatch) {

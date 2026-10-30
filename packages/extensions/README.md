@@ -46,7 +46,61 @@ VS Code 扩展 API 的本地子集：扩展以项目为单位安装在
 - `hello-command`：命令贡献（`hello.echo`）。
 - `info-panel`：面板贡献（纯文本 sections）。
 - `marker-checker`：检查器贡献（正则 `SAMPLE-MARKER`）。
-- 提供器贡献见包单测 `sandbox.test.ts`（`demo.notes` 解析）。
+- `demo-notes`：提供器贡献（`@notes`，解析查询为一条 note）。
+- 四个示例均为**官方示例**：manifest 含 `apiVersion: "1"` + `review: "official"`，
+  并附 `signature.json`（官方密钥签署，见下）。从目录安装时签名被一并读取，
+  列表中显示 review `official`、来源 `official`。
+
+## 信任模型（V3-#9）：API 版本化 + 签名 + 审核 + 显式信任
+
+信任不是安全声明：vm 沙盒不是安全边界（见上），本节只解决“这个 bundle
+是不是当初那个 bundle、是谁为它背书、用户有没有明确点头”。
+
+### API 版本化：宿主 API v1 冻结
+
+- 宿主扩展 API 版本为 `1`（`EXTENSION_API_VERSION`）。manifest 可声明
+  `apiVersion`（`"1"`、`"1.x"` 均兼容）；缺失 = 历史遗留 bundle，按 v1 计
+  并在信任裁决里打 `legacy` 警告（已安装的老扩展不断线）。
+- 声明的主版本不是 1（如 `"2"`）时，安装与加载均硬拒绝并明示
+  “宿主 API 为 v1”，绝不静默运行。后续 v2 以并行期方式引入，不会
+  用“承诺过死”锁住演进；签名验证可降级为警告，但版本不兼容不可降级。
+
+### 签名：Ed25519，本地密钥，零外部依赖
+
+- 签名对象是规范 bundle 字符串（`trust.ts`：`extension-trust-v1` 前缀 +
+  名称 + 版本 + 规范化 manifest 的 sha256 + main.js 的 sha256），
+  存为扩展目录下的 `signature.json`（`{ algorithm: "ed25519", publicKey,
+  signature }`，publicKey 为 base64 SPKI DER）。
+- 安装时验签：签名有效 → 直接安装（已签名即直接装，见审计报告验证方法）；
+  签名无效 → 安装拒绝（fail-closed：被篡改的 bundle 比未签名更危险，
+  不走“询问”流程）；未签名 → 见下“显式信任”。
+- 官方示例用仓库外持有的官方私钥签署，公钥硬编码为
+  `OFFICIAL_PUBLIC_KEY_B64`；重签工具见 `demo/sign-demo.mjs`
+ （私钥文件路径作参数传入，永不进仓库）。密钥轮换 = 换公钥常量 +
+  重签示例，旧签名随即验签失败（预期中的 fail-closed）。
+
+### 审核状态：声明只是声明，证据才算数
+
+- manifest 的 `review` 字段（`unreviewed`/`reviewed`/`official`）只是声明：
+  只有签名有效时才采信（`reviewed` 需有效签名，`official` 需官方密钥签名），
+  否则一律降级为 `unreviewed` 并打警告。UI 徽标显示的是裁决结果，
+  不是 manifest 自称。
+- 扩展列表的 `trust` 字段即裁决：`{ apiVersion, legacyApi, signature
+  (valid/invalid/absent), review, trusted, trustSource
+  (official/signature/user/local-dev), bundleSha256, warnings[] }`。
+
+### 显式信任：未签名必须点头，bundle 一改就失效
+
+- 未签名内联安装缺 `{ trust: true }` 时返回 409 `trust-required`
+ （附信任裁决）；桌面端此时出现“信任并安装”按钮。
+- 从项目内目录安装（本地开发，作者在场）直接安装，但仍记录一条
+  `local-dev` 信任决定——不是免信任，而是“在场作者的决定”也被记录。
+- 信任决定存在项目内 `<root>/.ai-factory/extensions/trust.json`，
+  按 bundle 哈希键控：manifest 或 main.js 一改，旧决定即失效，
+  启用/运行/解析均回 409，直到重新信任（`POST /api/extensions/:name/trust`，
+  撤销用 `/untrust`；两项均记审计 `EXT_TRUST_GRANTED`/`EXT_TRUST_REVOKED`）。
+- 高风险默认拦截（不询问）：签名无效、沙盒加载失败、未知权限
+  均直接拒绝安装——“询问”只留给“未签名但完好”的情形。
 
 ## 权限
 

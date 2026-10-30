@@ -7,6 +7,23 @@
 export * from './types.js';
 export { validateManifest, validateMainSource } from './manifest.js';
 export {
+  EXTENSION_API_VERSION,
+  EXTENSION_TRUST_FILE,
+  OFFICIAL_PUBLIC_KEY_B64,
+  TrustRequiredError,
+  assertTrusted,
+  bundleSha256,
+  canonicalBundleString,
+  checkApiVersion,
+  computeTrust,
+  parseSignature,
+  readTrustDecisions,
+  recordTrust,
+  revokeTrust,
+  signBundle,
+  verifyBundleSignature,
+} from './trust.js';
+export {
   LOAD_TIMEOUT_MS,
   INVOKE_TIMEOUT_MS,
   MAX_ARGS_BYTES,
@@ -23,6 +40,8 @@ export {
   listExtensionsVerbose,
   readExtension,
   toInfo,
+  trustOf,
+  type InstallOptions,
   installExtension,
   installExtensionFromDir,
   setExtensionEnabled,

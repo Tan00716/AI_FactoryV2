@@ -5,7 +5,26 @@
  *   GET  /api/tasks/list?root=        list parsed tasks (.ai-factory/tasks.json)
  *   PUT  /api/tasks                  { root?, text } — validate + write
  *   POST /api/tasks/run              { label, root?, projectId? } — run chain
- *   GET  /api/tasks/runs             recent run records (in-memory ring)
+ *   GET  /api/tasks/runs             recent run timelines (in-memory ring,
+ *                                    step outputs stripped in list view)
+ *   GET  /api/tasks/runs/:id         one timeline: full step cards +
+ *                                    linked shadow checkpoints
+ *   POST /api/tasks/runs/:id/rollback { stepLabel } — mark later steps
+ *                                    superseded (history never deleted)
+ *   POST /api/tasks/runs/:id/rerun  { stepLabel? } — new chain run from a
+ *                                    step, linked to the original run
+ *
+ * V3-#7 Cascade timeline: every chain run records a full per-step
+ * timeline (one card per step: label, command, status, exit code,
+ * duration, capped output + record digest, diagnostics, error). Steps the
+ * chain never reached are recorded as 'skipped', never invented. Rollback
+ * marks steps superseded and audits TIMELINE_ROLLBACK; it never rewrites
+ * or deletes history, and it never reverts files — file revert stays
+ * with the existing shadow-checkpoint restore endpoint, which the
+ * timeline detail links to (checkpoints resolved by run root via
+ * configsForPath). Rerun executes through the SAME executeChain as a
+ * manual run (same policy, same audit) — never a second execution
+ * channel; the new run is linked to the original via rerunOf/rerunFrom.
  *
  * NOTE (R5 closeout): GET /api/tasks (bare or ?projectId=) is the LEGACY
  * project-tasks endpoint further down the dispatch chain — the runner's
@@ -77,6 +96,12 @@ import {
   type TaskDef,
   type TaskRunResult,
 } from '@ai-factory/tasks';
+import {
+  applyRollback,
+  buildTimeline,
+  TimelineError,
+  type TimelineRun,
+} from '@ai-factory/tasktimeline';
 import { scrubCredentialEnv } from '@ai-factory/runtime';
 import type { RouteContext } from './context';
 import type { ParseStats, ProblemMatcherDef } from '../problem-matchers';
@@ -129,6 +154,35 @@ export function setTaskRunnerDeps(d: TaskRunnerDeps | null): void {
   deps = d;
 }
 
+/** One linked shadow checkpoint, as exposed on a timeline run detail. */
+export interface TimelineCheckpointLink {
+  id: string;
+  createdAt: string;
+  label: string;
+  workspaceId: string;
+  workspacePath: string;
+}
+
+/**
+ * Provider for linked shadow checkpoints. Setter injection (same pattern as
+ * setTaskRunnerDeps): this route is imported from src by tests under node
+ * type-stripping, so it must not value-import ../shadow-checkpoints (or any
+ * src-relative module) — the real provider is installed by index.ts at boot
+ * from the compiled server. Unwired callers get an empty list, never a crash:
+ * checkpoint linking is best-effort decoration on the timeline detail.
+ */
+export type TimelineCheckpointProvider = (
+  root: string,
+  label: string,
+) => { checkpoints: TimelineCheckpointLink[]; checkpointError: string | null };
+
+let timelineCheckpointProvider: TimelineCheckpointProvider | null = null;
+
+/** Installed once by index.ts at boot. */
+export function setTimelineCheckpointProvider(p: TimelineCheckpointProvider | null): void {
+  timelineCheckpointProvider = p;
+}
+
 function needDeps(): TaskRunnerDeps {
   if (!deps) throw new TaskRouteError('task runner is not wired', 'not-wired', 500);
   return deps;
@@ -160,37 +214,75 @@ function projectIdOf(value: unknown): string {
   return 'default';
 }
 
-interface RunRecord {
-  id: string;
-  label: string;
-  ok: boolean;
-  stoppedAt: string | null;
-  taskCount: number;
-  startedAt: string;
-  finishedAt: string;
+/**
+ * V3-#7 timeline record: the full TimelineRun plus server-only fields.
+ * `root` (absolute project root, needed for rerun + checkpoint lookup) is
+ * NEVER serialized to clients — timelineView() strips it.
+ */
+interface TimelineRecord extends TimelineRun {
+  root: string;
+  projectId: string;
 }
 
-const runRecords: RunRecord[] = [];
+const runRecords: TimelineRecord[] = [];
 let runSeq = 0;
 
-function recordRun(chain: TaskChainResult): void {
+function recordRun(
+  chain: TaskChainResult,
+  planned: TaskDef[],
+  root: string,
+  projectId: string,
+  rerun?: { rerunOf: string; rerunFrom: string },
+): TimelineRun {
   runSeq += 1;
-  runRecords.push({
-    id: `taskrun-${runSeq}`,
-    label: chain.requested.join(','),
-    ok: chain.ok,
-    stoppedAt: chain.stoppedAt,
-    taskCount: chain.results.length,
-    startedAt: chain.startedAt,
-    finishedAt: chain.finishedAt,
-  });
+  const timeline = buildTimeline(
+    `taskrun-${runSeq}`,
+    chain,
+    planned.map((t) => ({
+      label: t.label,
+      command: t.type === 'process' ? t.command : `${t.command} ${t.args.join(' ')}`.trim(),
+    })),
+  );
+  const rec: TimelineRecord = {
+    ...timeline,
+    ...(rerun ? { rerunOf: rerun.rerunOf, rerunFrom: rerun.rerunFrom } : {}),
+    root,
+    projectId,
+  };
+  runRecords.push(rec);
   while (runRecords.length > MAX_RUN_RECORDS) runRecords.shift();
+  return timeline;
 }
 
 /** Test seam: wipe run records. */
 export function resetTaskRunRecords(): void {
   runRecords.length = 0;
   runSeq = 0;
+}
+
+/** Serialize a record for clients: strip the server-only root path. */
+function timelineView(rec: TimelineRecord, withOutput: boolean): TimelineRun & { taskCount: number } {
+  const { root: _root, projectId: _projectId, ...view } = rec;
+  const taskCount = view.steps.length;
+  if (withOutput) return { ...view, taskCount };
+  return {
+    ...view,
+    taskCount,
+    steps: view.steps.map((s) => ({ ...s, output: '' })),
+  };
+}
+
+/** Resolve linked shadow checkpoints for a run, best-effort (never fails the timeline). */
+function linkedCheckpoints(rec: TimelineRecord): {
+  checkpoints: TimelineCheckpointLink[];
+  checkpointError: string | null;
+} {
+  if (!timelineCheckpointProvider) return { checkpoints: [], checkpointError: null };
+  try {
+    return timelineCheckpointProvider(rec.root, rec.label);
+  } catch (e) {
+    return { checkpoints: [], checkpointError: (e as Error).message };
+  }
 }
 
 /**
@@ -485,6 +577,8 @@ async function executeChain(
   envOverlay?: Record<string, string>,
   // R6-A7: slash-command extra args for the requested task only.
   extraArgs?: string[],
+  // V3-#7: rerun linkage — recorded on the new timeline, never on the old run.
+  rerun?: { rerunOf: string; rerunFrom: string },
 ): Promise<TaskChainResult> {
   const d = needDeps();
   let text: string;
@@ -507,7 +601,9 @@ async function executeChain(
     ...(extraArgs && extraArgs.length > 0 ? { extraArgs: extraArgs.slice(0, 20) } : {}),
   });
   const chain = await executePlan(d, planned.plan, root, projectId, ctx, actor, envOverlay, extraArgs, label);
-  recordRun(chain);
+  // V3-#7: the timeline is the chain's per-step record; the flattened plan
+  // supplies commands + planned-but-unrun steps, the run supplies results.
+  recordRun(chain, flat, root, projectId, rerun);
   return chain;
 }
 
@@ -642,7 +738,107 @@ export async function handleTaskRunnerRoutes(
 
     // ---- run history --------------------------------------------------
     if (path === `${PREFIX}/runs` && method === 'GET') {
-      ctx.json(res, 200, { runs: [...runRecords].reverse() });
+      ctx.json(res, 200, { runs: [...runRecords].reverse().map((r) => timelineView(r, false)) });
+      return true;
+    }
+
+    // ---- timeline detail / rollback / rerun (V3-#7) -------------------
+    // RBAC: GET -> viewer, POST -> operator via the default prefix rule
+    // (see module header) — no auth.ts change needed.
+    const runMatch = path.match(/^\/api\/tasks\/runs\/([^/]+)(?:\/(rollback|rerun))?$/);
+    if (runMatch) {
+      let runId = runMatch[1] ?? '';
+      try { runId = decodeURIComponent(runId); } catch { /* keep raw id; lookup will 404 */ }
+      const action = runMatch[2] ?? null;
+      const idx = runRecords.findIndex((r) => r.id === runId);
+      if (idx < 0) {
+        ctx.json(res, 404, { error: `no timeline run ${runId}`, code: 'timeline-not-found' });
+        return true;
+      }
+      const rec = runRecords[idx];
+      if (rec === undefined) {
+        ctx.json(res, 404, { error: `no timeline run ${runId}`, code: 'timeline-not-found' });
+        return true;
+      }
+      if (method === 'GET' && action === null) {
+        const links = linkedCheckpoints(rec);
+        ctx.json(res, 200, { run: timelineView(rec, true), ...links });
+        return true;
+      }
+      if (method === 'POST' && action === 'rollback') {
+        const body = await ctx.readBody(req);
+        const stepLabel = body['stepLabel'];
+        if (typeof stepLabel !== 'string' || stepLabel.length === 0) {
+          ctx.json(res, 400, { error: 'stepLabel is required', code: 'bad-step' });
+          return true;
+        }
+        const actor = (body['actor'] as string | undefined) ?? 'human';
+        try {
+          const { run, superseded } = applyRollback(rec, stepLabel, new Date().toISOString());
+          runRecords[idx] = { ...rec, ...run };
+          // Audit chain stays continuous: the rollback itself is recorded,
+          // and the original step results are still in the timeline.
+          ctx.audit.record(actor, 'TIMELINE_ROLLBACK', 'task', rec.label, {
+            runId: rec.id,
+            stepLabel,
+            superseded,
+            rollbackCount: run.rollbackCount,
+          });
+          ctx.json(res, 200, { run: timelineView(runRecords[idx] as TimelineRecord, true), superseded });
+        } catch (e) {
+          if (e instanceof TimelineError) {
+            ctx.json(res, 409, { error: e.message, code: e.code });
+          } else {
+            throw e;
+          }
+        }
+        return true;
+      }
+      if (method === 'POST' && action === 'rerun') {
+        const body = await ctx.readBody(req);
+        const actor = (body['actor'] as string | undefined) ?? 'human';
+        // Default start: the rollback target if one exists, else the step
+        // that stopped the chain, else the first failed step, else the
+        // last step. Rerunning a step runs its declared dependencies too
+        // (same executeChain semantics as a manual run).
+        const requested = body['stepLabel'];
+        const stepLabel = typeof requested === 'string' && requested.length > 0
+          ? requested
+          : rec.supersededFrom
+            ?? rec.stoppedAt
+            ?? rec.steps.find((s) => s.status === 'failed' || s.status === 'denied' || s.status === 'timeout')?.label
+            ?? rec.steps[rec.steps.length - 1]?.label;
+        if (!stepLabel) {
+          ctx.json(res, 400, { error: 'this timeline has no step to rerun', code: 'bad-step' });
+          return true;
+        }
+        try {
+          const chain = await executeChain(stepLabel, rec.root, rec.projectId, ctx, actor, undefined, undefined, {
+            rerunOf: rec.id,
+            rerunFrom: stepLabel,
+          });
+          const fresh = runRecords[runRecords.length - 1];
+          ctx.audit.record(actor, 'TIMELINE_RERUN', 'task', rec.label, {
+            runId: rec.id,
+            rerunId: fresh?.id ?? null,
+            stepLabel,
+            ok: chain.ok,
+          });
+          ctx.json(res, 200, {
+            run: fresh ? timelineView(fresh, true) : null,
+            chain,
+          });
+        } catch (e) {
+          if (e instanceof TaskRouteError) {
+            ctx.json(res, e.status, { error: e.message, code: e.code });
+          } else {
+            throw e;
+          }
+        }
+        return true;
+      }
+      // Wrong method on a timeline sub-path.
+      ctx.json(res, 405, { error: 'method not allowed for this timeline path', code: 'bad-method' });
       return true;
     }
 

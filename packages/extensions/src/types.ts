@@ -85,6 +85,8 @@ export interface ExtensionContributes {
   providers: ExtensionProviderDef[];
 }
 
+export type ExtensionReviewClaim = 'unreviewed' | 'reviewed' | 'official';
+
 export interface ExtensionManifest {
   name: string;
   version: string;
@@ -92,6 +94,45 @@ export interface ExtensionManifest {
   author?: string;
   permissions: ExtensionPermission[];
   contributes: ExtensionContributes;
+  /**
+   * Host extension API version this bundle targets (V3-#9).
+   * Missing = legacy (pre-trust-model) bundle: treated as API v1 with a
+   * warning, never silently upgraded. A declared major other than 1 is
+   * rejected at install and at load — see trust.ts checkApiVersion.
+   */
+  apiVersion?: string;
+  /**
+   * Review claim (V3-#9). This is only a claim: the trust layer honours
+   * 'reviewed'/'official' only when the bundle carries a valid signature
+   * (and 'official' only with the official key). Unsigned claims are
+   * downgraded to 'unreviewed' with a warning.
+   */
+  review?: ExtensionReviewClaim;
+}
+
+/** Ed25519 bundle signature, stored beside the bundle in signature.json. */
+export interface ExtensionSignature {
+  algorithm: 'ed25519';
+  /** Base64 SPKI DER public key. */
+  publicKey: string;
+  /** Base64 signature over the canonical bundle string (trust.ts). */
+  signature: string;
+}
+
+export type ExtensionSignatureStatus = 'valid' | 'invalid' | 'absent';
+export type ExtensionReview = 'official' | 'reviewed' | 'unreviewed';
+export type ExtensionTrustSource = 'official' | 'signature' | 'user' | 'local-dev';
+
+/** Trust verdict for one installed bundle (V3-#9). Never a security claim. */
+export interface ExtensionTrust {
+  apiVersion: string | null;
+  legacyApi: boolean;
+  signature: ExtensionSignatureStatus;
+  review: ExtensionReview;
+  trusted: boolean;
+  trustSource: ExtensionTrustSource | null;
+  bundleSha256: string;
+  warnings: string[];
 }
 
 export interface ExtensionState {
@@ -109,6 +150,10 @@ export interface ExtensionInfo {
   panels: ExtensionPanelDef[];
   checkers: ExtensionCheckerDef[];
   providers: ExtensionProviderDef[];
+  /** Declared host API version, or null for legacy bundles (V3-#9). */
+  apiVersion: string | null;
+  /** Trust verdict for the exact installed bundle (V3-#9). */
+  trust: ExtensionTrust;
 }
 
 export interface ExtensionProviderItem {

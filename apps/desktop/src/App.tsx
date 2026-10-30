@@ -49,6 +49,7 @@ import { EnvPanel } from './components/EnvPanel';
 import { DataPreviewPanel } from './components/DataPreviewPanel';
 import RulesPanel from './components/RulesPanel';
 import { SlashCommandsPanel } from './components/SlashCommandsPanel';
+import { DiagnosticsPanel } from './components/DiagnosticsPanel';
 import { initSnippets } from './snippets/manager';
 import { ScratchesPanel } from './components/ScratchesPanel';
 import { SchedulesPanel } from './components/SchedulesPanel';
@@ -58,6 +59,7 @@ import { ProfilerPanel } from './components/ProfilerPanel';
 import { HttpPanel } from './components/HttpPanel';
 import { DashboardPanel, createDashboardApi } from './components/DashboardPanel';
 import { OpsPanel } from './components/OpsPanel';
+import { BudgetPanel } from './components/BudgetPanel';
 import { FinalReportPanel } from './components/FinalReportPanel';
 import { BackupPanel } from './components/BackupPanel';
 import { ProjectPanel } from './components/ProjectPanel';
@@ -68,6 +70,7 @@ import { NeedsHumanPanel } from './components/NeedsHumanPanel';
 import { LanguageProvider, useLang } from './i18n';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { GoldenPathWizard } from './components/GoldenPathWizard';
+import { LangSrvPanel } from './components/LangSrvPanel';
 import {
   CENTER_TABS,
   DEFAULT_NAV_TIER_STATE,
@@ -123,7 +126,7 @@ function IdeShell() {
   const [authNotice, setAuthNotice] = useState('');
   const [rotatedTokenOnce, setRotatedTokenOnce] = useState<string | null>(null);
   const [rotating, setRotating] = useState(false);
-  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor' | 'Profiler' | 'HTTP' | 'Debug' | 'Timeline' | 'Keybindings' | 'Merge' | 'Search' | 'Scratches' | 'Snippets' | 'Schedules' | 'Rebase' | 'Extensions' | 'Rules' | 'DataPreview' | 'Env' | 'Slash'>('Dashboard');
+  const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor' | 'Profiler' | 'HTTP' | 'Debug' | 'Timeline' | 'Keybindings' | 'Merge' | 'Search' | 'Scratches' | 'Snippets' | 'Schedules' | 'Rebase' | 'Extensions' | 'Rules' | 'DataPreview' | 'Env' | 'Slash' | 'Diagnostics' | 'LangSrv'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
   /** V3-#3 tiered navigation: persisted, progressive disclosure. */
   const [navTier, setNavTier] = useState<NavTierState>(() =>
@@ -429,6 +432,7 @@ function IdeShell() {
           ) : centerTab === 'Ops' ? (
             <>
               <OpsPanel />
+              <BudgetPanel />
               <BackupPanel />
             </>
           ) : centerTab === 'Report' ? (
@@ -566,6 +570,10 @@ function IdeShell() {
             <RulesPanel projectRoot={projects.find((pr) => pr.id === projectId)?.path ?? ''} />
           ) : centerTab === 'Slash' ? (
             <SlashCommandsPanel projectRoot={projects.find((pr) => pr.id === projectId)?.path ?? ''} />
+          ) : centerTab === 'Diagnostics' ? (
+            <DiagnosticsPanel />
+          ) : centerTab === 'LangSrv' ? (
+            <LangSrvPanel projectRoot={projects.find((pr) => pr.id === projectId)?.path ?? ''} />
           ) : centerTab === 'Schedules' ? (
             <SchedulesPanel />
           ) : (

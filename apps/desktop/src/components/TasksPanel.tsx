@@ -7,6 +7,7 @@ import {
   type TasksListResponse,
 } from '../api';
 import { useLang } from '../i18n';
+import { CascadeTimelinePanel } from './CascadeTimelinePanel';
 
 /**
  * Declarative task runner panel (round-5 task R5-S2) — VS Code Tasks style.
@@ -265,6 +266,8 @@ export function TasksPanel({ projectId }: { projectId: string }) {
           ))}
         </div>
       )}
+
+      <CascadeTimelinePanel />
 
       <div className="muted tasks-hint">{t('tasks.honest')}</div>
     </div>

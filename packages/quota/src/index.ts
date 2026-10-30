@@ -8,8 +8,12 @@
  *             secret-free, no-dual-write activation guard
  *  - monitor  provider usage recording, limit-event classification, §27.4
  *             inflight-deterministic-tool gate
+ *  - budget   V3-#8 cost-governance objects: three-scope budgets, warn /
+ *             trip breaker, one-click release, conservative defaults,
+ *             unmeasured placeholder conversion table
  */
 export * from './types';
 export * from './policy';
 export * from './handoff';
 export * from './monitor';
+export * from './budget';

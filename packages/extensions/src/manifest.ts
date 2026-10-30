@@ -171,10 +171,13 @@ function parseProviders(raw: unknown): ExtensionProviderDef[] {
   return out;
 }
 
+const API_VERSION_RE = /^\d+(\.\d+){0,2}$/;
+const REVIEW_VALUES = ['unreviewed', 'reviewed', 'official'] as const;
+
 /** Validate an unknown value as an ExtensionManifest (throws ExtensionError). */
 export function validateManifest(input: unknown): ExtensionManifest {
   if (!isRecord(input)) throw new ExtensionError('manifest must be an object');
-  checkUnknown(input, ['name', 'version', 'description', 'author', 'permissions', 'contributes'], 'manifest');
+  checkUnknown(input, ['name', 'version', 'description', 'author', 'permissions', 'contributes', 'apiVersion', 'review'], 'manifest');
   const name = reqString(input, 'name', 64);
   if (!EXTENSION_NAME_RE.test(name)) throw new ExtensionError(`manifest.name is invalid: ${name}`);
   const version = reqString(input, 'version', 64);
@@ -206,7 +209,28 @@ export function validateManifest(input: unknown): ExtensionManifest {
       providers: parseProviders(input.contributes.providers),
     };
   }
-  return { name, version, description, author, permissions, contributes };
+  // V3-#9 trust fields. apiVersion is optional (missing = legacy); a
+  // malformed value is rejected here, an unsupported major in trust.ts.
+  const apiVersion = optString(input, 'apiVersion', 32);
+  if (apiVersion !== undefined && !API_VERSION_RE.test(apiVersion)) {
+    throw new ExtensionError(`manifest.apiVersion must look like 1 or 1.2: ${apiVersion}`);
+  }
+  const reviewRaw = optString(input, 'review', 32);
+  if (reviewRaw !== undefined && !(REVIEW_VALUES as readonly string[]).includes(reviewRaw)) {
+    throw new ExtensionError(`manifest.review must be one of: ${REVIEW_VALUES.join(', ')}`);
+  }
+  // Key order is fixed (and JSON.stringify drops undefined), so the
+  // canonical bundle string in trust.ts is stable across sign/verify.
+  return {
+    name,
+    version,
+    description,
+    author,
+    permissions,
+    contributes,
+    apiVersion,
+    review: reviewRaw as ExtensionManifest['review'],
+  };
 }
 
 /** Validate main.js source (size + NUL bytes). Execution safety is the sandbox's job. */

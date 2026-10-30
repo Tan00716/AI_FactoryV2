@@ -132,6 +132,7 @@ import { handleSessionRoutes } from './routes/sessions';
 import { handleSessionWorktreeRoutes } from './routes/session-worktrees';
 import { handleSearchRoutes } from './routes/search';
 import { getCodeIndexService, handleCodeIndexRoutes } from './routes/codeindex';
+import { handleLangSrvRoutes } from './routes/langsrv';
 import { getRepoMapService, handleRepoMapRoutes } from './routes/repomap';
 import { handleAttachmentRoutes } from './routes/attachments';
 import { handleMetricsRoutes, recordHealthLatency } from './routes/metrics';
@@ -223,7 +224,8 @@ import {
   setSpellInspectionRootResolver,
   spellCheckerProvider,
 } from './routes/spell';
-import { handleTaskRunnerRoutes, setTaskRunnerDeps, runTaskChainForScheduler, runTaskChainByLabel, runTaskChainWithEnv } from './routes/tasks';
+import { handleTaskRunnerRoutes, setTaskRunnerDeps, setTimelineCheckpointProvider, runTaskChainForScheduler, runTaskChainByLabel, runTaskChainWithEnv } from './routes/tasks';
+import { ShadowCheckpointStore } from './shadow-checkpoints';
 import { handleWatchRoutes, setWatchDeps } from './routes/watch';
 import { handleTaskQueueRoutes, setTaskQueueDeps } from './routes/taskqueue';
 import { handleEnvRoutes, setEnvDeps } from './routes/env';
@@ -280,7 +282,11 @@ import {
 } from './routes/rules';
 import { handleIgnoresRoutes } from './routes/ignores';
 import { handleEgressRoutes } from './routes/egress';
-import { assertEgressAllowed, setEgressBlockSinks } from './egress';
+import {
+  handleDiagnosticsRoutes,
+  setDiagnosticsConfigProvider,
+} from './routes/diagnostics';
+import { assertEgressAllowed, egressStore, setEgressBlockSinks } from './egress';
 import { setFetchTextGuard } from '@ai-factory/search';
 import { setMcpHttpGuard } from '@ai-factory/mcp';
 import { setIgnoreGateAuditHook, isIgnoredSync } from './ignore-gate';
@@ -819,6 +825,31 @@ setDataPreviewRootResolver((root) => resolveInspectionRoot(root));
 // policy (deny patterns + binary whitelist + control-dir guard) — no new
 // execution channel. Problem output is parsed with the project's matchers
 // and stored under source 'tasks'.
+// V3-#7 timeline checkpoint linking, via the setter seam in routes/tasks
+// (that route is src-imported by tests, so it must not value-import the
+// store itself). Best-effort: provider failures surface as checkpointError.
+setTimelineCheckpointProvider((root, label) => {
+  try {
+    const store = new ShadowCheckpointStore();
+    const out: Array<{ id: string; createdAt: string; label: string; workspaceId: string; workspacePath: string }> = [];
+    for (const cfg of store.configsForPath(root)) {
+      for (const cp of store.list(cfg.workspaceId)) {
+        if (cp.taskId !== label) continue;
+        out.push({
+          id: cp.id,
+          createdAt: cp.createdAt,
+          label: cp.label,
+          workspaceId: cfg.workspaceId,
+          workspacePath: cfg.workspacePath,
+        });
+        if (out.length >= 20) return { checkpoints: out, checkpointError: null };
+      }
+    }
+    return { checkpoints: out, checkpointError: null };
+  } catch (e) {
+    return { checkpoints: [], checkpointError: (e as Error).message };
+  }
+});
 setTaskRunnerDeps({
   resolveRoot: (root) => resolveInspectionRoot(root),
   checkCommandPolicy: (command) => checkCommandPolicy(command),
@@ -1479,6 +1510,20 @@ setEgressBlockSinks({
     notify.emit(event);
   },
 });
+// V3-#10: diagnostics config snapshot — auth mode (never a token value)
+// + egress summary (already viewer-visible via /api/egress/config).
+setDiagnosticsConfigProvider(() => {
+  const g = egressStore().getGlobal();
+  return {
+    authMode: AUTH_MODE === 'open' ? 'open' : 'token',
+    egress: {
+      enabled: g.enabled,
+      defaultPolicy: g.defaultPolicy,
+      ruleCount: g.rules.length,
+    },
+    egressUnavailableReason: null,
+  };
+});
 // R4-S1: pre-send prompt secret gate — a blocked prompt lands in the audit
 // trail (PROMPT_SECRET_BLOCKED / PROMPT_SECRET_REDACTED) and the block also
 // raises a HIGH notification via the rules engine. Best-effort sinks: the
@@ -1699,6 +1744,7 @@ const server = createServer(async (req, res) => {
     if (await handleSessionRoutes(req, res, url, routeCtx)) return;
     if (await handleSessionWorktreeRoutes(req, res, url, routeCtx)) return;
     if (await handleCodeIndexRoutes(req, res, url, routeCtx)) return;
+    if (await handleLangSrvRoutes(req, res, url, routeCtx)) return;
     if (await handleRepoMapRoutes(req, res, url, routeCtx)) return;
     if (await handleSearchRoutes(req, res, url, routeCtx)) return;
     if (await handleAttachmentRoutes(req, res, url, routeCtx)) return;
@@ -1787,6 +1833,7 @@ const server = createServer(async (req, res) => {
     if (await handleRecipesRoutes(req, res, url, routeCtx)) return;
     if (await handleProblemMatcherRoutes(req, res, url, routeCtx)) return;
     if (await handleEgressRoutes(req, res, url, routeCtx)) return;
+    if (await handleDiagnosticsRoutes(req, res, url, routeCtx)) return;
     if (await handleDesignRoutes(req, res, url, routeCtx)) return;
     if (await handleRetentionRoutes(req, res, url, routeCtx)) return;
     if (await handleAuthorizationTicketRoutes(req, res, url, routeCtx)) return;

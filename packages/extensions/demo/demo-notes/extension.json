@@ -1,0 +1,1 @@
+{"name":"demo-notes","version":"1.0.0","apiVersion":"1","review":"official","description":"Sample extension: contributes a context provider (@notes).","author":"ai-factory samples","permissions":["providers.contribute"],"contributes":{"commands":[],"panels":[],"checkers":[],"providers":[{"id":"demo.notes","prefix":"@notes","description":"Returns a note item for the query."}]}}

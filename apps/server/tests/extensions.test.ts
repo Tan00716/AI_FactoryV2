@@ -89,7 +89,7 @@ test('install + list + run command + panels + uninstall', async () => {
   const PROJ = freshProj();
   const g0 = await run('GET', `/api/extensions?root=${encodeURIComponent(PROJ)}`);
   assert.deepEqual((g0.body as { installed: unknown[] }).installed, []);
-  const ins = await run('POST', '/api/extensions/install', { root: PROJ, manifest: HELLO_MANIFEST, main: HELLO_MAIN });
+  const ins = await run('POST', '/api/extensions/install', { root: PROJ, manifest: HELLO_MANIFEST, main: HELLO_MAIN, trust: true });
   assert.equal(ins.code, 201);
   assert.ok(auditCalls.includes('EXT_INSTALLED'));
   const list = await run('GET', `/api/extensions?root=${encodeURIComponent(PROJ)}`);
@@ -116,8 +116,8 @@ test('install + list + run command + panels + uninstall', async () => {
 
 test('duplicate install is 409-style rejected', async () => {
   const PROJ = freshProj();
-  await run('POST', '/api/extensions/install', { root: PROJ, manifest: HELLO_MANIFEST, main: HELLO_MAIN });
-  const dup = await run('POST', '/api/extensions/install', { root: PROJ, manifest: HELLO_MANIFEST, main: HELLO_MAIN });
+  await run('POST', '/api/extensions/install', { root: PROJ, manifest: HELLO_MANIFEST, main: HELLO_MAIN, trust: true });
+  const dup = await run('POST', '/api/extensions/install', { root: PROJ, manifest: HELLO_MANIFEST, main: HELLO_MAIN, trust: true });
   assert.equal(dup.code, 400);
   assert.match((dup.body as { error: string }).error, /already installed/);
   await run('DELETE', `/api/extensions/hello-command?root=${encodeURIComponent(PROJ)}`);
@@ -148,6 +148,7 @@ test('handler-body escape is rejected at run time (vm is the enforcement)', asyn
     root: PROJ,
     manifest: HELLO_MANIFEST,
     main: `api.registerCommand('hello.echo', () => require('fs'));`,
+    trust: true,
   });
   const runRes = await run('POST', '/api/extensions/hello-command/commands/hello.echo/run', {
     root: PROJ,
@@ -178,7 +179,7 @@ test('install-from-dir honours the jail', async () => {
 
 test('checker provider flags marker lines and honours disable', async () => {
   const PROJ = freshProj();
-  await run('POST', '/api/extensions/install', { root: PROJ, manifest: MARKER_MANIFEST, main: `// no code needed` });
+  await run('POST', '/api/extensions/install', { root: PROJ, manifest: MARKER_MANIFEST, main: `// no code needed`, trust: true });
   const checkers = extensionCheckerProvider(PROJ);
   assert.equal(checkers.length, 1);
   assert.equal(checkers[0].name, 'ext:marker-checker:mark');
