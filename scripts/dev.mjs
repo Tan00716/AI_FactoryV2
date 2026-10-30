@@ -9,7 +9,12 @@ const root = new URL('..', import.meta.url).pathname;
 
 const backend = spawn('node', ['apps/server/dist/index.js'], {
   cwd: root,
-  env: { ...process.env, PORT: '3100', DB_PATH: './data/factory.db' },
+  // V3-#1: dev-only explicit opt-in to open local mode. The production
+  // default is fail-closed (no credential refuses to start); the
+  // packaged desktop instead injects a per-install token file (see
+  // apps/desktop/electron/main.ts). Never copy this flag into a
+  // distributed launch path.
+  env: { ...process.env, PORT: '3100', DB_PATH: './data/factory.db', FACTORY_ALLOW_OPEN_LOCAL: '1' },
   stdio: 'inherit',
 });
 

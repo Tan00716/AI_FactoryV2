@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, defaultApiBase, BoardCard, OrgNode, Project, TaskSummary } from './api';
+import { api, defaultApiBase, BoardCard, OrgNode, Project, TaskSummary, initApiTokenFromMain, rotateApiToken } from './api';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { Board } from './components/Board';
@@ -67,6 +67,20 @@ import { ModelsPanel } from './components/ModelsPanel';
 import { NeedsHumanPanel } from './components/NeedsHumanPanel';
 import { LanguageProvider, useLang } from './i18n';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { GoldenPathWizard } from './components/GoldenPathWizard';
+import {
+  CENTER_TABS,
+  DEFAULT_NAV_TIER_STATE,
+  GOTO_TAB_EVENT,
+  OPEN_CREATE_EVENT,
+  loadGoldenPathProgress,
+  loadNavTierState,
+  saveGoldenPathProgress,
+  saveNavTierState,
+  tabsOfTier,
+  tierOf,
+} from './navigation/tiers';
+import type { NavTierState } from './navigation/tiers';
 import { initialProjectId } from './utils/project-query';
 import { KeybindingHost } from './keybinding/host';
 import { onCommand, tabNameForCommand, LANGUAGE_SWITCH_COMMAND } from './keybinding/commands';
@@ -100,8 +114,58 @@ function IdeShell() {
   /** Batch 15: API identity label for the top bar (role / local mode /
    *  unknown when whoami cannot be fetched — displayed as-is, never guessed). */
   const [apiIdentityLabel, setApiIdentityLabel] = useState('');
+  /** V3-#1 completion: true while the server runs in explicit open local
+   *  mode (FACTORY_ALLOW_OPEN_LOCAL=1); renders the warning banner below. */
+  const [apiOpenLocal, setApiOpenLocal] = useState(false);
+  /** V3-#1 completion: rotation result notice; the rotated token itself is
+   *  shown once only in the no-bridge fallback (it is never stored in
+   *  state in the Electron path, where main re-reads the token file). */
+  const [authNotice, setAuthNotice] = useState('');
+  const [rotatedTokenOnce, setRotatedTokenOnce] = useState<string | null>(null);
+  const [rotating, setRotating] = useState(false);
   const [centerTab, setCenterTab] = useState<'Dashboard' | 'Ops' | 'Report' | 'Board' | 'Git' | 'QA' | 'Approvals' | 'Permissions' | 'NeedsHuman' | 'Dispatch' | 'CI/CD' | 'Skills' | 'Memory' | 'MCP' | 'Knowledge' | 'Evaluation' | 'Agents' | 'Orchestrate' | 'Observatory' | 'Manager' | 'Editor' | 'Terminal' | 'Changes' | 'Stability' | 'Project' | 'Activity' | 'Events' | 'Models' | 'Plan' | 'Hooks' | 'Session' | 'Plugins' | 'Metrics' | 'Inspections' | 'Batch' | 'Collab' | 'Coverage' | 'Recipes' | 'Design' | 'Updates' | 'Refactor' | 'Profiler' | 'HTTP' | 'Debug' | 'Timeline' | 'Keybindings' | 'Merge' | 'Search' | 'Scratches' | 'Snippets' | 'Schedules' | 'Rebase' | 'Extensions' | 'Rules' | 'DataPreview' | 'Env' | 'Slash'>('Dashboard');
   const [showCreate, setShowCreate] = useState(false);
+  /** V3-#3 tiered navigation: persisted, progressive disclosure. */
+  const [navTier, setNavTier] = useState<NavTierState>(() =>
+    typeof window === 'undefined' ? { ...DEFAULT_NAV_TIER_STATE } : loadNavTierState(window.localStorage),
+  );
+  /** V3-#3 golden path wizard: first run unless dismissed. */
+  const [wizardOpen, setWizardOpen] = useState(() =>
+    typeof window === 'undefined' ? false : !loadGoldenPathProgress(window.localStorage).dismissed,
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    saveNavTierState(navTier, window.localStorage);
+  }, [navTier]);
+  /** EmptyState / wizard jump events: keep panels prop-light. */
+  useEffect(() => {
+    const onGoto = (e: Event) => {
+      const d = (e as CustomEvent<{ tab?: string }>).detail;
+      if (d && typeof d.tab === 'string' && (CENTER_TABS as readonly string[]).includes(d.tab)) {
+        setCenterTab(d.tab as typeof centerTab);
+      }
+    };
+    const onCreate = () => {
+      setCenterTab('Board');
+      setShowCreate(true);
+    };
+    window.addEventListener(GOTO_TAB_EVENT, onGoto);
+    window.addEventListener(OPEN_CREATE_EVENT, onCreate);
+    return () => {
+      window.removeEventListener(GOTO_TAB_EVENT, onGoto);
+      window.removeEventListener(OPEN_CREATE_EVENT, onCreate);
+    };
+  }, []);
+  /** Navigating (e.g. via command palette) into a collapsed tier expands it. */
+  useEffect(() => {
+    const tier = tierOf(centerTab);
+    if (tier === 'advanced' && !navTier.expandedAdvanced && !navTier.showAll) {
+      setNavTier((prev) => ({ ...prev, expandedAdvanced: true }));
+    } else if (tier === 'expert' && !navTier.expandedExpert && !navTier.showAll) {
+      setNavTier((prev) => ({ ...prev, expandedExpert: true }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [centerTab]);
   /**
    * Design panel → editor jump (task ⑨): the Design panel dispatches an
    * 'ai-factory:open-file' CustomEvent with {path, line}; we hand it to
@@ -163,13 +227,23 @@ function IdeShell() {
 
   const refresh = useCallback(async () => {
     try {
+      // V3-#1 completion: the per-install token must be in memory before
+      // the first authenticated call; previously initApiTokenFromMain was
+      // defined but never invoked, so an Electron renderer sent no token.
+      await initApiTokenFromMain();
       await api.health();
       setConnected(true);
       // Identity is display-only: a failed whoami (older server, bad
       // token) must not break the refresh — it just shows as unknown.
       api.whoami()
-        .then((w) => setApiIdentityLabel(w.mode === 'open' ? t('app.identityLocal') : t('app.identityRole', { role: w.role })))
-        .catch(() => setApiIdentityLabel(t('app.identityUnknown')));
+        .then((w) => {
+          setApiIdentityLabel(w.mode === 'open' ? t('app.identityLocal') : t('app.identityRole', { role: w.role }));
+          setApiOpenLocal(w.mode === 'open');
+        })
+        .catch(() => {
+          setApiIdentityLabel(t('app.identityUnknown'));
+          setApiOpenLocal(false);
+        });
       const [ps, board, tree, agents, taskList] = await Promise.all([
         api.projects(), api.board(projectId), api.org(), api.agents(), api.tasks(projectId),
       ]);
@@ -257,6 +331,25 @@ function IdeShell() {
     return () => clearInterval(t);
   }, [bootError, refresh]);
 
+  /** V3-#1 completion: rotate the per-install token (admin only). The old
+   *  token dies immediately server-side; rotateApiToken re-syncs the
+   *  client so the next request does not 401. */
+  const onRotateToken = async () => {
+    setRotating(true);
+    setAuthNotice('');
+    setRotatedTokenOnce(null);
+    try {
+      const r = await rotateApiToken();
+      setAuthNotice(t('app.rotateOk'));
+      if (!r.viaBridge && r.token) setRotatedTokenOnce(r.token);
+      await refresh();
+    } catch (e) {
+      setAuthNotice(t('app.rotateFail', { message: (e as Error).message }));
+    } finally {
+      setRotating(false);
+    }
+  };
+
   return (
     <div className="ide">
       <TopBar
@@ -276,10 +369,60 @@ function IdeShell() {
         <Sidebar org={org} onSelectAgent={setSelectedAgentId} onOpenUpdates={() => setCenterTab('Updates')} />
         <main className="center">
           {bootError && <div className="banner err">{bootError}</div>}
+          {apiOpenLocal && (
+            <div className="banner err">{t('app.openLocalWarning')}</div>
+          )}
+          {connected && !apiOpenLocal && (
+            <div className="banner">
+              <button disabled={rotating} onClick={onRotateToken}>{t('app.rotateToken')}</button>
+              {authNotice && <span style={{ marginLeft: 8 }}>{authNotice}</span>}
+              {rotatedTokenOnce && (
+                <span style={{ marginLeft: 8 }}>
+                  {t('app.rotateTokenOnce')}: <code>{rotatedTokenOnce}</code> {t('app.rotateTokenNote')}
+                </span>
+              )}
+            </div>
+          )}
+          {wizardOpen && (
+            <GoldenPathWizard
+              onClose={() => setWizardOpen(false)}
+              onDismiss={() => {
+                if (typeof window !== 'undefined') {
+                  const prev = loadGoldenPathProgress(window.localStorage);
+                  saveGoldenPathProgress({ ...prev, dismissed: true }, window.localStorage);
+                }
+                setWizardOpen(false);
+              }}
+            />
+          )}
+          {/* V3-#3 tier toolbar: outside .center-tabs so e2e tab indexing is unchanged. */}
+          <div className="nav-tier-bar">
+            <span className="muted">{t('nav.tierLabel')}</span>
+            <button onClick={() => setNavTier((prev) => ({ ...prev, expandedAdvanced: !prev.expandedAdvanced, showAll: false }))}>
+              {navTier.expandedAdvanced ? t('nav.hideAdvanced') : t('nav.showAdvanced')}
+            </button>
+            <button onClick={() => setNavTier((prev) => ({ ...prev, expandedExpert: !prev.expandedExpert, showAll: false }))}>
+              {navTier.expandedExpert ? t('nav.hideExpert') : t('nav.showExpert')}
+            </button>
+            <button onClick={() => setNavTier((prev) => ({ ...prev, showAll: !prev.showAll }))}>
+              {navTier.showAll ? t('nav.showTiered') : t('nav.showAll')}
+            </button>
+            <button onClick={() => setWizardOpen(true)}>{t('nav.wizard')}</button>
+          </div>
           <div className="center-tabs">
-            {(['Dashboard', 'Ops', 'Report', 'Board', 'Git', 'QA', 'Approvals', 'Permissions', 'NeedsHuman', 'Dispatch', 'CI/CD', 'Skills', 'Memory', 'MCP', 'Knowledge', 'Evaluation', 'Agents', 'Orchestrate', 'Observatory', 'Manager', 'Editor', 'Terminal', 'Changes', 'Stability', 'Project', 'Activity', 'Events', 'Models', 'Plan', 'Hooks', 'Session', 'Plugins', 'Metrics', 'Inspections', 'Batch', 'Collab', 'Coverage', 'Recipes', 'Design', 'Updates', 'Refactor', 'Profiler', 'HTTP', 'Debug', 'Timeline', 'Keybindings', 'Merge', 'Search', 'Scratches', 'Snippets', 'Schedules', 'Rebase', 'Extensions', 'Rules', 'DataPreview', 'Env', 'Slash'] as const).map((name) => (
-              <button key={name} className={centerTab === name ? 'active' : ''} onClick={() => setCenterTab(name)}>{t(`tab.${name.toLowerCase().replace('/', '')}` as const)}</button>
-            ))}
+            {(['common', 'advanced', 'expert'] as const).map((tier) => {
+              const collapsed = tier !== 'common'
+                && !navTier.showAll
+                && (tier === 'advanced' ? !navTier.expandedAdvanced : !navTier.expandedExpert);
+              return (
+                <span key={tier} className="center-tab-group" data-tier={tier} style={collapsed ? { display: 'none' } : undefined}>
+                  <span className="center-tab-group-label muted">{t(`nav.tier.${tier}`)}</span>
+                  {tabsOfTier(tier).map((name) => (
+                    <button key={name} className={centerTab === name ? 'active' : ''} onClick={() => setCenterTab(name)}>{t(`tab.${name.toLowerCase().replace('/', '')}` as const)}</button>
+                  ))}
+                </span>
+              );
+            })}
           </div>
           {centerTab === 'Dashboard' ? (
             <DashboardPanel api={dashboardApi} />

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 export interface SessionRecord {
   id: string;
@@ -372,6 +373,7 @@ export function SessionPanel({ sessionApi }: { sessionApi: SessionApi }) {
 
   return (
     <div className="panel">
+      {sessions !== null && sessions.length === 0 && <EmptyState panel="session" />}
       <h2>{t('session.title')}</h2>
       <p className="muted">{t('session.desc')}</p>
       {error && <div className="error">{error}</div>}

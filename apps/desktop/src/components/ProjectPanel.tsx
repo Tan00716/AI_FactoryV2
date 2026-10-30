@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, type EgressBlockEntry, type EgressConfigState, type EgressRule, type EgressTestResult, type IgnorePreview, type QualityGateConfig, type QualityGateLastRun } from '../api';
+import EgressWizardPanel from './EgressWizardPanel';
 import { useLang } from '../i18n';
 
 interface Issue { file: string; message: string }
@@ -592,6 +593,7 @@ function EgressSection({ projectId }: { projectId: string }) {
     <section className="sub-panel">
       <h4>{t('egress.title')}</h4>
       <p className="muted">{t('egress.desc')}</p>
+      <EgressWizardPanel onDone={() => void load()} />
       {!loaded ? (
         <p className="muted">{t('egress.loading')}</p>
       ) : (

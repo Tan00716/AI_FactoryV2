@@ -2,7 +2,8 @@
  * Egress firewall HTTP tests — boots the real server (dist) with an
  * isolated DB and exercises the whole feature end to end:
  *
- *   GET  /api/egress/config            default: disabled, no rules
+ *   GET  /api/egress/config            default: ENABLED + deny (V3-#5
+ *                                      factory default), no rules
  *   PUT  /api/egress/config (global)   invalid rule → 400
  *   PUT  /api/egress/config (global)   enabled + deny www.bing.com
  *   POST /api/egress/test              dry-run verdicts (deny-rule /
@@ -65,6 +66,10 @@ async function startServer(): Promise<Running> {
     DB_PATH: path.join(dir, 'factory.db'),
     AI_FACTORY_DATA_DIR: path.join(dir, 'data'),
     FACTORY_PROJECTS_ROOT: path.join(dir, 'projects'),
+    // Test-harness opt-in (same as the V3-#5 smoke script): the server
+    // is fail-closed without a token even on loopback since V3-#1, so
+    // egress HTTP tests boot with explicit open-local mode.
+    FACTORY_ALLOW_OPEN_LOCAL: '1',
   };
   for (const k of ['FACTORY_API_TOKEN', 'FACTORY_SECRETS_DIR', 'FACTORY_RUNTIME_TOOLS', 'BRAVE_SEARCH_API_KEY', 'TAVILY_API_KEY']) {
     delete env[k];
@@ -126,12 +131,15 @@ test('egress firewall end to end over HTTP', async () => {
       db.close();
     }
 
-    // 1. Default state: disabled, deny default policy, no rules.
+    // 1. Default state (V3-#5 factory default): ENABLED, deny default
+    //    policy, no rules, flagged as factory default (not legacy).
     let r = await api(srv.port, 'GET', `/api/egress/config?projectId=${encodeURIComponent(projectId)}`);
     assert.equal(r.status, 200);
-    assert.equal(r.body.global.enabled, false);
+    assert.equal(r.body.global.enabled, true);
     assert.equal(r.body.global.defaultPolicy, 'deny');
     assert.deepEqual(r.body.global.rules, []);
+    assert.equal(r.body.factoryDefault, true);
+    assert.equal(r.body.legacyConfig, false);
     assert.equal(r.body.project.rules.length, 0);
 
     // 2. Invalid rule → 400 with details (wildcard rejected).

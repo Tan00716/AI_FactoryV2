@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 /** Typed client for the knowledge endpoints. */
 export interface KnowledgeHit {
@@ -259,6 +260,7 @@ export function KnowledgePanel(props: { knowledge?: KnowledgeApi }) {
 
   return (
     <div className="knowledge-panel">
+      {cards.length === 0 && <EmptyState panel="knowledge" />}
       {error && <div className="banner err">{error}</div>}
       <div className="subtabs">
         <button className={subtab === 'browse' ? 'sel' : ''} onClick={() => setSubtab('browse')}>{t('knowledge.browse')}</button>

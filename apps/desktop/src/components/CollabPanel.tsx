@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { defaultApiBase, getApiToken, authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 import {
   RgaDocument,
   type RgaOp,
@@ -348,6 +349,7 @@ export function CollabPanel({ projectId, currentTab, onFollowPanel }: Props) {
 
   return (
     <div className="panel collab-panel">
+      {members.length === 0 && <EmptyState panel="collab" />}
       <div className="panel-head">
         <h2>{t('collab.title')}</h2>
         <p className="muted">{t('collab.subtitle')}</p>

@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 // ------------------------------------------------------------- API ----
 
@@ -220,6 +221,7 @@ export function BatchChangesPanel({ api }: { api: BatchChangesApi }) {
 
   return (
     <div style={{ padding: 12, overflowY: 'auto', height: '100%' }}>
+      {batches.length === 0 && <EmptyState panel="batch" />}
       <h3 style={{ margin: '0 0 8px' }}>{t('batch.title')}</h3>
       {err && <div className="banner err">{err}</div>}
       <div className="muted" style={{ fontSize: 12, marginBottom: 12, lineHeight: 1.6 }}>

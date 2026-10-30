@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, TaskSummary, NextState } from '../api';
 import { useLang, type TFunc } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 /**
  * Task Board 完整版 — spec §85.
@@ -205,6 +206,7 @@ export function Board({ tasks, onChanged, onCreate, onSelectTask }: {
 
   return (
     <div className="board-wrap">
+      {tasks.length === 0 && <EmptyState panel="board" />}
       <div className="board-head">
         <h2>{t('board.title')} <span className="muted">{t('board.taskCount', { count: tasks.length })}</span></h2>
         <button className="primary" onClick={onCreate}>{t('board.newTask')}</button>

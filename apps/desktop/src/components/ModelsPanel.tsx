@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 /**
  * Model Registry — spec §90.
@@ -103,6 +104,7 @@ export function ModelsPanel({ api, pollMs = 15000 }: ModelsPanelProps) {
 
   return (
     <div className="models-panel">
+      {models.length === 0 && <EmptyState panel="models" />}
       <div className="board-head">
         <h2>{t('models.title')} <span className="count">§90</span></h2>
         <span className="muted">{t('models.count', { v: visible.length, n: models.length })}</span>

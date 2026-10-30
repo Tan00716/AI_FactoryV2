@@ -39,3 +39,22 @@ test('quote: bare values pass through, multiline values escape', () => {
   assert.equal(quoteEnvValue('line1\nline2'), '"line1\\nline2"');
   assert.equal(parseDotEnv(`K=${quoteEnvValue('line1\nline2')}\n`).entries[0].value, 'line1\nline2');
 });
+
+test('crlf: roundtrip preserves CRLF on untouched, rewritten, and appended lines', () => {
+  const crlf = '# header\r\nA=1\r\nB=2\r\n';
+  assert.equal(parseDotEnv(crlf).lineEnding, '\r\n');
+  assert.equal(applyEnvOps(crlf, []), crlf);
+  assert.equal(
+    applyEnvOps(crlf, [
+      { type: 'set', key: 'A', value: '9' },
+      { type: 'set', key: 'C', value: '3' },
+    ]),
+    '# header\r\nA=9\r\nB=2\r\nC=3\r\n',
+  );
+});
+
+test('crlf: LF files stay LF, mixed files keep CRLF when any CRLF present', () => {
+  assert.equal(parseDotEnv('A=1\n').lineEnding, '\n');
+  assert.equal(parseDotEnv('A=1\r\nB=2\n').lineEnding, '\r\n');
+  assert.equal(applyEnvOps('A=1\n', []), 'A=1\n');
+});

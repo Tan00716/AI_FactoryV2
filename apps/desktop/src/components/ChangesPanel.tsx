@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 import { DiffViewer } from './DiffViewer';
 
 const API_BASE = defaultApiBase();
@@ -135,6 +136,7 @@ export function ChangesPanel({ api }: { api: ChangesApi }) {
 
   return (
     <div style={{ padding: 12, overflowY: 'auto', height: '100%' }}>
+      {changes.length === 0 && <EmptyState panel="changes" />}
       <h3 style={{ margin: '0 0 8px' }}>
         {t('changes.title')} <span className="muted">§66</span>
       </h3>

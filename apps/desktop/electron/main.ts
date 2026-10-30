@@ -6,6 +6,8 @@
  */
 import { app, BrowserWindow, ipcMain, Notification } from 'electron';
 import { spawn, ChildProcess } from 'child_process';
+import * as crypto from 'crypto';
+import * as fs from 'fs';
 import * as path from 'path';
 
 // Dev means: unpackaged AND not forced to production. A packaged app must
@@ -55,10 +57,59 @@ function startBackend(): void {
     // (which spawns another "backend", ad infinitum). Run-as-node makes the
     // child execute serverEntry as plain Node, in dev and packaged builds
     // alike.
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT) },
+    //
+    // V3-#1: the backend is never spawned unauthenticated anymore. The
+    // per-install token file (0600, see ensureInstallToken) is injected
+    // as FACTORY_API_TOKEN_FILE, so the server's fail-closed default
+    // (no credential refuses to start) is satisfied by construction.
+    // The renderer obtains the same token through the preload bridge
+    // ('ai-factory:api-token'), never through the URL or localStorage.
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
+      PORT: String(API_PORT),
+      FACTORY_API_TOKEN_FILE: installTokenPath(),
+    },
     stdio: 'inherit',
   });
   backend.on('exit', (code) => console.log(`[main] backend exited with ${code}`));
+}
+
+/**
+ * V3-#1 per-install API token. Path: <userData>/api-token. Created once
+ * (256-bit hex) with mode 0600; an existing file is reused and
+ * re-tightened to 0600 on every launch. The value is never logged and
+ * never leaves the main process except through the 'ai-factory:api-token'
+ * IPC handler, which the renderer calls once at startup.
+ */
+function installTokenPath(): string {
+  return path.join(app.getPath('userData'), 'api-token');
+}
+
+function ensureInstallToken(): string {
+  const file = installTokenPath();
+  try {
+    const existing = fs.readFileSync(file, 'utf8').trim();
+    if (existing) {
+      try {
+        fs.chmodSync(file, 0o600);
+      } catch {
+        /* best effort: a loose mode on an existing file is tightened when possible */
+      }
+      return existing;
+    }
+  } catch {
+    /* missing or unreadable: fall through to creation */
+  }
+  const token = crypto.randomBytes(32).toString('hex');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${token}\n`, { mode: 0o600 });
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    /* best effort */
+  }
+  return token;
 }
 
 function createWindow(initialProject?: string): void {
@@ -95,6 +146,19 @@ function createWindow(initialProject?: string): void {
 }
 
 app.whenReady().then(() => {
+  // V3-#1: create the per-install token before anything spawns the
+  // backend or loads a window, and serve it to the renderer on demand
+  // (fresh read each call, so a server-side rotation is picked up
+  // without relaunching the app). Never logged, never in the URL.
+  ensureInstallToken();
+  ipcMain.handle('ai-factory:api-token', () => {
+    try {
+      const token = fs.readFileSync(installTokenPath(), 'utf8').trim();
+      return token || null;
+    } catch {
+      return null;
+    }
+  });
   // OS desktop notifications from the renderer's notification center.
   // The console line doubles as a test hook (headless Xvfb has no
   // notification daemon, so "shown" can't be observed there).
@@ -164,7 +228,28 @@ app.whenReady().then(() => {
   });
 });
 
+/** Kill the spawned backend if it is still alive. Safe to call twice:
+ * an already-exited child is a no-op, and kill failures are swallowed
+ * because quit-time cleanup must never block the app from exiting. */
+function killBackend(): void {
+  try {
+    if (backend && backend.exitCode === null && !backend.killed) backend.kill();
+  } catch {
+    /* noop: backend already gone */
+  }
+}
+
 app.on('window-all-closed', () => {
-  backend?.kill();
+  killBackend();
   if (process.platform !== 'darwin') app.quit();
 });
+
+// Belt-and-braces (V3 closeout): window-all-closed covers the normal user
+// path, but quit paths that bypass it (CDP Browser.close, verified
+// 2026-10-30 to exit 0 while the backend survived) must not leak the
+// backend either. before-quit runs on every app.quit() path and will-quit
+// is the last synchronous hook before the process exits; on macOS neither
+// fires for a mere window close (the app stays alive), so this does not
+// change the darwin window lifecycle.
+app.on('before-quit', killBackend);
+app.on('will-quit', killBackend);

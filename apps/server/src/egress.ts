@@ -19,10 +19,19 @@
  *   2. Otherwise an ALLOW rule matching in any layer allows the call.
  *   3. Otherwise the global defaultPolicy decides ('deny' = allowlist
  *      mode, the recommended default; 'allow' = denylist mode).
- * When the firewall is DISABLED (the factory default), every call is
- * allowed and NOTHING is audited or logged — first enable must not
- * break existing behavior, and a disabled firewall must not spam the
- * audit trail with noise.
+ * When the firewall is DISABLED (explicitly, by operator choice), every
+ * call is allowed and NOTHING is audited or logged — a disabled firewall
+ * must not spam the audit trail with noise.
+ *
+ * FACTORY DEFAULT (third-round hardening, V3-#5): a fresh install with
+ * NO egress.json on disk starts ENABLED with defaultPolicy 'deny' — an
+ * unlisted outbound target is refused and audited. This tightened
+ * default applies ONLY to the missing-file case: an existing egress.json
+ * is never silently rewritten (it is reported as `legacy` until it is
+ * next written by current code, and the wizard merges into it without
+ * deleting its rules). An operator who wants the old permissive posture
+ * chooses dev-mode in the wizard explicitly — an audited, explicit
+ * choice, not a silent default.
  *
  * Rule shape: { domain, pathPrefix?, action: 'allow'|'deny', note? }.
  *
@@ -111,6 +120,142 @@ export interface EgressGlobalConfig {
   rules: EgressRule[];
   updatedAt: string;
   updatedBy: string;
+  /**
+   * Written by current code (2 = V3-#5 wizard era). Absent on files
+   * predating the wizard: such files are reported as `legacy` (kept
+   * verbatim, never silently rewritten) until next written.
+   */
+  policyVersion?: number;
+  /** ISO time the first-run wizard last completed (any outcome). */
+  wizardCompletedAt?: string;
+  /** Which wizard outcome produced this file, if any. */
+  wizardMode?: 'templates' | 'dev-mode';
+}
+
+/** One wizard template: a bundle of allow rules with plain-language
+ * explanation and risk note (UI renders i18n text by id; the server
+ * text is the fallback). Rule notes are stamped `wizard-template:<id>`
+ * so the provenance of every wizard-added rule stays visible. */
+export interface EgressWizardTemplate {
+  id: string;
+  domains: string[];
+  label: string;
+  description: string;
+  risk: string;
+}
+
+export const EGRESS_WIZARD_TEMPLATES: EgressWizardTemplate[] = [
+  {
+    id: 'npm',
+    domains: ['registry.npmjs.org'],
+    label: 'npm registry',
+    description: 'Node 包安装与元数据查询（npm install / 包信息）。',
+    risk: '仅放行 registry 本身；包安装脚本经 shell 出网不受本防火墙约束。',
+  },
+  {
+    id: 'pypi',
+    domains: ['pypi.org', 'files.pythonhosted.org'],
+    label: 'PyPI',
+    description: 'Python 包安装与元数据查询（pip install）。',
+    risk: '仅放行 PyPI 本身；包安装脚本经 shell 出网不受本防火墙约束。',
+  },
+  {
+    id: 'github',
+    domains: ['github.com', 'api.github.com', 'raw.githubusercontent.com'],
+    label: 'GitHub',
+    description: '仓库读取、API 调用与原始文件拉取。',
+    risk: '放行后任意公开仓库内容均可拉取；私有仓库仍需令牌。',
+  },
+  {
+    id: 'openai',
+    domains: ['api.openai.com'],
+    label: 'OpenAI API',
+    description: '模型端点调用（api.openai.com）。',
+    risk: '放行后提示词与代码片段将发往该端点；请确认已配置密钥。',
+  },
+  {
+    id: 'anthropic',
+    domains: ['api.anthropic.com'],
+    label: 'Anthropic API',
+    description: '模型端点调用（api.anthropic.com）。',
+    risk: '放行后提示词与代码片段将发往该端点；请确认已配置密钥。',
+  },
+  {
+    id: 'google-ai',
+    domains: ['generativelanguage.googleapis.com'],
+    label: 'Google AI API',
+    description: '模型端点调用（generativelanguage.googleapis.com）。',
+    risk: '放行后提示词与代码片段将发往该端点；请确认已配置密钥。',
+  },
+  {
+    id: 'deepseek',
+    domains: ['api.deepseek.com'],
+    label: 'DeepSeek API',
+    description: '模型端点调用（api.deepseek.com）。',
+    risk: '放行后提示词与代码片段将发往该端点；请确认已配置密钥。',
+  },
+  {
+    // V3 closeout: the built-in default search provider (Bing RSS) had no
+    // first-run path — under the V3-#5 factory default (enabled + deny) a
+    // fresh install blocked /api/search with 403 and the wizard offered no
+    // template to allow it. This template restores the guided path; the
+    // default itself stays deny (search still needs explicit opt-in).
+    id: 'web-search',
+    domains: ['www.bing.com'],
+    label: 'Web search (Bing)',
+    description: '内置默认搜索提供方（Bing RSS）的出站查询。',
+    risk: '放行后搜索查询将发往 Bing；查询内容不受本防火墙审查。',
+  },
+];
+
+/** Expand template ids to allow rules (note-stamped with provenance).
+ * Returns the rules plus any unknown ids (caller rejects on those). */
+export function wizardTemplateRules(ids: string[]): { rules: EgressRule[]; unknownIds: string[] } {
+  const byId = new Map(EGRESS_WIZARD_TEMPLATES.map((t) => [t.id, t]));
+  const rules: EgressRule[] = [];
+  const unknownIds: string[] = [];
+  for (const id of ids) {
+    const t = byId.get(id);
+    if (!t) {
+      unknownIds.push(id);
+      continue;
+    }
+    for (const domain of t.domains) {
+      rules.push({ domain, action: 'allow', note: `wizard-template:${t.id}` });
+    }
+  }
+  return { rules, unknownIds };
+}
+
+function ruleKey(r: EgressRule): string {
+  return `${normalizeHost(r.domain)}|${r.pathPrefix ?? ''}|${r.action}`;
+}
+
+/**
+ * Pure wizard merge: existing rules are kept VERBATIM and first;
+ * additions are appended only when no identical (domain, pathPrefix,
+ * action) rule already exists. Nothing is ever deleted here.
+ */
+export function mergeWizardRules(
+  existing: EgressRule[],
+  additions: EgressRule[],
+): { merged: EgressRule[]; added: EgressRule[]; preserved: number } {
+  const seen = new Set(existing.map(ruleKey));
+  const added: EgressRule[] = [];
+  const merged = [...existing];
+  for (const r of additions) {
+    if (seen.has(ruleKey(r))) continue;
+    seen.add(ruleKey(r));
+    merged.push(r);
+    added.push(r);
+  }
+  return { merged, added, preserved: existing.length };
+}
+
+/** First-run wizard dismissal state (separate file — dismissing the
+ * wizard must never touch egress.json itself). */
+export interface EgressWizardState {
+  dismissedAt?: string;
 }
 
 export interface EgressProjectLayer {
@@ -322,7 +467,23 @@ function canonicalRule(r: EgressRule): EgressRule {
 
 /* --------------------------------------------------------------- store */
 
+/**
+ * Factory default for a fresh install (no egress.json): ENABLED +
+ * default-deny (V3-#5). This is the tightened default; it applies ONLY
+ * when the file is missing.
+ */
 const DEFAULT_GLOBAL: EgressGlobalConfig = {
+  enabled: true,
+  defaultPolicy: 'deny',
+  rules: [],
+  updatedAt: new Date(0).toISOString(),
+  updatedBy: 'factory-default',
+};
+
+/** Fail-safe for a corrupt/unreadable file: stay DISABLED and surface
+ * the error — a corrupt config must neither silently become a
+ * block-everything firewall nor silently vanish. */
+const CORRUPT_GLOBAL: EgressGlobalConfig = {
   enabled: false,
   defaultPolicy: 'deny',
   rules: [],
@@ -358,35 +519,48 @@ export class EgressStore {
   }
 
   /**
-   * Read the global layer. Missing file → factory default (disabled).
-   * Corrupt/invalid file → fail SAFE to disabled-with-no-rules (the
-   * previous behavior is preserved; a corrupt config must neither
-   * silently become a block-everything firewall nor silently vanish):
-   * the error rides along as `loadError` and GET /api/egress/config
-   * surfaces it so the operator can fix the file. Enforcement itself
-   * never guesses.
+   * Read the global layer. Missing file → tightened factory default
+   * (enabled + deny, V3-#5) with `factoryDefault: true`.
+   * File present but predating the wizard (no policyVersion 2) →
+   * `legacy: true`: the file is returned verbatim and is never
+   * rewritten by a read; the wizard merges into it without deleting.
+   * Corrupt/invalid file → fail SAFE to disabled-with-no-rules and
+   * `loadError` (the previous behavior is preserved; a corrupt config
+   * must neither silently become a block-everything firewall nor
+   * silently vanish). Enforcement itself never guesses.
    */
-  getGlobal(): EgressGlobalConfig & { loadError?: string } {
+  getGlobal(): EgressGlobalConfig & { loadError?: string; factoryDefault?: boolean; legacy?: boolean } {
     try {
       const raw = readFileSync(this.globalFile(), 'utf8');
       const parsed = JSON.parse(raw) as Partial<EgressGlobalConfig>;
       const errs = validateEgressRules(parsed.rules ?? [], 'global.rules');
-      if (errs.length > 0) return { ...DEFAULT_GLOBAL, loadError: errs.join('; ') };
+      if (errs.length > 0) return { ...CORRUPT_GLOBAL, loadError: errs.join('; ') };
+      const legacy = parsed.policyVersion !== 2 && !parsed.wizardCompletedAt;
       return {
         enabled: parsed.enabled === true,
         defaultPolicy: parsed.defaultPolicy === 'allow' ? 'allow' : 'deny',
         rules: (parsed.rules ?? []).map(canonicalRule),
-        updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : DEFAULT_GLOBAL.updatedAt,
+        updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : CORRUPT_GLOBAL.updatedAt,
         updatedBy: typeof parsed.updatedBy === 'string' ? parsed.updatedBy : 'unknown',
+        ...(parsed.policyVersion !== undefined ? { policyVersion: parsed.policyVersion } : {}),
+        ...(parsed.wizardCompletedAt ? { wizardCompletedAt: parsed.wizardCompletedAt } : {}),
+        ...(parsed.wizardMode ? { wizardMode: parsed.wizardMode } : {}),
+        factoryDefault: false,
+        legacy,
       };
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { ...DEFAULT_GLOBAL };
-      return { ...DEFAULT_GLOBAL, loadError: `egress.json unreadable: ${(e as Error).message}` };
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { ...DEFAULT_GLOBAL, factoryDefault: true, legacy: false };
+      return { ...CORRUPT_GLOBAL, loadError: `egress.json unreadable: ${(e as Error).message}` };
     }
   }
 
-  /** Replace the global layer (validated by the caller / here). */
-  setGlobal(input: { enabled: boolean; defaultPolicy: EgressDefaultPolicy; rules: EgressRule[] }, actor: string): EgressGlobalConfig {
+  /** Replace the global layer (validated by the caller / here). Every
+   * write by current code stamps policyVersion 2, clearing `legacy`. */
+  setGlobal(
+    input: { enabled: boolean; defaultPolicy: EgressDefaultPolicy; rules: EgressRule[] },
+    actor: string,
+    wizard?: { wizardCompletedAt: string; wizardMode: 'templates' | 'dev-mode' },
+  ): EgressGlobalConfig {
     const errs = validateEgressRules(input.rules, 'global.rules');
     if (errs.length > 0) throw new Error(errs.join('; '));
     const next: EgressGlobalConfig = {
@@ -395,8 +569,32 @@ export class EgressStore {
       rules: input.rules.map(canonicalRule),
       updatedAt: new Date().toISOString(),
       updatedBy: actor,
+      policyVersion: 2,
+      ...(wizard ? { wizardCompletedAt: wizard.wizardCompletedAt, wizardMode: wizard.wizardMode } : {}),
     };
     atomicWriteJson(this.globalFile(), next);
+    return next;
+  }
+
+  /** Wizard dismissal state file (never egress.json itself). */
+  wizardFile(): string {
+    return join(this.dataDir, 'egress-wizard.json');
+  }
+
+  getWizardState(): EgressWizardState {
+    try {
+      const parsed = JSON.parse(readFileSync(this.wizardFile(), 'utf8')) as EgressWizardState;
+      return parsed && typeof parsed === 'object'
+        ? { ...(typeof parsed.dismissedAt === 'string' ? { dismissedAt: parsed.dismissedAt } : {}) }
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  dismissWizard(): EgressWizardState {
+    const next: EgressWizardState = { dismissedAt: new Date().toISOString() };
+    atomicWriteJson(this.wizardFile(), next);
     return next;
   }
 

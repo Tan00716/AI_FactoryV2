@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 /** Server response shapes (subset of apps/server/src/coverage.ts). */
 export interface CoverageSummaryView {
@@ -207,6 +208,7 @@ export function CoveragePanel({ api, projectId }: { api: CoverageApi; projectId:
 
   return (
     <div className="coverage-panel" style={{ padding: 16, overflowY: 'auto' }}>
+      {files.length === 0 && <EmptyState panel="coverage" />}
       <h2 style={{ marginTop: 0 }}>{t('coverage.title')}</h2>
       <p style={{ opacity: 0.8 }}>{t('coverage.subtitle')}</p>
       <p style={{ opacity: 0.7, fontStyle: 'italic' }}>{t('coverage.honestNote')}</p>

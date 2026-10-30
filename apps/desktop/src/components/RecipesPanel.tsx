@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api as coreApi, authHeaders, type TaskSummary } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 // ------------------------------------------------------------- API ----
 
@@ -273,6 +274,7 @@ export function RecipesPanel({ api }: { api: RecipesApi }) {
 
   return (
     <div style={{ padding: 12, overflowY: 'auto', height: '100%' }}>
+      {recipes.length === 0 && <EmptyState panel="recipes" />}
       <h3 style={{ margin: '0 0 8px' }}>{t('recipes.title')}</h3>
       {err && <div className="banner err">{err}</div>}
       <div className="muted" style={{ fontSize: 12, marginBottom: 12, lineHeight: 1.6 }}>

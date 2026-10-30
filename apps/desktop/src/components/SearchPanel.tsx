@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 import {
   parseCodeSearchFile,
   serializeCodeSearchFile,
@@ -191,6 +192,7 @@ export function SearchPanel() {
 
   return (
     <div className="search-editor">
+      {result === null && !loading && <EmptyState panel="search" />}
       <div className="search-editor-head">
         <span className="search-editor-icon" title=".code-search">&#x1F50D;</span>
         <h3>{t('search.title')}</h3>

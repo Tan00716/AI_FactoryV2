@@ -1,6 +1,7 @@
 import { Component, useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang, type TFunc } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 /**
  * Approvals panel — spec §45 (Tool Approval) + §69 (Approval System).
@@ -200,6 +201,7 @@ export function ApprovalsPanelInner({ api, pollMs = 5000 }: ApprovalsPanelProps)
 
   return (
     <div className="approvals">
+      {items.length === 0 && <EmptyState panel="approvals" />}
       <div className="board-head">
         <h2>{t('approvals.title')} <span className="count">§45 · §69</span></h2>
         <label className="muted">

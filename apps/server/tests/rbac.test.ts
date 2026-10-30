@@ -130,7 +130,13 @@ describe('resolveApiAuthConfig / startupRbacError', () => {
   it('any credential allows a non-loopback bind; none keeps the loopback rule', () => {
     const roleOnly = resolveApiAuthConfig({ FACTORY_API_TOKENS: `viewer:${VIEWER}` }).config;
     assert.equal(startupRbacError('0.0.0.0', roleOnly), null);
-    assert.equal(startupRbacError('127.0.0.1', resolveApiAuthConfig({}).config), null);
+    // V3-#1: loopback without credentials refuses by default, and the
+    // explicit opt-in re-opens loopback only.
+    assert.ok(startupRbacError('127.0.0.1', resolveApiAuthConfig({}).config));
+    assert.equal(
+      startupRbacError('127.0.0.1', resolveApiAuthConfig({}).config, { allowOpenLocal: true }),
+      null,
+    );
     const err = startupRbacError('0.0.0.0', resolveApiAuthConfig({}).config);
     assert.ok(err);
     assert.match(err!, /FACTORY_API_TOKENS/);

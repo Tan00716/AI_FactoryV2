@@ -9,6 +9,8 @@ interface AiFactoryBridge {
   updateDownload: () => Promise<{ downloaded: boolean; version?: string }>;
   /** R3-T1: quit and install the downloaded update. */
   updateQuitAndInstall: () => Promise<{ ok: boolean }>;
+  /** V3-#1: per-install API token from the main process (null outside Electron). */
+  getApiToken?: () => Promise<string | null>;
 }
 
 interface Window {

@@ -27,4 +27,10 @@ contextBridge.exposeInMainWorld('aiFactory', {
     ipcRenderer.invoke('ai-factory:update-download'),
   updateQuitAndInstall: (): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('ai-factory:update-quit-install'),
+  // V3-#1: the per-install API token, served by the main process from
+  // the 0600 token file. The renderer calls this once at startup and
+  // keeps the token in memory only (never localStorage, never the URL).
+  // Absent in plain browsers (vite dev), where the localStorage token
+  // fallback in api.ts still applies.
+  getApiToken: (): Promise<string | null> => ipcRenderer.invoke('ai-factory:api-token'),
 });

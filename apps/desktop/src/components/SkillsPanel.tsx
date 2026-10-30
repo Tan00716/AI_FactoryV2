@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 /** Typed client for the skills endpoints (mirrors the req pattern in api.ts). */
 export interface SkillSummary {
@@ -133,6 +134,7 @@ export function SkillsPanel(props: { taskId?: string | null; skills?: SkillsApi 
 
   return (
     <div className="skills-panel">
+      {skills.length === 0 && <EmptyState panel="skills" />}
       {error && <div className="banner err">{error}</div>}
       <h4 style={{ margin: '4px 0' }}>{t('skills.installed')} <span className="muted">({skills.length})</span></h4>
       {skills.length === 0 && <div className="muted">{t('skills.noSkills')}</div>}

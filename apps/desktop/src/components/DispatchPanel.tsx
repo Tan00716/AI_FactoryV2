@@ -8,6 +8,7 @@ import {
   type TaskAuthorizationStatus,
 } from '../api';
 import { useLang, type TFunc } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 /**
  * Dispatch（Batch 18）— §17.2 Human Dispatch 桌面队列。
@@ -283,6 +284,7 @@ export function DispatchPanel() {
 
   return (
     <div className="panel">
+      {agents.length === 0 && <EmptyState panel="dispatch" />}
       <h2>
         Dispatch <span className="muted">{t('dispatch.subtitle')}</span>
       </h2>

@@ -37,6 +37,13 @@ export interface DotEnvParseResult {
   entries: DotEnvEntry[];
   /** Parse problems (invalid lines, unclosed quotes). */
   errors: Array<{ line: number; message: string }>;
+  /**
+   * Line ending of the source text: '\r\n' when the file contains any
+   * CRLF (Windows-style), '\n' otherwise. Serialize reuses it so a CRLF
+   * file is not silently converted to LF on save (cross-platform bug
+   * found by scripts/cross-platform-check.mjs, V3-#2).
+   */
+  lineEnding: '\n' | '\r\n';
 }
 
 /** One write operation applied by applyEnvOps (see serialize.ts). */

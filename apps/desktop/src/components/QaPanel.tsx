@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 /** Typed client for the QA endpoints (mirrors the req pattern in api.ts). */
 export interface QaAgent {
@@ -150,6 +151,7 @@ export function QaPanel(props: { taskId: string | null; qa?: QaApi }) {
 
   return (
     <div className="qa-panel" style={{ padding: 12, overflowY: 'auto' }}>
+      {run === null && !running && <EmptyState panel="qa" />}
       <h3 style={{ margin: '0 0 8px' }}>{t('qa.title')} <span className="muted">§36–§38</span></h3>
 
       <h4 className="muted" style={{ margin: '8px 0 4px' }}>{t('qa.organization')}</h4>

@@ -144,8 +144,10 @@ test('validation rejects wildcards, bad domains, bad actions, bad prefixes', () 
 test('store: global + project/task layers round-trip through disk', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aif-egress-'));
   const store = new EgressStore(path.join(dir, 'data'));
-  // defaults: disabled
-  assert.equal(store.getGlobal().enabled, false);
+  // factory default (V3-#5): enabled + deny, flagged factoryDefault
+  assert.equal(store.getGlobal().enabled, true);
+  assert.equal(store.getGlobal().factoryDefault, true);
+  assert.equal(store.getGlobal().legacy, false);
   store.setGlobal({ enabled: true, defaultPolicy: 'deny', rules: [allow('example.com')] }, 'tester');
   const g = store.getGlobal();
   assert.equal(g.enabled, true);

@@ -129,5 +129,10 @@ export function parseDotEnv(text: string): DotEnvParseResult {
     }
   });
 
-  return { lines, entries: entryOrder.map((k) => effective.get(k) as DotEnvEntry), errors };
+  return {
+    lines,
+    entries: entryOrder.map((k) => effective.get(k) as DotEnvEntry),
+    errors,
+    lineEnding: text.includes('\r\n') ? '\r\n' : '\n',
+  };
 }

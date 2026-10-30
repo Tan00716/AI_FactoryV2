@@ -2,6 +2,15 @@
 /**
  * Test-runner wrapper: hermetic TMPDIR for `node --test` (Batch 73-2).
  *
+ * V3-#1 note: this wrapper also sets FACTORY_ALLOW_OPEN_LOCAL=1 for the
+ * child test process. The server default is fail-closed (no credential
+ * refuses to start, even on loopback); 41 server test files boot
+ * token-less servers and inherit this env through `...process.env`,
+ * which is the test harness's explicit opt-in to open local mode.
+ * Production (desktop spawn, direct binary runs) never sets it unless
+ * the operator does so deliberately.
+ *
+ *
  * Why this exists: ~149 test files call `mkdtempSync(join(tmpdir(), ...))`
  * for SQLite DBs and never clean up. On machines where /tmp is a small
  * tmpfs (this dev container: 512MB), the junk accumulates across runs until
@@ -44,6 +53,12 @@ if (!process.env.TMPDIR) {
   process.env.TMP = tmpRoot;
   process.env.TEMP = tmpRoot;
 }
+
+// V3-#1: the test harness explicitly opts into open local mode (see
+// header). Server tests spawn real servers with `...process.env`, so
+// this one line keeps all token-less test boots working while the
+// production default stays fail-closed. Never set this in production.
+process.env.FACTORY_ALLOW_OPEN_LOCAL = '1';
 
 function cleanup() {
   if (tmpRoot) {

@@ -1,33 +1,53 @@
 /**
  * Single-operator API token authentication (sellable checklist B).
  *
- * Until now the API relied on the loopback bind alone: any local process
- * could call every endpoint. This module adds one shared-secret gate with
- * deliberately desktop-friendly semantics:
+ * V3-#1 default (fail-closed): the loopback bind alone is NOT an
+ * authentication mechanism anymore. The server refuses to start without
+ * any credential unless the operator explicitly opts into open local
+ * mode with FACTORY_ALLOW_OPEN_LOCAL=1 (dev/test only — the desktop
+ * top bar renders an explicit warning while it is on, and the startup
+ * log says so too). The desktop app generates a per-install token,
+ * stores it 0600 under the Electron userData directory, and injects it
+ * via FACTORY_API_TOKEN_FILE; the token can be rotated at runtime
+ * through POST /api/auth/rotate (admin only, see routes/auth-token.ts),
+ * which invalidates the old token immediately.
  *
- *  - Token configured (env FACTORY_API_TOKEN): every /api/* request except
- *    GET /api/health must carry `Authorization: Bearer <token>`. Missing
- *    and wrong tokens are indistinguishable — both get the same 401 body —
- *    and every denial is audited (AUTH_DENIED with method/path/source,
- *    never the presented or configured token).
- *  - No token configured: the API stays open (the local desktop mode spawns
- *    this server on loopback and must not break), the startup log warns
- *    once that authentication is disabled — and binding a non-loopback
- *    host without a token refuses to start (fail-closed: an open API must
- *    never become reachable beyond this machine by accident).
+ * Gate semantics (unchanged otherwise):
+ *  - Token configured (env FACTORY_API_TOKEN, or FACTORY_API_TOKEN_FILE):
+ *    every /api/* request except GET /api/health must carry
+ *    `Authorization: Bearer <token>`. Missing and wrong tokens are
+ *    indistinguishable — both get the same 401 body — and every denial
+ *    is audited (AUTH_DENIED with method/path/source, never the
+ *    presented or configured token).
+ *  - No token configured + FACTORY_ALLOW_OPEN_LOCAL=1: the API stays
+ *    open on loopback only (explicit opt-in, startup log warns).
+ *  - No token configured + non-loopback bind: refuse to start
+ *    (fail-closed: an open API must never become reachable beyond this
+ *    machine by accident).
  *
  * Token comparison is constant-time: both sides are hashed to fixed-size
  * SHA-256 digests first, so timingSafeEqual never leaks the configured
  * token's length either.
  */
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { tokenPrefixHash } from '@ai-factory/security';
 
 export const API_TOKEN_ENV = 'FACTORY_API_TOKEN';
 export const API_TOKENS_ENV = 'FACTORY_API_TOKENS';
+/** V3-#1: explicit opt-in for the legacy open local mode. Only the
+ *  exact value "1" enables it; anything else (including "true") is
+ *  treated as unset, so a typo can never silently reopen the API. */
+export const ALLOW_OPEN_LOCAL_ENV = 'FACTORY_ALLOW_OPEN_LOCAL';
+/** V3-#1: file holding the single operator token (one token, trimmed).
+ *  Read at startup; also the persistence target for token rotation. */
+export const API_TOKEN_FILE_ENV = 'FACTORY_API_TOKEN_FILE';
 export const AUTH_DENIED_ACTION = 'AUTH_DENIED';
 export const RBAC_DENIED_ACTION = 'RBAC_DENIED';
+/** V3-#1: token rotation audit action. Details name the rotation only
+ *  (tokenFile yes/no) — never any token value, old or new. */
+export const TOKEN_ROTATED_ACTION = 'TOKEN_ROTATED';
 /** The one endpoint exempt from authentication (liveness probes). */
 export const HEALTH_PATH = '/api/health';
 /** Read-only identity probe: returns the caller's role, never any token. */
@@ -50,19 +70,71 @@ export function isLoopbackHost(host: string): boolean {
   return h === '127.0.0.1' || h === '::1' || h === '[::1]' || h === 'localhost';
 }
 
+/** V3-#1: exact-"1" opt-in for open local mode (see header). */
+export function resolveAllowOpenLocal(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env[ALLOW_OPEN_LOCAL_ENV] ?? '').trim() === '1';
+}
+
+/**
+ * V3-#1: generate a per-install operator token (256-bit, hex). Used by
+ * the desktop main process at first run and by the rotate endpoint.
+ */
+export function generateInstallToken(): string {
+  return randomBytes(32).toString('hex');
+}
+
+/**
+ * V3-#1: read the single token from a file (trimmed; empty file is an
+ * error, not "no token"). The reader is injectable so tests can pass a
+ * fake without touching the filesystem; production passes fs.readFileSync.
+ * Errors name the problem only — file content is never echoed.
+ */
+export function readTokenFile(
+  filePath: string,
+  readFile: (p: string) => string = defaultReadFile,
+): { token: string } | { error: string } {
+  let raw: string;
+  try {
+    raw = readFile(filePath);
+  } catch {
+    return { error: `cannot read ${API_TOKEN_FILE_ENV} file` };
+  }
+  const token = raw.trim();
+  if (!token) return { error: `${API_TOKEN_FILE_ENV} file is empty` };
+  return { token };
+}
+
+function defaultReadFile(filePath: string): string {
+  return readFileSync(filePath, 'utf8');
+}
+
 /**
  * Startup policy, as a pure predicate so it is unit-testable without
  * booting the server: returns a fatal error message when the server must
  * refuse to start, or null when startup may proceed.
  *
  *   token set                  → always OK (any bind host).
- *   no token + loopback host   → OK (open local mode; caller logs a warning).
+ *   no token + loopback host + FACTORY_ALLOW_OPEN_LOCAL=1 → OK
+ *     (explicit open local mode; caller logs a warning).
+ *   no token + loopback host, no opt-in → refuse (V3-#1 default).
  *   no token + non-loopback    → refuse: an unauthenticated API would be
  *                                exposed beyond this machine.
  */
-export function startupAuthError(host: string, token: string | undefined): string | null {
+export function startupAuthError(
+  host: string,
+  token: string | undefined,
+  opts: { allowOpenLocal?: boolean } = {},
+): string | null {
   if (token) return null;
-  if (isLoopbackHost(host)) return null;
+  if (isLoopbackHost(host)) {
+    return opts.allowOpenLocal
+      ? null
+      : (
+        `[ai-factory] refusing to start: no API credential is configured on a loopback bind. ` +
+        `Set ${API_TOKEN_ENV} (or ${API_TOKEN_FILE_ENV}), or explicitly opt into open local mode ` +
+        `for development with ${ALLOW_OPEN_LOCAL_ENV}=1.`
+      );
+  }
   return (
     `[ai-factory] refusing to start: host "${host}" is not loopback but ` +
     `${API_TOKEN_ENV} is not set — the API would be reachable without authentication. ` +
@@ -260,11 +332,13 @@ function fireAuthHook(
  *
  * Backward compatibility (hard requirement):
  *   - FACTORY_API_TOKENS unset → behavior is exactly the pre-RBAC gate:
- *     the single FACTORY_API_TOKEN (when set) is an admin credential,
- *     and with neither variable set on a loopback bind the API stays
- *     open (local single-machine mode, effective role admin).
+ *     the single FACTORY_API_TOKEN (when set) is an admin credential.
  *   - FACTORY_API_TOKEN, when set, always remains valid as admin, even
  *     alongside FACTORY_API_TOKENS.
+ *   - V3-#1 change: with neither variable set on a loopback bind the API
+ *     no longer stays open by default — it refuses to start unless
+ *     FACTORY_ALLOW_OPEN_LOCAL=1 explicitly opts into open local mode
+ *     (effective role admin while it is on, same as before).
  */
 export type ApiRole = 'viewer' | 'operator' | 'admin';
 
@@ -368,12 +442,26 @@ export function resolveApiAuthConfig(env: NodeJS.ProcessEnv = process.env): {
  * startupAuthError, which keeps its single-token contract): any
  * credential — the single token or at least one role token — makes any
  * bind host acceptable; no credential at all keeps the loopback-only
- * rule. Malformed FACTORY_API_TOKENS entries are named by the caller as
- * a separate fatal error (see parseRoleTokens).
+ * rule, and on loopback V3-#1 additionally requires the explicit
+ * FACTORY_ALLOW_OPEN_LOCAL=1 opt-in. Malformed FACTORY_API_TOKENS
+ * entries are named by the caller as a separate fatal error (see
+ * parseRoleTokens).
  */
-export function startupRbacError(host: string, config: ApiAuthConfig): string | null {
+export function startupRbacError(
+  host: string,
+  config: ApiAuthConfig,
+  opts: { allowOpenLocal?: boolean } = {},
+): string | null {
   if (hasAnyCredential(config)) return null;
-  if (isLoopbackHost(host)) return null;
+  if (isLoopbackHost(host)) {
+    return opts.allowOpenLocal
+      ? null
+      : (
+        `[ai-factory] refusing to start: no API credential is configured on a loopback bind. ` +
+        `Set ${API_TOKEN_ENV} (or ${API_TOKEN_FILE_ENV}), or explicitly opt into open local mode ` +
+        `for development with ${ALLOW_OPEN_LOCAL_ENV}=1.`
+      );
+  }
   return (
     `[ai-factory] refusing to start: host "${host}" is not loopback but neither ` +
     `${API_TOKEN_ENV} nor ${API_TOKENS_ENV} is set — the API would be reachable ` +

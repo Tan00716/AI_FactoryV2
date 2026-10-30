@@ -71,7 +71,10 @@ export function applyEnvOps(text: string, ops: DotEnvOp[]): string {
     }
   }
   if (out.length === 0) return '';
-  return out.map((l) => l.raw).join('\n') + '\n';
+  // Reuse the source file's line ending: a CRLF file must not be silently
+  // converted to LF by a save (Windows cross-platform behavior).
+  const eol = doc.lineEnding;
+  return out.map((l) => l.raw).join(eol) + eol;
 }
 
 /** Keys present more than once in a parsed document (duplicate warning). */

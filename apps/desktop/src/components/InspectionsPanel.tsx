@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 /** Server response shapes (subset of apps/server/src/inspections.ts). */
 export interface InspectionFinding {
@@ -692,6 +693,7 @@ export function InspectionsPanel({ api, projectId }: { api: InspectionsApi; proj
 
   return (
     <div style={{ padding: 4 }}>
+      {history.length === 0 && <EmptyState panel="inspections" />}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
         <h3 style={{ margin: 0 }}>{t('inspections.title')}</h3>
         <span className="muted" style={{ fontSize: 12 }}>{t('inspections.subtitle')}</span>

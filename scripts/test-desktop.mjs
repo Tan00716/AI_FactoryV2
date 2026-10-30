@@ -137,7 +137,10 @@ let serverProc = null;
 async function startServer() {
   serverProc = startProc('server', 'node', [join(repoRoot, 'apps/server/dist/index.js')], {
     cwd: repoRoot,
-    env: { ...process.env, PORT: String(PORT), DB_PATH: dbPath, FACTORY_SECRETS_DIR: secretsDir },
+    env: { ...process.env, PORT: String(PORT), DB_PATH: dbPath, FACTORY_SECRETS_DIR: secretsDir,
+      // V3-#1: test harness explicitly opts into open local mode (the
+      // server default is fail-closed without a credential).
+      FACTORY_ALLOW_OPEN_LOCAL: '1' },
   });
   await waitForHttp(`http://127.0.0.1:${PORT}/api/health`, 30000, 'server');
   log('server healthy');

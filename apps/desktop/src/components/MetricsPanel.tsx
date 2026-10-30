@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 export interface MetricsSummary {
   ts: string;
@@ -149,6 +150,7 @@ export function MetricsPanel({ api }: { api: MetricsApi }) {
 
   return (
     <div style={{ padding: 4 }}>
+      {summary === null && !loading && <EmptyState panel="metrics" />}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
         <h3 style={{ margin: 0 }}>{t('metrics.title')}</h3>
         <span className="muted" style={{ fontSize: 12 }}>{t('metrics.subtitle')}</span>

@@ -11,6 +11,15 @@
  *                                                rules?, taskRules? }
  *                                                validated write + audit
  *                                                (operator)
+ *   GET  /api/egress/wizard             templates + factory/legacy/wizard
+ *                                        state (viewer)
+ *   POST /api/egress/wizard/complete     enable (deny) + merge template/
+ *                                        custom rules, existing rules kept
+ *                                        verbatim (operator)
+ *   POST /api/egress/wizard/dev-mode     explicit firewall-OFF choice,
+ *                                        audited + stamped (operator)
+ *   POST /api/egress/wizard/dismiss      record dismissal only; never
+ *                                        touches egress.json (operator)
  *   GET  /api/egress/log?limit=                  recent blocked calls,
  *                                                newest first (viewer)
  *   POST /api/egress/test { url, projectId?, taskId? }
@@ -45,11 +54,14 @@ import { dirname, join, resolve, sep } from 'node:path';
 import type { RouteContext } from './context';
 import {
   EGRESS_MAX_RULES,
+  EGRESS_WIZARD_TEMPLATES,
   egressStore,
   evaluateEgress,
   getEgressBlockLog,
+  mergeWizardRules,
   ruleLabel,
   validateEgressRules,
+  wizardTemplateRules,
   type EgressAction,
   type EgressDefaultPolicy,
   type EgressRule,
@@ -153,6 +165,13 @@ export async function handleEgressRoutes(
       project,
       task,
       projectPath,
+      factoryDefault: (global as { factoryDefault?: boolean }).factoryDefault === true,
+      legacyConfig: (global as { legacy?: boolean }).legacy === true,
+      wizard: {
+        completedAt: (global as { wizardCompletedAt?: string }).wizardCompletedAt ?? null,
+        mode: (global as { wizardMode?: string }).wizardMode ?? null,
+        dismissedAt: store.getWizardState().dismissedAt ?? null,
+      },
       limits: { maxRulesPerLayer: EGRESS_MAX_RULES },
     });
     return true;
@@ -242,6 +261,99 @@ export async function handleEgressRoutes(
     } catch (e) {
       ctx.json(res, 400, { error: (e as Error).message, code: 'EGRESS_RULE_INVALID' });
     }
+    return true;
+  }
+
+  // GET /api/egress/wizard — templates + current wizard/migration state (viewer).
+  if (method === 'GET' && path === `${PREFIX}/wizard`) {
+    const global = store.getGlobal();
+    ctx.json(res, 200, {
+      templates: EGRESS_WIZARD_TEMPLATES,
+      global: {
+        enabled: global.enabled,
+        defaultPolicy: global.defaultPolicy,
+        ruleCount: global.rules.length,
+        factoryDefault: (global as { factoryDefault?: boolean }).factoryDefault === true,
+        legacyConfig: (global as { legacy?: boolean }).legacy === true,
+        wizardCompletedAt: (global as { wizardCompletedAt?: string }).wizardCompletedAt ?? null,
+        wizardMode: (global as { wizardMode?: string }).wizardMode ?? null,
+      },
+      wizard: store.getWizardState(),
+    });
+    return true;
+  }
+
+  // POST /api/egress/wizard/complete — enable (deny) + merge selected
+  // template/custom rules into the global layer WITHOUT deleting any
+  // existing rule (operator). Unknown template ids / invalid rules → 400.
+  if (method === 'POST' && path === `${PREFIX}/wizard/complete`) {
+    const body = (await ctx.readBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const actor = typeof body['actor'] === 'string' && body['actor'].trim()
+      ? body['actor'].trim().slice(0, 64)
+      : 'human';
+    const templateIds = Array.isArray(body['templateIds'])
+      ? body['templateIds'].filter((x): x is string => typeof x === 'string')
+      : [];
+    const { rules: templateRules, unknownIds } = wizardTemplateRules(templateIds);
+    if (unknownIds.length > 0) {
+      ctx.json(res, 400, { error: `unknown wizard template ids: ${unknownIds.join(', ')}`, code: 'EGRESS_WIZARD_UNKNOWN_TEMPLATE' });
+      return true;
+    }
+    const custom = coerceRules(body['customRules'] ?? []);
+    if (custom === null) {
+      ctx.json(res, 400, { error: 'customRules must be an array of { domain, action, pathPrefix?, note? }', code: 'EGRESS_BAD_RULES' });
+      return true;
+    }
+    const errs = validateEgressRules(custom, 'wizard.customRules');
+    if (errs.length > 0) {
+      ctx.json(res, 400, { error: 'invalid custom rules', details: errs, code: 'EGRESS_RULE_INVALID' });
+      return true;
+    }
+    const current = store.getGlobal();
+    const { merged, added, preserved } = mergeWizardRules(current.rules, [...templateRules, ...custom]);
+    const next = store.setGlobal({ enabled: true, defaultPolicy: 'deny', rules: merged }, actor, {
+      wizardCompletedAt: new Date().toISOString(),
+      wizardMode: 'templates',
+    });
+    ctx.audit.record(actor, 'EGRESS_WIZARD_COMPLETED', 'egress', 'global', {
+      templateIds,
+      addedRuleCount: added.length,
+      preservedRuleCount: preserved,
+    });
+    ctx.json(res, 200, { global: next, added, preservedRuleCount: preserved });
+    return true;
+  }
+
+  // POST /api/egress/wizard/dev-mode — explicit operator choice to run
+  // with the firewall OFF (operator). This is the one-click escape hatch
+  // for pre-existing workflows; it is audited and stamped, never silent.
+  if (method === 'POST' && path === `${PREFIX}/wizard/dev-mode`) {
+    const body = (await ctx.readBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const actor = typeof body['actor'] === 'string' && body['actor'].trim()
+      ? body['actor'].trim().slice(0, 64)
+      : 'human';
+    const current = store.getGlobal();
+    const next = store.setGlobal({ enabled: false, defaultPolicy: current.defaultPolicy, rules: current.rules }, actor, {
+      wizardCompletedAt: new Date().toISOString(),
+      wizardMode: 'dev-mode',
+    });
+    ctx.audit.record(actor, 'EGRESS_WIZARD_DEV_MODE', 'egress', 'global', {
+      preservedRuleCount: current.rules.length,
+    });
+    ctx.json(res, 200, { global: next });
+    return true;
+  }
+
+  // POST /api/egress/wizard/dismiss — record dismissal only; egress.json
+  // is NOT touched (operator).
+  if (method === 'POST' && path === `${PREFIX}/wizard/dismiss`) {
+    const body = (await ctx.readBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const actor = typeof body['actor'] === 'string' && body['actor'].trim()
+      ? body['actor'].trim().slice(0, 64)
+      : 'human';
+    const state = store.dismissWizard();
+    ctx.audit.record(actor, 'EGRESS_WIZARD_DISMISSED', 'egress', 'global', {});
+    ctx.json(res, 200, { wizard: state });
     return true;
   }
 

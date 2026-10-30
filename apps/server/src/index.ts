@@ -337,16 +337,21 @@ import {
   handleBruteForceDenial,
 } from './brute-force-emission';
 import {
+  ALLOW_OPEN_LOCAL_ENV,
   API_TOKEN_ENV,
+  API_TOKEN_FILE_ENV,
   API_TOKENS_ENV,
   WHOAMI_PATH,
   authMode,
   enforceApiAuth,
+  readTokenFile,
   requestRole,
+  resolveAllowOpenLocal,
   resolveApiAuthConfig,
   resolveApiToken,
   startupRbacError,
 } from './auth';
+import { ROTATE_PATH, handleAuthTokenRoutes } from './routes/auth-token';
 
 const PORT = Number(process.env.PORT ?? 3100);
 // SPEC §7.4 — the control-plane API binds loopback by default. Override
@@ -355,11 +360,15 @@ const HOST = process.env.AI_FACTORY_HOST ?? '127.0.0.1';
 const DB_PATH = process.env.DB_PATH ?? './data/factory.db';
 // API authentication (sellable checklist B + Batch 15 RBAC; see ./auth).
 // FACTORY_API_TOKEN is the legacy single token (an admin credential);
-// FACTORY_API_TOKENS adds role tokens ("viewer:…,operator:…,admin:…").
-// Neither set = open local mode on loopback; a non-loopback bind without
-// any credential is a fatal startup error, and a malformed
-// FACTORY_API_TOKENS value is fatal too — both fail-closed before any
-// side effect (no DB open). Error text never echoes a token value.
+// FACTORY_API_TOKENS adds role tokens ("viewer:…,operator:…,admin:…");
+// FACTORY_API_TOKEN_FILE names a file holding the single token (the
+// desktop per-install token; also the rotation persistence target).
+// V3-#1 default: no credential at all refuses to start, even on
+// loopback — open local mode now requires the explicit
+// FACTORY_ALLOW_OPEN_LOCAL=1 opt-in (dev/test only). A malformed
+// FACTORY_API_TOKENS value or an unreadable token file is fatal too —
+// both fail-closed before any side effect (no DB open). Error text
+// never echoes a token value.
 const API_TOKEN = resolveApiToken();
 const authResolution = resolveApiAuthConfig();
 if (authResolution.errors.length > 0) {
@@ -369,8 +378,22 @@ if (authResolution.errors.length > 0) {
   process.exit(1);
 }
 const AUTH_CONFIG = authResolution.config;
+// Token file fills the single-token slot only when no env token is set
+// (env wins — an operator override must never be silently replaced).
+const API_TOKEN_FILE = (process.env[API_TOKEN_FILE_ENV] ?? '').trim() || undefined;
+if (AUTH_CONFIG.singleToken === undefined && API_TOKEN_FILE) {
+  const fileResult = readTokenFile(API_TOKEN_FILE);
+  if ('error' in fileResult) {
+    console.error(`[ai-factory] refusing to start: ${fileResult.error}`);
+    process.exit(1);
+  }
+  AUTH_CONFIG.singleToken = fileResult.token;
+}
 const AUTH_MODE = authMode(AUTH_CONFIG);
-const authStartupError = startupRbacError(HOST, AUTH_CONFIG);
+// The single-token gate reads AUTH_CONFIG.singleToken per request, so
+// rotating the token mutates this object in place (never reassign it).
+const ALLOW_OPEN_LOCAL = resolveAllowOpenLocal();
+const authStartupError = startupRbacError(HOST, AUTH_CONFIG, { allowOpenLocal: ALLOW_OPEN_LOCAL });
 if (authStartupError) {
   console.error(authStartupError);
   process.exit(1);
@@ -1498,9 +1521,15 @@ const server = createServer(async (req, res) => {
     // (detector failure → BRUTE_FORCE_DETECTOR_FAILED audit, the 401
     // stands); a real credential match clears the source's counter.
     const bruteForceDeps = { needsHuman: fdb.needsHuman, audit };
+    // V3-#1 takeover fix: the gate must see the LIVE single token
+    // (AUTH_CONFIG.singleToken), not the env-only snapshot. The token
+    // file fills AUTH_CONFIG.singleToken after this point, and rotation
+    // mutates it in place — passing the env snapshot made token-file
+    // auth invisible to the gate (unauthenticated reads returned 200).
+    // Read fresh per request so rotation takes effect immediately.
     if (
       !enforceApiAuth(req, res, {
-        token: API_TOKEN,
+        token: AUTH_CONFIG.singleToken,
         roleTokens: AUTH_CONFIG.roleTokens,
         audit,
         json,
@@ -1524,6 +1553,24 @@ const server = createServer(async (req, res) => {
         authRequired: identity.authRequired,
       });
     }
+
+    // V3-#1 token rotation (admin only; the gate above already ran, so
+    // this handler re-checks the caller's role rather than trusting the
+    // route table). Mutates AUTH_CONFIG.singleToken in place, so the
+    // old token stops working on the very next request.
+    if (
+      handleAuthTokenRoutes(req, res, {
+        getSingleToken: () => AUTH_CONFIG.singleToken,
+        setSingleToken: (t: string) => {
+          AUTH_CONFIG.singleToken = t;
+        },
+        callerRole: () => requestRole(req, AUTH_CONFIG).role,
+        tokenFilePath: API_TOKEN_FILE,
+        audit,
+        json,
+      })
+    )
+      return;
 
     // Health — includes the §28.3 startup scan summary (G-59): how many
     // step intents a previous process left uncommitted when this process
@@ -2574,15 +2621,17 @@ server.listen(PORT, HOST, () => {
     console.log(
       `[ai-factory] API authentication enabled with role tokens (${API_TOKENS_ENV} is set): ` +
         `${AUTH_CONFIG.roleTokens.length} token(s) for role(s): ${roleNames}` +
-        (API_TOKEN ? `; ${API_TOKEN_ENV} also set (admin)` : ''),
+        (AUTH_CONFIG.singleToken ? `; single token also present (admin)` : ''),
     );
-  } else if (API_TOKEN) {
-    console.log(`[ai-factory] API authentication enabled (${API_TOKEN_ENV} is set)`);
+  } else if (AUTH_CONFIG.singleToken) {
+    console.log(
+      `[ai-factory] API authentication enabled (single token via ${API_TOKEN ? API_TOKEN_ENV : API_TOKEN_FILE_ENV})`,
+    );
   } else {
     console.warn(
-      `[ai-factory] WARNING: API authentication disabled — neither ${API_TOKEN_ENV} nor ` +
-        `${API_TOKENS_ENV} is set, so any local process can call this API. Acceptable on ` +
-        'the loopback desktop bind only; the server refuses non-loopback binds in this state.',
+      `[ai-factory] WARNING: API authentication disabled — open local mode explicitly ` +
+        `enabled with ${ALLOW_OPEN_LOCAL_ENV}=1, so any local process can call this API. ` +
+        'Development only; the desktop top bar shows an open-mode warning while this is on.',
     );
   }
   if (RUNTIME_TOOL_ALLOWLIST.length > 0) {

@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 // ------------------------------------------------------------- API ----
 
@@ -350,6 +351,7 @@ export function GitPanel({ api }: { api: GitApi }) {
 
   return (
     <div style={{ padding: 12, overflowY: 'auto', height: '100%' }}>
+      {log.length === 0 && <EmptyState panel="git" />}
       <h3 style={{ margin: '0 0 8px' }}>
         {t('git.title')} <span className="muted">§34</span>
       </h3>

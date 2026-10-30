@@ -53,9 +53,19 @@ describe('isLoopbackHost / startupAuthError (fail-closed startup policy)', () =>
     }
   });
 
-  it('no token + loopback → startup allowed (open local mode)', () => {
-    assert.equal(startupAuthError('127.0.0.1', undefined), null);
-    assert.equal(startupAuthError('localhost', undefined), null);
+  it('V3-#1: no token + loopback → startup refused by default (fail-closed)', () => {
+    const err = startupAuthError('127.0.0.1', undefined);
+    assert.ok(err);
+    assert.match(err!, /refusing to start/);
+    assert.match(err!, /FACTORY_ALLOW_OPEN_LOCAL/);
+    assert.ok(!err!.includes(TOKEN), 'error must not echo a token');
+  });
+
+  it('V3-#1: explicit FACTORY_ALLOW_OPEN_LOCAL=1 re-opens loopback only', () => {
+    assert.equal(startupAuthError('127.0.0.1', undefined, { allowOpenLocal: true }), null);
+    assert.equal(startupAuthError('localhost', undefined, { allowOpenLocal: true }), null);
+    // The opt-in never covers a non-loopback bind.
+    assert.ok(startupAuthError('0.0.0.0', undefined, { allowOpenLocal: true }));
   });
 
   it('no token + non-loopback → startup refused with a clear message', () => {

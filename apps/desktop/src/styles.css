@@ -838,3 +838,16 @@ button.danger { color: #c00; }
 .extensions-panel .status { font-size: 12px; color: var(--green); }
 .extensions-panel .ext-panel { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
 .extensions-panel pre { background: var(--bg3); padding: 8px; border-radius: 6px; font-size: 12px; overflow-x: auto; }
+
+/* V3-#3 tiered navigation + golden path wizard + empty guides */
+.nav-tier-bar { display: flex; gap: 8px; align-items: center; padding: 8px 12px 0; background: var(--bg2); flex-wrap: wrap; }
+.nav-tier-bar button { background: none; border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; cursor: pointer; font-size: 12px; border-radius: 4px; }
+.center-tab-group { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.center-tab-group-label { font-size: 11px; padding: 0 4px; }
+.golden-wizard { margin: 8px 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg2); }
+.golden-head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.golden-actions { margin-left: auto; display: flex; gap: 8px; }
+.golden-steps { margin: 8px 0; padding-left: 20px; }
+.golden-steps li { margin: 6px 0; }
+.golden-glossary { margin: 8px 0 0; padding-left: 20px; }
+.empty-guide { margin: 12px 0; padding: 12px; border: 1px dashed var(--border); border-radius: 6px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }

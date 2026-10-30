@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type TimelineEntryDto } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 import { editorCursor } from '../editorCursor';
 
 /**
@@ -109,6 +110,7 @@ export function TimelinePanel() {
 
   return (
     <div className="timeline-panel">
+      {entries.length === 0 && <EmptyState panel="timeline" />}
       <div className="timeline-toolbar">
         <input
           className="timeline-path"

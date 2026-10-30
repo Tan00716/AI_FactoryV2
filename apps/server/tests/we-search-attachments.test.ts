@@ -8,7 +8,9 @@
  *     GET  /api/tasks/:id/attachments/:attId → bytes + content-type
  *     404 on unknown task · 400 on bad mime · 400 on missing fields
  *   Search:
- *     POST /api/search → 200 with real results (default provider, live)
+ *     POST /api/search → 403 on a fresh server (V3-#5 factory default
+ *       deny), then 200 with real results (default provider, live) after
+ *       the egress wizard allows the 'web-search' template
  *     400 on missing query
  *     GET /api/search/providers → lists bing-rss (no key configured)
  *
@@ -186,6 +188,13 @@ test('attachments: 404 unknown task, 400 bad mime/missing fields', async () => {
 
 test('search: real results via default provider; 400 on missing query', async () => {  const s = await startServer();
   try {
+    // V3 closeout contract (V3-#5 factory default is enabled + deny): a
+    // fresh server blocks the built-in search provider with 403 until the
+    // first-run wizard explicitly allows it via the 'web-search' template.
+    const blocked = await api(s.port, 'POST', '/api/search', { query: 'TypeScript programming language', count: 3 });
+    assert.equal(blocked.status, 403);
+    const wiz = await api(s.port, 'POST', '/api/egress/wizard/complete', { templateIds: ['web-search'] });
+    assert.equal(wiz.status, 200);
     const r = await api(s.port, 'POST', '/api/search', { query: 'TypeScript programming language', count: 3 });
     assert.equal(r.status, 200);
     assert.equal(r.body.provider, 'bing-rss');

@@ -30,11 +30,37 @@ const BASE = defaultApiBase();
 
 /**
  * Operator API token for a server started with FACTORY_API_TOKEN
- * (checklist B). Stored by the operator in localStorage under
- * 'factory.apiToken'; when absent, no Authorization header is sent and the
- * default token-less local server works unchanged.
+ * (checklist B). Resolution order (V3-#1):
+ *   1. in-memory token from the Electron preload bridge (the per-install
+ *      token; fetched once at startup, never written to localStorage);
+ *   2. localStorage 'factory.apiToken' (vite-dev fallback, where the
+ *      backend is started separately and the operator pastes a token).
+ * When neither is present, no Authorization header is sent.
  */
+let memoryToken: string | null = null;
+
+/** V3-#1: install the per-install token in memory (called at startup). */
+export function setApiToken(token: string | null): void {
+  memoryToken = token && token.trim() ? token.trim() : null;
+}
+
+/**
+ * V3-#1: fetch the per-install token from the Electron main process
+ * through the preload bridge. No-op in plain browsers (no bridge).
+ * Safe to call repeatedly; a null result leaves the fallback untouched.
+ */
+export async function initApiTokenFromMain(): Promise<void> {
+  try {
+    const bridge = typeof window !== 'undefined' ? window.aiFactory : undefined;
+    const token = await bridge?.getApiToken?.();
+    if (typeof token === 'string' && token.trim()) setApiToken(token);
+  } catch {
+    /* bridge unavailable or main has no token yet: fallback applies */
+  }
+}
+
 function apiToken(): string | null {
+  if (memoryToken) return memoryToken;
   try {
     const t = localStorage.getItem('factory.apiToken');
     return t && t.trim() ? t.trim() : null;
@@ -91,6 +117,33 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 /** Raw-text sibling of `req` (same auth treatment) for non-JSON bodies
  *  such as the Final Report Markdown rendering. */
+
+/**
+ * V3-#1 completion: rotate the per-install API token (POST /api/auth/rotate,
+ * admin only). The old token stops working immediately server-side; the
+ * client re-syncs so the next request does not 401:
+ *   - Electron: re-fetch from the main process (rotation persisted to the
+ *     0600 token file when configured); the new value is never shown.
+ *   - Plain browser (vite-dev fallback, no token file): the rotated token
+ *     lives only in server memory, so it is stored into the localStorage
+ *     fallback and returned once for the operator to save.
+ */
+export async function rotateApiToken(): Promise<{ rotated: boolean; token?: string; viaBridge: boolean }> {
+  const body = await req<{ rotated: boolean; token: string }>('/auth/rotate', { method: 'POST' });
+  const hasBridge =
+    typeof window !== 'undefined' && typeof window.aiFactory?.getApiToken === 'function';
+  await initApiTokenFromMain();
+  if (hasBridge) return { rotated: true, viaBridge: true };
+  if (body.token) {
+    setApiToken(body.token);
+    try {
+      localStorage.setItem('factory.apiToken', body.token);
+    } catch {
+      /* storage unavailable: memory token still applies this session */
+    }
+  }
+  return { rotated: true, token: body.token, viaBridge: false };
+}
 async function reqText(path: string, init?: RequestInit): Promise<string> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
@@ -605,7 +658,32 @@ export interface EgressConfigState {
   project: { rules: EgressRule[]; taskIds: string[]; loadError?: string } | null;
   task: { rules: EgressRule[] } | null;
   projectPath: string | null;
+  /** V3-#5: true when no egress.json exists (tightened factory default). */
+  factoryDefault?: boolean;
+  /** V3-#5: true when the stored file predates the wizard (kept verbatim). */
+  legacyConfig?: boolean;
+  wizard?: { completedAt: string | null; mode: string | null; dismissedAt: string | null };
   limits: { maxRulesPerLayer: number };
+}
+export interface EgressWizardTemplate {
+  id: string;
+  domains: string[];
+  label: string;
+  description: string;
+  risk: string;
+}
+export interface EgressWizardState {
+  templates: EgressWizardTemplate[];
+  global: {
+    enabled: boolean;
+    defaultPolicy: 'allow' | 'deny';
+    ruleCount: number;
+    factoryDefault: boolean;
+    legacyConfig: boolean;
+    wizardCompletedAt: string | null;
+    wizardMode: string | null;
+  };
+  wizard: { dismissedAt?: string };
 }
 export interface EgressBlockEntry {
   at: string;
@@ -2119,6 +2197,23 @@ export const api = {
   /** 出站防火墙干跑判定（POST /api/egress/test）：写 operator。 */
   egressTest: (p: { url: string; projectId?: string; taskId?: string }) =>
     req<EgressTestResult>('/egress/test', { method: 'POST', body: JSON.stringify(p) }),
+  /** 出站首次启用向导状态（GET /api/egress/wizard）：读 viewer。 */
+  egressWizard: () => req<EgressWizardState>('/egress/wizard'),
+  /** 向导完成：启用（deny）并合并模板/自定义规则，存量规则原样保留（operator）。 */
+  egressWizardComplete: (p: { templateIds: string[]; customRules?: EgressRule[] }) =>
+    req<{ global: EgressGlobalConfig; added: EgressRule[]; preservedRuleCount: number }>(
+      '/egress/wizard/complete', { method: 'POST', body: JSON.stringify(p) },
+    ),
+  /** 向导开发模式：显式关闭防火墙（已审计的选择，operator）。 */
+  egressWizardDevMode: () =>
+    req<{ global: EgressGlobalConfig }>(
+      '/egress/wizard/dev-mode', { method: 'POST', body: JSON.stringify({}) },
+    ),
+  /** 向导稍后提醒：只记 dismissed，不碰 egress.json（operator）。 */
+  egressWizardDismiss: () =>
+    req<{ wizard: { dismissedAt: string } }>(
+      '/egress/wizard/dismiss', { method: 'POST', body: JSON.stringify({}) },
+    ),
   /** 质量闸门配置（GET /api/quality?projectId=）：读 viewer。 */
   qualityGate: (projectId: string) =>
     req<{ config: QualityGateConfig; lastRun: Record<'lint' | 'test', QualityGateLastRun | null> }>(

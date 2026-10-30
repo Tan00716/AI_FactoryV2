@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 /**
  * System Event Bus panel — spec §91.
@@ -107,6 +108,7 @@ export function EventsPanel({ api, pollMs = 3000 }: EventsPanelProps) {
 
   return (
     <div className="events-panel">
+      {events.length === 0 && <EmptyState panel="events" />}
       <div className="board-head">
         <h2>{t('events.title')} <span className="count">§91</span></h2>
         <span className="muted">

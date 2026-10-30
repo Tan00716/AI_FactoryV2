@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { defaultApiBase, authHeaders } from '../api';
 import { useLang } from '../i18n';
+import { EmptyState } from './EmptyState';
 
 /** Typed client for the memory endpoints (mirrors the req pattern in api.ts). */
 export interface MemoryEntry {
@@ -111,6 +112,7 @@ export function MemoryPanel(props: { memory?: MemoryApi }) {
 
   return (
     <div className="memory-panel">
+      {entries.length === 0 && <EmptyState panel="memory" />}
       {error && <div className="banner err">{error}</div>}
       <div className="row" style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
         {SCOPES.map((s) => (
