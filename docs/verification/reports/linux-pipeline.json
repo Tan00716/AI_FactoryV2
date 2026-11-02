@@ -1,0 +1,40 @@
+{
+  "platform": "linux",
+  "host": "linux",
+  "dir": "/home/hatch/workspace/ai-factory/release/linux-unpacked",
+  "stages": [
+    {
+      "id": "build",
+      "status": "PASS",
+      "detail": "npm run dist:linux exit 0, /home/hatch/workspace/ai-factory/release/linux-unpacked exists"
+    },
+    {
+      "id": "packaged-smoke",
+      "status": "PASS",
+      "detail": "packaged-smoke exit 0; last lines:  | 14/14 passed (0 fail, 0 skip)"
+    },
+    {
+      "id": "platform-check",
+      "status": "PASS",
+      "detail": "cross-platform-check exit 0; last lines: live: 6/6 passed | not-run platforms: win32, darwin (run the listed commands on those machines)"
+    },
+    {
+      "id": "trust-gate",
+      "status": "TRUST_NOT_VERIFIED",
+      "detail": "TRUST_NOT_VERIFIED: no manual double-click prompt record attached (--trust-manual)"
+    }
+  ],
+  "pipeline": "PASS",
+  "trust": {
+    "verdict": "TRUST_NOT_VERIFIED",
+    "signature": {
+      "checked": true,
+      "signed": false,
+      "detail": "Linux AppImage ships unsigned by policy; direct distribution accepts unsigned (matrix ack, not a signature claim)"
+    },
+    "manual": null,
+    "reasons": [
+      "no manual double-click prompt record attached (--trust-manual)"
+    ]
+  }
+}

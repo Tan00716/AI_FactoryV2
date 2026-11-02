@@ -9,10 +9,18 @@
  * already caught a launch race in dev mode; a packaged-only race would
  * have sailed through. This script closes that hole.
  *
- * Target: an electron-builder unpacked directory (release/linux-unpacked
- * from `electron-builder --linux --dir`) or an AppImage (extracted first
- * with --appimage-extract). It NEVER claims a Windows/macOS result: those
- * platforms get NOT_RUN entries from scripts/cross-platform-check.mjs.
+ * Target: an electron-builder unpacked directory. On Linux that is
+ * release/linux-unpacked (`electron-builder --linux --dir`) or an AppImage
+ * (extracted first with --appimage-extract). Since V3R2-#7 the layout
+ * resolver also recognises the Windows unpacked dir
+ * (release/win-unpacked, binary `AI Factory.exe`) and the macOS app bundle
+ * (release/mac/AI Factory.app, binary Contents/MacOS/AI Factory), so the
+ * SAME script is the smoke stage on all three platforms — run it on the
+ * target machine, never from Linux for a Win/mac result. Xvfb is a Linux
+ * -only launch aid: on Windows/macOS the binary is spawned directly.
+ * Direct-binary launch on macOS bypasses Gatekeeper by construction, so
+ * the double-click trust test belongs to the trust gate in
+ * scripts/verify-platform.mjs, never to this smoke.
  *
  * Checks (each PASS / FAIL / SKIP, JSON out):
  *   layout-binary / layout-asar / layout-server / layout-packages
@@ -57,31 +65,118 @@ export const repoRoot = join(here, '..');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Pure layout contract for an electron-builder linux-unpacked dir. */
-export function checkPackagedLayout(dir) {
+/**
+ * Pure layout contract for an electron-builder unpacked dir, all platforms.
+ * electron-builder layouts (productName "AI Factory", see electron-builder.yml):
+ *   linux : <dir>/ai-factory, <dir>/resources/app.asar + server/index.js
+ *   win32 : <dir>/AI Factory.exe, <dir>/resources/app.asar + server/index.js
+ *   darwin: <dir>/AI Factory.app/Contents/MacOS/AI Factory,
+ *           <dir>/AI Factory.app/Contents/Resources/app.asar + server/index.js
+ * Detection probes the binary first (a dir containing only resources/ but no
+ * binary is NOT a runnable product). Returns null when nothing matches.
+ * opts: { platform?: 'auto'|'linux'|'win32'|'darwin', binary?: string }.
+ */
+export function resolvePackagedLayout(dir, opts = {}) {
+  const platform = opts.platform || 'auto';
+  const candidates = [];
+  if (opts.binary) {
+    candidates.push({ platform: platform === 'auto' ? process.platform : platform, binary: opts.binary, resourcesDir: join(dir, 'resources') });
+  }
+  if (platform === 'auto' || platform === 'darwin') {
+    candidates.push({
+      platform: 'darwin',
+      binary: join(dir, 'AI Factory.app', 'Contents', 'MacOS', 'AI Factory'),
+      resourcesDir: join(dir, 'AI Factory.app', 'Contents', 'Resources'),
+    });
+  }
+  if (platform === 'auto' || platform === 'win32') {
+    candidates.push({
+      platform: 'win32',
+      binary: join(dir, 'AI Factory.exe'),
+      resourcesDir: join(dir, 'resources'),
+    });
+  }
+  if (platform === 'auto' || platform === 'linux') {
+    candidates.push({
+      platform: 'linux',
+      binary: join(dir, 'ai-factory'),
+      resourcesDir: join(dir, 'resources'),
+    });
+  }
+  for (const c of candidates) {
+    if (!existsSync(c.binary)) continue;
+    return {
+      ...c,
+      serverEntry: join(c.resourcesDir, 'server', 'index.js'),
+      pkgDir: join(c.resourcesDir, 'server', 'node_modules', '@ai-factory'),
+      asar: join(c.resourcesDir, 'app.asar'),
+    };
+  }
+  // No binary found: the four layout checks stay independent per file
+  // (a missing binary must fail ONLY layout-binary, per the old tests).
+  // Fall back to the resources dir if one exists: a .app dir means darwin,
+  // a bare resources/ dir means the flagged platform (default linux, since
+  // win32 and linux share the resources/ shape and are told apart by the
+  // binary). A dir with neither is not a product at all: null.
+  const appDir = join(dir, 'AI Factory.app');
+  if (existsSync(appDir)) {
+    const resourcesDir = join(appDir, 'Contents', 'Resources');
+    return {
+      platform: 'darwin',
+      binary: join(appDir, 'Contents', 'MacOS', 'AI Factory'),
+      resourcesDir,
+      serverEntry: join(resourcesDir, 'server', 'index.js'),
+      pkgDir: join(resourcesDir, 'server', 'node_modules', '@ai-factory'),
+      asar: join(resourcesDir, 'app.asar'),
+    };
+  }
+  if (existsSync(join(dir, 'resources'))) {
+    const plat = platform === 'auto' ? 'linux' : platform;
+    const resourcesDir = join(dir, 'resources');
+    return {
+      platform: plat,
+      binary: plat === 'win32' ? join(dir, 'AI Factory.exe') : join(dir, 'ai-factory'),
+      resourcesDir,
+      serverEntry: join(resourcesDir, 'server', 'index.js'),
+      pkgDir: join(resourcesDir, 'server', 'node_modules', '@ai-factory'),
+      asar: join(resourcesDir, 'app.asar'),
+    };
+  }
+  return null;
+}
+
+export function checkPackagedLayout(dir, opts = {}) {
   const checks = [];
-  const binary = join(dir, 'ai-factory');
+  const layout = resolvePackagedLayout(dir, opts);
+  if (!layout) {
+    for (const id of ['layout-binary', 'layout-asar', 'layout-server', 'layout-packages']) {
+      checks.push({ id, pass: false, detail: 'no recognized packaged layout (need linux ai-factory, win32 AI Factory.exe, or darwin AI Factory.app)' });
+    }
+    return checks;
+  }
+  const isWin = layout.platform === 'win32';
+  let binaryOk = existsSync(layout.binary);
+  if (binaryOk && !isWin) {
+    try { binaryOk = (statSync(layout.binary).mode & 0o111) !== 0; } catch { binaryOk = false; }
+  }
   checks.push({
     id: 'layout-binary',
-    pass: existsSync(binary) && (statSync(binary).mode & 0o111) !== 0,
-    detail: existsSync(binary) ? 'ai-factory executable present' : 'missing ai-factory binary',
+    pass: binaryOk,
+    detail: binaryOk ? `${layout.platform} executable present: ${layout.binary}` : `missing/non-executable binary: ${layout.binary}`,
   });
-  const asar = join(dir, 'resources', 'app.asar');
-  const asarOk = existsSync(asar) && statSync(asar).size > 1024 * 1024;
+  const asarOk = existsSync(layout.asar) && statSync(layout.asar).size > 1024 * 1024;
   checks.push({
     id: 'layout-asar',
     pass: asarOk,
-    detail: existsSync(asar) ? `app.asar ${statSync(asar).size} bytes` : 'missing resources/app.asar',
+    detail: existsSync(layout.asar) ? `app.asar ${statSync(layout.asar).size} bytes` : `missing app.asar: ${layout.asar}`,
   });
-  const serverEntry = join(dir, 'resources', 'server', 'index.js');
   checks.push({
     id: 'layout-server',
-    pass: existsSync(serverEntry),
-    detail: existsSync(serverEntry) ? 'resources/server/index.js present' : 'missing packaged backend entry',
+    pass: existsSync(layout.serverEntry),
+    detail: existsSync(layout.serverEntry) ? 'packaged backend entry present' : `missing packaged backend entry: ${layout.serverEntry}`,
   });
-  const pkgDir = join(dir, 'resources', 'server', 'node_modules', '@ai-factory');
   let pkgCount = 0;
-  try { pkgCount = readdirSync(pkgDir).length; } catch { /* absent */ }
+  try { pkgCount = readdirSync(layout.pkgDir).length; } catch { /* absent */ }
   checks.push({
     id: 'layout-packages',
     pass: pkgCount >= 40,
@@ -91,12 +186,14 @@ export function checkPackagedLayout(dir) {
 }
 
 function parseArgs(argv) {
-  const out = { dir: null, appimage: null, out: null, display: ':99' };
+  const out = { dir: null, appimage: null, out: null, display: ':99', platform: 'auto', binary: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--dir') out.dir = argv[++i];
     else if (argv[i] === '--appimage') out.appimage = argv[++i];
     else if (argv[i] === '--out') out.out = argv[++i];
     else if (argv[i] === '--display') out.display = argv[++i];
+    else if (argv[i] === '--platform') out.platform = argv[++i];
+    else if (argv[i] === '--binary') out.binary = argv[++i];
   }
   return out;
 }
@@ -117,22 +214,104 @@ function ancestorPids() {
   return set;
 }
 
-/** PIDs whose cmdline mentions the packaged backend entry, minus ancestors. */
-function findBackendPids(unpackedDir) {
+/**
+ * PIDs of THIS run's backend, minus ancestors.
+ * A backend child cmdline = packaged electron binary + server/index.js as
+ * an argument (backslashes on Windows). The backend's parent is the app
+ * main process, so a backend counts only if its parent is alive AND looks
+ * like OUR app: parent cmdline contains this run's temp home, OR parent
+ * environ has HOME=<temp home> (Linux /proc), OR parent cmdline contains
+ * the unpacked dir (the main process argv[0] is the packaged binary).
+ * The parent check is what excludes orphans: a backend left behind by an
+ * aborted run has a dead parent (reparented to init) and is NOT counted —
+ * observed live 2026-11-02: a timed-out smoke left a backend behind and
+ * the next run counted 2. Residual limit, documented not hidden: two
+ * packaged smokes against the SAME unpacked dir at the same time share
+ * the binary-path signal and can cross-count; pipeline runs on one
+ * machine are sequential by convention, so this is accepted.
+ * Platform branches: Linux reads /proc; macOS parses `ps` output (no
+ * /proc); Windows tries PowerShell Get-CimInstance and returns null
+ * (UNKNOWABLE, not zero) when that fails — a backend count of "unknown"
+ * must be SKIP, never silently PASS.
+ */
+function parentLooksLikeOurApp(parentCmd, parentEnviron, homeDir, unpackedDir) {
+  if (!parentCmd) return false;
+  const norm = (s) => (s || '').replace(/\\/g, '/');
+  if (homeDir && norm(parentCmd).includes(norm(homeDir))) return true;
+  if (homeDir && parentEnviron && parentEnviron.split('\0').includes(`HOME=${homeDir}`)) return true;
+  if (unpackedDir && norm(parentCmd).includes(norm(unpackedDir))) return true;
+  return false;
+}
+
+function findBackendPids(unpackedDir, platform = process.platform, homeDir = null) {
   const skip = ancestorPids();
   const found = [];
+  const matches = (cmd) => cmd.includes('server/index.js') || cmd.includes('server\\index.js');
+  if (platform === 'darwin') {
+    try {
+      const out = execFileSync('ps', ['-ax', '-o', 'pid=,ppid=,command='], { encoding: 'utf8' });
+      const procs = new Map();
+      for (const line of out.split('\n')) {
+        const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+        if (m) procs.set(Number(m[1]), { ppid: Number(m[2]), cmd: m[3] });
+      }
+      for (const [pid, p] of procs) {
+        if (skip.has(pid) || !matches(p.cmd)) continue;
+        if (homeDir) {
+          const parent = procs.get(p.ppid);
+          if (!parentLooksLikeOurApp(parent?.cmd, null, homeDir, unpackedDir)) continue;
+        }
+        found.push(pid);
+      }
+    } catch { /* ps failed: empty list, caller decides */ }
+    return found;
+  }
+  if (platform === 'win32') {
+    try {
+      const out = execFileSync('powershell', ['-NoProfile', '-Command',
+        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"],
+        { encoding: 'utf8', timeout: 30000 });
+      const list = [].concat(JSON.parse(out || '[]'));
+      const byPid = new Map(list.map((p) => [p.ProcessId, p]));
+      for (const p of list) {
+        if (!p.CommandLine || skip.has(p.ProcessId) || !matches(p.CommandLine)) continue;
+        if (homeDir) {
+          const parent = byPid.get(p.ParentProcessId);
+          if (!parentLooksLikeOurApp(parent?.CommandLine, null, homeDir, unpackedDir)) continue;
+        }
+        found.push(p.ProcessId);
+      }
+      return found;
+    } catch { return null; }
+  }
   let pids = [];
   try {
     pids = readdirSync('/proc').filter((d) => /^\d+$/.test(d)).map(Number);
   } catch { return found; }
+  const readCmd = (pid) => {
+    try { return execFileSync('cat', [`/proc/${pid}/cmdline`], { encoding: 'utf8' }).replace(/\0/g, ' '); } catch { return null; }
+  };
+  const readEnviron = (pid) => {
+    try { return execFileSync('cat', [`/proc/${pid}/environ`], { encoding: 'utf8' }); } catch { return null; }
+  };
+  const readPpid = (pid) => {
+    try {
+      const stat = execFileSync('cat', [`/proc/${pid}/stat`], { encoding: 'utf8' });
+      const m = stat.match(/\)\s+\S+\s+(\d+)/);
+      return m ? Number(m[1]) : null;
+    } catch { return null; }
+  };
   for (const pid of pids) {
     if (skip.has(pid)) continue;
-    try {
-      const cmd = execFileSync('cat', [`/proc/${pid}/cmdline`], { encoding: 'utf8' });
-      // Backend child cmdline = packaged electron binary + server/index.js
-      // as an argument. The app process itself never carries that string.
-      if (cmd.includes('server/index.js')) found.push(pid);
-    } catch { /* vanished */ }
+    const cmd = readCmd(pid);
+    if (!cmd || !matches(cmd)) continue;
+    if (homeDir) {
+      const ppid = readPpid(pid);
+      const parentCmd = ppid ? readCmd(ppid) : null;
+      const parentEnviron = ppid ? readEnviron(ppid) : null;
+      if (!parentLooksLikeOurApp(parentCmd, parentEnviron, homeDir, unpackedDir)) continue;
+    }
+    found.push(pid);
   }
   return found;
 }
@@ -199,16 +378,32 @@ async function cdpBrowserClose(cdpPort) {
   } catch { return false; }
 }
 
-/** Read the V3-#1 per-install token from a (temp) HOME's userData dir. */
-function readInstallToken(home) {
-  for (const name of ['ai-factory', 'AI Factory']) {
-    const f = join(home, '.config', name, 'api-token');
-    try {
-      const t = readFileSync(f, 'utf8').trim();
-      if (t) return { file: f, token: t };
-    } catch { /* try next */ }
+/**
+ * Read the V3-#1 per-install token from a (temp) userData dir.
+ * userData roots differ per platform (Electron app.getPath('userData')):
+ *   linux : $HOME/.config/<name>
+ *   darwin: $HOME/Library/Application Support/<name>
+ *   win32 : %APPDATA%/<name>  (the smoke sets APPDATA into the temp home)
+ * `roots` lists the candidate parent dirs; the caller passes the temp
+ * home's roots so a real ~/.config is never read or written.
+ */
+function readInstallToken(roots) {
+  for (const root of roots) {
+    for (const name of ['ai-factory', 'AI Factory']) {
+      const f = join(root, name, 'api-token');
+      try {
+        const t = readFileSync(f, 'utf8').trim();
+        if (t) return { file: f, token: t };
+      } catch { /* try next */ }
+    }
   }
   return null;
+}
+
+function tokenRootsFor(home, platform, appdata) {
+  if (platform === 'win32') return [appdata];
+  if (platform === 'darwin') return [join(home, 'Library', 'Application Support')];
+  return [join(home, '.config')];
 }
 async function cdpEvaluate(cdpPort) {
   const list = await fetchJson(`http://127.0.0.1:${cdpPort}/json/list`);
@@ -274,41 +469,52 @@ export async function runPackagedSmoke(opts) {
     push('layout-dir', 'FAIL', `packaged dir not found: ${unpackedDir}`);
     return results;
   }
-  for (const c of checkPackagedLayout(unpackedDir)) {
+  const layoutOpts = { platform: opts.platform || 'auto', binary: opts.binary || undefined };
+  for (const c of checkPackagedLayout(unpackedDir, layoutOpts)) {
     push(c.id, c.pass ? 'PASS' : 'FAIL', c.detail);
   }
   if (results.some((r) => r.status === 'FAIL')) return results;
+  const layout = resolvePackagedLayout(unpackedDir, layoutOpts);
+  const runPlatform = layout.platform;
 
   const port = 32000 + Math.floor(Math.random() * 10000);
   const cdpPort = 19300 + Math.floor(Math.random() * 500);
   const home = join(homedir(), `packaged-smoke-${process.pid}-${Date.now()}`);
   mkdirSync(join(home, 'secrets'), { recursive: true });
-  const binary = join(unpackedDir, 'ai-factory');
-  const haveXvfb = spawnSync('which', ['Xvfb'], { encoding: 'utf8' }).status === 0;
-  if (!haveXvfb) {
-    push('launch', 'SKIP', 'Xvfb not installed: packaged app cannot start headless here');
-    push('window', 'SKIP', 'Xvfb not installed: window render not checked');
-    return results;
-  }
-  // Direct Xvfb (not xvfb-run): xvfb-run swallows SIGTERM, so a graceful
-  // quit could never be observed through it. Pick a free display.
-  const wanted = opts.display && opts.display !== ':99' ? [opts.display] : [];
-  const candidates = [...wanted, ...Array.from({ length: 11 }, (_, i) => `:${99 + i}`)];
+  const appdata = join(home, 'AppData', 'Roaming');
+  if (runPlatform === 'win32') mkdirSync(appdata, { recursive: true });
+  const binary = layout.binary;
+  // Xvfb is Linux-only. On Windows/macOS the binary spawns directly; on
+  // macOS that bypasses Gatekeeper by construction (see header note) — the
+  // trust gate, not this smoke, owns the double-click check.
   let xvfbProc = null;
   let display = null;
-  for (const cand of [...new Set(candidates)]) {
-    const p = spawn('Xvfb', [cand, '-screen', '0', '1600x900x24'], { stdio: 'ignore' });
-    await sleep(1200);
-    if (p.exitCode === null) { xvfbProc = p; display = cand; break; }
-  }
-  if (!xvfbProc) {
-    push('launch', 'FAIL', 'no free X display in :99-109');
-    return results;
+  if (runPlatform === 'linux') {
+    const haveXvfb = spawnSync('which', ['Xvfb'], { encoding: 'utf8' }).status === 0;
+    if (!haveXvfb) {
+      push('launch', 'SKIP', 'Xvfb not installed: packaged app cannot start headless here');
+      push('window', 'SKIP', 'Xvfb not installed: window render not checked');
+      return results;
+    }
+    // Direct Xvfb (not xvfb-run): xvfb-run swallows SIGTERM, so a graceful
+    // quit could never be observed through it. Pick a free display.
+    const wanted = opts.display && opts.display !== ':99' ? [opts.display] : [];
+    const candidates = [...wanted, ...Array.from({ length: 11 }, (_, i) => `:${99 + i}`)];
+    for (const cand of [...new Set(candidates)]) {
+      const p = spawn('Xvfb', [cand, '-screen', '0', '1600x900x24'], { stdio: 'ignore' });
+      await sleep(1200);
+      if (p.exitCode === null) { xvfbProc = p; display = cand; break; }
+    }
+    if (!xvfbProc) {
+      push('launch', 'FAIL', 'no free X display in :99-109');
+      return results;
+    }
   }
   const env = {
     ...process.env,
-    DISPLAY: display,
+    ...(display ? { DISPLAY: display } : {}),
     HOME: home,
+    ...(runPlatform === 'win32' ? { APPDATA: appdata, LOCALAPPDATA: join(home, 'AppData', 'Local') } : {}),
     PORT: String(port),
     DB_PATH: join(home, 'factory.db'),
     FACTORY_SECRETS_DIR: join(home, 'secrets'),
@@ -321,7 +527,11 @@ export async function runPackagedSmoke(opts) {
   child.stdout?.on('data', (d) => { out += d.toString(); });
   child.stderr?.on('data', (d) => { out += d.toString(); });
   const cleanup = () => {
-    try { if (!child.killed) child.kill('SIGKILL'); } catch { /* noop */ }
+    // Kill the whole process GROUP first (POSIX): killing only the app
+    // leaves its backend orphaned — the exact leak that made a later
+    // run's one-backend check count 2. Windows has no group kill, so the
+    // direct-child kill below is the fallback there.
+    try { if (!child.killed) process.kill(-child.pid, 'SIGKILL'); } catch { try { if (!child.killed) child.kill('SIGKILL'); } catch { /* noop */ } }
     try { xvfbProc?.kill('SIGKILL'); } catch { /* noop */ }
     try { rmSync(home, { recursive: true, force: true }); } catch { /* noop */ }
     if (extracted) { try { rmSync(join(homedir(), `packaged-smoke-extract-${process.pid}`), { recursive: true, force: true }); } catch { /* noop */ } }
@@ -332,7 +542,7 @@ export async function runPackagedSmoke(opts) {
       push('launch', 'FAIL', `app exited early code=${child.exitCode}: ${out.slice(-500)}`);
       return results;
     }
-    push('launch', 'PASS', `app process alive after 3s under Xvfb ${display}`);
+    push('launch', 'PASS', `app process alive after 3s${display ? ` under Xvfb ${display}` : ` (direct spawn, ${runPlatform})`}`);
     const health = await pollHealth(port, 90000);
     push('health', health.ok ? 'PASS' : 'FAIL', health.ok ? 'GET /api/health 200 ok:true' : `health never ready: ${health.detail}`);
     if (health.ok) {
@@ -340,8 +550,8 @@ export async function runPackagedSmoke(opts) {
       // every /api route except /api/health. The token lives in the
       // app's userData dir — under our temp HOME, so discovery here also
       // proves the smoke leaked nothing into the real ~/.config.
-      const tok = readInstallToken(home);
-      push('install-token', tok ? 'PASS' : 'FAIL', tok ? `per-install token found at ${tok.file}` : 'no api-token under temp HOME userData');
+      const tok = readInstallToken(tokenRootsFor(home, runPlatform, appdata));
+      push('install-token', tok ? 'PASS' : 'FAIL', tok ? `per-install token found at ${tok.file}` : 'no api-token under temp userData');
       const headers = tok ? { Authorization: `Bearer ${tok.token}` } : {};
       const stats = await fetchJson(`http://127.0.0.1:${port}/api/stats`, headers);
       push('stats', stats.status === 200 ? 'PASS' : 'FAIL', `GET /api/stats status ${stats.status}${tok ? ' (authed)' : ' (no token)'}`);
@@ -363,8 +573,12 @@ export async function runPackagedSmoke(opts) {
         const winOk = cdp.title && cdp.tabs >= 20 && cdp.mainLen > 20 && cdp.errors.length === 0;
         push('window', winOk ? 'PASS' : 'FAIL', `title=${JSON.stringify(cdp.title)} tabs=${cdp.tabs} mainLen=${cdp.mainLen} pageErrors=${cdp.errors.length}${cdp.errors.length ? ' :: ' + cdp.errors.join('|').slice(0, 200) : ''}`);
       }
-      const backends = findBackendPids(unpackedDir);
-      push('one-backend', backends.length === 1 ? 'PASS' : 'FAIL', `backend processes found: ${backends.length} (need exactly 1)`);
+      const backends = findBackendPids(unpackedDir, runPlatform, home);
+      if (backends === null) {
+        push('one-backend', 'SKIP', 'backend count unknowable on this host (PowerShell CIM query failed) — not a pass');
+      } else {
+        push('one-backend', backends.length === 1 ? 'PASS' : 'FAIL', `backend processes found: ${backends.length} (need exactly 1)`);
+      }
     }
     // Graceful quit first via the USER path (window.close ->
     // window-all-closed -> backend.kill() -> app.quit()); fall back to
@@ -384,7 +598,10 @@ export async function runPackagedSmoke(opts) {
       ]);
       if (exited !== null) quitMethod = 'browser-close';
     }
-    if (exited === null) {
+    if (exited === null && runPlatform !== 'win32') {
+      // POSIX process-group kill; on Windows there is no group kill, and
+      // taskkill would also kill the smoke's own tree — direct child kill
+      // below is the documented Windows degradation, not an equivalent.
       try { process.kill(-child.pid, 'SIGTERM'); } catch { try { child.kill('SIGTERM'); } catch { /* noop */ } }
       exited = await Promise.race([
         new Promise((r) => child.once('exit', (code) => r(code))),
@@ -399,8 +616,12 @@ export async function runPackagedSmoke(opts) {
       push('quit', 'PASS', `app exited code=${exited} via ${quitMethod}`);
     }
     await sleep(1000);
-    const leftover = findBackendPids(unpackedDir);
-    push('no-leftover-backend', leftover.length === 0 ? 'PASS' : 'FAIL', `backend processes after quit: ${leftover.length}`);
+    const leftover = findBackendPids(unpackedDir, runPlatform, home);
+    if (leftover === null) {
+      push('no-leftover-backend', 'SKIP', 'backend leftover unknowable on this host — not a pass');
+    } else {
+      push('no-leftover-backend', leftover.length === 0 ? 'PASS' : 'FAIL', `backend processes after quit: ${leftover.length}`);
+    }
   } finally {
     try { if (!child.killed) child.kill('SIGKILL'); } catch { /* noop */ }
     cleanup();
@@ -411,7 +632,7 @@ export async function runPackagedSmoke(opts) {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (!opts.dir && !opts.appimage) {
-    console.error('usage: node scripts/packaged-smoke.mjs --dir <unpacked-dir> | --appimage <file> [--out <json>] [--display :99]');
+    console.error('usage: node scripts/packaged-smoke.mjs --dir <unpacked-dir> | --appimage <file> [--out <json>] [--display :99] [--platform linux|win32|darwin|auto] [--binary <path>]');
     process.exit(2);
   }
   const results = await runPackagedSmoke(opts);

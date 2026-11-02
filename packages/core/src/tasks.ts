@@ -4,6 +4,8 @@
  */
 
 import { randomUUID } from 'crypto';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import {
   DependencyKind,
   Task,
@@ -166,7 +168,15 @@ export interface CreateTaskInput {
   evidenceRefs?: string[];
 }
 
-const DEFAULT_WORKSPACE = 'C:\\AIProjects\\MyApp';
+/**
+ * Default task workspace, platform-correct: under the operator's home
+ * directory on every OS. Previously a hard-coded Windows path that on Linux
+ * resolved to a bogus single directory under the server cwd (backslashes
+ * are filename characters on POSIX). Kept in sync with the demo project
+ * path in @ai-factory/db's seed (same expression, not imported, to keep
+ * this pure domain layer free of a db dependency).
+ */
+const DEFAULT_WORKSPACE = join(homedir(), 'AIProjects', 'MyApp');
 
 export class TaskManager {
   constructor(private store: TaskStore = new InMemoryTaskStore()) {}

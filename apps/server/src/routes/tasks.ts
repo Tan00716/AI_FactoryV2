@@ -9,10 +9,15 @@
  *   POST /api/tasks/run              { label, root?, projectId? } — run chain
  *   GET  /api/tasks/graph?label=&root= DAG nodes + edges + last-run status
  *                                    overlay for visualization (R7-#4)
- *   GET  /api/tasks/runs             recent run timelines (in-memory ring,
- *                                    step outputs stripped in list view)
+ *   GET  /api/tasks/runs             recent run timelines: live ring
+ *                                    merged with persisted run metadata
+ *                                    (V3.0 audit round 2, item #10)
  *   GET  /api/tasks/runs/:id         one timeline: full step cards +
- *                                    linked shadow checkpoints
+ *                                    linked shadow checkpoints; a
+ *                                    persisted-only id returns metadata
+ *                                    with empty steps (view, not replay)
+ *   DELETE /api/tasks/runs/history   clear persisted run history
+ *                                    (operator, audited, count only)
  *   POST /api/tasks/runs/:id/rollback { stepLabel } — mark later steps
  *                                    superseded (history never deleted)
  *   POST /api/tasks/runs/:id/rerun  { stepLabel? } — new chain run from a
@@ -81,8 +86,11 @@
  *  - Env is additive only; PATH, LD_PRELOAD, LD_LIBRARY_PATH, DYLD_*,
  *    and NODE_OPTIONS cannot be overridden and credential-looking env
  *    vars are scrubbed.
- *  - Run records are process-local (restart clears them); output is capped
- *    at 2MB per task with truncation flagged.
+ *  - Run records: full timelines stay process-local (restart clears
+ *    step cards and outputs); run METADATA persists across restarts in
+ *    <dataDir>/run-history.json (V3.0 audit round 2, item #10) so the
+ *    runs list can be viewed back. Persisted runs are view-only: they
+ *    cannot be rolled back or re-run from their record.
  *
  * Wired into apps/server/src/index.ts by the coordinator:
  *   import { handleTaskRunnerRoutes, setTaskRunnerDeps } from './routes/tasks';
@@ -99,7 +107,7 @@
  */
 import { execFile } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, normalize, relative } from 'node:path';
+import { dirname, join, normalize, relative, resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
   DEFAULT_TIMEOUT_MS,
@@ -121,6 +129,12 @@ import {
   TimelineError,
   type TimelineRun,
 } from '@ai-factory/tasktimeline';
+import {
+  RUN_HISTORY_FILE,
+  RunHistory,
+  RunHistoryCorruptError,
+  type RunHistoryMeta,
+} from '@ai-factory/runhistory';
 import { scrubCredentialEnv } from '@ai-factory/runtime';
 import type { RouteContext } from './context';
 import type { ParseStats, ProblemMatcherDef } from '../problem-matchers';
@@ -246,6 +260,125 @@ interface TimelineRecord extends TimelineRun {
 const runRecords: TimelineRecord[] = [];
 let runSeq = 0;
 
+/**
+ * V3.0 audit round 2, item #10 — minimal persisted run metadata.
+ *
+ * The live ring above is still the source of truth for full timelines
+ * (step cards, outputs, rollback, rerun). Persisted history is metadata
+ * only (see packages/runhistory): it survives restarts so the runs list
+ * can be viewed back, but it carries no step data, no root path, and no
+ * free-text beyond a redacted chain label — so a persisted run can
+ * never be rolled back or re-run from its record. Re-execution always
+ * goes through POST /api/tasks/run with the chain label.
+ *
+ * The store is lazy per data dir (same AI_FACTORY_DATA_DIR convention
+ * as the db-browser history) and best-effort: a corrupt or unwritable
+ * history file never fails a chain run; the corruption surfaces in the
+ * list response (historyCorrupt) and explicit DELETE clears it.
+ */
+let runHistoryStore: RunHistory | null = null;
+let runHistoryDir = '';
+let runSeqSeeded = false;
+
+function runHistoryDataDir(): string {
+  const env = (process.env['AI_FACTORY_DATA_DIR'] ?? '').trim();
+  if (env) return resolve(env);
+  return resolve(process.cwd(), 'data');
+}
+
+function runHistoryOf(): RunHistory {
+  const dir = runHistoryDataDir();
+  if (!runHistoryStore || runHistoryDir !== dir) {
+    runHistoryStore = new RunHistory({ filePath: join(dir, RUN_HISTORY_FILE) });
+    runHistoryDir = dir;
+  }
+  return runHistoryStore;
+}
+
+/** True when the persisted history file is corrupt (fail-closed state). */
+function runHistoryCorrupt(): boolean {
+  try {
+    runHistoryOf().load();
+    return runHistoryOf().corrupt;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Seed the live run sequence above every persisted id (taskrun-N) so a
+ * restart never reuses an id that persisted history already holds: the
+ * merged list view dedupes by id with live runs winning, and a reused
+ * id would silently shadow an older persisted run.
+ */
+function ensureSeqSeeded(): void {
+  if (runSeqSeeded) return;
+  runSeqSeeded = true;
+  try {
+    runHistoryOf().load();
+    for (const m of runHistoryOf().list()) {
+      const n = /^taskrun-(\d+)$/.exec(m.id);
+      if (n) runSeq = Math.max(runSeq, Number(n[1]));
+    }
+  } catch {
+    // Corrupt history: no seed available, live ids start fresh; the
+    // corrupt file is not loaded, so no persisted id can collide.
+  }
+}
+
+/** Project a live timeline into persisted metadata (counts only). */
+function toRunMeta(timeline: TimelineRun): Omit<RunHistoryMeta, 'label'> & { label: string } {
+  const counts = { ok: 0, failed: 0, denied: 0, timeout: 0, skipped: 0, superseded: 0 };
+  for (const s of timeline.steps) {
+    if (s.status in counts) counts[s.status as keyof typeof counts] += 1;
+  }
+  return {
+    id: timeline.id,
+    label: timeline.label,
+    ok: timeline.ok,
+    startedAt: timeline.startedAt,
+    finishedAt: timeline.finishedAt,
+    durationMs: Date.parse(timeline.finishedAt) - Date.parse(timeline.startedAt),
+    taskCount: timeline.steps.length,
+    counts,
+    coverage: timeline.coverage,
+    ...(timeline.rerunOf !== undefined ? { rerunOf: timeline.rerunOf } : {}),
+    ...(timeline.rerunFrom !== undefined ? { rerunFrom: timeline.rerunFrom } : {}),
+  };
+}
+
+/** Persisted view of one metadata record for the runs list / detail. */
+function persistedView(meta: RunHistoryMeta): Record<string, unknown> {
+  return {
+    ...meta,
+    taskCount: meta.taskCount,
+    steps: [],
+    persisted: true,
+    persistedNote:
+      'Persisted run metadata only: step commands, outputs, and error text are not stored. ' +
+      'This is a view of a past run, not a re-execution channel — to run again, ' +
+      'POST /api/tasks/run with the chain label.',
+  };
+}
+
+/** Merged list view: live runs first (newest first), then persisted runs not already live. */
+function mergedRunsView(): Array<(TimelineRun & { taskCount: number }) | Record<string, unknown>> {
+  const live = [...runRecords].reverse().map((r) => timelineView(r, false));
+  const liveIds = new Set(live.map((r) => r.id));
+  let persisted: RunHistoryMeta[] = [];
+  try {
+    runHistoryOf().load();
+    persisted = runHistoryOf().list();
+  } catch {
+    persisted = [];
+  }
+  const extra = [...persisted]
+    .reverse()
+    .filter((m) => !liveIds.has(m.id))
+    .map((m) => persistedView(m));
+  return [...live, ...extra];
+}
+
 function recordRun(
   chain: TaskChainResult,
   planned: TaskDef[],
@@ -253,6 +386,8 @@ function recordRun(
   projectId: string,
   rerun?: { rerunOf: string; rerunFrom: string },
 ): TimelineRun {
+  // Seed once per boot so restarted servers never reuse a persisted id.
+  ensureSeqSeeded();
   runSeq += 1;
   const timeline = buildTimeline(
     `taskrun-${runSeq}`,
@@ -270,6 +405,13 @@ function recordRun(
   };
   runRecords.push(rec);
   while (runRecords.length > MAX_RUN_RECORDS) runRecords.shift();
+  // Best-effort persistence: a corrupt/unwritable history file must
+  // never fail the chain run itself; corruption surfaces in the list.
+  try {
+    runHistoryOf().record(toRunMeta(timeline));
+  } catch {
+    // Live record already kept; historyCorrupt in the list reports it.
+  }
   return timeline;
 }
 
@@ -277,6 +419,9 @@ function recordRun(
 export function resetTaskRunRecords(): void {
   runRecords.length = 0;
   runSeq = 0;
+  // Do not re-seed after an explicit reset: the reset caller owns the
+  // id space (production never calls this; seeding happens on boot).
+  runSeqSeeded = true;
 }
 
 /** Serialize a record for clients: strip the server-only root path. */
@@ -789,8 +934,26 @@ export async function handleTaskRunnerRoutes(
     }
 
     // ---- run history --------------------------------------------------
+    // V3.0 audit round 2, item #10: the list merges the live ring with
+    // persisted run metadata (restart-surviving, metadata only). The
+    // merged view dedupes by id with live runs winning; persisted
+    // entries carry persisted:true and empty steps.
     if (path === `${PREFIX}/runs` && method === 'GET') {
-      ctx.json(res, 200, { runs: [...runRecords].reverse().map((r) => timelineView(r, false)) });
+      ctx.json(res, 200, { runs: mergedRunsView(), historyCorrupt: runHistoryCorrupt() });
+      return true;
+    }
+
+    // ---- clear persisted run history (operator, audited) --------------
+    // Must precede the /runs/:id matcher below, which would otherwise
+    // swallow 'history' as a run id. Clears the persisted file only;
+    // live in-memory timelines are untouched. Count-only audit: never
+    // any run content. Also the repair path for a corrupt file.
+    if (path === `${PREFIX}/runs/history` && method === 'DELETE') {
+      const cleared = runHistoryOf().clear();
+      ctx.audit.record('human', 'TASK_RUN_HISTORY_CLEARED', 'task', 'run-history', {
+        cleared,
+      });
+      ctx.json(res, 200, { ok: true, cleared });
       return true;
     }
 
@@ -804,6 +967,39 @@ export async function handleTaskRunnerRoutes(
       const action = runMatch[2] ?? null;
       const idx = runRecords.findIndex((r) => r.id === runId);
       if (idx < 0) {
+        // Persisted-only run (restart-surviving metadata): viewable, but
+        // immutable — it carries no root path and no step data, so it
+        // can never be rolled back or re-run from its record. Re-run
+        // means POST /api/tasks/run with the chain label.
+        let persisted: RunHistoryMeta | undefined;
+        try {
+          runHistoryOf().load();
+          persisted = runHistoryOf().list().find((m) => m.id === runId);
+        } catch {
+          persisted = undefined;
+        }
+        if (persisted) {
+          if (method === 'GET' && action === null) {
+            ctx.json(res, 200, {
+              run: persistedView(persisted),
+              persisted: true,
+              checkpoints: [],
+              checkpointError: null,
+            });
+            return true;
+          }
+          if (method === 'POST' && (action === 'rollback' || action === 'rerun')) {
+            ctx.json(res, 409, {
+              error:
+                `persisted run ${runId} is metadata only and cannot be ${action}ed; ` +
+                `to run again, POST /api/tasks/run with the chain label '${persisted.label}'`,
+              code: 'persisted-run-immutable',
+            });
+            return true;
+          }
+          ctx.json(res, 405, { error: 'method not allowed for this timeline path', code: 'bad-method' });
+          return true;
+        }
         ctx.json(res, 404, { error: `no timeline run ${runId}`, code: 'timeline-not-found' });
         return true;
       }

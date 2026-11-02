@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkPackagedLayout } from './packaged-smoke.mjs';
+import { checkPackagedLayout, resolvePackagedLayout } from './packaged-smoke.mjs';
 import { platformMatrix, notRunEntries } from './cross-platform-check.mjs';
 
 function fakeUnpacked({ binary = true, asarSize = 2 * 1024 * 1024, pkgs = 45 } = {}) {
@@ -77,4 +77,80 @@ test('notRun: current platform excluded, others carry runnable commands', () => 
     assert.ok(e.commands.some((c) => c.includes('cross-platform-check.mjs')));
     assert.ok(e.commands.some((c) => c.includes('packaged-smoke.mjs')));
   }
+});
+
+// V3R2-#7: the same smoke script must recognise Win/mac layouts by their
+// binary, not by the host platform (the script runs ON the target machine).
+test('layout: windows unpacked dir resolves win32 binary + resources', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fake-win-'));
+  try {
+    writeFileSync(join(dir, 'AI Factory.exe'), 'MZ fake\n');
+    mkdirSync(join(dir, 'resources', 'server', 'node_modules', '@ai-factory'), { recursive: true });
+    writeFileSync(join(dir, 'resources', 'app.asar'), Buffer.alloc(2 * 1024 * 1024));
+    writeFileSync(join(dir, 'resources', 'server', 'index.js'), '// fake\n');
+    for (let i = 0; i < 45; i++) mkdirSync(join(dir, 'resources', 'server', 'node_modules', '@ai-factory', `pkg${i}`));
+    const layout = resolvePackagedLayout(dir);
+    assert.equal(layout.platform, 'win32');
+    const checks = checkPackagedLayout(dir);
+    assert.equal(checks.length, 4);
+    for (const c of checks) assert.equal(c.pass, true, c.id);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('layout: mac app bundle resolves darwin binary + Contents/Resources', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fake-mac-'));
+  try {
+    const app = join(dir, 'AI Factory.app', 'Contents');
+    mkdirSync(join(app, 'MacOS'), { recursive: true });
+    mkdirSync(join(app, 'Resources', 'server', 'node_modules', '@ai-factory'), { recursive: true });
+    const bin = join(app, 'MacOS', 'AI Factory');
+    writeFileSync(bin, '#!/bin/sh\n');
+    chmodSync(bin, 0o755);
+    writeFileSync(join(app, 'Resources', 'app.asar'), Buffer.alloc(2 * 1024 * 1024));
+    writeFileSync(join(app, 'Resources', 'server', 'index.js'), '// fake\n');
+    for (let i = 0; i < 45; i++) mkdirSync(join(app, 'Resources', 'server', 'node_modules', '@ai-factory', `pkg${i}`));
+    const layout = resolvePackagedLayout(dir);
+    assert.equal(layout.platform, 'darwin');
+    const checks = checkPackagedLayout(dir);
+    assert.equal(checks.length, 4);
+    for (const c of checks) assert.equal(c.pass, true, c.id);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('layout: dir with resources but no binary fails binary/server/packages, not asar', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fake-nobin-'));
+  try {
+    mkdirSync(join(dir, 'resources', 'server'), { recursive: true });
+    writeFileSync(join(dir, 'resources', 'app.asar'), Buffer.alloc(2 * 1024 * 1024));
+    // Layout checks stay independent per file: only the missing pieces fail.
+    const layout = resolvePackagedLayout(dir);
+    assert.equal(layout.platform, 'linux');
+    const checks = checkPackagedLayout(dir);
+    assert.equal(checks.find((c) => c.id === 'layout-binary').pass, false);
+    assert.equal(checks.find((c) => c.id === 'layout-asar').pass, true);
+    assert.equal(checks.find((c) => c.id === 'layout-server').pass, false);
+    assert.equal(checks.find((c) => c.id === 'layout-packages').pass, false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('layout: empty dir resolves to no layout and fails all four checks', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fake-empty-'));
+  try {
+    assert.equal(resolvePackagedLayout(dir), null);
+    const checks = checkPackagedLayout(dir);
+    assert.equal(checks.length, 4);
+    for (const c of checks) assert.equal(c.pass, false, c.id);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('layout: explicit platform flag constrains binary probing', () => {
+  const dir = fakeUnpacked();
+  try {
+    // A linux-shaped dir probed as win32 keeps the resources shape but
+    // looks for AI Factory.exe, so only the binary check fails.
+    const winLayout = resolvePackagedLayout(dir, { platform: 'win32' });
+    assert.equal(winLayout.platform, 'win32');
+    assert.equal(checkPackagedLayout(dir, { platform: 'win32' }).find((c) => c.id === 'layout-binary').pass, false);
+    assert.equal(resolvePackagedLayout(dir, { platform: 'linux' }).platform, 'linux');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

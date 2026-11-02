@@ -125,6 +125,12 @@ function ManifestDetail({ manifest }: { manifest: RunManifest }) {
           <td>
             {m.driver.kind} · adapter <code>{m.driver.adapter}</code> ·{' '}
             routeRequest {m.driver.routeRequestProvided ? t('observatory.has') : t('observatory.hasNot')}
+            {/* V3R2-#4: a bare "adapter stub" in muted text is easy to
+                skim past — a run that only ever produced scripted output
+                gets an explicit badge here. */}
+            {m.driver.adapter === 'stub' && (
+              <span className="pill warn" style={{ marginLeft: 8 }}>{t('stub.adapterBadge')}</span>
+            )}
           </td>
           <th>{t('observatory.row.model')}</th>
           <td>
@@ -331,6 +337,13 @@ export function ObservatoryPanel() {
                         {row.manifest.model ?? '—'}
                         {row.manifest.modelSource && (
                           <span className="muted">{t('observatory.modelSource', { source: row.manifest.modelSource })}</span>
+                        )}
+                        {/* V3R2-#4: same badge as the manifest detail, so
+                            the list row alone never implies a real turn.
+                            The list carries the summary shape, whose
+                            adapter is a flat field, not driver.adapter. */}
+                        {row.manifest.adapter === 'stub' && (
+                          <span className="pill warn" style={{ marginLeft: 8 }}>{t('stub.adapterBadge')}</span>
                         )}
                       </>
                     ) : (

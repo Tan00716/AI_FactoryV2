@@ -32,7 +32,11 @@ type RunView = TaskRunsResponse['runs'][number];
  *  - List-view step outputs are stripped (detail view carries full output).
  *  - outputDigest is the SHA-256 of the stored (capped) output record,
  *    not a build-artifact digest.
- *  - Runs are process-local: a server restart clears the timeline.
+ *  - Full timelines are process-local: a server restart clears step
+ *    cards and outputs. Run METADATA persists across restarts (V3.0
+ *    audit round 2, item #10) and is marked persisted below; a persisted
+ *    run is a view of a past run, not a re-execution channel — it cannot
+ *    be rolled back or re-run from its record.
  *  - A step whose command the planner did not know is shown with an
  *    explicit unknown marker and coverage 'partial', never invented.
  */
@@ -204,6 +208,23 @@ export function CascadeTimelinePanel() {
     [load, t],
   );
 
+  // V3.0 audit round 2, item #10: clear persisted run metadata only;
+  // live in-memory timelines are untouched. Confirmed, audited server-side.
+  const clearPersisted = useCallback(async () => {
+    if (!window.confirm(t('runhist.clearConfirm'))) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api.tasksClearRunHistory();
+      setMsg(t('runhist.cleared', { count: r.cleared === null ? '?' : String(r.cleared) }));
+      await load();
+    } catch (e) {
+      setMsg(t('timeline.actionFailed', { message: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setBusy(false);
+    }
+  }, [load, t]);
+
   const restoreCheckpoint = useCallback(
     async (cp: { id: string; workspaceId: string; workspacePath: string }) => {
       if (!window.confirm(t('timeline.restoreConfirm', { id: cp.id }))) return;
@@ -249,6 +270,9 @@ export function CascadeTimelinePanel() {
         <button className="link" onClick={load}>
           {t('tasks.refresh')}
         </button>
+        <button className="link" disabled={busy} onClick={clearPersisted}>
+          {t('runhist.clear')}
+        </button>
         {msg && <span className="muted">{msg}</span>}
       </div>
       {runs.length === 0 && <div className="muted">{t('timeline.runsEmpty')}</div>}
@@ -263,6 +287,7 @@ export function CascadeTimelinePanel() {
               <b>{run.label}</b>
               <span className="muted">
                 {run.ok ? t('tasks.chainOk') : t('tasks.chainFailed')}
+                {run.persisted && ` · ${t('runhist.persisted')}`}
                 {run.stoppedAt && ` · ${t('tasks.stoppedAt', { label: run.stoppedAt })}`}
                 {run.rerunOf && ` · ${t('timeline.rerunOf', { id: run.rerunOf, from: run.rerunFrom ?? '—' })}`}
                 {run.supersededFrom && ` · ${t('timeline.rolledBackTo', { label: run.supersededFrom })}`}
@@ -282,6 +307,7 @@ export function CascadeTimelinePanel() {
             {openId === run.id && (
               <>
                 {detailErr && <div className="pill warn">{detailErr}</div>}
+                {detail?.persistedNote && <div className="muted">{t('runhist.persistedNote')}</div>}
                 {shown.steps.map((step) => (
                   <StepCard
                     key={step.label}

@@ -23,12 +23,30 @@ export default function RulesPanel(props: { projectRoot: string }) {
   const [editId, setEditId] = useState('');
   const [editContent, setEditContent] = useState('');
   const [status, setStatus] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  const reload = useCallback(async () => {
+  // Real server error plus HTTP status when the api client carries one,
+  // so a failure never again shows up as a bare unexplained status line.
+  const errText = (e: unknown): string => {
+    const message = e instanceof Error ? e.message : String(e);
+    const code = (e as { status?: number }).status;
+    return code ? `${message} (HTTP ${code})` : message;
+  };
+
+  // Reload owns the view and the load error only: it must never overwrite
+  // an operation status (previously a failed reload replaced a "saved"
+  // status with its own error, so a successful save displayed as a failure).
+  // Returns the fresh view, or null when the load itself failed.
+  const reload = useCallback(async (): Promise<RulesViewDto | null> => {
     try {
-      setView(await api.rulesView(props.projectRoot || undefined));
+      const next = await api.rulesView(props.projectRoot || undefined);
+      setView(next);
+      setLoadError('');
+      return next;
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setLoadError(errText(e));
+      return null;
     }
   }, [props.projectRoot]);
 
@@ -37,15 +55,29 @@ export default function RulesPanel(props: { projectRoot: string }) {
   }, [reload]);
 
   const onAdd = async () => {
+    if (saving) return;
     setStatus('');
+    setSaving(true);
     try {
-      await api.rulesAdd({ scope, name: name.trim(), content, root: props.projectRoot || undefined });
-      setStatus(t('rules.status.saved'));
+      const { rule } = await api.rulesAdd({ scope, name: name.trim(), content, root: props.projectRoot || undefined });
       setName('');
       setContent('');
-      await reload();
+      const next = await reload();
+      if (!next) {
+        // Server accepted the rule (201) but the list failed to refresh:
+        // report both facts instead of hiding the save behind the error.
+        setStatus(t('rules.status.saved'));
+      } else if (next.global.some((r) => r.id === rule.id) || next.project.some((r) => r.id === rule.id)) {
+        setStatus(t('rules.status.saved'));
+      } else {
+        // Write/read fork: accepted server-side but invisible on reload.
+        setStatus('');
+        setLoadError(`saved rule not visible after reload: ${rule.id}`);
+      }
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setStatus(errText(e));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -54,7 +86,7 @@ export default function RulesPanel(props: { projectRoot: string }) {
       await api.rulesPatch(rule.id, rule.scope, { enabled: !rule.enabled }, props.projectRoot || undefined);
       await reload();
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setStatus(errText(e));
     }
   };
 
@@ -63,7 +95,7 @@ export default function RulesPanel(props: { projectRoot: string }) {
       await api.rulesDelete(rule.id, rule.scope, props.projectRoot || undefined);
       await reload();
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setStatus(errText(e));
     }
   };
 
@@ -73,7 +105,7 @@ export default function RulesPanel(props: { projectRoot: string }) {
       setEditId('');
       await reload();
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setStatus(errText(e));
     }
   };
 
@@ -86,7 +118,7 @@ export default function RulesPanel(props: { projectRoot: string }) {
       await api.rulesOrder(rules[0].scope, next.map((r) => r.id), props.projectRoot || undefined);
       await reload();
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setStatus(errText(e));
     }
   };
 
@@ -172,7 +204,7 @@ export default function RulesPanel(props: { projectRoot: string }) {
         <div>
           <textarea value={content} onChange={(e) => setContent(e.target.value)} rows={4} cols={72} />
         </div>
-        <button onClick={() => void onAdd()} disabled={!name.trim()}>{t('rules.add')}</button>
+        <button onClick={() => void onAdd()} disabled={!name.trim() || saving}>{t('rules.add')}</button>
       </section>
       {view ? (
         <>
@@ -180,6 +212,8 @@ export default function RulesPanel(props: { projectRoot: string }) {
           {renderLevel(t('rules.projectTitle'), view.project)}
           {renderEffective(view.effective)}
         </>
+      ) : loadError ? (
+        <p>{loadError} <button onClick={() => void reload()}>{t('tasks.retry')}</button></p>
       ) : (
         <p>{t('rules.loading')}</p>
       )}

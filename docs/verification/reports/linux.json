@@ -1,0 +1,99 @@
+{
+  "platform": "linux",
+  "live": [
+    {
+      "id": "sandbox-probe",
+      "status": "PASS",
+      "detail": "bwrap probe on linux: available=false reason=bwrap probe failed to spawn: Required binary 'bwrap' is missing: spawn bwrap ENOENT"
+    },
+    {
+      "id": "sandbox-degrade-not-silent",
+      "status": "PASS",
+      "detail": "forced-missing binary probe: available=false reason=bwrap probe failed to spawn: Required binary '/definitely/not/a/binary' is missing: spawn /definitely/not/a/binary ENOENT"
+    },
+    {
+      "id": "dotenv-crlf",
+      "status": "PASS",
+      "detail": "entries=2 untouched-preserved=true changed-line=true"
+    },
+    {
+      "id": "path-semantics",
+      "status": "PASS",
+      "detail": "posix=/a/c win32=C:\\a\\c driveRoot=true"
+    },
+    {
+      "id": "kill-semantics",
+      "status": "PASS",
+      "detail": "POSIX: process-group kill available"
+    },
+    {
+      "id": "signing-status",
+      "status": "PASS",
+      "detail": "platform=linux codesign=false signtool=true — all three platforms ship UNSIGNED (cert purchase is Tan-side, not code)"
+    }
+  ],
+  "notRun": [
+    {
+      "platform": "win32",
+      "status": "NOT_RUN",
+      "commands": [
+        "node scripts/cross-platform-check.mjs --out docs/verification/reports/<platform>.json",
+        "npm run dist:win && node scripts/packaged-smoke.mjs --dir release/win-unpacked"
+      ],
+      "note": "Must include the sandbox-degrade path: high-risk exec under degrade must be refused-or-audited, never silently sandboxed."
+    },
+    {
+      "platform": "darwin",
+      "status": "NOT_RUN",
+      "commands": [
+        "node scripts/cross-platform-check.mjs --out docs/verification/reports/<platform>.json",
+        "npm run dist:mac && node scripts/packaged-smoke.mjs --dir <unpacked .app parent>"
+      ],
+      "note": "Must include the unsigned Gatekeeper prompt check: the prompt text must be recorded, not worked around."
+    }
+  ],
+  "matrix": [
+    {
+      "area": "sandbox",
+      "linux": "bwrap user namespaces when installed; probe is a real invocation",
+      "win32": "NO bwrap: degrade path — build runs unsandboxed, SANDBOX_UNAVAILABLE audited, never silent",
+      "darwin": "NO bwrap: same degrade path as Windows",
+      "severity": "P0-3 (boundary asymmetry, disclosed not hidden)"
+    },
+    {
+      "area": "process-group kill (taskqueue cancel)",
+      "linux": "kills the whole POSIX process group",
+      "win32": "degrades to direct child only; grandchildren may survive (documented limit)",
+      "darwin": "POSIX process group kill (same as Linux)",
+      "severity": "P1 (documented, needs a Windows test to confirm the degrade)"
+    },
+    {
+      "area": "paths",
+      "linux": "POSIX separators, no drive letters",
+      "win32": "drive letters + backslashes; jail resolver must reject drive-escape",
+      "darwin": "POSIX separators; case-insensitive FS by default (collision risk)",
+      "severity": "P1 (jail tests must cover drive-letter and case-folding cases)"
+    },
+    {
+      "area": "line endings",
+      "linux": "LF",
+      "win32": "CRLF: .env roundtrip must preserve bytes; git autocrlf risk on checkout",
+      "darwin": "LF",
+      "severity": "P2 (covered live by dotenv-crlf on every host)"
+    },
+    {
+      "area": "signing / notarization",
+      "linux": "AppImage unsigned (accepted for direct distribution)",
+      "win32": "UNSIGNED: SmartScreen warning; needs OV/EV cert (Tan-side purchase)",
+      "darwin": "UNSIGNED + UNNOTARIZED: Gatekeeper blocks double-click; needs Apple Developer ID (Tan-side)",
+      "severity": "P0-2 (blocks trusted distribution, not a code task)"
+    },
+    {
+      "area": "installer format",
+      "linux": "AppImage + linux-unpacked (verified path: packaged-smoke.mjs)",
+      "win32": "NSIS Setup + portable exe (electron-builder config ready; exe in release/ is a payload-less template — NOT usable)",
+      "darwin": "DMG (config ready; cannot be built on Linux — sips is macOS-only)",
+      "severity": "P0-2 (Win template exe must never be shipped)"
+    }
+  ]
+}

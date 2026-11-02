@@ -41,6 +41,13 @@ export function CreateTaskModal({ projectId, onClose, onCreated }: {
   const [goal, setGoal] = useState('');
   const [priority, setPriority] = useState('P2');
   const [error, setError] = useState('');
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  // V3R2-#3: the error used to render at the bottom of a modal taller than
+  // the window, below the fold. It now sits next to the title field and
+  // scrolls into view on submit so a failed validation is never missed.
+  useEffect(() => {
+    if (error) errorRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [error]);
   const [busy, setBusy] = useState(false);
   const [images, setImages] = useState<PendingImage[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -281,6 +288,7 @@ export function CreateTaskModal({ projectId, onClose, onCreated }: {
           </div>
         )}
         <label>{t('createtask.titleLabel')}<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('createtask.titlePlaceholder')} /></label>
+        {error && <p ref={errorRef} className="err" role="alert">{error}</p>}
         <label>{t('createtask.goalLabel')}<textarea value={goal} onChange={(e) => setGoal(e.target.value)} placeholder={t('createtask.goalPlaceholder')} /></label>
         <label>{t('createtask.priorityLabel')}
           <select value={priority} onChange={(e) => setPriority(e.target.value)}>
@@ -349,7 +357,6 @@ export function CreateTaskModal({ projectId, onClose, onCreated }: {
             ))}
           </div>
         )}
-        {error && <p className="err">{error}</p>}
         <div className="btn-row">
           <button className="primary" onClick={submit} disabled={busy}>{busy ? (templateId ? t('tasktpl.launching') : (uploading ? t('createtask.uploadingImages') : t('createtask.creating'))) : (templateId ? t('tasktpl.launch') : t('createtask.create'))}</button>
           <button onClick={onClose}>{t('createtask.cancel')}</button>

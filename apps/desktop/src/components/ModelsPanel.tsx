@@ -110,6 +110,10 @@ export function ModelsPanel({ api, pollMs = 15000 }: ModelsPanelProps) {
         <span className="muted">{t('models.count', { v: visible.length, n: models.length })}</span>
       </div>
       {error && <div className="banner err">{error}</div>}
+      {/* V3R2-#4: the registry lists catalog metadata, not live provider
+          connections — say so above the table, before any "online" pill
+          can read as a connected model. */}
+      <div className="banner warn">{t('stub.modelsBanner')}</div>
 
       <div className="filter-box">
         <label className="muted">

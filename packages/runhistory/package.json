@@ -1,0 +1,1 @@
+{"dependencies":{"@ai-factory/diagpack":"0.1.0"},"description":"Minimal persisted task-run metadata: restart-surviving run history without step outputs (V3.0 audit round 2, item #10)","license":"Apache-2.0","main":"dist/src/index.js","name":"@ai-factory/runhistory","scripts":{"build":"tsc -p tsconfig.json"},"types":"dist/src/index.d.ts","version":"0.1.0"}

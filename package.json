@@ -85,6 +85,7 @@
     "test:desktop": "node scripts/test-desktop.mjs",
     "smoke:packaged": "node scripts/packaged-smoke.mjs",
     "verify:platform": "node scripts/cross-platform-check.mjs",
+    "pipeline:verify": "node scripts/verify-platform.mjs",
     "headless": "node packages/headless/dist/src/cli.js",
     "benchmark": "npm run build -w @ai-factory/benchmark && node packages/benchmark/dist/src/cli.js"
   },

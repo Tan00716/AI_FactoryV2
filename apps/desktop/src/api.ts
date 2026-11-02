@@ -2030,6 +2030,9 @@ export interface TaskRunsResponse {
     rerunOf?: string;
     rerunFrom?: string;
     checkpointTaskId: string;
+    /** V3.0 audit round 2, item #10: restart-surviving metadata, no step data. */
+    persisted?: boolean;
+    persistedNote?: string;
   }>;
 }
 /** V3-#7 Cascade 时间线：一步一卡片（列表视图输出为空，详情视图含完整输出）。 */
@@ -2053,6 +2056,9 @@ export interface TimelineStepView {
 /** V3-#7 时间线详情：完整步骤卡片 + 关联的影子检查点。 */
 export interface TimelineDetailResponse {
   run: TaskRunsResponse['runs'][number];
+  /** V3.0 audit round 2, item #10: set for persisted-only detail views. */
+  persisted?: boolean;
+  persistedNote?: string;
   checkpoints: Array<{
     id: string;
     createdAt: string;
@@ -2990,29 +2996,29 @@ export const api = {
   /** R6-A6 规则文件：两级 + 兼容 + 生效视图。 */
   rulesView: (root?: string) =>
     req<RulesViewDto>(
-      `/api/rules${root ? `?root=${encodeURIComponent(root)}` : ''}`,
+      `/rules${root ? `?root=${encodeURIComponent(root)}` : ''}`,
     ),
   /** R6-A6 规则文件：新增托管规则。 */
   rulesAdd: (input: { scope: 'global' | 'project'; name: string; content: string; order?: number; root?: string }) =>
-    req<{ rule: RuleDto }>('/api/rules', {
+    req<{ rule: RuleDto }>('/rules', {
       method: 'POST',
       body: JSON.stringify(input),
     }),
   /** R6-A6 规则文件：改名/改内容/启用停用/排序。 */
   rulesPatch: (id: string, scope: 'global' | 'project', patch: { name?: string; content?: string; enabled?: boolean; order?: number }, root?: string) =>
     req<{ rule: RuleDto }>(
-      `/api/rules?id=${encodeURIComponent(id)}&scope=${scope}${root ? `&root=${encodeURIComponent(root)}` : ''}`,
+      `/rules?id=${encodeURIComponent(id)}&scope=${scope}${root ? `&root=${encodeURIComponent(root)}` : ''}`,
       { method: 'PATCH', body: JSON.stringify(patch) },
     ),
   /** R6-A6 规则文件：删除托管规则。 */
   rulesDelete: (id: string, scope: 'global' | 'project', root?: string) =>
     req<{ deleted: string }>(
-      `/api/rules?id=${encodeURIComponent(id)}&scope=${scope}${root ? `&root=${encodeURIComponent(root)}` : ''}`,
+      `/rules?id=${encodeURIComponent(id)}&scope=${scope}${root ? `&root=${encodeURIComponent(root)}` : ''}`,
       { method: 'DELETE' },
     ),
   /** R6-A6 规则文件：整级重排（ids 为该级全部 id 的排列）。 */
   rulesOrder: (scope: 'global' | 'project', ids: string[], root?: string) =>
-    req<{ rules: RuleDto[] }>('/api/rules/order', {
+    req<{ rules: RuleDto[] }>('/rules/order', {
       method: 'POST',
       body: JSON.stringify({ scope, ids, ...(root ? { root } : {}) }),
     }),
@@ -3460,6 +3466,9 @@ export const api = {
       `/api/tasks/runs/${encodeURIComponent(id)}/rerun`,
       { method: 'POST', body: JSON.stringify({ ...(stepLabel ? { stepLabel } : {}) }) },
     ),
+  /** V3.0 audit round 2, item #10：清除已持久化的运行历史（仅元数据文件；实时时间线不动）。 */
+  tasksClearRunHistory: () =>
+    req<{ ok: boolean; cleared: number | null }>('/api/tasks/runs/history', { method: 'DELETE' }),
   /** R6-S4 后台任务队列：提交一个 tasks.json 标签链为后台作业。 */
   queueSubmit: (label: string, projectId: string, root?: string) =>
     req<{ job: QueueJobView }>('/api/taskqueue/submit', {

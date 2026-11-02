@@ -3,6 +3,8 @@
  * tasks spread across the board (§85). Idempotent — skips when already seeded.
  */
 import { randomUUID } from 'crypto';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import {
   AgentRegistry,
   AuditLog,
@@ -12,6 +14,15 @@ import {
   nowIso,
 } from '@ai-factory/core';
 import { FactoryDatabase } from './db';
+
+/**
+ * Demo project path, platform-correct: under the operator's home directory
+ * on every OS. Previously a hard-coded Windows path (`C:\AIProjects\MyApp`)
+ * that on Linux resolved to a bogus single directory under the server cwd
+ * (backslashes are filename characters on POSIX), so project-scoped writes
+ * such as rules landed outside any real project directory.
+ */
+export const DEMO_PROJECT_PATH = join(homedir(), 'AIProjects', 'MyApp');
 
 export function seedIfEmpty(fdb: FactoryDatabase): void {
   const count = (fdb.db.prepare('SELECT COUNT(*) AS n FROM projects').get() as { n: number }).n;
@@ -27,7 +38,7 @@ export function seedIfEmpty(fdb: FactoryDatabase): void {
     id: 'proj-myapp',
     name: 'MyApp',
     description: 'Demo project for the AI Engineering Factory prototype',
-    path: 'C:\\AIProjects\\MyApp',
+    path: DEMO_PROJECT_PATH,
   });
 
   // --- AI organization (§14) ------------------------------------------------
@@ -68,7 +79,7 @@ export function seedIfEmpty(fdb: FactoryDatabase): void {
   ) => {
     const t = tasks.create({
       projectId: project.id, title, goal, priority,
-      creator: 'human', workspace: 'C:\\AIProjects\\MyApp',
+      creator: 'human', workspace: DEMO_PROJECT_PATH,
     });
     if (agentId) tasks.assignAgent(t.id, agentId);
     return t;

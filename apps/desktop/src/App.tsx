@@ -7,6 +7,7 @@ import { TaskDetailDrawer } from './components/TaskDetail';
 import { EmployeeDetail } from './components/EmployeeDetail';
 import { BottomPanel } from './components/BottomPanel';
 import { CreateTaskModal } from './components/CreateTaskModal';
+import { HelpPanel } from './components/HelpPanel';
 import { GitPanel, createGitApi } from './components/GitPanel';
 import { QaPanel, createQaApi } from './components/QaPanel';
 import { ApprovalsPanel } from './components/ApprovalsPanel';
@@ -142,6 +143,8 @@ function IdeShell() {
   const [wizardOpen, setWizardOpen] = useState(() =>
     typeof window === 'undefined' ? false : !loadGoldenPathProgress(window.localStorage).dismissed,
   );
+  /** V3R2-#3: help entry point (HelpPanel modal). */
+  const [showHelp, setShowHelp] = useState(false);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     saveNavTierState(navTier, window.localStorage);
@@ -155,6 +158,7 @@ function IdeShell() {
       }
     };
     const onCreate = () => {
+      suppressModalCloseRef.current = true;
       setCenterTab('Board');
       setShowCreate(true);
     };
@@ -173,6 +177,16 @@ function IdeShell() {
     } else if (tier === 'expert' && !navTier.expandedExpert && !navTier.showAll) {
       setNavTier((prev) => ({ ...prev, expandedExpert: true }));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [centerTab]);
+  /** V3R2-#3: task creation is a Board-scoped action — switching centre tabs
+   * closes the New Task modal so it cannot linger over other panels. The
+   * wizard's open-create jump switches to Board in the same tick, so it sets
+   * this flag and the effect skips exactly that one switch. */
+  const suppressModalCloseRef = useRef(false);
+  useEffect(() => {
+    if (suppressModalCloseRef.current) { suppressModalCloseRef.current = false; return; }
+    setShowCreate(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [centerTab]);
   /**
@@ -417,6 +431,7 @@ function IdeShell() {
               {navTier.showAll ? t('nav.showTiered') : t('nav.showAll')}
             </button>
             <button onClick={() => setWizardOpen(true)}>{t('nav.wizard')}</button>
+            <button onClick={() => setShowHelp(true)}>{t('nav.help')}</button>
           </div>
           <div className="center-tabs">
             {(['common', 'advanced', 'expert'] as const).map((tier) => {
@@ -602,6 +617,9 @@ function IdeShell() {
       <BottomPanel projectId={projectId} />
       {showCreate && (
         <CreateTaskModal projectId={projectId} onClose={() => setShowCreate(false)} onCreated={refresh} />
+      )}
+      {showHelp && (
+        <HelpPanel onClose={() => setShowHelp(false)} />
       )}
       {selectedTaskId && (
         <TaskDetailDrawer

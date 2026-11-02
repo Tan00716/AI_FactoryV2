@@ -1643,6 +1643,13 @@ export function executeRuntimeRun(deps: ExecuteRuntimeRunDeps): void {
   const agentId = rec.agentId;
   const taskId = rec.taskId;
   liveRunIds.add(id);
+  // V3R2-#4 honest stub labeling: the default execution path runs on the
+  // scripted stub adapter. Say so on stdout at run start so a server log
+  // never reads like a real model turn; the audit record below carries the
+  // same label durably. Non-stub adapters log nothing extra here.
+  if (adapter.name === 'stub') {
+    console.log(`[runtime] run ${id} started with stub adapter (scripted output, no real model connected)`);
+  }
   // Shadow checkpoint (third-wave task 7): opt-in auto snapshot before the
   // run starts. Fires only when a shadow config exists whose workspaceId
   // equals this run's taskId with autoOnRunStart enabled. Fire-and-forget
@@ -2087,6 +2094,10 @@ export function startScheduledRun(
     taskId,
     grantedTools,
     scheduled: true,
+    // V3R2-#4: label the execution backend on the audit record so a run
+    // that only ever ran scripted stub output never reads as a real turn.
+    adapter: adapter.name,
+    executionMode: adapter.name === 'stub' ? 'stub' : 'live',
   });
   executeRuntimeRun({
     ctx,
@@ -2538,6 +2549,9 @@ export async function handleRuntimeRoutes(
       taskId: source.taskId,
       grantedTools,
       resumeOf: { runId: sourceId, stepPosition: checkpoint.stepPosition },
+      // V3R2-#4: see the scheduled-run site above — same stub label.
+      adapter: adapter.name,
+      executionMode: adapter.name === 'stub' ? 'stub' : 'live',
     });
     const budgetBaseline = { ...checkpoint.budgetUsage };
     ctx.audit.record('human', 'RESUME_STARTED', 'runtime_run', newId, {
@@ -2854,6 +2868,9 @@ export async function handleRuntimeRoutes(
       agentId,
       taskId,
       grantedTools,
+      // V3R2-#4: see the scheduled-run site above — same stub label.
+      adapter: adapter.name,
+      executionMode: adapter.name === 'stub' ? 'stub' : 'live',
     });
     // Task ⑥ — the @-context providers attached above are first-class
     // audit facts: which providers resolved, what they labeled their

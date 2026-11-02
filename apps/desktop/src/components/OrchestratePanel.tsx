@@ -50,6 +50,8 @@ export interface RouteDecision {
   fallback: { provider: string; model: string };
   emergency: { provider: string; model: string };
   reason: string[];
+  /** V3R2-#4: server-labeled default execution backend ('stub' today). */
+  executionMode?: string;
 }
 
 export interface RuntimeRun {
@@ -311,6 +313,12 @@ export function OrchestratePanel({
         <div className="row">
           <button onClick={doRoute} disabled={busy !== ''}>{busy === 'route' ? t('orchestrate.routing') : t('orchestrate.route')}</button>
           {accountLabel(account) != null && <span className="muted">{accountLabel(account)}</span>}
+          {/* V3R2-#4: the account endpoint labels its own source; surface
+              the stub case instead of letting "not logged in" stand alone
+              as the whole story. */}
+          {(account as { source?: unknown } | null)?.source === 'stub' && (
+            <span className="pill warn" style={{ marginLeft: 8 }}>{t('stub.accountBadge')}</span>
+          )}
         </div>
         {decision && (
           <ul className="plain">
@@ -318,6 +326,12 @@ export function OrchestratePanel({
             <li><span className="pill">{t('orchestrate.fallback')}</span> {decision.fallback.provider}/{decision.fallback.model}</li>
             <li><span className="pill">{t('orchestrate.emergency')}</span> {decision.emergency.provider}/{decision.emergency.model}</li>
             <li className="muted">{decision.reason.join(' · ')}</li>
+            {/* V3R2-#4: model names in a routing result look like a live
+                commitment; the server labels the execution backend, and
+                the stub case gets a badge, not silence. */}
+            {decision.executionMode === 'stub' && (
+              <li><span className="pill warn">{t('stub.routeBadge')}</span></li>
+            )}
           </ul>
         )}
       </section>

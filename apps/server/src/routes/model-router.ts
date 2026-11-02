@@ -294,10 +294,13 @@ export async function handleModelRouterRoutes(
     } catch {
       live = null;
     }
+    // V3R2-#4: expose the source as a machine-readable field, not just
+    // inside usageNote prose — the desktop account line renders this as
+    // an explicit stub badge, and API consumers need not parse prose.
     if (live) {
-      return ctx.json(res, 200, getAccountStatus({ live, liveSource: LIVE_SOURCE })), true;
+      return ctx.json(res, 200, { ...getAccountStatus({ live, liveSource: LIVE_SOURCE }), source: 'live' }), true;
     }
-    return ctx.json(res, 200, getAccountStatus()), true;
+    return ctx.json(res, 200, { ...getAccountStatus(), source: 'stub' }), true;
   }
 
   if (method === 'POST' && path === '/api/router/route') {
@@ -354,7 +357,11 @@ export async function handleModelRouterRoutes(
         // (quota's checkFallbackCompatibility, injected; see above).
         fallbackChecker: buildQuotaFallbackChecker(),
       });
-      return ctx.json(res, 200, decision), true;
+      // V3R2-#4: the decision itself is pure routing, but whatever it
+      // picks executes on the default backend — currently the scripted
+      // stub adapter. Label that so the decision never reads as a live
+      // model commitment.
+      return ctx.json(res, 200, { ...decision, executionMode: 'stub' }), true;
     } catch (e) {
       bad(ctx.json, res, e instanceof Error ? e.message : 'routing failed');
       return true;

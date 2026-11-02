@@ -1,0 +1,77 @@
+{
+  "results": [
+    {
+      "id": "layout-binary",
+      "status": "PASS",
+      "detail": "linux executable present: /home/hatch/workspace/ai-factory/release/linux-unpacked/ai-factory"
+    },
+    {
+      "id": "layout-asar",
+      "status": "PASS",
+      "detail": "app.asar 16051121 bytes"
+    },
+    {
+      "id": "layout-server",
+      "status": "PASS",
+      "detail": "packaged backend entry present"
+    },
+    {
+      "id": "layout-packages",
+      "status": "PASS",
+      "detail": "@ai-factory staged packages: 88 (need >= 40)"
+    },
+    {
+      "id": "launch",
+      "status": "PASS",
+      "detail": "app process alive after 3s under Xvfb :99"
+    },
+    {
+      "id": "health",
+      "status": "PASS",
+      "detail": "GET /api/health 200 ok:true"
+    },
+    {
+      "id": "install-token",
+      "status": "PASS",
+      "detail": "per-install token found at /home/hatch/packaged-smoke-70925-1793592527164/.config/ai-factory/api-token"
+    },
+    {
+      "id": "stats",
+      "status": "PASS",
+      "detail": "GET /api/stats status 200 (authed)"
+    },
+    {
+      "id": "projects",
+      "status": "PASS",
+      "detail": "GET /api/projects status 200 (authed)"
+    },
+    {
+      "id": "sandbox-probe",
+      "status": "PASS",
+      "detail": "bwrap probe: available=false reason=bwrap probe failed to spawn: Required binary 'bwrap' is missing: spawn bwrap ENOENT (unavailable + audited degrade is the expected non-Linux/VM result)"
+    },
+    {
+      "id": "window",
+      "status": "PASS",
+      "detail": "title=\"AI Factory — proj-myapp\" tabs=65 mainLen=429 pageErrors=0"
+    },
+    {
+      "id": "one-backend",
+      "status": "PASS",
+      "detail": "backend processes found: 1 (need exactly 1)"
+    },
+    {
+      "id": "quit",
+      "status": "PASS",
+      "detail": "app exited code=0 via window-close"
+    },
+    {
+      "id": "no-leftover-backend",
+      "status": "PASS",
+      "detail": "backend processes after quit: 0"
+    }
+  ],
+  "pass": 14,
+  "fail": 0,
+  "skip": 0
+}
