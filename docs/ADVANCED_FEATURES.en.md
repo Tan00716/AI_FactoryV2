@@ -1297,6 +1297,166 @@ bounds pending growth; +3 regression tests.
 
 **Honest boundaries**: read-only preview, no edits, no write-back; this is a file preview, not a database browser (it connects to no database); caps are 100,000 rows, 200 columns, 64MB files, 4096 characters per cell — overflows truncate with a label; malformed rows are skipped and counted, never format-guessed; previews are snapshots — reload after the file changes.
 
+## 80. Desktop default per-install API token (V3.0 audit, part 1)
+
+**What**: the fix for V3.0 audit P0-4 — the desktop no longer serves an unauthenticated loopback API by default. Each install generates its own token, stored in a 0600-mode token file; the server refuses to start without a credential (and no explicit opt-in), fail-closed; the Electron renderer fetches the token through the preload bridge, and the desktop offers a rotation entry.
+
+**How**: the token is generated and persisted on first start; `GET /api/auth/whoami` shows mode and role; `POST /api/auth/rotate` rotates (the old token dies immediately; there is no separate revoke endpoint); explicit open-local mode (`FACTORY_ALLOW_OPEN_LOCAL=1`) renders a warning banner on the desktop, with the top bar also marked "local mode (no token)".
+
+**Honest boundaries**: loopback-only default auth — a non-loopback bind without credentials is likewise refused at start (pre-existing behavior); under Vite dev (no bridge) a rotated token lives only in the localStorage fallback and server memory, reverting to the start-time env token after a server restart — the Electron path has no such issue; a bare `node --test` run (no wrapper) rejects token-less test starts under the new default, as intended, while the `npm run test:server` wrapper explicitly opts in.
+
+## 81. Packaged smoke test + cross-platform verification pipeline (V3.0 audit, part 1)
+
+**What**: a smoke script for the packaged product itself plus a Win/mac verification pipeline definition. `scripts/packaged-smoke.mjs` runs 14 checks against `release/linux-unpacked` or an extracted AppImage dir (layout, launch, health, token, panel tab count, zero backends after quit); `scripts/cross-platform-check.mjs` prints a 6-row platform-difference matrix (sandbox, process-group kill, paths, line endings, signing/notarization, installer format), with non-current platforms marked NOT_RUN plus exact rerun commands.
+
+**How**: `npm run smoke:packaged` (after a Linux build) and `npm run verify:platform`; rerun the same script on Win/mac — never substitute Linux results. The platform-difference list lives in `docs/verification/platform-matrix.md`.
+
+**Honest boundaries**: Linux x64 smoke 14/14 (Electron 44.8.0, 57 tabs, 0 page errors); Win/mac packaged artifacts, signing/notarization, sandbox degradation paths, and install flows are all unverified — all three platforms are currently unsigned, a script-measured fact, and certificate purchase is Tan's action; this VM has no bwrap, so the sandbox can only be verified as "probe unavailable + degradation auditable", not as "builds inside the sandbox".
+
+## 82. Golden path wizard + tiered panel navigation (V3.0 audit, part 1)
+
+**What**: the 57 center tabs in three tiers (12 common, advanced, expert) + a 4-step golden path wizard (pick a project → run checks → create a task → watch approvals) + empty-state guides for 20 panels. The tier toolbar sits outside `.center-tabs`, so e2e tab index order is unchanged; collapsing a tier only hides buttons with CSS — no feature removed, no route semantics changed.
+
+**How**: the tier toolbar switches common/advanced/expert/all, auto-expanding a collapsed tier when navigated into; the wizard can be skipped and reopened, each step jumping to an existing flow the user marks complete manually; the Top 20 empty-state guides cover each panel's next step.
+
+**Honest boundaries**: the wizard is a guidance checklist, not an auto-executor; the V3 report's "2–3 real users walk the golden path and log friction" was not done, so the 100% wizard success criterion is unverified; the smoke test started no server (a pure desktop UI change).
+
+## 83. IDE performance benchmark suite + CI gate (V3.0 audit, part 1)
+
+**What**: `packages/perfbench/` + `scripts/perfbench.mjs` + `scripts/perf-gate.mjs`: 11 measured tasks (server-boot, index, repomap, search, SQLite writes, large-file-scan, concurrent-task P95, unit-sample) + a canonical baseline `packages/perfbench/baselines/baseline.json` + a gate (self-compare warn PASS, a +50% regression warns through, block fails with exit 1, missing baseline passes under block with a noBaseline mark).
+
+**How**: run the baseline, then compare with `scripts/perf-gate.mjs`; baseline run2: server-boot 2760ms, index-small 653ms, repomap-medium 109367ms, search-medium 508ms, SQLite 2000 autocommits 108344ms (20000 batched only 121ms), concurrent-task p95 650.73ms.
+
+**Honest boundaries**: the gate stays warn — on this 2-core shared VM the same tier varied 18–23x across runs, so a 20% threshold would certainly false-positive; block requires 3 stable runs on the same machine first; the SQLite autocommit bottleneck is per-write fsync and repomap's medium-tier superlinear growth are recorded leads, not fixes here; large-file-scan is a read + tokenize proxy, not a real Monaco large-file render; Win/mac measurements, the large tier (100k files), and vite-build are opt-in and unrun.
+
+## 84. Egress firewall default tightening + first-run wizard (V3.0 audit, part 1)
+
+**What**: missing-file default is now enabled + deny + factoryDefault, replacing the old allow-all default; a first-run wizard with 8 templates (npm, pypi, and more, including the closeout-added `web-search` template for `www.bing.com`), each with a description and risk note; legacy files without policyVersion keep their rules verbatim, merged note-stamped when the wizard completes; explicit dev-mode OFF is audited, and dismissing the wizard creates no file (only a dismissed timestamp).
+
+**How**: the EgressWizard panel completes/dismisses/reopens the wizard; `GET /api/egress/wizard`, `POST /api/egress/wizard/complete|dev-mode|dismiss`; every policy change is audited (EGRESS_CONFIG_UPDATED / WIZARD_COMPLETED / DEV_MODE / DISMISSED).
+
+**Honest boundaries**: the firewall governs domain rules only — it does not defend against DNS rebinding, stated in both UI and code comments; dev-mode allow-all is an explicit operator choice and is audited, not a silent fallback; after tightening, the built-in Bing RSS search is 403 on a fresh install until the wizard explicitly allows the `web-search` template (a regression fixed at closeout).
+
+## 85. LSP code intelligence (V3.0 audit, part 2)
+
+**What**: new package `packages/langsrv/` (zero new dependencies): a TypeScript compiler API precision engine (go-to-definition, references, hover, outline, rename preview — edits computed only, files never written) + a zero-dependency LSP client (external language servers are clients only, never bundled; `FACTORY_LANGSRV_LSP_COMMAND` takes priority when configured) + codeindex heuristics as a third-tier fallback. Priority is LSP → semantic engine → heuristics; rename preview is semantic-only, 409 when semantics are unavailable.
+
+**How**: the LangSrv panel (new center tab, advanced tier); `GET /api/langsrv/status`, `POST /api/langsrv/{definition,references,hover,outline,rename-preview}`; fallback responses always carry `source: 'heuristic'` + a warning — never a silent downgrade.
+
+**Honest boundaries**: only TS/JS and dialects are precise; other languages fall back to heuristics; single-root scope, 3000-file cap with 409 beyond it; tree-sitter was refused (native/wasm external dependency, breaking the zero-dependency policy); accuracy spot-check (first 50 call-shaped identifiers in langsrv/src + server routes): semantic 49/50, heuristic baseline 21/50, the single semantic miss being a doc-comment-line sample artifact.
+
+## 86. Cascade-style task timeline UI (V3.0 audit, part 2)
+
+**What**: tasks.json chain run records upgraded to a full timeline: cards in execution order + unrun steps explicitly skipped + unknown commands partial; `GET /api/tasks/runs/:id` (full cards + shadow checkpoints matched by run root), `POST .../rollback` (audited TIMELINE_ROLLBACK), `POST .../rerun` (same executeChain, new run linked via rerunOf/rerunFrom). The desktop CascadeTimelinePanel sits at the bottom of TasksPanel — no new center tab.
+
+**How**: the timeline panel shows step cards (command/status/exit code/duration/diagnostics/collapsible output/record summary), rollback (confirm), rerun, and checkpoint restore (via the existing shadow-checkpoint restore endpoint); the list view strips step output and the server root absolute path.
+
+**Honest boundaries**: the timeline is an in-process record (ring cap 20 entries), cleared on server restart; rollback only marks later steps superseded — it deletes no history and changes no files (file restore goes through the shadow-checkpoint endpoint), and it does not stop same-name jobs already in the queue, which the panel warns about; checkpoint jumps depend on shadow workspace config and say so when absent.
+
+## 87. Model-side cost governance policy layer (V3.0 audit, part 2)
+
+**What**: merged into `packages/quota` (no new package): three budget tiers (task/person/project) x three units (usd-estimate/calls/tokens-estimate) x four periods (daily/weekly/monthly/all-time); 80% warns once → 100% trips (`checkAllowed` refuses new calls) → one-click release (reason required, else 400; clears only the current window, never raises the cap, audited); a new project's default monthly budget is a 10 USD estimate (an AI Factory policy default, not a vendor price); on trip, a project budget best-effort snapshots into a shadow checkpoint (label `budget-breaker:<id>`). Persisted to `<DATA_DIR>/budgets.json` with atomic writes; unknown shapes fail closed. The desktop BudgetPanel lives inside the Ops tab — no new center tab.
+
+**How**: the Budget panel board/release; 11 `GET /api/quota/budgets/*` endpoints; apply-defaults is idempotent (an existing same scope+key+unit+period budget is kept verbatim; duplicate creation returns 409).
+
+**Honest boundaries**: zero real model keys — all usage is simulated or hand-recorded, and costs and tokens are estimates; the conversion table's 3 rows are all `measured: false`, and unknown-unit estimates return null rather than invented numbers; real metering (provider token/bill wiring) is deferred until a model is actually connected, per the audit; the budget ledger keeps only the current window — cross-window history lives in the audit chain.
+
+## 88. Extension trust model (V3.0 audit, part 2)
+
+**What**: landed in `packages/extensions` (no new package): `trust.ts` (API version checks, Ed25519 sign/verify, trust verdicts, trust.json decision storage). Host API v1 is frozen; a missing `apiVersion` counts as legacy v1 with a warning, and a declared major version other than 1 is hard-refused; valid signature + official key = official auto-trust, valid signature + other key = auto-trust, invalid signature = install refused (fail-closed), unsigned = explicit trust required (inline install without `{ trust: true }` → 409 trust-required); review claims without a valid signature downgrade to unreviewed; trust verdicts are keyed by bundle hash, so any bundle change voids them.
+
+**How**: the Extensions panel shows a trust badge row (review/signature/trust source/API version), a warning row, "trust and install" on an unsigned-install 409, and per-item trust/revoke buttons; audited EXT_TRUST_GRANTED/REVOKED; the 4 official examples (including the new demo-notes) carry `apiVersion: "1"` + `review: "official"` + an officially signed `signature.json`, with the resign tool `demo/sign-demo.mjs` (private key passed as an argument, never committed).
+
+**Honest boundaries**: the vm sandbox is not a security boundary — the trust model only makes provenance auditable and the user's decision explicit, stated in the README, the schema, and desktop warnings alike; it never claims "untrusted extensions run safely"; the official private key is not in the repo, and rotation requires changing `OFFICIAL_PUBLIC_KEY_B64` and re-signing the examples.
+
+## 89. Diagnostics bundle export + privacy disclosure (V3.0 audit, part 2)
+
+**What**: new package `packages/diagpack/` (server-only, CJS single format): `GET /api/diagnostics/preview` (viewer; preview generates no bundle), `POST /api/diagnostics/export` (operator; requires `{ confirm: true }`, else 400; audited `DIAGNOSTICS_EXPORTED` with only bundle ID and section counts). A bundle holds only counts and stripped fields: audit details are never read in, task evidence is counts only, config is modes and counts only, and env var names and values never enter a bundle; redaction uses `@ai-factory/security` SECRET_PATTERNS + `maskSecret` throughout; `buildBundle` self-checks the serialized bundle and any hit throws, turning the route into a 409 with nothing shipped; nothing is uploaded — the bundle is returned to the caller for download. New center tab DiagnosticsPanel; privacy policy `docs/PRIVACY_POLICY.md` / `.en.md`.
+
+**How**: the Diagnostics panel previews the list → confirms export → downloads JSON/HTML; preview first shows the excludes list (including secret classes) and the bilingual notice.
+
+**Honest boundaries**: error excerpts are heuristic (the audit log has no severity column); the performance-baseline section depends on `FACTORY_PERFBENCH_BASELINE` and is marked unavailable when unset; a bundle holds no user file content or task titles — remote diagnosis needing verbatim text requires the user to supply it separately; the model-egress section is placeholder copy (adapters other than Codex are still stubs), stated in both panel and policy.
+
+## 90. Remote development live access (seventh round, part 1)
+
+**What**: new package `packages/remote/`: ssh/wsl/container/local transports (argv, no shell; path jail; timeouts and output caps), connection CRUD (12 endpoints), probing, policy-checked command execution (via `setRemoteExecPolicy(checkCommandPolicy)` into the existing exec channel), file round-trips, and ssh `-N -L` tunnels (tracked in-process, gone on restart). New center tab RemotePanel (advanced tier).
+
+**How**: the Remote panel creates a connection → probes online → does directory/read/write/exec round-trips → starts/lists/deletes forwards; 12 `GET /api/remote/*` endpoints; keys are stored as paths only — the server never opens a key file; audit details carry only id/kind/outcome.
+
+**Honest boundaries**: no real sshd/docker/WSL environment — the ssh path was verified via a PATH shim only; real remote hosts, containers, and WSL are unverified; `local` is an explicitly chosen loopback transport, so unprobed or disconnected connections return 409 on exec and file ops and never silently fall back to the local machine; remote debugging / remote LSP are out of scope.
+
+## 91. Notebook interactive runs (seventh round, part 1)
+
+**What**: new package `packages/notebook/`: versioned JSON documents (`<DATA_DIR>/notebooks/`), code cells + Markdown cells, per-cell run, run-all, clear-outputs, export (`?stripOutputs=1`). New center tab (advanced tier).
+
+**How**: the Notebook panel creates a notebook → adds code cells → runs for output → moves/clears output/exports with-or-without outputs for comparison; 30s per-cell timeout, 64K characters per output stream (overflows marked truncated: true); only TS/JS can run; running a Markdown cell returns 400 not-code.
+
+**Honest boundaries**: an honest deviation from the list — the list said "local Jupyter kernel access", but the brief specified the existing shared exec safety channel, so there is no Jupyter kernel wire protocol; each cell runs in its own node process, cells share no variables, and run-all is just sequential; notebooks are not audited and are not protected by the pre-send secret scan, which the panel footer warns about.
+
+## 92. Test explorer UI (seventh round, part 1)
+
+**What**: new package `packages/testexplorer/`: static discovery of `*.test.*` files as a package > file > case tree; runs reuse the node:test programmatic `run()` API (child process reports over fd 3 as JSON lines); spawned runners strip `NODE_TEST_CONTEXT` + `NODE_TEST_WORKER_ID` (against silent nested node:test downgrade); timeouts kill the process group; 512KB output cap, 8KB per-case failure-text cap; `POST /api/testexplorer/rerun-failed` (in-process last run). New center tab (advanced tier, appended last).
+
+**How**: the TestExplorer panel shows the discovery tree + per-case/per-file/per-package/all runs + expandable failure output + rerun-failed; `GET /api/testexplorer/discover`, `POST /api/testexplorer/run` (case/file/package/all/cases scopes).
+
+**Honest boundaries**: `*.spec.*` and `test.each` are out of v1; same-name leaf cases in one file all run (noted in the response); test paths containing deny words are fail-closed refused by the exec policy; after a server restart there is no last run to rerun (409 NO_FAILED_RUN).
+
+## 93. Task dependency DAG (seventh round, part 1)
+
+**What**: three genuine gaps on top of fifth-round S2 dependsOn planning and V3-#7 timeline skipped backfill: (1) `packages/tasks/src/graph.ts` adds `detectCycle()` + `dagLevels()` — PUT saving a cycle returns 400 `cycle-detected` and writes nothing (runtime plan-failed defense stays); (2) on dependency failure the dependent is recorded `skipped` with an error naming the root-cause failure (the original failure propagates, not the intermediate skipped node), audited `TASK_SKIPPED`; (3) `GET /api/tasks/graph` + desktop DagGraphPanel (embedded in TasksPanel, no new center tab).
+
+**How**: DagGraphPanel picks a label and shows level-columned nodes (status-colored) and an edge list, plus run; linear chains behave unchanged, diamonds run once, stoppedAt semantics unchanged.
+
+**Honest boundaries**: graph state comes from the in-process timeline ring and clears (null) on restart; the graph is a planning shape, not live execution tracing (per-step output and history live in the Cascade timeline); save-time cycle detection covers cycles only — unknown dependencies are still refused at runtime plan time.
+
+## 94. Webhook event triggers (seventh round, part 1)
+
+**What**: new package `packages/webhooks/`: HMAC-SHA256 + 300-second timestamp window + nonce ring + event-id dedup; the shared secret comes from the environment (`FACTORY_WEBHOOK_SECRET` or `FACTORY_WEBHOOK_SECRET_FILE`) and never enters webhooks.json, responses, logs, or audits. The receive endpoint `POST /api/webhooks/receive` is the single exact route bypassing the API token gate in `index.ts` (HMAC auth); events never select a chain and never pass parameters (a body `chainLabel` is ignored, proven by smoke test) — the chain comes from the endpoint config and runs via `runTaskChainByLabel`. New center tab (advanced tier).
+
+**How**: the Webhooks panel manages endpoints (CRUD + delivery history under the normal gate); valid signatures trigger, replays get 401, unsigned 401, stale timestamps 401, unknown events 404.
+
+**Honest boundaries**: delivery/dedup/nonce are in-process rings, cleared on restart, so dedup weakens across restarts (stated in the README); per-sender keys are not done; no public exposure or GitHub App wiring.
+
+## 95. PR review and Issue linkage (seventh round, part 2)
+
+**What**: read-only linkage first: new package `packages/prlink/` (refs parsing for `#123` / `owner/repo#123`, read-only local git linkage, a zero-dependency GitHub REST client + offline fixture provider, a local review archive at `<data>/prlink/reviews.json` with atomic writes); server routes status / local / linked / linked/:number / reviews/local / issues/import / write/comment; new center tab PrLinkPanel (advanced tier). Writes are off by default and need all three: server `FACTORY_PRLINK_WRITES_ENABLED=1` + body `confirm: true` + a configured provider; the fixture provider's publish returns 501.
+
+**How**: the PrLink panel shows linked PRs/Issues, review excerpts, and CI status summaries; branch names and commit messages are parsed for numbers; Issue import creates a DRAFT, never auto-assigns; the local review archive stays local and is never sent upstream; token values never leave the provider closure — never in logs, audits, or responses.
+
+**Honest boundaries**: zero real tokens by default — with no provider, linked returns configured:false + an empty array and never fabricates data; a bare `#123` is neither an issue nor a PR before provider resolution; the GitHub client is unverified against real GitHub, and live semantics (reviews/checks endpoints) await a Tan-side token for recheck; remote diff fetching is out of v1 (the review view uses local `base...head` stat + a 500-word remote review excerpt).
+
+## 96. Debugging deepening: multi-language DAP + conditional breakpoints / logpoints (seventh round, part 2)
+
+**What**: on top of fourth-round S2 DAP: multi-language DAP + conditional breakpoints / logpoints. Adapters are statically registered (node built-in and implemented; python via external debugpy, probed with `python3 -m debugpy --version` falling back to `python -m debugpy --version`, install hint `pip install debugpy`; go via external delve, probed with `dlv version`, install hint `go install github.com/go-delve/delve/cmd/dlv@latest`; probes time out at 10 seconds); conditional breakpoints pause only on a hit, logpoints only log and never pause (logMessage wins over condition; both together mean logpoint, implemented via CDP condition without touching source files); condition syntax is parse-checked only (`new Function` parse, never executed), and syntactically illegal conditions fail startup with 400 `bad-breakpoint`; evaluation errors at hit time are diagnosed and the chain continues.
+
+**How**: the Debug panel adapter area (static list + on-demand probes), breakpoint-draft logpoint input with `log:` display in the list, config dropdown showing `(request, adapter)`; `GET /api/debug/adapters` (static registration, no spawn), `POST /api/debug/adapters/:kind/probe` (unknown kind 400 `unknown-adapter`); a non-node session start returns 501 `adapter-not-implemented` before spawning — never a silent fallback to node.
+
+**Honest boundaries**: only TS/JS is precise; python/go are registration + probe only, not driven; a probe reports only whether the binary exists, not a usable session; a Node session does not auto-terminate (a round-4 gap — smoke tests use explicit DELETE as the session-end semantic); data breakpoints and reverse debugging are explicitly deferred.
+
+## 97. Multi-connection databases + query history + ER diagram (seventh round, part 2)
+
+**What**: deepening fourth-round A5 database browser: `multiconn.ts` (driver directory: sqlite/postgres available, mysql/mariadb/mssql/oracle honestly marked driverless; connection metadata with active switching; write-mode gate — off by default, confirm to enable, prod and read-only drivers can never enable; `stripSecretFields` audit redaction) + `history.ts` (query history at `<dataDir>/db-history.json` with atomic writes, 500-entry cap, SQL truncated to 4000 characters, corrupt files fail closed and are never overwritten, reruns append new entries); server routes `GET /drivers`, `GET /connections/meta`, `GET/POST /active`, `POST /connections/:name/write-mode`, `GET/DELETE /history`, `POST /history/:id/rerun|favorite`, `DELETE /history/:id`; the desktop extends the existing DbBrowserPanel (no new center tab): current-connection switching, write-mode switch (with a preceding `window.confirm`), driver hints, a history sub-tab, and an ER sub-tab with a new SVG relation graph (referenced tables left, FK-holding tables right, columns by reference depth, cycle-guarded).
+
+**How**: the DbBrowser panel switches connections, enables write mode (confirm first), reruns/favorites/deletes/clears history, and reads FK relations from the ER graph; write paths on `/api/db-browser/query` and `PUT /api/db-browser/row` refuse by default (`WRITE_MODE_DISABLED`) until `POST /connections/:name/write-mode {enabled: true, confirm: true}`; destructive statements still take the original ticket path, unaffected by the write-mode gate; prod write refusal is unchanged (`PROD_WRITE_REFUSED`, prod checked first).
+
+**Honest boundaries**: connections are server-session level — restart loses them and they must be re-registered; history survives restarts but old entries may 404 on rerun; Postgres is still a minimal wire-protocol driver (trust auth, no SSL), unverified against a real server; driverless engines refuse registration outright; history stores the SQL text itself (reruns need it) only in the server data dir, audit events carry only entry id and count and never SQL, and password fields are never read, stored, or logged; the ER graph is derived read-only from foreign keys and never modifies a database, and the desktop ER SVG is a deterministic column layout, not an interactive canvas.
+
+## 98. API client deepening (seventh round, part 2)
+
+**What**: deepening fourth-round A6 HTTP/REST client with collections, environments, auth, GraphQL, and WebSocket: `packages/httpclient/` gains `auth.ts` (Bearer/Basic/ApiKey, OAuth2 placeholder), `collections.ts` (collections/environments/auth configs/history, secrets stored separately), `graphql.ts` (queries + variables, errors surfaced as-is), `ws.ts` (RFC 6455 client, frame caps, close handshake, explicit close semantics), and strict substitution in `envs.ts`; server collection CRUD, auth-config CRUD, environment PUT/GET, `/send`, `/graphql`, `/ws/*`, `/history` + rerun; secrets live in `http-api-secrets.json` (0600) with reads always redacted; the desktop HttpPanel gains sub-tabs (files/collections/GraphQL/WebSocket/history) inside the existing panel — no new center tab.
+
+**How**: the Http panel creates collections, configures the three auth kinds, saves environments, sends GraphQL, connects WebSocket (connect/send/echo reply/close), and reruns history; environment-variable substitution failures error explicitly (400 `unresolved-variable`) and never silently send empty values; history stores the pre-substitution URL template and redacted headers, never any secret verbatim.
+
+**Honest boundaries**: OAuth2 is only a placeholder: kind 'oauth2' accepts records but applies fail-closed (`oauth2-placeholder`) and runs no token flow, stated in the panel boundary copy; WebSocket binary frames are refused fail-closed, post-close sends return 409, and outbound checks run against the equivalent http(s) address; the desktop panel path is covered by tsc + unit tests, not a separate Electron e2e (closeout e2e governs).
+
+## 99. Settings sync (seventh round, part 2)
+
+**What**: settings export/import (JSON + version stamp), pre-import preview diffs (added/modified/conflict, plus a removed class), per-item conflict confirmation with no silent overwrite, and post-apply audits recording key names only; an optional private remote (token stored only in the secure channel), with local export/import working fine without one. New center tab SettingsSyncPanel (advanced tier, last).
+
+**How**: the SettingsSync panel downloads exports, pastes imports, shows the preview table, adjudicates conflicts/deletions item by item, applies, and configures/pushes/pulls the remote; `GET /api/settingsync/export`, `POST /api/settingsync/preview`, `POST /api/settingsync/apply` (unadjudicated conflict/removed entries return 409 as a whole and write no files), `GET/PUT /api/settingsync/remote` (returns only URL and a `tokenConfigured` boolean), `POST /api/settingsync/remote/push|pull` (pull previews only, never applies); baseline at `<dataDir>/settingsync-baseline.json`; RBAC follows the default gate (GET viewer, POST/PUT operator).
+
+**Honest boundaries**: sync partitions are only keybindings and rules-global; desktop localStorage preferences (Vim, tiered navigation, golden-path progress) do not sync in v1; rule diffs compare at store level (the whole `rules` array); the remote is the user's own single-document HTTP endpoint — no accounts, no discovery, no retries; an export whose settings file itself carries secret characteristics is refused as a whole (fail-closed); document caps are 1MB, 32 sections, 1000 keys per section, and sections missing from a document are never diffed or written.
+
 ---
 
 *Version 0.2.0 (2026-10-18). Supplemented 2026-10-21: hardening waves
@@ -1305,4 +1465,5 @@ supplemented 2026-10-21: third round (parts 1/2) — §42–§49;
 supplemented 2026-10-22: fourth round (parts 1/2) — §50–§59;
 supplemented 2026-10-23: fifth round (parts 1/2) — §60–§69.
 supplemented 2026-10-27: sixth round (parts 1/2) — §70–§79.
+supplemented 2026-11-02: V3.0 audit (parts 1/2) — §80–§89; seventh round (parts 1/2) — §90–§99.
 中文版见 ADVANCED_FEATURES.md。*

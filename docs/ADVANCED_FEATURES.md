@@ -1164,6 +1164,166 @@ carry/holdback 逻辑不变，落盘映射回原始坐标；
 
 **诚实边界**：只读预览，无编辑、无写回；这是文件预览，不是数据库浏览器（不连数据库）；行数上限 100,000、列数上限 200、文件上限 64MB、单格上限 4096 字符，超了截断并标注；畸形行只跳过并计数，不猜格式；预览是快照语义，文件变化需重新加载。
 
+## 80. 桌面默认 per-install API token（V3.0 一）
+
+**是什么**：V3.0 审计 P0-4 的修复——桌面默认不再开放无鉴权 loopback API。每次安装生成独立 token，存 0600 模式的 token 文件；服务端启动时无凭证（且未显式 opt-in）拒绝启动，fail-closed；Electron 渲染进程经 preload 桥取 token 发请求，桌面提供轮换入口。
+
+**怎么用**：首次启动自动生成并落盘 token；`GET /api/auth/whoami` 查看模式与角色；`POST /api/auth/rotate` 轮换（旧 token 立即失效，无单独吊销端点）；显式开放本地模式（`FACTORY_ALLOW_OPEN_LOCAL=1`）时桌面顶部渲染警告横幅，顶栏同时标“本地模式（无令牌）”。
+
+**诚实边界**：仅 loopback 默认鉴权，非 loopback 绑定无凭证同样拒绝启动（既有行为）；Vite dev（无桥）下轮换后的新 token 只存 localStorage fallback 与服务端内存，服务端重启后回到启动时 env token，Electron 路径无此问题；裸跑 `node --test`（不走 wrapper）时 token-less 测试启动会被新默认拒绝，属预期语义，`npm run test:server` 的 wrapper 已显式 opt-in。
+
+## 81. 打包后真机冒烟 + 跨平台验证流水线（V3.0 一）
+
+**是什么**：打包产物本身的冒烟脚本 + Win/mac 验证流水线定义。`scripts/packaged-smoke.mjs` 对 `release/linux-unpacked` 或 AppImage 解包目录跑 14 项检查（布局、启动、健康、token、面板 tab 数、退出后后端清零）；`scripts/cross-platform-check.mjs` 输出 6 行平台差异矩阵（沙盒、进程组 kill、路径、换行、签名/公证、安装包格式），非当前平台一律标 NOT_RUN 并给出精确重跑命令。
+
+**怎么用**：`npm run smoke:packaged`（Linux 打包后）与 `npm run verify:platform`；Win/mac 上用同一脚本重跑，不得用 Linux 结果代替。平台差异清单见 `docs/verification/platform-matrix.md`。
+
+**诚实边界**：Linux x64 冒烟 14/14（Electron 44.8.0，57 tab，0 页错误）；Win/mac 打包产物、签名/公证、沙盒降级路径、安装流程全部未验证——三平台目前全部未签名是脚本实测事实，证书采购为 Tan 侧动作；本 VM 无 bwrap，沙盒只能验证“探针不可用 + 降级可审计”，不能验证“沙盒内构建”。
+
+## 82. 黄金路径向导 + 面板分层导航（V3.0 一）
+
+**是什么**：57 个中心 tab 的三层划分（常用层 12 个、进阶、专家）+ 4 步黄金路径向导（选项目 → 跑检查 → 建任务 → 看审批）+ 20 个面板空态引导。分层工具栏在 `.center-tabs` 之外，e2e tab 索引顺序不变；折叠层仅 CSS 隐藏按钮，不删功能、不改路由语义。
+
+**怎么用**：分层工具栏切换常用/进阶/专家/全部，折叠层经导航进入时自动展开；向导可跳过、可重开，每步跳转到现有流程、由用户手动标记完成；空态指南 Top 20 覆盖各面板的下一步操作。
+
+**诚实边界**：向导是引导清单而非自动执行器；V3 报告要求的“2–3 名真人用户走黄金路径并记录卡点”未做，向导成功率 100% 的标准因此尚未验证；冒烟未起 server（本任务为纯桌面 UI 改动）。
+
+## 83. IDE 性能基准套件 + CI 门禁（V3.0 一）
+
+**是什么**：`packages/perfbench/` + `scripts/perfbench.mjs` + `scripts/perf-gate.mjs`：11 项实测任务（server-boot、index、repomap、search、SQLite 写入、large-file-scan、并发任务 P95、unit-sample）+ canonical 基线 `packages/perfbench/baselines/baseline.json` + 门禁（自比 warn PASS、回归 +50% 时 warn 通过带告警、block 失败 exit 1、缺基线 block 亦通过并标 noBaseline）。
+
+**怎么用**：跑基线后以 `scripts/perf-gate.mjs` 比对；基线 run2：server-boot 2760ms、index-small 653ms、repomap-medium 109367ms、search-medium 508ms、SQLite 2000 次 autocommit 108344ms（20000 次 batched 仅 121ms）、并发任务 p95 650.73ms。
+
+**诚实边界**：门禁保持 warn——本 VM 仅 2 核共享负载下同档观测差 18–23 倍，20% 阈值必误报，block 须等同一机器 3 轮稳定后才可收紧；SQLite autocommit 瓶颈在每次 fsync、repomap medium 档超线性增长是两条已记录未展开修的性能线索；large-file-scan 只是读 + 分词 proxy，不是 Monaco 真实大文件渲染；Win/mac 实测、large 档（100k 文件）、vite-build 均为 opt-in 未跑。
+
+## 84. 出站防火墙默认收紧 + 首次启用向导（V3.0 一）
+
+**是什么**：缺文件默认 = enabled + deny + factoryDefault，不再是旧默认全放行；首次启用向导带 8 个模板（npm、pypi 等，含收口补的 `web-search` 模板 `www.bing.com`），每项含说明与风险提示；存量无 policyVersion 的旧文件判 legacy、规则原样保留，向导完成时 note-stamped 合并；开发态显式 OFF 记审计，关闭向导不建文件（仅记 dismissed 时间戳）。
+
+**怎么用**：EgressWizard 面板完成/关闭/重开向导；`GET /api/egress/wizard`、`POST /api/egress/wizard/complete|dev-mode|dismiss`；策略变更全量审计（EGRESS_CONFIG_UPDATED / WIZARD_COMPLETED / DEV_MODE / DISMISSED）。
+
+**诚实边界**：防火墙只管域名规则，不防 DNS rebinding，UI 与代码注释均明示；开发态全放行是显式 operator 选择且记审计，不是静默回退；默认收紧后内置搜索 Bing RSS 新装即 403，须向导显式放行 `web-search` 模板后才通（收口已修此回归）。
+
+## 85. LSP 代码智能（V3.0 二）
+
+**是什么**：新包 `packages/langsrv/`（零新依赖）：TypeScript compiler API 精确引擎（定义跳转、引用、hover、大纲、重命名预览，只算 edits、永不写文件）+ 零依赖 LSP 客户端（外部语言服务器只做客户端、不捆绑，`FACTORY_LANGSRV_LSP_COMMAND` 配置即优先）+ codeindex 启发式第三级回退。优先级 LSP → 语义引擎 → 启发式；重命名预览仅语义层，语义不可用时 409。
+
+**怎么用**：LangSrv 面板（新中心 tab，advanced 层）；`GET /api/langsrv/status`，`POST /api/langsrv/{definition,references,hover,outline,rename-preview}`；回退响应恒带 `source: 'heuristic'` + warning，不静默降级。
+
+**诚实边界**：仅 TS/JS 及其方言精确，其他语言走启发式；单 root 作用域，文件数上限 3000、超限 409；tree-sitter 已拒绝（native/wasm 外部依赖，破零依赖策略）；准确率抽查（langsrv/src + server routes 前 50 个 call 形标识符）：语义 49/50，启发式基线 21/50，唯一语义失败为文档注释行样本伪影。
+
+## 86. Cascade 式任务时间线 UI（V3.0 二）
+
+**是什么**：tasks.json 任务链运行记录升级为完整时间线：执行顺序卡片 + 未跑步骤显式 skipped + 未知命令 partial；`GET /api/tasks/runs/:id`（完整卡片 + 按运行根目录匹配的影子检查点）、`POST .../rollback`（审计 TIMELINE_ROLLBACK）、`POST .../rerun`（同一 executeChain，新运行以 rerunOf/rerunFrom 链接）。桌面 CascadeTimelinePanel 嵌 TasksPanel 底部，不新增中心 tab。
+
+**怎么用**：时间线面板看步骤卡片（命令/状态/退出码/耗时/诊断/输出折叠/记录摘要）、回退（confirm）、重跑、检查点恢复（调既有影子检查点恢复端点）；列表视图剥离步骤输出与服务端 root 绝对路径。
+
+**诚实边界**：时间线为进程内记录（ring 上限 20 条），服务端重启清空；回退只标记后续步骤 superseded、不删历史、不改文件（文件恢复走影子检查点端点），且不停止队列中同名在途作业，面板以警告明示；检查点跳转依赖影子工作区配置，无配置时明示原因。
+
+## 87. 模型侧成本治理策略层（V3.0 二）
+
+**是什么**：并入 `packages/quota`（不新开包）：三级预算（task/person/project）× 三单位（usd-estimate/calls/tokens-estimate）× 四周期（daily/weekly/monthly/all-time）；80% 警告一次 → 100% 熔断（`checkAllowed` 拒绝新调用）→ 一键放行（理由必填、否则 400，只清本窗口、永不提高上限、记审计）；默认新项目月预算 10 美元估算（AI Factory 自有政策默认值，非厂商价格）；熔断时项目级预算 best-effort 进影子检查点（label `budget-breaker:<id>`）。持久化 `<DATA_DIR>/budgets.json` 原子写，未知形状 fail-closed。桌面 BudgetPanel 挂 Ops 页签内，不新增中心 tab。
+
+**怎么用**：Budget 面板看板/放行；`GET /api/quota/budgets/*` 11 个端点；apply-defaults 幂等（已存在同 scope+key+unit+period 的预算原样保留，重复创建 409）。
+
+**诚实边界**：零真实模型 key——全部用量为模拟/手动记录，费用与 token 均为估算；换算表 3 行全部 `measured: false`，未知单位估算返回 null、不编造数字；真实计量（provider 实际 token/账单接入）按审计结论暂缓至模型接通后；预算账本只保留当前窗口，跨窗口历史查审计链。
+
+## 88. 扩展信任模型（V3.0 二）
+
+**是什么**：落点 `packages/extensions`（不新开包）：`trust.ts`（API 版本检查、Ed25519 签名/验签、信任裁决、trust.json 决定存储）。宿主 API v1 冻结，缺 `apiVersion` = 遗留按 v1 计并警告，声明主版本非 1 硬拒绝；签名有效 + 官方密钥 = official 自动信任，签名有效 + 其他密钥 = 自动信任，签名无效 = 安装拒绝（fail-closed），未签名 = 需显式信任（内联安装缺 `{ trust: true }` → 409 trust-required）；审核声明无有效签名降级 unreviewed；信任决定按 bundle 哈希键控，bundle 一改即失效。
+
+**怎么用**：Extensions 面板信任徽标行（审核/签名/信任来源/API 版本）、警告行、未签名安装 409 时的“信任并安装”、逐项信任/撤销信任按钮；审计 EXT_TRUST_GRANTED/REVOKED；4 个官方示例（新增 demo-notes）均含 `apiVersion: "1"` + `review: "official"` + 官方密钥签署的 `signature.json`，重签工具 `demo/sign-demo.mjs`（私钥作参数传入，永不进仓库）。
+
+**诚实边界**：vm 沙盒不是安全边界——信任模型只解决来源可审计 + 用户显式决定，README、schema、桌面警告三处均明示，不宣称“安全运行不受信扩展”；官方私钥不在仓库，密钥轮换需换 `OFFICIAL_PUBLIC_KEY_B64` 并重签示例。
+
+## 89. 诊断包导出 + 隐私合规明示（V3.0 二）
+
+**是什么**：新包 `packages/diagpack/`（服务端专用 CJS 单格式）：`GET /api/diagnostics/preview`（viewer，预览不生成包）、`POST /api/diagnostics/export`（operator，须 `{ confirm: true }` 否则 400；审计 `DIAGNOSTICS_EXPORTED` 只记包 ID 与章节计数）。包内只有计数与 stripped 字段：审计 details 不读入包、任务证据只有计数、配置只有模式与计数、环境变量名与值一律不进包；脱敏全用 `@ai-factory/security` 的 SECRET_PATTERNS + `maskSecret`；`buildBundle` 对序列化包自检，任一命中即抛错、路由转 409 不发货；不上传，包只返回给调用方下载。新中心 tab DiagnosticsPanel；隐私政策 `docs/PRIVACY_POLICY.md` / `.en.md`。
+
+**怎么用**：Diagnostics 面板预览清单 → 确认导出 → 下载 JSON/HTML；预览先看 excludes 清单（含 secret 类）与中英 notice。
+
+**诚实边界**：错误摘录为启发式（审计日志无 severity 列）；性能基线摘要依赖 `FACTORY_PERFBENCH_BASELINE`，未设置时章节标注 unavailable；诊断包不含用户文件内容与任务标题，远程定位需原文时须用户另外提供；模型出境一节为占位文案（除 Codex 外适配器仍是 stub），面板与政策文档均明示。
+
+## 90. 远程开发实时接入（第七轮一）
+
+**是什么**：新包 `packages/remote/`：ssh/wsl/container/local 四传输（argv 无 shell、路径监狱、超时与输出上限）、连接 CRUD（12 端点）、探通、策略检查命令执行（经 `setRemoteExecPolicy(checkCommandPolicy)` 接既有 exec 通道）、文件往返、ssh `-N -L` 隧道（进程内跟踪，重启即消失）。新中心 tab RemotePanel（advanced 层）。
+
+**怎么用**：Remote 面板建连 → 探通在线 → 目录/读/写/执行往返 → 转发启动/列表/删除；`GET /api/remote/*` 12 端点；密钥只存路径，服务器不打开密钥文件；审计 details 只有 id/kind/outcome。
+
+**诚实边界**：无真实 sshd/docker/WSL 环境——ssh 路径经 PATH 垫片验证，真实远端主机/容器/WSL 未验证；`local` 是显式回环传输，未探通/已断开一律 409，绝不静默走本机；远程调试/远程 LSP 不在范围。
+
+## 91. Notebook 交互式运行（第七轮一）
+
+**是什么**：新包 `packages/notebook/`：版本化 JSON（`<DATA_DIR>/notebooks/`），代码格 + Markdown 格、单格 run、run-all、clear-outputs、export（`?stripOutputs=1`）。新中心 tab（advanced 层）。
+
+**怎么用**：Notebook 面板建本 → 加代码格 → 运行出结果 → 移动/清空输出/导出去输出对照；单格 30s 超时，输出每流上限 64K 字符（超限 truncated: true）；仅 TS/JS 可运行，Markdown 格运行返回 400 not-code。
+
+**诚实边界**：与清单的诚实偏差——清单说“Jupyter 内核接入”，按 brief 走既有共享 exec 安全通道落地，无 Jupyter 内核 wire protocol；每格独立 node 进程，格间不共享变量，run-all 只是顺序；笔记本不进审计、不受 pre-send 密钥扫描保护，面板页脚警示。
+
+## 92. 测试资源管理器 UI（第七轮一）
+
+**是什么**：新包 `packages/testexplorer/`：静态发现 `*.test.*`，包 > 文件 > 用例三级树；运行复用 node:test 程序化 `run()` API（子进程 fd 3 JSON 行上报）；spawn 剥离 `NODE_TEST_CONTEXT` + `NODE_TEST_WORKER_ID`（防嵌套 node:test 静默降级）；超时杀进程组；输出 512KB cap、单用例失败文本 8KB cap；`POST /api/testexplorer/rerun-failed`（进程内 last-run）。新中心 tab（advanced 层，追加末尾）。
+
+**怎么用**：TestExplorer 面板发现树 + 单用例/单文件/单包/全部运行 + 失败输出展开 + 重跑失败；`GET /api/testexplorer/discover`、`POST /api/testexplorer/run`（case/file/package/all/cases 五种 scope）。
+
+**诚实边界**：`*.spec.*` 与 `test.each` 不在 v1；同文件重名叶用例会全部跑（响应注明）；含 deny 词的测试路径会被 exec 策略 fail-closed 拒绝；服务端重启后重跑失败无据（409 NO_FAILED_RUN）。
+
+## 93. 任务依赖 DAG（第七轮一）
+
+**是什么**：在第五轮 S2 dependsOn 规划与 V3-#7 时间线 skipped 补记之上补三块真缺口：(1) `packages/tasks/src/graph.ts` 新增 `detectCycle()` + `dagLevels()`，PUT 保存成环 → 400 `cycle-detected` 且文件不写入（运行时 plan-failed 纵深防御保留）；(2) 依赖失败时依赖方记 `skipped` 且 error 点名根因失败方（透传原始失败方），审计 `TASK_SKIPPED`；(3) `GET /api/tasks/graph` + 桌面 DagGraphPanel（嵌 TasksPanel，不新增中心 tab）。
+
+**怎么用**：DagGraphPanel 选 label 看层级分列节点（状态着色）与边列表、运行；线性链行为不变、菱形只跑一次、stoppedAt 语义不变。
+
+**诚实边界**：图状态来自进程内时间线 ring，重启清空报 null；图是规划形状，不是实时执行追踪（单步输出与历史看 Cascade 时间线）；保存时环检测只管环，未知依赖仍在运行时 plan 拒绝。
+
+## 94. Webhook 事件触发（第七轮一）
+
+**是什么**：新包 `packages/webhooks/`：HMAC-SHA256 + 300 秒时间戳窗口 + nonce ring + 事件 id 去重；共享密钥来自环境（`FACTORY_WEBHOOK_SECRET` 或 `FACTORY_WEBHOOK_SECRET_FILE`），绝不进 webhooks.json/响应/日志/审计。接收端 `POST /api/webhooks/receive` 在 `index.ts` 于 API token 门禁前仅精确放行这一路（HMAC 鉴权）；事件绝不选链、绝不传参（body 里的 `chainLabel` 被忽略，冒烟实证），链取自端点配置，经 `runTaskChainByLabel` 跑。新中心 tab（advanced 层）。
+
+**怎么用**：Webhooks 面板管理端点（CRUD + 投递历史走正常门禁）；合法签名触发、重放 401、未签名 401、过期时间戳 401、未知事件 404。
+
+**诚实边界**：投递/去重/nonce 为进程内 ring，重启清空，去重保证在重启后弱化（README 明示）；每发送方独立密钥未做；不做公网暴露/GitHub 应用对接。
+
+## 95. PR 评审与 Issue 联动（第七轮二）
+
+**是什么**：只读联动为主：新包 `packages/prlink/`（refs 解析 `#123` / `owner/repo#123`、只读本地 git 联动、GitHub REST 客户端零依赖 + 离线 fixture provider、本地评审存档 `<data>/prlink/reviews.json` 原子写）；服务端路由 status / local / linked / linked/:number / reviews/local / issues/import / write/comment；新中心 tab PrLinkPanel（advanced 层）。写操作默认关闭，需服务端 `FACTORY_PRLINK_WRITES_ENABLED=1` + body `confirm: true` + 已配置 provider 三者齐全，fixture provider 的发布返回 501。
+
+**怎么用**：PrLink 面板看关联 PR/Issue、评审摘录、CI 状态摘要；本地分支与提交信息中的编号解析；Issue 导入为 DRAFT，永不自动派发；本地评审存档只存本地，永不发远端；token 值永不离开 provider 闭包、不进日志/审计/响应。
+
+**诚实边界**：零真实 token 默认——无 provider 时 linked 返回 configured:false + 空数组，绝不伪造数据；裸 `#123` 在 provider 解析前既不是 issue 也不是 PR；GitHub 客户端未对真实 GitHub 验证，live 语义（reviews/checks 端点）待 Tan 侧 token 后复核；远程 diff 拉取不在 v1（评审视图用本地 `base...head` stat + 远端评审摘录 500 字）。
+
+## 96. 调试深化：多语言 DAP + 条件断点/日志点（第七轮二）
+
+**是什么**：在第四轮 S2 DAP 之上补多语言 DAP + 条件断点/日志点：适配器静态注册（node 内置已实现；python 外部 debugpy，探针 `python3 -m debugpy --version` 回退 `python -m debugpy --version`，安装提示 `pip install debugpy`；go 外部 delve，探针 `dlv version`，安装提示 `go install github.com/go-delve/delve/cmd/dlv@latest`；探针 10 秒超时）；条件断点条件命中才停、日志点只记不停（logMessage 优先于 condition，两者都有时为 logpoint，经 CDP condition 实现、不改源码文件）；条件语法只做解析检查（`new Function` 解析、绝不执行），启动时语法非法 400 `bad-breakpoint`；命中时求值错误记诊断并继续、不断链。
+
+**怎么用**：Debug 面板适配器区（静态列表 + 按需探针）、断点草稿日志点输入框与列表 `log:` 显示、配置下拉显示 `(request, adapter)`；`GET /api/debug/adapters`（静态注册不 spawn）、`POST /api/debug/adapters/:kind/probe`（未知 kind 400 `unknown-adapter`）；非 node 会话启动时 spawn 前返回 501 `adapter-not-implemented`，绝不静默回退 node。
+
+**诚实边界**：仅 TS/JS 精确；python/go 仅注册与探针，未驱动；探针只报告二进制是否存在，不等于可用会话；Node 会话不自动 terminate（round-4 前置缺口，冒烟以显式 DELETE 为会话结束语义）；数据断点与反向调试明确后置。
+
+## 97. 数据库多连接 + 查询历史 + ER 图（第七轮二）
+
+**是什么**：在第四轮 A5 数据库浏览器之上深化：`multiconn.ts`（驱动目录：sqlite/postgres 可用，mysql/mariadb/mssql/oracle 诚实标注无驱动；连接元数据 active 切换；写模式门禁：默认关、开启需 confirm、prod 与驱动只读永不可开；`stripSecretFields` 审计脱敏）+ `history.ts`（查询历史 `<dataDir>/db-history.json` 原子写、上限 500 条、SQL 截断 4000 字符、损坏文件 fail-closed 永不覆盖、重跑记新条目不覆盖旧条目）；服务端路由 `GET /drivers`、`GET /connections/meta`、`GET/POST /active`、`POST /connections/:name/write-mode`、`GET/DELETE /history`、`POST /history/:id/rerun|favorite`、`DELETE /history/:id`；桌面扩展既有 DbBrowserPanel（不新增中心 tab）：当前连接切换、写模式开关（开启前 `window.confirm`）、驱动提示、历史子 tab、ER 子 tab 新增 SVG 关系图（被引用表在左、外键持有表在右，按引用深度分列，环保护）。
+
+**怎么用**：DbBrowser 面板切换连接、开写模式（先 confirm）、历史重跑/收藏/删除/清空、ER 图看外键关系；`/api/db-browser/query` 与 `PUT /api/db-browser/row` 的写路径默认拒绝（`WRITE_MODE_DISABLED`），需先 `POST /connections/:name/write-mode {enabled: true, confirm: true}`；破坏性语句仍走原票据路径，不受写模式门禁影响；prod 写拒绝语义不变（`PROD_WRITE_REFUSED`，门禁顺序 prod 优先）。
+
+**诚实边界**：多连接为服务端会话级，重启后连接丢失需重新注册；历史文件跨重启保留，但旧条目重跑可能 404；Postgres 仍为最小线协议驱动（trust 认证、无 SSL），未对真实服务器验证；mysql 等无驱动注册直接拒绝；历史存 SQL 文本本身（重跑必需），只落在服务端数据目录，审计事件只含条目 id 与计数、永不含 SQL，密码字段永不被读取、存储、记录；ER 图由外键只读推导、不改库，桌面 ER SVG 为确定性分列布局、非交互式画布。
+
+## 98. API 客户端深化（第七轮二）
+
+**是什么**：在第四轮 A6 HTTP/REST 客户端之上补集合、环境、鉴权、GraphQL、WebSocket：`packages/httpclient/` 扩展 `auth.ts`（Bearer/Basic/ApiKey，OAuth2 占位）、`collections.ts`（集合/环境/鉴权配置/历史，密钥分离存储）、`graphql.ts`（查询 + 变量，errors 原样 surfacing）、`ws.ts`（RFC 6455 客户端，帧上限、close 握手、断线语义 explicit）、`envs.ts` 严格替换；服务端集合 CRUD、鉴权配置 CRUD、环境 PUT/GET、`/send`、`/graphql`、`/ws/*`、`/history` + rerun；密钥存 `http-api-secrets.json`（0600），读侧一律 redacted；桌面 HttpPanel 内新增子 tab（文件/集合/GraphQL/WebSocket/历史），不新增中心 tab。
+
+**怎么用**：Http 面板建集合、配三种鉴权、存环境、发 GraphQL、连 WebSocket（连接/发送/echo 回包/关闭）、历史重跑；环境变量替换失败明确报错（400 `unresolved-variable`），不静默发空值；历史存变量替换前的 URL 模板与 redacted 头，不存任何密钥原文。
+
+**诚实边界**：OAuth2 只是占位：kind 'oauth2' 接受建档，应用时 fail-closed（`oauth2-placeholder`），不跑任何 token 流程，面板边界文案已明示；WebSocket 二进制帧拒绝 fail-closed，关后发送 409，出站检查按等价 http(s) 地址执行；桌面面板路径经 tsc + 单测覆盖，未单独走 Electron e2e（收口 e2e 为准）。
+
+## 99. 设置同步（第七轮二）
+
+**是什么**：设置导出/导入（JSON + 版本戳）、导入前预览 diff（新增/修改/冲突三类，另有删除类）、冲突逐项确认不静默覆盖、应用后记审计（只记键名不记值）；可选私有远端（token 只存安全通道），无远端时本地导出/导入照常可用。新中心 tab SettingsSyncPanel（advanced 层末尾）。
+
+**怎么用**：SettingsSync 面板导出下载、导入粘贴、预览表、冲突/删除逐项裁决、应用、远端配置/推送/拉取；`GET /api/settingsync/export`、`POST /api/settingsync/preview`、`POST /api/settingsync/apply`（未裁决的 conflict/removed 整体 409 且不写任何文件）、`GET/PUT /api/settingsync/remote`（只返回 URL 与 `tokenConfigured` 布尔值）、`POST /api/settingsync/remote/push|pull`（pull 只预览不应用）；基线 `<dataDir>/settingsync-baseline.json`；RBAC 走默认门禁（GET viewer，POST/PUT operator）。
+
+**诚实边界**：同步分区仅 keybindings 与 rules-global；桌面 localStorage 偏好（Vim、分层导航、金路径进度）v1 不同步；规则 diff 为 store 级（`rules` 数组整体比较）；远端为用户自有单文档 HTTP 端点，无账号体系、无发现、无重试；导出时设置文件本身含密钥特征则整体拒绝（fail-closed）；文档上限 1MB、32 section、每 section 1000 键，文档缺失的 section 一律不 diff、不写。
+
 ---
 
 *版本 0.2.0（2026-10-18）。2026-10-21 补录：加强波（一/二）、
@@ -1172,4 +1332,5 @@ carry/holdback 逻辑不变，落盘映射回原始坐标；
 2026-10-22 补录：第四轮（一/二）功能（§50–§59）；
 2026-10-23 补录：第五轮（一/二）功能（§60–§69）。
 2026-10-27 补录：第六轮（一/二）功能（§70–§79）。
+2026-11-02 补录：V3.0（一/二）功能（§80–§89）；第七轮（一/二）功能（§90–§99）。
 英文版见 ADVANCED_FEATURES.en.md。*
