@@ -1,6 +1,7 @@
 # 中心 Tab 全量盘点（65 个）
 
-- 基线：本地 main `da648a1`（V3R4 代码侧收口后；R5 #8 刷新。R4 快照基线为 `ce9ff66`，历史验证记录见“本轮验证”一节）。
+- 基线：本地 main `5b93f74`（V3R5 代码侧收口后；R6 #8 刷新。R5 快照基线为 `da648a1`，R4 快照基线为 `ce9ff66`，历史验证记录见“本轮验证”一节）。
+- 复核日期：2026-11-04（R6 #8 刷新；计数复核、旧别名 grep、占位符比对四项全重跑，见文末“R6 #8 刷新记录”）。
 - 范围：仅中心 tab（`CENTER_TABS`）。底部 12 个 tab（AI Activity、Terminal、Tests、Problems、TODO、Database、Tasks、Queue、Watch、Bookmarks、Logs、Evidence）不在本盘点内；底部 Terminal 与中心 Terminal 是两个独立入口，见“近似重复说明”。
 - 方法：`apps/desktop/src/navigation/tiers.ts` 的 `CENTER_TABS` 与 `apps/desktop/src/App.tsx` 的渲染分支双向比对；i18n 键按 App.tsx 的派生规则（`name.toLowerCase().replace('/', '')`）逐个核对；旧别名全树 grep 引用。
 - 复核方法：任一改动后重跑本节“计数复核”三条命令，tab 数、分支数、i18n 键数三者须同时吻合；复核周期：每次增删 tab 后更新本表，不得让表过期。维护责任见“维护责任（R5 #8 S2）”一节；基线过期须复核，不得静默沿用。
@@ -148,14 +149,14 @@ grep -rn "tab\.settingsync'" apps/desktop/src apps/desktop/tests || echo "orphan
 ### i18n 占位符比对（同名同数，逐键）
 
 - 方法：比对脚本 `~/v3r5-8-shots/compare-placeholders.mjs`，以 node 类型剥离直接导入 `apps/desktop/src/i18n/zh.ts` 与 `en.ts` 的导出对象（与 `apps/desktop/tests/unit/i18n.test.mjs` 同机制）；`{{name}}` 双花括号先剔除（两处均为“支持 {{name}} 占位符”的说明文字，非插值）；单花括号 `{name}` 按名与出现次数逐键比对为多重集。`${1:${2:x}}`（snippets.honest 嵌套占位符示例）与 en.ts 首行 import 类型花括号均非插值，不计入。
-- 结果：zh/en 各 3311 键、键集合双向 0 差；占位符差异共 1 条（不是 0 条，见下表），其余 3310 键全部同名同数。
+- 结果：zh/en 各 3321 键、键集合双向 0 差；占位符差异共 1 条（不是 0 条，见下表），其余 3320 键全部同名同数。（R6 #8 重跑，2026-11-04；R5 版数字 3311 已过期，以本次重跑为准。）
 
 | 键 | zh 占位符 | en 占位符 | 定性 |
 |---|---|---|---|
 | `changes.changeCount` | `{count}` | `{count}, {plural}` | 有意例外，非缺陷：中文无需复数后缀；调用点（ChangesPanel）同时传 `count` 与 `plural`（单数为空、复数为 s），中文串只用 `count`。与 `i18n.test.mjs` 的 ALLOWLIST 一致，不得为“清零”而给中文串加无意义的 `{plural}`，也不得删 en 串的 `{plural}`。 |
 
 - 本比对严于既有单测：单测只比占位符名集合，本比对加比出现次数；单测的 ALLOWLIST 例外在本比对中仍记为差异并定性，不静默豁免。
-- 完整比对输出：`~/v3r5-8-shots/placeholder-diffs.txt`。
+- 完整比对输出：`~/v3r6-8-shots/placeholder-diffs.txt`（R6 #8 重跑；R5 版输出见 `~/v3r5-8-shots/placeholder-diffs.txt`）。
 
 ### 维护责任（R5 #8 S2）
 
@@ -172,3 +173,9 @@ grep -rn "tab\.settingsync'" apps/desktop/src apps/desktop/tests || echo "orphan
 - 别名清理后键集合复核：zh/en 各 65 个，双向 0 差；`tab.settingsync` 全树零引用。
 - 仓库 `data/factory.db`：mtime 仍为 2026-10-19，无 WAL/SHM，未污染；e2e 进程（server/electron/Xvfb/vite）均已由 harness 杀净。
 - 注意：i18n 两文件的工作树 diff 除本轮删的 2 行外另有兄弟任务（R4 #5）的 `budget.estimatedSuffix` 新增行，不属本轮；收口 commit 时须按行认领，不得整文件打包。
+
+## R6 #8 刷新记录（2026-11-04，基线 5b93f74）
+
+- 触发：S2 触发条件 (1)，本地 main 基线由 `da648a1` 变更为 `5b93f74`；`apps/desktop/src/App.tsx` 与 `apps/desktop/src/navigation/tiers.ts` 在 `da648a1` → `5b93f74` 间零改动（`git diff --name-only` 为空），表内容仍准，本次只刷表头、复核日期与占位符比对结果数字。
+- 四项全重跑（脚本 `~/v3r6-8-shots/verify-inventory.mjs` 与 `~/v3r6-8-shots/compare-placeholders.mjs`）：`CENTER_TABS` 65 个、无重名；App.tsx 显性分支 64 个、唯一无显性分支为 Editor（默认分支），无多余分支；分层 common 12 / expert 14 / advanced 39，合计 65；i18n 派生 `tab.*` 键 zh/en 各 65 个、双向 0 差；键集合总量 zh/en 各 3321、双向 0 差；旧别名 `tab.settingsync`（单 s）全树 grep 除本表自身清理记录文字外零引用；占位符比对差异 1 条（`changes.changeCount` 有意例外，与单测 ALLOWLIST 一致），其余 3320 键同名同数。
+- 历史修正：本表占位符一节原写 3311 键已过期（R5 收口与 R6 审计独立实测均为 3321 键），本次以重跑结果 3321 键为准；R5 版“本轮验证”一节为历史记录，未动。
