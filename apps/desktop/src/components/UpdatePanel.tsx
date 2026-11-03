@@ -14,6 +14,10 @@ export interface UpdateStatus {
   autoCheck: boolean;
   checkIntervalMs: number;
   lastCheck: { at: number; result: UpdateCheckResult } | null;
+  /** V3R3 #10: true when the persisted lastCheck record is corrupt (ignored, not a check). */
+  lastCheckCorrupt?: boolean;
+  /** V3R3 #10: non-null when the last persist attempt failed (in-memory value still served). */
+  lastCheckPersistError?: string | null;
 }
 
 export interface UpdateFeedInfo {
@@ -161,9 +165,25 @@ export function UpdatePanel({ api }: { api: UpdateApi }) {
             <div>
               <dt>{t('update.lastCheck')}</dt>
               <dd>
-                {status.lastCheck ? (
+                {!status.feedConfigured ? (
                   <>
-                    {fmtTime(status.lastCheck.at)} — {t(`update.result_${status.lastCheck.result.status}` as const)}
+                    <span className="pill warn">{t('update.lastCheckNotConfigured')}</span>{' '}
+                    <span className="muted">{t('update.feedDecisionHint')}</span>
+                  </>
+                ) : status.lastCheckCorrupt ? (
+                  <span className="muted">{t('update.lastCheckCorrupt')}</span>
+                ) : status.lastCheck ? (
+                  <>
+                    {fmtTime(status.lastCheck.at)} —{' '}
+                    {(status.lastCheck.result.status === 'feed-error' ||
+                      status.lastCheck.result.status === 'fetch-error') && 'reason' in status.lastCheck.result ? (
+                      <span className="pill warn">
+                        {t(`update.result_${status.lastCheck.result.status}` as const)} —{' '}
+                        {(status.lastCheck.result as { reason: string }).reason}
+                      </span>
+                    ) : (
+                      t(`update.result_${status.lastCheck.result.status}` as const)
+                    )}
                   </>
                 ) : (
                   t('update.neverChecked')

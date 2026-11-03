@@ -8,6 +8,7 @@ import {
 } from '../api';
 import { useLang } from '../i18n';
 import { CascadeTimelinePanel } from './CascadeTimelinePanel';
+import { CommandPanel } from './CommandPanel';
 import { DagGraphPanel } from './DagGraphPanel';
 
 /**
@@ -152,6 +153,7 @@ export function TasksPanel({ projectId }: { projectId: string }) {
   const tasks = data?.tasks ?? [];
   return (
     <div className="tasks-panel">
+      <CommandPanel />
       <div className="tasks-toolbar">
         <button className="pill" onClick={openEditor}>
           {data?.missing ? t('tasks.createFile') : t('tasks.editFile')}

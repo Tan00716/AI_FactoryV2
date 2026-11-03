@@ -35,8 +35,86 @@ const FETCH_TIMEOUT_MS = 15000;
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const CHANGELOG_PATH = path.join(REPO_ROOT, 'CHANGELOG.md');
 
-/** In-memory last-check state (prototype: lost on restart, like /api/releases). */
+/** Last-check state: in-memory copy of the persisted record below. */
 let lastCheck: { at: number; result: UpdateCheckResult } | null = null;
+
+/**
+ * V3.0 audit round 3, item #10 — lastCheck persistence. The record lives in
+ * <dataDir>/update-lastcheck.json (same AI_FACTORY_DATA_DIR convention as
+ * the run-history store): atomic tmp+rename writes, best-effort (a corrupt
+ * or unwritable file never fails a check; corruption surfaces in the status
+ * response and the next successful check overwrites it). Only a timestamp
+ * plus the check result is stored — never the feed configuration itself, so
+ * persisting lastCheck must not be mistaken for a #3 feed decision.
+ */
+const LASTCHECK_FILE = 'update-lastcheck.json';
+const LASTCHECK_STATUSES = new Set(['not-configured', 'up-to-date', 'update-available', 'feed-error', 'fetch-error']);
+
+let lastCheckDir = '';
+let lastCheckLoaded = false;
+let lastCheckCorrupt = false;
+let lastCheckPersistError: string | null = null;
+
+function lastCheckDataDir(): string {
+  const env = (process.env['AI_FACTORY_DATA_DIR'] ?? '').trim();
+  if (env) return path.resolve(env);
+  return path.resolve(process.cwd(), 'data');
+}
+
+function isLastCheck(v: unknown): v is { at: number; result: UpdateCheckResult } {
+  if (typeof v !== 'object' || v === null) return false;
+  const c = v as Record<string, unknown>;
+  if (typeof c['at'] !== 'number' || !Number.isFinite(c['at'])) return false;
+  const r = c['result'] as Record<string, unknown> | null;
+  if (typeof r !== 'object' || r === null) return false;
+  return typeof r['status'] === 'string' && LASTCHECK_STATUSES.has(r['status']);
+}
+
+function lastCheckFilePath(): string {
+  return path.join(lastCheckDataDir(), LASTCHECK_FILE);
+}
+
+/** Load the persisted record once per data dir; invalid content => corrupt flag, never a crash. */
+function ensureLastCheckLoaded(): void {
+  const dir = lastCheckDataDir();
+  if (lastCheckLoaded && lastCheckDir === dir) return;
+  lastCheckDir = dir;
+  lastCheckLoaded = true;
+  lastCheckCorrupt = false;
+  try {
+    const raw = fs.readFileSync(lastCheckFilePath(), 'utf8');
+    const parsed: unknown = JSON.parse(raw);
+    if (isLastCheck(parsed)) {
+      lastCheck = parsed;
+    } else {
+      lastCheck = null;
+      lastCheckCorrupt = true;
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      lastCheck = null;
+    } else {
+      lastCheck = null;
+      lastCheckCorrupt = true;
+    }
+  }
+}
+
+function setLastCheck(v: { at: number; result: UpdateCheckResult }): void {
+  lastCheck = v;
+  lastCheckCorrupt = false;
+  lastCheckPersistError = null;
+  try {
+    const dir = lastCheckDataDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const file = lastCheckFilePath();
+    const tmp = `${file}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(v), 'utf8');
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    lastCheckPersistError = e instanceof Error ? e.message : String(e);
+  }
+}
 
 function currentVersion(): string {
   return readAppVersion(REPO_ROOT);
@@ -108,7 +186,7 @@ export async function performUpdateCheck(ctx: {
         detail: verdict.reason,
       });
       const result: UpdateCheckResult = { status: 'fetch-error', reason: 'egress-blocked' };
-      lastCheck = { at: Date.now(), result };
+      setLastCheck({ at: Date.now(), result });
       return result;
     }
   }
@@ -125,7 +203,7 @@ export async function performUpdateCheck(ctx: {
       }),
     audit: (action, details) => ctx.audit.record('system', action, 'app-update', 'channel', details),
   });
-  lastCheck = { at: Date.now(), result };
+  setLastCheck({ at: Date.now(), result });
   return result;
 }
 
@@ -155,6 +233,7 @@ export async function handleUpdateRoutes(
 
   // GET /api/updates/status
   if (method === 'GET' && pathName === `${PREFIX}/status`) {
+    ensureLastCheckLoaded();
     const cfg = config();
     const feedHost = (() => {
       if (!cfg.feedUrl) return null;
@@ -171,6 +250,8 @@ export async function handleUpdateRoutes(
       autoCheck: cfg.autoCheck,
       checkIntervalMs: cfg.checkIntervalMs,
       lastCheck,
+      lastCheckCorrupt,
+      lastCheckPersistError,
     }), true;
   }
 
@@ -184,7 +265,7 @@ export async function handleUpdateRoutes(
         result,
       }), true;
     }
-    return ctx.json(res, 200, { result, lastCheck }), true;
+    return ctx.json(res, 200, { result, lastCheck, lastCheckCorrupt, lastCheckPersistError }), true;
   }
 
   // GET /api/updates/changelog
