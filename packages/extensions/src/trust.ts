@@ -13,6 +13,15 @@
  *   - Host extension API is v1. Manifest apiVersion missing = legacy:
  *     treated as v1 with a warning (installed base keeps working).
  *     Declared major != 1 = hard reject at install and at load.
+ *   - Default trust behaviour (V3R4-#3, decided by Tan 2026-11-03):
+ *     WARN-THEN-CONFIRM. Executing or enabling an untrusted bundle
+ *     prompts with an explicit warning (vm sandbox is not a security
+ *     boundary, signature status, declared permissions); a per-execution
+ *     confirmation runs it once and is audited, and never writes
+ *     trust.json. There is no "trust all" switch. The rejected branch
+ *     (fail-closed refusal) is archived as declined, not kept as a
+ *     parallel track. Invalid signatures stay fail-closed and can
+ *     never be warned past.
  *   - Signature: Ed25519 over the canonical bundle string below.
  *     Valid + official key = review 'official', auto-trusted.
  *     Valid + other key = auto-trusted (report rule: signed installs
@@ -283,6 +292,95 @@ export class TrustRequiredError extends ExtensionError {
     this.name = 'TrustRequiredError';
     this.trust = trust;
   }
+}
+
+/**
+ * Warn-then-confirm payload (V3R4-#3, Tan decision 2026-11-03: the
+ * extension trust default is warn-then-confirm, not fail-closed
+ * refusal). Sent with a 409 'trust-confirmation-required' so the UI can
+ * render the warning BEFORE the user decides. The warning states the
+ * three facts the decision needs: the vm sandbox is not a security
+ * boundary, the signature status, and the declared permissions. It
+ * never claims the bundle is safe, and it carries no code content.
+ */
+export interface TrustWarning {
+  signature: ExtensionTrust['signature'];
+  review: ExtensionTrust['review'];
+  bundleSha256: string;
+  permissions: string[];
+  risks: string[];
+}
+
+export function buildTrustWarning(manifest: ExtensionManifest, trust: ExtensionTrust): TrustWarning {
+  const risks: string[] = [
+    'The node:vm sandbox is NOT a security boundary: it limits the API surface and blocks naive escapes, but cannot make an untrusted extension harmless.',
+  ];
+  if (trust.signature === 'absent') {
+    risks.push('This bundle is unsigned: nothing proves it is byte-identical to what its author shipped.');
+  } else if (trust.signature === 'valid') {
+    risks.push('This bundle carries a valid signature, but no trust decision covers this exact bundle hash (the bundle changed, or trust was revoked).');
+  }
+  if (manifest.permissions.length > 0) {
+    risks.push(`Declared permissions: ${manifest.permissions.join(', ')}. A permission declaration does not expand the sandbox, but it states what the extension intends to do.`);
+  }
+  return {
+    signature: trust.signature,
+    review: trust.review,
+    bundleSha256: trust.bundleSha256,
+    permissions: [...manifest.permissions],
+    risks,
+  };
+}
+
+/**
+ * Thrown when an untrusted (but confirmable) extension is executed
+ * without a per-execution confirmation (maps to 409). This is a PROMPT,
+ * not a decision: the route layer audits nothing for it. An explicit
+ * confirm:true audits EXT_TRUST_CONFIRMED; an explicit confirm:false
+ * audits EXT_TRUST_REJECTED. Carries the warning so the UI can render
+ * it verbatim.
+ */
+export class TrustConfirmationRequiredError extends ExtensionError {
+  readonly status = 409;
+  readonly trust: ExtensionTrust;
+  readonly warning: TrustWarning;
+  constructor(name: string, manifest: ExtensionManifest, trust: ExtensionTrust) {
+    super(
+      `extension "${name}" is untrusted: confirm the warning for this single execution ` +
+        '(retry with { confirm: true }), or decline it (retry with { confirm: false }). ' +
+        'A confirmation covers this one execution only and is recorded in the audit log; it does not grant persistent trust.',
+    );
+    this.name = 'TrustConfirmationRequiredError';
+    this.trust = trust;
+    this.warning = buildTrustWarning(manifest, trust);
+  }
+}
+
+/**
+ * Warn-then-confirm gate (V3R4-#3). Returns one of:
+ *   'trusted'   — signed or covered by a trust decision: proceed, no audit.
+ *   'confirmed' — untrusted but the caller passed confirm:true: proceed
+ *                 for THIS execution only. The caller must audit
+ *                 EXT_TRUST_CONFIRMED and must NOT write trust.json.
+ *   'rejected'  — the caller passed confirm:false: the caller must audit
+ *                 EXT_TRUST_REJECTED and refuse the operation.
+ *   'prompt'    — no confirm flag: the caller must refuse with
+ *                 TrustConfirmationRequiredError (no audit: a prompt is
+ *                 not a decision).
+ * Throws TrustRequiredError (hard fail-closed, never confirmable) when
+ * the signature is INVALID: a tampered bundle cannot be warned past.
+ */
+export function checkTrustGate(
+  name: string,
+  manifest: ExtensionManifest,
+  trust: ExtensionTrust,
+  confirm: unknown,
+): 'trusted' | 'confirmed' | 'rejected' | 'prompt' {
+  if (trust.trusted) return 'trusted';
+  if (trust.signature === 'invalid') throw new TrustRequiredError(name, trust);
+  if (confirm === true) return 'confirmed';
+  if (confirm === false) return 'rejected';
+  return 'prompt';
 }
 
 /** Gate helper: throws TrustRequiredError unless the bundle is trusted. */

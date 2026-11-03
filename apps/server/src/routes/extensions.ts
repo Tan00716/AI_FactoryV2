@@ -23,12 +23,18 @@
  * via extensionCheckerProvider (wired in index.ts through
  * setExtraCheckerProvider, alongside SSR/Trojan/spell).
  *
- * Trust (V3-#9): the vm sandbox is NOT a security boundary, so trust is
- * provenance + explicit decision, never a safety claim. Unsigned inline
- * installs need { trust: true } or fail with 409 trust-required;
- * enabling, running, or resolving an untrusted bundle fails the same
- * way; a changed bundle voids prior trust until re-decided. Signed
- * bundles install directly; a failed signature is fail-closed.
+ * Trust (V3-#9, default V3R4-#3 decided by Tan 2026-11-03):
+ * the vm sandbox is NOT a security boundary, so trust is provenance +
+ * explicit decision, never a safety claim. Unsigned inline installs
+ * need { trust: true } or fail with 409 trust-required (install is
+ * not execution, so the install gate is unchanged). Enabling,
+ * running, or resolving an untrusted bundle prompts with an explicit
+ * warning (409 trust-confirmation-required): confirm:true runs it
+ * ONCE and audits EXT_TRUST_CONFIRMED without writing trust.json;
+ * confirm:false audits EXT_TRUST_REJECTED and refuses. A changed
+ * bundle voids prior trust until re-decided. Signed bundles install
+ * directly; a failed signature is fail-closed and can never be
+ * warned past. There is no "trust all" switch.
  *
  * Dual-mode import rule (AGENTS.md): value-imports only node builtins
  * and @ai-factory/extensions; the root jail comes via setter injection,
@@ -42,11 +48,12 @@ import type { RouteContext } from './context';
 import type { Checker, Finding } from '../inspections';
 import {
   EXTENSION_API_VERSION,
+  TrustConfirmationRequiredError,
   TrustRequiredError,
-  assertTrusted,
   bundleSha256,
   checkApiVersion,
   checkLine,
+  checkTrustGate,
   computeTrust,
   enabledExtensions,
   installExtension,
@@ -60,6 +67,7 @@ import {
   uninstallExtension,
   ExtensionError,
   type ExtensionInfo,
+  type ExtensionManifest,
   type ExtensionTrust,
 } from '@ai-factory/extensions';
 
@@ -97,6 +105,10 @@ function jailPathInsideRoot(root: string, candidate: string): string {
 }
 
 function sendError(res: ServerResponse, ctx: RouteContext, e: unknown): boolean {
+  if (e instanceof TrustConfirmationRequiredError) {
+    ctx.json(res, e.status, { error: e.message, code: 'trust-confirmation-required', trust: e.trust, warning: e.warning });
+    return true;
+  }
   if (e instanceof TrustRequiredError) {
     ctx.json(res, e.status, { error: e.message, code: 'trust-required', trust: e.trust });
     return true;
@@ -141,7 +153,8 @@ function handleSchema(res: ServerResponse, ctx: RouteContext): boolean {
     sandboxNotABoundary: 'The vm sandbox limits the API surface and blocks naive escapes; it is NOT a multi-tenant security boundary. Trust below is provenance + explicit decision, never a safety claim.',
     apiVersion: `Host extension API is v${EXTENSION_API_VERSION} (frozen; a future v2 would run a parallel period). Manifest apiVersion missing = legacy, treated as v1 with a warning. A declared major other than ${EXTENSION_API_VERSION} is rejected at install and at load.`,
     trust: {
-      signature: 'Optional Ed25519 signature over the canonical bundle string (packages/extensions trust.ts), stored as signature.json. Valid + official key = review "official", auto-trusted. Valid + other key = auto-trusted. Invalid = install rejected (fail-closed). Absent = install needs { trust: true } or fails 409 trust-required.',
+      signature: 'Optional Ed25519 signature over the canonical bundle string (packages/extensions trust.ts), stored as signature.json. Valid + official key = review "official", auto-trusted. Valid + other key = auto-trusted. Invalid = install rejected (fail-closed) and never confirmable at run time. Absent = install needs { trust: true } or fails 409 trust-required.',
+      defaultWarnConfirm: 'Default trust behaviour (decided by Tan 2026-11-03, V3R4-#3): WARN-THEN-CONFIRM. Enabling, running, or resolving an untrusted bundle returns 409 trust-confirmation-required with a warning payload (vm sandbox is not a security boundary, signature status, declared permissions). Retry with { confirm: true } runs it ONCE and audits EXT_TRUST_CONFIRMED without writing trust.json; { confirm: false } audits EXT_TRUST_REJECTED and refuses. No "trust all" switch exists; persistent trust stays a separate explicit POST /trust decision.',
       review: 'Manifest review is a claim only: honoured ("reviewed"/"official") solely with a valid signature, and "official" solely with the official key. Unsigned claims downgrade to "unreviewed" with a warning.',
       localDev: 'install-from-dir (author present, source inside the project) installs directly and records a "local-dev" trust decision for the exact bundle hash.',
       voidOnChange: 'Trust decisions are keyed by bundle hash: any change to extension.json or main.js voids prior trust until re-decided via POST /api/extensions/:name/trust.',
@@ -159,6 +172,38 @@ function trustFor(root: string, name: string): ExtensionTrust {
   // at load too, not just at install — never silently run.
   checkApiVersion(manifest);
   return computeTrust(root, name, manifest, main, signature);
+}
+
+/**
+ * Warn-then-confirm gate for enable / run / resolve (V3R4-#3).
+ * 'trusted' proceeds silently; 'confirmed' proceeds for this one
+ * execution and audits EXT_TRUST_CONFIRMED (no trust.json write, so
+ * the next execution prompts again); 'rejected' audits
+ * EXT_TRUST_REJECTED and refuses; 'prompt' refuses with the warning
+ * payload and audits nothing (a prompt is not a decision). An invalid
+ * signature throws TrustRequiredError from checkTrustGate and is
+ * never confirmable. Audit payloads carry metadata only (name,
+ * action, signature status, result) — never code content.
+ */
+function gateExecution(
+  name: string,
+  manifest: ExtensionManifest,
+  trust: ExtensionTrust,
+  confirm: unknown,
+  action: 'enable' | 'run' | 'resolve',
+  ctx: RouteContext,
+  root: string,
+): void {
+  const verdict = checkTrustGate(name, manifest, trust, confirm);
+  if (verdict === 'trusted') return;
+  if (verdict === 'confirmed') {
+    ctx.audit.record('human', 'EXT_TRUST_CONFIRMED', 'extensions', root, { name, action, signature: trust.signature, result: 'confirmed' });
+    return;
+  }
+  if (verdict === 'rejected') {
+    ctx.audit.record('human', 'EXT_TRUST_REJECTED', 'extensions', root, { name, action, signature: trust.signature, result: 'rejected' });
+  }
+  throw new TrustConfirmationRequiredError(name, manifest, trust);
 }
 
 function handlePanels(res: ServerResponse, url: URL, ctx: RouteContext): boolean {
@@ -253,7 +298,11 @@ async function handleEnable(
 ): Promise<boolean> {
   const body = (await ctx.readBody(req)) as Record<string, unknown>;
   const root = resolveRoot(str(body.root));
-  if (enable) assertTrusted(name, trustFor(root, name));
+  if (enable) {
+    const { manifest, main, signature } = readExtension(root, name);
+    checkApiVersion(manifest);
+    gateExecution(name, manifest, computeTrust(root, name, manifest, main, signature), body.confirm, 'enable', ctx, root);
+  }
   const extension = setExtensionEnabled(root, name, enable);
   ctx.audit.record('human', enable ? 'EXT_ENABLED' : 'EXT_DISABLED', 'extensions', root, { name });
   ctx.json(res, 200, { extension });
@@ -279,7 +328,7 @@ async function handleRunCommand(
   const root = resolveRoot(str(body.root));
   const { manifest, main, state } = readExtension(root, name);
   if (!state.enabled) throw new ExtensionRouteError(`extension is disabled: ${name}`, 409);
-  assertTrusted(name, trustFor(root, name));
+  gateExecution(name, manifest, trustFor(root, name), body.confirm, 'run', ctx, root);
   let out;
   try {
     out = loadExtension(manifest, main).runCommand(command, body.args ?? {});
@@ -307,7 +356,7 @@ async function handleResolveProvider(
   const root = resolveRoot(str(body.root));
   const { manifest, main, state } = readExtension(root, name);
   if (!state.enabled) throw new ExtensionRouteError(`extension is disabled: ${name}`, 409);
-  assertTrusted(name, trustFor(root, name));
+  gateExecution(name, manifest, trustFor(root, name), body.confirm, 'resolve', ctx, root);
   const query = str(body.query);
   if (query === undefined) throw new ExtensionRouteError('query is required');
   let out;

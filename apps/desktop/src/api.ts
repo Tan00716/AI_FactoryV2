@@ -119,15 +119,22 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = (await res.json()) as T;
   if (!res.ok) {
-    const err = body as { error?: string; missing?: string[]; problems?: string[] };
+    const err = body as { error?: string; missing?: string[]; problems?: string[]; code?: string };
     const e = new Error(err.error ?? `HTTP ${res.status}`) as Error & {
       missing?: string[];
       problems?: string[];
       status: number;
+      code?: string;
+      details?: unknown;
     };
     e.missing = err.missing;
     e.problems = err.problems;
     e.status = res.status;
+    // Additive only: panels that need the server payload (e.g. the
+    // extension trust-confirmation warning) read e.code / e.details;
+    // every other caller keeps reading e.message as before.
+    e.code = err.code;
+    e.details = body;
     throw e;
   }
   return body;
@@ -2971,11 +2978,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ root, sourceDir }),
     }),
-  /** R6-S1 扩展系统：启用/禁用。 */
-  extensionsSetEnabled: (name: string, root: string, enabled: boolean) =>
+  /** R6-S1 扩展系统：启用/禁用。V3R4-#3：启用未信任扩展时 confirm:true 为逐次确认（仅本次启用，不写 trust.json），confirm:false 为显式拒绝（进审计）。 */
+  extensionsSetEnabled: (name: string, root: string, enabled: boolean, confirm?: boolean) =>
     req<{ extension: ExtensionDto }>(`/api/extensions/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, {
       method: 'POST',
-      body: JSON.stringify({ root }),
+      body: JSON.stringify({ root, confirm }),
     }),
   /** R6-S1 扩展系统：卸载。 */
   extensionsUninstall: (name: string, root?: string) =>
@@ -2983,11 +2990,11 @@ export const api = {
       `/api/extensions/${encodeURIComponent(name)}${root ? `?root=${encodeURIComponent(root)}` : ''}`,
       { method: 'DELETE' },
     ),
-  /** R6-S1 扩展系统：运行扩展命令（沙盒内执行）。 */
-  extensionsRunCommand: (name: string, command: string, root: string, args: unknown) =>
+  /** R6-S1 扩展系统：运行扩展命令（沙盒内执行）。V3R4-#3：未信任扩展 confirm:true 为逐次确认（仅执行一次，不写 trust.json），confirm:false 为显式拒绝（进审计）。 */
+  extensionsRunCommand: (name: string, command: string, root: string, args: unknown, confirm?: boolean) =>
     req<{ extension: string; command: string; result: unknown; logs: string[] }>(
       `/api/extensions/${encodeURIComponent(name)}/commands/${encodeURIComponent(command)}/run`,
-      { method: 'POST', body: JSON.stringify({ root, args }) },
+      { method: 'POST', body: JSON.stringify({ root, args, confirm }) },
     ),
   /** R6-S1 扩展系统：已启用扩展贡献的面板。 */
   extensionsPanels: (root?: string) =>
@@ -3005,11 +3012,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  /** R6-S1 扩展系统：运行扩展上下文提供器。 */
-  extensionsResolveProvider: (name: string, provider: string, root: string, query: string) =>
+  /** R6-S1 扩展系统：运行扩展上下文提供器。V3R4-#3：confirm 语义同运行命令（逐次确认 / 显式拒绝）。 */
+  extensionsResolveProvider: (name: string, provider: string, root: string, query: string, confirm?: boolean) =>
     req<{ extension: string; provider: string; items: Array<{ label: string; text: string }>; logs: string[] }>(
       `/api/extensions/${encodeURIComponent(name)}/providers/${encodeURIComponent(provider)}/resolve`,
-      { method: 'POST', body: JSON.stringify({ root, query }) },
+      { method: 'POST', body: JSON.stringify({ root, query, confirm }) },
     ),
   /** R6-A6 规则文件：两级 + 兼容 + 生效视图。 */
   rulesView: (root?: string) =>

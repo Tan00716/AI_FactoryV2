@@ -278,7 +278,7 @@ export function BudgetPanel() {
           <ul>
             {defaults.conversionTable.map((row) => (
               <li key={row.unit}>
-                {row.unit}: {row.description} — {row.estimatedInputTokens} in / {row.estimatedOutputTokens} out / ${row.estimatedCostUsd}
+                {row.unit}: {row.description} — {row.estimatedInputTokens} in / {row.estimatedOutputTokens} out / ${row.estimatedCostUsd}{t('budget.estimatedSuffix')}
               </li>
             ))}
           </ul>

@@ -13,6 +13,37 @@ import { useLang } from '../i18n';
 import { api } from '../api';
 import type { ExtensionDto, ExtensionPanelDto, ExtensionProviderDto } from '../api';
 
+/** Server warning payload carried on a 409 trust-confirmation-required. */
+interface TrustConfirmWarning {
+  signature: string;
+  review: string;
+  bundleSha256: string;
+  permissions: string[];
+  risks: string[];
+}
+
+/** A pending warn-then-confirm decision (V3R4-#3). No "trust always"
+ *  control lives here by design: confirming runs the action ONCE and
+ *  audits it; persistent trust stays the separate list button. */
+interface ConfirmPending {
+  action: 'enable' | 'run' | 'resolve';
+  extName: string;
+  enableTo?: boolean;
+  command?: string;
+  args?: unknown;
+  provider?: string;
+  query?: string;
+  warning: TrustConfirmWarning;
+}
+
+function confirmWarningOf(e: unknown): TrustConfirmWarning | null {
+  const err = e as { code?: string; details?: { warning?: TrustConfirmWarning } };
+  if (err.code !== 'trust-confirmation-required') return null;
+  const w = err.details?.warning;
+  if (!w || typeof w.signature !== 'string' || !Array.isArray(w.risks)) return null;
+  return w;
+}
+
 const EMPTY_MANIFEST = `{
   "name": "my-extension",
   "version": "1.0.0",
@@ -44,6 +75,7 @@ export default function ExtensionsPanel(props: { projectRoot: string }) {
   const [queryResult, setQueryResult] = useState('');
   const [status, setStatus] = useState('');
   const [trustNeeded, setTrustNeeded] = useState(false);
+  const [confirmPending, setConfirmPending] = useState<ConfirmPending | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -106,8 +138,59 @@ export default function ExtensionsPanel(props: { projectRoot: string }) {
       await api.extensionsSetEnabled(ext.name, props.projectRoot, !ext.enabled);
       await reload();
     } catch (e) {
+      const warning = confirmWarningOf(e);
+      if (warning && !ext.enabled) {
+        setConfirmPending({ action: 'enable', extName: ext.name, enableTo: true, warning });
+        return;
+      }
       setStatus(e instanceof Error ? e.message : String(e));
     }
+  };
+
+  const onConfirmOnce = async () => {
+    if (!confirmPending) return;
+    const pending = confirmPending;
+    setConfirmPending(null);
+    setStatus('');
+    try {
+      if (pending.action === 'enable') {
+        await api.extensionsSetEnabled(pending.extName, props.projectRoot, pending.enableTo ?? true, true);
+        setStatus(t('extensions.trustConfirmConfirmed'));
+      } else if (pending.action === 'run') {
+        const args = pending.args ?? {};
+        const out = await api.extensionsRunCommand(pending.extName, pending.command ?? '', props.projectRoot, args, true);
+        setRunResult(JSON.stringify(out.result, null, 2) + (out.logs.length > 0 ? `\nlogs:\n${out.logs.join('\n')}` : ''));
+        setStatus(t('extensions.trustConfirmConfirmed'));
+      } else {
+        const out = await api.extensionsResolveProvider(pending.extName, pending.provider ?? '', props.projectRoot, pending.query ?? '', true);
+        setQueryResult(JSON.stringify(out.items, null, 2));
+        setStatus(t('extensions.trustConfirmConfirmed'));
+      }
+      await reload();
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const onRejectConfirm = async () => {
+    if (!confirmPending) return;
+    const pending = confirmPending;
+    setConfirmPending(null);
+    try {
+      if (pending.action === 'enable') {
+        await api.extensionsSetEnabled(pending.extName, props.projectRoot, pending.enableTo ?? true, false);
+      } else if (pending.action === 'run') {
+        await api.extensionsRunCommand(pending.extName, pending.command ?? '', props.projectRoot, pending.args ?? {}, false);
+      } else {
+        await api.extensionsResolveProvider(pending.extName, pending.provider ?? '', props.projectRoot, pending.query ?? '', false);
+      }
+    } catch {
+      // A rejection is expected to come back 409: the server audited
+      // EXT_TRUST_REJECTED and refused. Any transport error is also
+      // fine here — nothing ran, which is the rejected outcome.
+    }
+    setStatus(t('extensions.trustConfirmRejected'));
+    await reload();
   };
 
   const onUninstall = async (ext: ExtensionDto) => {
@@ -127,6 +210,16 @@ export default function ExtensionsPanel(props: { projectRoot: string }) {
       const out = await api.extensionsRunCommand(runExt.trim(), runCmd.trim(), props.projectRoot, args);
       setRunResult(JSON.stringify(out.result, null, 2) + (out.logs.length > 0 ? `\nlogs:\n${out.logs.join('\n')}` : ''));
     } catch (e) {
+      const warning = confirmWarningOf(e);
+      if (warning) {
+        try {
+          const args = JSON.parse(runArgs) as unknown;
+          setConfirmPending({ action: 'run', extName: runExt.trim(), command: runCmd.trim(), args, warning });
+        } catch {
+          setRunResult(e instanceof Error ? e.message : String(e));
+        }
+        return;
+      }
       setRunResult(e instanceof Error ? e.message : String(e));
     }
   };
@@ -137,6 +230,11 @@ export default function ExtensionsPanel(props: { projectRoot: string }) {
       const out = await api.extensionsResolveProvider(queryExt.trim(), queryProv.trim(), props.projectRoot, queryText);
       setQueryResult(JSON.stringify(out.items, null, 2));
     } catch (e) {
+      const warning = confirmWarningOf(e);
+      if (warning) {
+        setConfirmPending({ action: 'resolve', extName: queryExt.trim(), provider: queryProv.trim(), query: queryText, warning });
+        return;
+      }
       setQueryResult(e instanceof Error ? e.message : String(e));
     }
   };
@@ -164,6 +262,24 @@ export default function ExtensionsPanel(props: { projectRoot: string }) {
       <p className="hint">{t('extensions.honest')}</p>
       <p className="hint">{t('extensions.trustWarning')}</p>
       {status !== '' && <p className="status">{status}</p>}
+      {confirmPending && (
+        <div className="trust-confirm-dialog" role="alertdialog" aria-label={t('extensions.trustConfirmTitle')}>
+          <h3>{t('extensions.trustConfirmTitle')}</h3>
+          <p>{t('extensions.trustConfirmIntro', { ext: confirmPending.extName, action: confirmPending.action })}</p>
+          <ul>
+            {confirmPending.warning.risks.map((r, i) => (
+              <li key={i}>{r}</li>
+            ))}
+          </ul>
+          <p className="hint">{t('extensions.trustConfirmSig', { signature: confirmPending.warning.signature, review: confirmPending.warning.review })}</p>
+          <p className="hint">{t('extensions.trustConfirmPerms', { perms: confirmPending.warning.permissions.join(', ') || '—' })}</p>
+          <p className="hint">{t('extensions.trustConfirmHash', { hash: confirmPending.warning.bundleSha256 })}</p>
+          <p className="hint">{t('extensions.trustConfirmOneShot')}</p>
+          <button onClick={() => void onConfirmOnce()}>{t('extensions.trustConfirmOnce')}</button>
+          <button onClick={() => void onRejectConfirm()}>{t('extensions.trustConfirmReject')}</button>
+          <button onClick={() => setConfirmPending(null)}>{t('extensions.trustConfirmCancel')}</button>
+        </div>
+      )}
 
       <h3>{t('extensions.listTitle', { count: String(extensions.length) })}</h3>
       {extensions.length === 0 && <p className="hint">{t('extensions.empty')}</p>}

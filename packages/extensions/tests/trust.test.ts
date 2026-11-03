@@ -11,10 +11,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   OFFICIAL_PUBLIC_KEY_B64,
+  TrustConfirmationRequiredError,
   TrustRequiredError,
   assertTrusted,
+  buildTrustWarning,
   bundleSha256,
   checkApiVersion,
+  checkTrustGate,
   computeTrust,
   installExtension,
   installExtensionFromDir,
@@ -202,5 +205,56 @@ describe('install trust gates', () => {
     const info = installExtensionFromDir(r, src);
     assert.equal(info.trust.trusted, true);
     assert.equal(info.trust.trustSource, 'local-dev');
+  });
+});
+
+describe('warn-then-confirm gate (V3R4-#3, Tan decision 2026-11-03)', () => {
+  it('trusted bundles pass without any confirm flag', () => {
+    const r = root();
+    const m = manifest({ apiVersion: '1' });
+    recordTrust(r, 'trust-demo', bundleSha256(m, MAIN), 'user');
+    const t = computeTrust(r, 'trust-demo', m, MAIN);
+    assert.equal(checkTrustGate('trust-demo', m, t, undefined), 'trusted');
+    assert.equal(checkTrustGate('trust-demo', m, t, false), 'trusted');
+  });
+
+  it('unsigned untrusted: no flag prompts, true confirms once, false rejects', () => {
+    const r = root();
+    const m = manifest({ apiVersion: '1' });
+    const t = computeTrust(r, 'trust-demo', m, MAIN);
+    assert.equal(t.trusted, false);
+    assert.equal(t.signature, 'absent');
+    assert.equal(checkTrustGate('trust-demo', m, t, undefined), 'prompt');
+    assert.equal(checkTrustGate('trust-demo', m, t, true), 'confirmed');
+    assert.equal(checkTrustGate('trust-demo', m, t, false), 'rejected');
+    // A confirmation writes nothing: the next call without a flag prompts again.
+    assert.equal(computeTrust(r, 'trust-demo', m, MAIN).trusted, false);
+  });
+
+  it('an invalid signature is fail-closed even with confirm:true', () => {
+    const r = root();
+    const kp = keypair();
+    const m = manifest({ apiVersion: '1' });
+    const sig = signBundle(m, MAIN, kp.privateKey);
+    const bad = { ...sig, signature: Buffer.from('x').toString('base64') };
+    const t = computeTrust(r, 'trust-demo', m, MAIN, bad);
+    assert.equal(t.signature, 'invalid');
+    assert.throws(() => checkTrustGate('trust-demo', m, t, true), (e: unknown) => e instanceof TrustRequiredError);
+    assert.throws(() => checkTrustGate('trust-demo', m, t, undefined), (e: unknown) => e instanceof TrustRequiredError);
+  });
+
+  it('the confirmation prompt error carries the full warning payload', () => {
+    const r = root();
+    const m = manifest({ apiVersion: '1' });
+    const t = computeTrust(r, 'trust-demo', m, MAIN);
+    const err = new TrustConfirmationRequiredError('trust-demo', m, t);
+    assert.equal(err.status, 409);
+    assert.equal(err.warning.signature, 'absent');
+    assert.equal(err.warning.bundleSha256, t.bundleSha256);
+    assert.deepEqual(err.warning.permissions, ['commands.execute']);
+    assert.ok(err.warning.risks.some((x) => /NOT a security boundary/.test(x)));
+    assert.ok(err.warning.risks.some((x) => /unsigned/.test(x)));
+    const w = buildTrustWarning(m, t);
+    assert.equal(w.signature, 'absent');
   });
 });

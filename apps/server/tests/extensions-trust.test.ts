@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -98,17 +98,40 @@ test('unsigned inline install with trust records a user decision and audits it',
   await run('DELETE', `/api/extensions/trust-route?root=${encodeURIComponent(PROJ)}`);
 });
 
-test('tampering voids trust: run and enable fail 409 until re-trusted', async () => {
+test('tampering voids trust: run and enable prompt for warn-confirm until re-trusted', async () => {
   const PROJ = freshProj();
   await run('POST', '/api/extensions/install', { root: PROJ, manifest: MANIFEST, main: MAIN, trust: true });
   const mainPath = join(PROJ, '.ai-factory', 'extensions', 'trust-route', 'main.js');
   writeFileSync(mainPath, readFileSync(mainPath, 'utf8') + '\n// tampered\n', 'utf8');
   const denied = await run('POST', '/api/extensions/trust-route/commands/trust.echo/run', { root: PROJ, args: {} });
   assert.equal(denied.code, 409);
-  assert.equal((denied.body as { code: string }).code, 'trust-required');
+  assert.equal((denied.body as { code: string }).code, 'trust-confirmation-required');
+  const warning = (denied.body as { warning: { signature: string; risks: string[]; permissions: string[] } }).warning;
+  assert.equal(warning.signature, 'absent');
+  assert.deepEqual(warning.permissions, ['commands.execute']);
+  assert.ok(warning.risks.some((r) => /NOT a security boundary/.test(r)));
+  // Per-execution confirmation: runs once, audits, writes no trust.
+  const confirmed = await run('POST', '/api/extensions/trust-route/commands/trust.echo/run', { root: PROJ, args: {}, confirm: true });
+  assert.equal(confirmed.code, 200);
+  assert.ok(auditCalls.includes('EXT_TRUST_CONFIRMED'));
+  const again = await run('POST', '/api/extensions/trust-route/commands/trust.echo/run', { root: PROJ, args: {} });
+  assert.equal(again.code, 409);
+  assert.equal((again.body as { code: string }).code, 'trust-confirmation-required');
+  // Explicit rejection audits and refuses, and runs nothing.
+  const rejected = await run('POST', '/api/extensions/trust-route/commands/trust.echo/run', { root: PROJ, args: {}, confirm: false });
+  assert.equal(rejected.code, 409);
+  assert.equal((rejected.body as { code: string }).code, 'trust-confirmation-required');
+  assert.ok(auditCalls.includes('EXT_TRUST_REJECTED'));
   await run('POST', '/api/extensions/trust-route/disable', { root: PROJ });
   const enableDenied = await run('POST', '/api/extensions/trust-route/enable', { root: PROJ });
   assert.equal(enableDenied.code, 409);
+  assert.equal((enableDenied.body as { code: string }).code, 'trust-confirmation-required');
+  // Enable-by-confirmation enables but grants no run trust: the next
+  // run without a flag prompts again (per-execution semantics).
+  const enableConfirmed = await run('POST', '/api/extensions/trust-route/enable', { root: PROJ, confirm: true });
+  assert.equal(enableConfirmed.code, 200);
+  const runAfterEnable = await run('POST', '/api/extensions/trust-route/commands/trust.echo/run', { root: PROJ, args: {} });
+  assert.equal(runAfterEnable.code, 409);
   const granted = await run('POST', '/api/extensions/trust-route/trust', { root: PROJ });
   assert.equal(granted.code, 200);
   assert.equal((granted.body as { trusted: boolean }).trusted, true);
@@ -128,6 +151,7 @@ test('untrust revokes the decision and blocks runs again', async () => {
   assert.ok(auditCalls.includes('EXT_TRUST_REVOKED'));
   const denied = await run('POST', '/api/extensions/trust-route/commands/trust.echo/run', { root: PROJ, args: {} });
   assert.equal(denied.code, 409);
+  assert.equal((denied.body as { code: string }).code, 'trust-confirmation-required');
   await run('DELETE', `/api/extensions/trust-route?root=${encodeURIComponent(PROJ)}`);
 });
 
@@ -202,4 +226,33 @@ test('official demo bundles install from dir as official and run', async () => {
   assert.deepEqual((prov.body as { items: unknown }).items, [{ label: 'note:hello', text: 'note body for hello' }]);
   await run('DELETE', `/api/extensions/hello-command?root=${encodeURIComponent(PROJ)}`);
   await run('DELETE', `/api/extensions/demo-notes?root=${encodeURIComponent(PROJ)}`);
+});
+
+test('an invalid signature is fail-closed and can never be warned past', async () => {
+  const PROJ = freshProj();
+  // Manually place a bundle whose signature does not verify (install
+  // rejects such bundles, so placement bypasses the install gate).
+  const dir = join(PROJ, '.ai-factory', 'extensions', 'bad-sig');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'extension.json'), JSON.stringify({ ...MANIFEST, name: 'bad-sig' }), 'utf8');
+  writeFileSync(join(dir, 'main.js'), MAIN, 'utf8');
+  writeFileSync(join(dir, 'signature.json'), JSON.stringify({
+    algorithm: 'ed25519',
+    publicKey: Buffer.from('not-a-key').toString('base64'),
+    signature: Buffer.from('not-a-signature').toString('base64'),
+  }), 'utf8');
+  const list = await run('GET', `/api/extensions?root=${encodeURIComponent(PROJ)}`);
+  const bad = (list.body as { installed: Array<{ name: string; trust: { signature: string } }> }).installed
+    .find((e) => e.name === 'bad-sig');
+  assert.equal(bad?.trust.signature, 'invalid');
+  const prompt = await run('POST', '/api/extensions/bad-sig/commands/trust.echo/run', { root: PROJ, args: {} });
+  assert.equal(prompt.code, 409);
+  assert.equal((prompt.body as { code: string }).code, 'trust-required');
+  // Even an explicit per-execution confirmation must not run it.
+  const confirmed = await run('POST', '/api/extensions/bad-sig/commands/trust.echo/run', { root: PROJ, args: {}, confirm: true });
+  assert.equal(confirmed.code, 409);
+  assert.equal((confirmed.body as { code: string }).code, 'trust-required');
+  const enableConfirmed = await run('POST', '/api/extensions/bad-sig/enable', { root: PROJ, confirm: true });
+  assert.equal(enableConfirmed.code, 409);
+  assert.equal((enableConfirmed.body as { code: string }).code, 'trust-required');
 });
