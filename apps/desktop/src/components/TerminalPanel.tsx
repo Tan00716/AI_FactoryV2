@@ -95,7 +95,7 @@ export function TerminalPanel() {
     setHistoryLoading(true);
     try {
       const res = await fetch(
-        `${API_BASE}/api/terminal/history?q=${encodeURIComponent(q)}&limit=50`,
+        `${API_BASE}/terminal/history?q=${encodeURIComponent(q)}&limit=50`,
         { headers: authHeaders() },
       );
       if (res.ok) {

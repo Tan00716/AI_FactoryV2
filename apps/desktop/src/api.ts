@@ -29,6 +29,24 @@ export function defaultApiBase(): string {
 const BASE = defaultApiBase();
 
 /**
+ * Normalize a request path against BASE, which already ends in `/api`.
+ * Call sites historically passed both bare (`/tasks`) and `/api`-prefixed
+ * (`/api/tasks`) paths; without normalization the latter resolved to
+ * `/api/api/tasks` and the server (exact-path dispatch, no double-prefix
+ * handling) answered 404, which panels rendered as a silent empty state.
+ * Strip exactly one leading `/api` segment so both conventions resolve to
+ * the same URL, and so a future call site cannot reintroduce the bug by
+ * picking the wrong convention. Idempotent for bare paths, and paths that
+ * merely start with a similar prefix (`/apix/...`, `/apiary/...`) are
+ * left untouched. A lone `/api` resolves to BASE itself.
+ */
+export function stripApiPrefix(path: string): string {
+  if (path === '/api') return '';
+  if (path.startsWith('/api/')) return path.slice(4);
+  return path;
+}
+
+/**
  * Operator API token for a server started with FACTORY_API_TOKEN
  * (checklist B). Resolution order (V3-#1):
  *   1. in-memory token from the Electron preload bridge (the per-install
@@ -91,7 +109,7 @@ export function authHeaders(): Record<string, string> {
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${BASE}${stripApiPrefix(path)}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -145,7 +163,7 @@ export async function rotateApiToken(): Promise<{ rotated: boolean; token?: stri
   return { rotated: true, token: body.token, viaBridge: false };
 }
 async function reqText(path: string, init?: RequestInit): Promise<string> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${BASE}${stripApiPrefix(path)}`, {
     ...init,
     headers: { ...authHeaders(), ...(init?.headers ?? {}) },
   });
@@ -2240,7 +2258,7 @@ async function reqWithStatus<T>(
   path: string,
   init?: RequestInit,
 ): Promise<{ status: number; body: T }> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${BASE}${stripApiPrefix(path)}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',

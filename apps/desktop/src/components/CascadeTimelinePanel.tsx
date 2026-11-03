@@ -231,7 +231,7 @@ export function CascadeTimelinePanel() {
       setBusy(true);
       setMsg(null);
       try {
-        const res = await fetch(`${API_BASE}/api/shadow-checkpoints/${cp.id}/restore`, {
+        const res = await fetch(`${API_BASE}/shadow-checkpoints/${cp.id}/restore`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({
