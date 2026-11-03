@@ -28,6 +28,10 @@ export interface CommandQueueJobRow {
   id: string;
   label: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  currentTask: string | null;
+  completedTaskCount: number;
+  taskCount: number;
+  startedAt: string | null;
 }
 
 export interface CommandBudgetRow {
@@ -81,18 +85,40 @@ export interface QueueInput {
   running: number;
   queued: number;
   maxConcurrency: number;
-  jobs: readonly { id: string; label: string; status: CommandQueueJobRow['status'] }[];
+  jobs: readonly {
+    id: string;
+    label: string;
+    status: CommandQueueJobRow['status'];
+    currentTask?: string | null;
+    completedTaskCount?: number;
+    taskCount?: number;
+    startedAt?: string | null;
+  }[];
 }
 
 export function summarizeQueue(
   q: QueueInput,
   maxRows = 5,
 ): { running: number; queued: number; maxConcurrency: number; jobs: CommandQueueJobRow[] } {
+  // Server order is insertion order (oldest first); surface live work
+  // first so a running job can never hide behind the 5-row cap, then
+  // queued, then finished. Stable within each group.
+  const rank = (s: CommandQueueJobRow['status']) =>
+    s === 'running' ? 0 : s === 'queued' ? 1 : 2;
+  const sorted = [...q.jobs].sort((a, b) => rank(a.status) - rank(b.status));
   return {
     running: q.running,
     queued: q.queued,
     maxConcurrency: q.maxConcurrency,
-    jobs: q.jobs.slice(0, maxRows).map((j) => ({ id: j.id, label: j.label, status: j.status })),
+    jobs: sorted.slice(0, maxRows).map((j) => ({
+      id: j.id,
+      label: j.label,
+      status: j.status,
+      currentTask: j.currentTask ?? null,
+      completedTaskCount: j.completedTaskCount ?? 0,
+      taskCount: j.taskCount ?? 0,
+      startedAt: j.startedAt ?? null,
+    })),
   };
 }
 

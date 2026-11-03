@@ -1,9 +1,9 @@
 # 中心 Tab 全量盘点（65 个）
 
-- 基线：本地 main `ce9ff66`（V3R3 代码侧收口后）。
+- 基线：本地 main `da648a1`（V3R4 代码侧收口后；R5 #8 刷新。R4 快照基线为 `ce9ff66`，历史验证记录见“本轮验证”一节）。
 - 范围：仅中心 tab（`CENTER_TABS`）。底部 12 个 tab（AI Activity、Terminal、Tests、Problems、TODO、Database、Tasks、Queue、Watch、Bookmarks、Logs、Evidence）不在本盘点内；底部 Terminal 与中心 Terminal 是两个独立入口，见“近似重复说明”。
 - 方法：`apps/desktop/src/navigation/tiers.ts` 的 `CENTER_TABS` 与 `apps/desktop/src/App.tsx` 的渲染分支双向比对；i18n 键按 App.tsx 的派生规则（`name.toLowerCase().replace('/', '')`）逐个核对；旧别名全树 grep 引用。
-- 复核方法：任一改动后重跑本节“计数复核”三条命令，tab 数、分支数、i18n 键数三者须同时吻合；复核周期：每次增删 tab 后更新本表，不得让表过期。
+- 复核方法：任一改动后重跑本节“计数复核”三条命令，tab 数、分支数、i18n 键数三者须同时吻合；复核周期：每次增删 tab 后更新本表，不得让表过期。维护责任见“维护责任（R5 #8 S2）”一节；基线过期须复核，不得静默沿用。
 
 ## 对审计原文的一处纠正（现测为准）
 
@@ -136,6 +136,33 @@ print('explicit branches:', len(branches), 'fallback-only:', [t for t in tabs if
 EOF
 grep -rn "tab\.settingsync'" apps/desktop/src apps/desktop/tests || echo "orphan alias refs: none"
 ```
+
+## R5 刷新记录（基线 da648a1，R5 #8）
+
+- 盘点重跑（64+1 口径）：`CENTER_TABS` 65 个、无重名；App.tsx 显性分支 64 个、无重复分支条件、无分支指向表外 tab；唯一无显性分支的 tab 仍是 Editor，走默认分支。盘点表 65 行与当前 `CENTER_TABS` 逐行比对，顺序与集合完全一致，行内容无需改动（ce9ff66 → da648a1 无增删 tab）。
+- i18n `tab.*` 键：zh/en 各 65 个，双向 0 差；派生键逐个解析，零缺失。
+- 旧别名复核：`tab.settingsync`（单 s）全树 grep 除本盘点表自身的清理记录文字外零引用；服务端路由与 api 方法名前缀 `settingsync` 是另一命名空间，保留（见别名清理记录）。
+- 治理落差复核：治理仍只有文案三件套、无中心 tab 入口、无治理视图，落差说明继续有效；视图门控于客群判定（R5 #10 决策单先行），本条不新增 tab、不把盘点完成说成治理完成。
+- 失败降级形态：盘点未完成时不得宣称“65 tab 全可达”；占位符差异未清零时差异清单本身就是交付物，不得为清零而删键或改占位符名。
+
+### i18n 占位符比对（同名同数，逐键）
+
+- 方法：比对脚本 `~/v3r5-8-shots/compare-placeholders.mjs`，以 node 类型剥离直接导入 `apps/desktop/src/i18n/zh.ts` 与 `en.ts` 的导出对象（与 `apps/desktop/tests/unit/i18n.test.mjs` 同机制）；`{{name}}` 双花括号先剔除（两处均为“支持 {{name}} 占位符”的说明文字，非插值）；单花括号 `{name}` 按名与出现次数逐键比对为多重集。`${1:${2:x}}`（snippets.honest 嵌套占位符示例）与 en.ts 首行 import 类型花括号均非插值，不计入。
+- 结果：zh/en 各 3311 键、键集合双向 0 差；占位符差异共 1 条（不是 0 条，见下表），其余 3310 键全部同名同数。
+
+| 键 | zh 占位符 | en 占位符 | 定性 |
+|---|---|---|---|
+| `changes.changeCount` | `{count}` | `{count}, {plural}` | 有意例外，非缺陷：中文无需复数后缀；调用点（ChangesPanel）同时传 `count` 与 `plural`（单数为空、复数为 s），中文串只用 `count`。与 `i18n.test.mjs` 的 ALLOWLIST 一致，不得为“清零”而给中文串加无意义的 `{plural}`，也不得删 en 串的 `{plural}`。 |
+
+- 本比对严于既有单测：单测只比占位符名集合，本比对加比出现次数；单测的 ALLOWLIST 例外在本比对中仍记为差异并定性，不静默豁免。
+- 完整比对输出：`~/v3r5-8-shots/placeholder-diffs.txt`。
+
+### 维护责任（R5 #8 S2）
+
+- 责任人：每轮审计/开发的执行方（收口人），不是某个固定人名；责任随轮次交接，交接时须把本表基线字段一并更新。
+- 触发条件（任一即刷新）：(1) 本地 main 基线变更（每轮收口提交后）；(2) 增删或改名中心 tab；(3) i18n 键集合或占位符规则变化。刷新内容：基线 commit、计数复核、旧别名 grep、占位符比对四项全重跑，只改数字不跑比对视为未刷新。
+- 复核周期：基线字段过期（表注基线落后于本地 main）时，下一轮开工前必须先刷新本表，再以新基线开展该轮工作；不得静默沿用旧基线表。
+- 归属：本表只覆盖中心 tab；底部 12 tab 与治理视图不在本表维护范围内，治理视图排期待客群判定后另立盘点。
 
 ## 本轮验证（实测）
 

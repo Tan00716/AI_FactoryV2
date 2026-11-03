@@ -5,10 +5,19 @@ effective view. It only describes current behavior; it does not change
 the rule engine, and it does not claim any precedence order beyond what
 the code implements.
 
-Status date: 2026-11-03. Baseline commit: ce9ff66. Review this document
+Status date: 2026-11-03. Baseline commit: da648a1. Review this document
 whenever packages/rules or apps/server/src/routes/rules.ts changes.
+Next review: the next V3.0 audit round, or immediately when
+packages/rules or apps/server/src/routes/rules.ts changes, whichever
+comes first.
+Fidelity review (V3R5 #9): the engine files were unchanged between
+ce9ff66 and da648a1 (verified with git diff --name-only over
+packages/rules and apps/server/src/routes/rules.ts: zero files).
+The only correction in this revision is the section 1 title (five
+sources, not four). Every other semantic below was re-checked
+against the code and against a compiled-dist probe, and stands.
 
-## 1. The four sources
+## 1. The five sources
 
 | # | Source | Where it lives | Editable through the Rules API? |
 |---|---|---|---|

@@ -26,7 +26,13 @@ import {
  * Field -> source mapping (each section footer names its source):
  * - Latest runs: GET /api/tasks/runs (live ring + persisted metadata;
  *   persisted rows carry metadata only, no step data, and are badged).
- * - Background queue: GET /api/taskqueue/jobs + /config.
+ * - Background queue: GET /api/taskqueue/jobs + /config, grouped into
+ *   in-progress (running jobs with current task + progress), queued, and
+ *   finished. In-progress covers queue running jobs only: a foreground
+ *   chain has no global GET row while running (the runs ring records a
+ *   run only after it finishes), so it is never listed here.
+ * - Refresh: manual refresh + 30s auto-refresh; the toolbar shows when
+ *   the displayed data was fetched.
  * - Budgets: GET /api/quota/budgets. Usage is simulated / reported
  *   estimates (V3-#8), never vendor-measured consumption: every row
  *   carries an estimate badge and the API basis string is shown verbatim.
@@ -55,9 +61,10 @@ export function CommandPanel() {
   const [audit, setAudit] = useState<AuditRecord[]>([]);
   const [errs, setErrs] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     const next: Record<string, string> = {};
     const [rRuns, rQueue, rBudgets, rAudit] = await Promise.allSettled([
       api.tasksRuns(),
@@ -94,10 +101,21 @@ export function CommandPanel() {
     }
     setErrs(next);
     setLoading(false);
+    setRefreshedAt(new Date().toLocaleTimeString());
   }, []);
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  // Refresh policy (V3R5-#7): auto-refresh every 30s + manual refresh.
+  // Aggregation latency is bounded by the slowest single GET in load();
+  // a failed section keeps its previous rows with a failure pill, and the
+  // timestamp above shows when those rows were fetched, so stale data is
+  // never presented as real-time.
+  useEffect(() => {
+    const timer = setInterval(() => { void load(true); }, 30000);
+    return () => clearInterval(timer);
   }, [load]);
 
   return (
@@ -105,13 +123,14 @@ export function CommandPanel() {
       <div className="tasks-toolbar">
         <b>{t('command.title')}</b>
         <span className="muted">{t('command.subtitle')}</span>
-        <button className="link" onClick={load}>{t('command.refresh')}</button>
+        <button className="link" onClick={() => { void load(); }}>{t('command.refresh')}</button>
+        {refreshedAt && <span className="muted">{t('command.refreshedAt', { time: refreshedAt })}</span>}
       </div>
       {loading && <div className="muted">{t('command.loading')}</div>}
 
       <h3>{t('command.runs')}</h3>
       {errs['runs'] ? (
-        <div><span className="pill warn">{t('command.loadFailed', { message: errs['runs'] })}</span>{' '}<button className="link" onClick={load}>{t('command.retry')}</button></div>
+        <div><span className="pill warn">{t('command.loadFailed', { message: errs['runs'] })}</span>{' '}<button className="link" onClick={() => { void load(); }}>{t('command.retry')}</button></div>
       ) : runs.length === 0 ? (
         <div className="muted">{t('command.noRuns')}</div>
       ) : (
@@ -132,16 +151,44 @@ export function CommandPanel() {
 
       <h3>{t('command.queue')}</h3>
       {errs['queue'] ? (
-        <div><span className="pill warn">{t('command.loadFailed', { message: errs['queue'] })}</span>{' '}<button className="link" onClick={load}>{t('command.retry')}</button></div>
+        <div><span className="pill warn">{t('command.loadFailed', { message: errs['queue'] })}</span>{' '}<button className="link" onClick={() => { void load(); }}>{t('command.retry')}</button></div>
       ) : !queue ? (
         <div className="muted">{t('command.noJobs')}</div>
       ) : (
         <div>
           <div className="muted">{t('command.queueCounts', { running: String(queue.running), queued: String(queue.queued), cap: String(queue.maxConcurrency) })}</div>
-          {queue.jobs.length === 0 ? (
+          <h4>{t('command.inProgress')}</h4>
+          {queue.jobs.filter((j) => j.status === 'running').length === 0 ? (
+            <div className="muted">{t('command.noRunning')}</div>
+          ) : (
+            queue.jobs.filter((j) => j.status === 'running').map((j) => (
+              <div key={j.id} className="tasks-result" data-command-running-job={j.id}>
+                <LocalBadge />{' '}
+                <b>{j.label}</b>{' '}
+                <span className="pill muted">{t(`queue.status.${j.status}`)}</span>{' '}
+                <span className="muted">{t('command.jobProgress', { done: String(j.completedTaskCount), total: String(j.taskCount) })}</span>{' '}
+                <span className="muted">{j.currentTask ? t('command.currentTask', { task: j.currentTask }) : t('command.currentTaskNone')}</span>
+              </div>
+            ))
+          )}
+          <div className="muted tasks-hint">{t('command.inProgressNote')}</div>
+          <h4>{t('command.queuedJobs')}</h4>
+          {queue.jobs.filter((j) => j.status === 'queued').length === 0 ? (
+            <div className="muted">{t('command.noQueued')}</div>
+          ) : (
+            queue.jobs.filter((j) => j.status === 'queued').map((j) => (
+              <div key={j.id} className="tasks-result">
+                <LocalBadge />{' '}
+                <b>{j.label}</b>{' '}
+                <span className="pill muted">{t(`queue.status.${j.status}`)}</span>
+              </div>
+            ))
+          )}
+          <h4>{t('command.finishedJobs')}</h4>
+          {queue.jobs.filter((j) => j.status !== 'running' && j.status !== 'queued').length === 0 ? (
             <div className="muted">{t('command.noJobs')}</div>
           ) : (
-            queue.jobs.map((j) => (
+            queue.jobs.filter((j) => j.status !== 'running' && j.status !== 'queued').map((j) => (
               <div key={j.id} className="tasks-result">
                 <LocalBadge />{' '}
                 <b>{j.label}</b>{' '}
@@ -155,7 +202,7 @@ export function CommandPanel() {
 
       <h3>{t('command.budgets')}</h3>
       {errs['budgets'] ? (
-        <div><span className="pill warn">{t('command.loadFailed', { message: errs['budgets'] })}</span>{' '}<button className="link" onClick={load}>{t('command.retry')}</button></div>
+        <div><span className="pill warn">{t('command.loadFailed', { message: errs['budgets'] })}</span>{' '}<button className="link" onClick={() => { void load(); }}>{t('command.retry')}</button></div>
       ) : budgets.length === 0 ? (
         <div className="muted">{t('command.noBudgets')}</div>
       ) : (
@@ -183,7 +230,7 @@ export function CommandPanel() {
 
       <h3>{t('command.audit')}</h3>
       {errs['audit'] ? (
-        <div><span className="pill warn">{t('command.loadFailed', { message: errs['audit'] })}</span>{' '}<button className="link" onClick={load}>{t('command.retry')}</button></div>
+        <div><span className="pill warn">{t('command.loadFailed', { message: errs['audit'] })}</span>{' '}<button className="link" onClick={() => { void load(); }}>{t('command.retry')}</button></div>
       ) : audit.length === 0 ? (
         <div className="muted">{t('command.noAudit')}</div>
       ) : (

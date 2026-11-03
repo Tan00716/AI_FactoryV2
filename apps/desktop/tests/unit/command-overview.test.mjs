@@ -55,6 +55,37 @@ test('summarizeQueue passes counts through and caps jobs at 5', () => {
   assert.equal(s.jobs.length, 5);
 });
 
+test('summarizeQueue surfaces running jobs first with progress fields', () => {
+  const s = summarizeQueue({
+    running: 1, queued: 1, maxConcurrency: 2,
+    jobs: [
+      { id: 'q1', label: 'queued-one', status: 'queued' },
+      { id: 'f1', label: 'done-one', status: 'succeeded' },
+      {
+        id: 'r1', label: 'running-one', status: 'running',
+        currentTask: 'step-b', completedTaskCount: 1, taskCount: 3,
+        startedAt: '2026-11-03T01:00:00Z',
+      },
+    ],
+  });
+  assert.deepEqual(s.jobs.map((j) => j.id), ['r1', 'q1', 'f1']);
+  assert.equal(s.jobs[0].currentTask, 'step-b');
+  assert.equal(s.jobs[0].completedTaskCount, 1);
+  assert.equal(s.jobs[0].taskCount, 3);
+  assert.equal(s.jobs[0].startedAt, '2026-11-03T01:00:00Z');
+});
+
+test('summarizeQueue defaults missing progress fields instead of dropping rows', () => {
+  const s = summarizeQueue({
+    running: 0, queued: 1, maxConcurrency: 2,
+    jobs: [{ id: 'q1', label: 'queued-one', status: 'queued' }],
+  });
+  assert.equal(s.jobs[0].currentTask, null);
+  assert.equal(s.jobs[0].completedTaskCount, 0);
+  assert.equal(s.jobs[0].taskCount, 0);
+  assert.equal(s.jobs[0].startedAt, null);
+});
+
 test('summarizeBudgets marks every row estimated and counts tripped/warned', () => {
   const s = summarizeBudgets([
     { budget: { id: 'b1', scope: 'project', scopeKey: 'p', unit: 'usd-estimate' }, used: 9, limit: 10, pct: 90, status: 'warned' },
