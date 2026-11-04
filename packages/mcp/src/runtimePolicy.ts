@@ -13,8 +13,13 @@
  * plainly, per surface:
  *  - stdio env filtering: filterStdioEnv() actually strips the
  *    environment; any launcher built on this package MUST spawn with
- *    its output. (The package ships no spawner — a launcher that
- *    ignores the filter is outside this layer, see KNOWN_LIMITATIONS.)
+ *    its output as the BASE environment. That MUST does NOT extend
+ *    to values a launcher overlays afterwards (e.g. secret
+ *    injection): overlaid values are outside this filter's
+ *    guarantee unless the launcher itself checks them against the
+ *    allowlist / fixed keys. (The package ships no spawner — a
+ *    launcher that ignores the filter is outside this layer, see
+ *    KNOWN_LIMITATIONS.)
  *  - redirect / URL / TLS decisions: evaluateRedirect() and
  *    evaluateServerUrl() are the decision functions an HTTP transport
  *    must consult; the credential-forwarding rule they encode

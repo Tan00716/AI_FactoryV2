@@ -29,6 +29,7 @@ import assert from 'node:assert/strict';
 import { MemorySecretStore, SecretBroker } from '@ai-factory/secrets';
 import type { AuditLog } from '@ai-factory/core';
 import type { McpServer } from '@ai-factory/mcp';
+import { defaultRuntimePolicy } from '@ai-factory/mcp';
 import { McpServerLauncher, McpLaunchError } from '../src/mcp-launcher.ts';
 import { requiredRoleFor } from '../src/auth.ts';
 
@@ -239,5 +240,81 @@ describe('McpServerLauncher (real broker + real child processes)', () => {
     await waitFor(() => !launcher.list()[0].alive);
     const auditText = JSON.stringify(records);
     assert.ok(auditText.includes('MCP_SERVER_STOPPED'), 'stop not audited');
+  });
+});
+
+describe('McpServerLauncher secretEnv key collision (R8 #6 A, fail-closed)', () => {
+  const launched: McpServerLauncher[] = [];
+  after(() => {
+    for (const l of launched) {
+      for (const rec of l.list()) {
+        if (rec.alive) l.stop(rec.id, 'test-teardown', fakeAudit().audit);
+      }
+    }
+  });
+
+  it('rejects an injected key that collides with an allowlist key (PATH); nothing spawns', async () => {
+    const broker = await makeBroker();
+    const { audit, records } = fakeAudit();
+    const launcher = new McpServerLauncher();
+    launched.push(launcher);
+    await assert.rejects(
+      launcher.launch({
+        server: fakeServer(), installed: true, enabled: true,
+        command: process.execPath, args: ['-e', '1'],
+        secretEnv: { PATH: 'mcp-token' },
+        actor: 'test', broker, audit,
+      }),
+      (e: unknown) => e instanceof McpLaunchError && e.code === 'MCP_SECRET_ENV_KEY_COLLISION' && e.status === 403,
+    );
+    assert.deepEqual(launcher.list(), [], 'rejected launch must not spawn');
+    // Candidate G audit: the denial is distinguishable as a filtered-key
+    // overwrite event, not a generic declaration failure.
+    const denied = records.filter((r) => (r as { event: unknown }).event === 'MCP_LAUNCH_DENIED');
+    assert.equal(denied.length, 1);
+    const details = (denied[0] as { details: Record<string, unknown> }).details;
+    assert.equal(details.reason, 'SECRET_ENV_KEY_COLLISION');
+    assert.equal(details.envVar, 'PATH');
+    assert.equal(details.overwritesFilteredKey, true);
+    assert.ok(!JSON.stringify(records).includes(SENTINEL), 'sentinel leaked into audit records');
+  });
+
+  it('rejects an injected key that collides with a fixed policy key; nothing spawns', async () => {
+    const broker = await makeBroker();
+    const { audit, records } = fakeAudit();
+    const launcher = new McpServerLauncher();
+    launched.push(launcher);
+    const policy = { ...defaultRuntimePolicy('stdio'), stdioEnvFixed: { MCP_FIXED_KEY: 'pinned' } };
+    await assert.rejects(
+      launcher.launch({
+        server: fakeServer(), installed: true, enabled: true,
+        command: process.execPath, args: ['-e', '1'],
+        secretEnv: { MCP_FIXED_KEY: 'mcp-token' },
+        actor: 'test', broker, audit, policy,
+      }),
+      (e: unknown) => e instanceof McpLaunchError && e.code === 'MCP_SECRET_ENV_KEY_COLLISION',
+    );
+    assert.deepEqual(launcher.list(), [], 'rejected launch must not spawn');
+    const denied = records.filter((r) => (r as { event: unknown }).event === 'MCP_LAUNCH_DENIED');
+    assert.equal(denied.length, 1);
+    assert.equal((denied[0] as { details: Record<string, unknown> }).details.envVar, 'MCP_FIXED_KEY');
+  });
+
+  it('still allows a non-colliding injected key; child sees the value', async () => {
+    const broker = await makeBroker();
+    const { audit } = fakeAudit();
+    const launcher = new McpServerLauncher();
+    launched.push(launcher);
+    const rec = await launcher.launch({
+      server: fakeServer(), installed: true, enabled: true,
+      command: process.execPath,
+      args: ['-e', CHILD_SCRIPT],
+      secretEnv: { MCP_TEST_TOKEN: 'mcp-token' },
+      actor: 'test', broker, audit,
+    });
+    await waitFor(() => !launcher.list()[0].alive);
+    const { logs } = launcher.logs(rec.id)!;
+    assert.ok(logs.includes(`LEN=${SENTINEL.length}`), `child did not see the value:\n${logs}`);
+    assert.ok(!logs.includes(SENTINEL), 'sentinel leaked into launch logs');
   });
 });

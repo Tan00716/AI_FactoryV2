@@ -63,3 +63,15 @@ R4 原文“无签名须显式信任决定”现分两支，须在主本 §1.1 �
 - 范围核对：`5b93f74` → `ba64414` 的 15 个文件清单中无 `packages/extensions/`、`packages/plugins/`、`packages/mcp/` 文件，无 `apps/server/src/mcp-launcher.ts`、`apps/server/src/routes/extensions.ts`、`apps/server/src/routes/plugins.ts`、`apps/server/src/routes/mcp.ts`，三包盘点结论所依赖的代码面未动；主本自 R6 写回后无新修订，本页与主本结论一致性不变。
 - 时效引用（本轮现测，不得再出现指针与主本各写一套）：三包源码内 `acp` 仍 0 命中（已排除 capacity 类误命中）；`apps/server/src/routes/extensions.ts` 内 `requireRole` 仍 0 命中，分发层角色强制点仍未知；`packages/extensions/demo/` 仍为 4 个 bundle（另有 sign-demo.mjs 脚本，非 bundle），真实第三方扩展数仍 0，路线触发门（盘点完成 AND（真实第三方扩展数达到 3 个以上 OR 客群判定））仍未满足，路线继续暂缓。
 - 结论：R4 评估整体仍成立；R6 #8 后段写回内容（持久信任与逐次确认两支、§1.5 四项加固字段、launcher 已过滤 / 连接器依赖调用方 = 部分确认）继续有效；强制默认值仍待 Tan 一句话，对外口径不变。
+
+## R8 #6 C 复核（2026-11-04，复核基线 7f6876d；本节取代 R6 节中“launcher 已过滤”一词的现时效力）
+
+- 主本 §1.3 子进程环境行已由 R8 #6 C 收紧为真实公式：先过滤父 env、再叠加未过滤注入值；过滤结论为部分确认，不得写成“全路径已过滤”，更不得写成“已过滤”全称。R6 节中的“launcher 已确认 env 过滤”仅为当时的历史表述，现时结论以主本收紧句为准。
+- 同源三处已同步：launcher 头注释（真实公式 + 注入值可覆盖 allowlist 与 fixed 键后果句）、runtimePolicy MUST 句（叠加例外限定：MUST 仅约束基底环境，不覆盖事后叠加值）。
+- 本页仍只作指针：字段定义以主本为准，本页不另写一套；强制默认值四项仍待 Tan 一句话，对外口径不变（警告后确认，注册表来源与冷却期字段待加固评估）。
+
+## R8 #8 复核（2026-11-04，复核基线 7f6876d）
+
+- 范围核对：`ba64414` → `7f6876d` 的提交为纯文档（7 个文档文件），无 `packages/extensions/`、`packages/plugins/`、`packages/mcp/` 文件，无 `apps/server/src/mcp-launcher.ts`、`apps/server/src/routes/extensions.ts`、`apps/server/src/routes/plugins.ts`、`apps/server/src/routes/mcp.ts`，三包盘点结论所依赖的代码面未动；主本自 R6 写回后唯一的修订是 R8 #6 C 的真实公式收紧（见本页 R8 #6 C 复核节），本页与主本结论一致性不变。
+- 时效引用（本轮现测，不得再出现指针与主本各写一套）：三包源码内 `acp` 仍 0 命中；`apps/server/src/routes/extensions.ts` 内 `requireRole` 仍 0 命中，分发层角色强制点仍未知；`packages/extensions/demo/` 仍为 4 个 bundle（另有 sign-demo.mjs 脚本，非 bundle），真实第三方扩展数仍 0，路线触发门（盘点完成 AND（真实第三方扩展数达到 3 个以上 OR 客群判定））仍未满足，路线继续暂缓。
+- 结论：R4 评估整体仍成立；R6 #8 后段写回内容（持久信任与逐次确认两支、§1.5 四项加固字段）继续有效，现时子进程环境结论以 R8 #6 C 收紧句为准（部分确认）；强制默认值仍待 Tan 一句话，对外口径不变。

@@ -15,10 +15,19 @@
  *     launch request cannot smuggle an arbitrary secret into an MCP
  *     server). Declared refs are resolved through the Secret Broker
  *     under SHORT-TERM LEASES (not plain resolve).
- *  3. the child env is filterStdioEnv(policy, process.env) overlaid
- *     with the resolved values — values exist in process memory only
- *     for the spawn instant; request bodies, logs and audit records
- *     carry ref NAMES only.
+ *  3. the child env is filterStdioEnv(policy, process.env) as the
+ *     BASE, overlaid with the resolved injected values. Since R8
+ *     #6 A, injected keys are checked not only for a valid variable
+ *     name and a declared credentialRef, but also against the policy
+ *     allowlist and fixed keys: a key colliding with a protected
+ *     key is refused outright (MCP_SECRET_ENV_KEY_COLLISION, 403 +
+ *     audit with overwritesFilteredKey), never silently dropped or
+ *     overwritten. So injected values only overlay NON-protected
+ *     keys; the real formula is "allowlist-filtered parent env
+ *     OVERLAID BY injected values for non-protected keys only",
+ *     NOT "allowlist-filtered env".
+ *     Values exist in process memory only for the spawn instant;
+ *     request bodies, logs and audit records carry ref NAMES only.
  *  4. stdout/stderr are piped through redactSecretValues() before they
  *     reach the in-memory log ring / any audit detail.
  *
@@ -195,9 +204,34 @@ export class McpServerLauncher {
       throw new McpLaunchError('MCP_LAUNCH_BAD_ARGS', 400, 'args must be an array of strings');
     }
 
+    // Policy is resolved BEFORE the secretEnv loop (R8 #6 A): the loop
+    // needs the allowlist/fixed set to reject colliding injection keys.
+    const policy = opts.policy ?? defaultRuntimePolicy('stdio');
     // Declaration constrains resolution: every requested ref must be
     // on the server's credentialRefs. Nothing spawns half-injected.
     const secretEnv = opts.secretEnv ?? {};
+    // Fail-closed key check (R8 #6 A; audit candidate G): an injected
+    // key that falls in the allowlist/fixed set would silently
+    // overwrite a filtered parent value at spawn time, so it is
+    // refused outright — never silently dropped, never silently
+    // overwritten. Checked before any lease is taken, so a rejected
+    // launch leaves no half-injected state behind.
+    const protectedKeys = new Set([
+      ...policy.stdioEnvAllowlist,
+      ...Object.keys(policy.stdioEnvFixed ?? {}),
+    ]);
+    for (const varName of Object.keys(secretEnv)) {
+      if (protectedKeys.has(varName)) {
+        audit.record(actor, 'MCP_LAUNCH_DENIED', 'mcp_server', idBase, {
+          reason: 'SECRET_ENV_KEY_COLLISION', envVar: varName,
+          overwritesFilteredKey: true,
+        });
+        throw new McpLaunchError(
+          'MCP_SECRET_ENV_KEY_COLLISION', 403,
+          `refusing to launch ${idBase}: secretEnv key '${varName}' collides with a filtered/fixed parent env key and would overwrite it at spawn`,
+        );
+      }
+    }
     const declared = new Set(server.credentialRefs ?? []);
     const leases: SecretLease[] = [];
     const values: string[] = [];
@@ -242,7 +276,6 @@ export class McpServerLauncher {
       }
     }
 
-    const policy = opts.policy ?? defaultRuntimePolicy('stdio');
     const env = { ...filterStdioEnv(policy, process.env), ...injectedEnv };
 
     const id = randomUUID();
