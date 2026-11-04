@@ -1,15 +1,20 @@
-# Rule Priority Disclosure (AI Factory, baseline 5b93f74)
+# Rule Priority Disclosure (AI Factory, baseline ba64414)
 
 This document discloses how AI Factory merges rule files into the
 effective view. It only describes current behavior; it does not change
 the rule engine, and it does not claim any precedence order beyond what
 the code implements.
 
-Status date: 2026-11-04. Baseline commit: 5b93f74. Review this document
+Status date: 2026-11-04. Baseline commit: ba64414. Review this document
 whenever packages/rules or apps/server/src/routes/rules.ts changes.
 Next review: the next V3.0 audit round, or immediately when
 packages/rules or apps/server/src/routes/rules.ts changes, whichever
 comes first.
+Fidelity review (V3R7 #8): the engine files were also unchanged between
+5b93f74 and ba64414 (verified with git diff --name-only over
+packages/rules and apps/server/src/routes/rules.ts: zero files).
+Title baseline and body baseline now both read ba64414; semantics unchanged.
+This document only discloses current behavior; it does not change the engine.
 Fidelity review (V3R6 #8): the engine files were also unchanged between
 da648a1 and 5b93f74 (verified with git diff --name-only over
 packages/rules and apps/server/src/routes/rules.ts: zero files).

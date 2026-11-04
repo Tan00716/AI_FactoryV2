@@ -1,7 +1,7 @@
 # 中心 Tab 全量盘点（65 个）
 
-- 基线：本地 main `5b93f74`（V3R5 代码侧收口后；R6 #8 刷新。R5 快照基线为 `da648a1`，R4 快照基线为 `ce9ff66`，历史验证记录见“本轮验证”一节）。
-- 复核日期：2026-11-04（R6 #8 刷新；计数复核、旧别名 grep、占位符比对四项全重跑，见文末“R6 #8 刷新记录”）。
+- 基线：本地 main `ba64414`（V3R6 代码侧收口后；R7 #8 刷新。R6 快照基线为 `5b93f74`，R5 快照基线为 `da648a1`，R4 快照基线为 `ce9ff66`，历史验证记录见“本轮验证”一节）。
+- 复核日期：2026-11-04（R7 #8 刷新；计数复核、旧别名 grep、占位符比对四项全重跑，见文末“R7 #8 刷新记录”）。
 - 范围：仅中心 tab（`CENTER_TABS`）。底部 12 个 tab（AI Activity、Terminal、Tests、Problems、TODO、Database、Tasks、Queue、Watch、Bookmarks、Logs、Evidence）不在本盘点内；底部 Terminal 与中心 Terminal 是两个独立入口，见“近似重复说明”。
 - 方法：`apps/desktop/src/navigation/tiers.ts` 的 `CENTER_TABS` 与 `apps/desktop/src/App.tsx` 的渲染分支双向比对；i18n 键按 App.tsx 的派生规则（`name.toLowerCase().replace('/', '')`）逐个核对；旧别名全树 grep 引用。
 - 复核方法：任一改动后重跑本节“计数复核”三条命令，tab 数、分支数、i18n 键数三者须同时吻合；复核周期：每次增删 tab 后更新本表，不得让表过期。维护责任见“维护责任（R5 #8 S2）”一节；基线过期须复核，不得静默沿用。
@@ -149,14 +149,14 @@ grep -rn "tab\.settingsync'" apps/desktop/src apps/desktop/tests || echo "orphan
 ### i18n 占位符比对（同名同数，逐键）
 
 - 方法：比对脚本 `~/v3r5-8-shots/compare-placeholders.mjs`，以 node 类型剥离直接导入 `apps/desktop/src/i18n/zh.ts` 与 `en.ts` 的导出对象（与 `apps/desktop/tests/unit/i18n.test.mjs` 同机制）；`{{name}}` 双花括号先剔除（两处均为“支持 {{name}} 占位符”的说明文字，非插值）；单花括号 `{name}` 按名与出现次数逐键比对为多重集。`${1:${2:x}}`（snippets.honest 嵌套占位符示例）与 en.ts 首行 import 类型花括号均非插值，不计入。
-- 结果：zh/en 各 3321 键、键集合双向 0 差；占位符差异共 1 条（不是 0 条，见下表），其余 3320 键全部同名同数。（R6 #8 重跑，2026-11-04；R5 版数字 3311 已过期，以本次重跑为准。）
+- 结果：zh/en 各 3321 键、键集合双向 0 差；占位符差异共 1 条（不是 0 条，见下表），其余 3320 键全部同名同数。（R7 #8 重跑，2026-11-04，结果与 R6 一致；R5 版数字 3311 已过期，以重跑为准。）
 
 | 键 | zh 占位符 | en 占位符 | 定性 |
 |---|---|---|---|
 | `changes.changeCount` | `{count}` | `{count}, {plural}` | 有意例外，非缺陷：中文无需复数后缀；调用点（ChangesPanel）同时传 `count` 与 `plural`（单数为空、复数为 s），中文串只用 `count`。与 `i18n.test.mjs` 的 ALLOWLIST 一致，不得为“清零”而给中文串加无意义的 `{plural}`，也不得删 en 串的 `{plural}`。 |
 
 - 本比对严于既有单测：单测只比占位符名集合，本比对加比出现次数；单测的 ALLOWLIST 例外在本比对中仍记为差异并定性，不静默豁免。
-- 完整比对输出：`~/v3r6-8-shots/placeholder-diffs.txt`（R6 #8 重跑；R5 版输出见 `~/v3r5-8-shots/placeholder-diffs.txt`）。
+- 完整比对输出：`~/v3r7-8-shots/placeholder-diffs.txt`（R7 #8 重跑；R6 版输出见 `~/v3r6-8-shots/placeholder-diffs.txt`，R5 版输出见 `~/v3r5-8-shots/placeholder-diffs.txt`）。
 
 ### 维护责任（R5 #8 S2）
 
@@ -164,6 +164,21 @@ grep -rn "tab\.settingsync'" apps/desktop/src apps/desktop/tests || echo "orphan
 - 触发条件（任一即刷新）：(1) 本地 main 基线变更（每轮收口提交后）；(2) 增删或改名中心 tab；(3) i18n 键集合或占位符规则变化。刷新内容：基线 commit、计数复核、旧别名 grep、占位符比对四项全重跑，只改数字不跑比对视为未刷新。
 - 复核周期：基线字段过期（表注基线落后于本地 main）时，下一轮开工前必须先刷新本表，再以新基线开展该轮工作；不得静默沿用旧基线表。
 - 归属：本表只覆盖中心 tab；底部 12 tab 与治理视图不在本表维护范围内，治理视图排期待客群判定后另立盘点。
+
+### 收口清单机制：基线注记刷新（R7 #8，修复本身，不降为附录）
+
+R5→R6→R7 三轮同一模式（每轮基线前进一步、文档注记落后一轮）证明：只改数字不改机制，下一轮还会再来一轮。此后每个代码侧收口提交必须含“基线注记刷新”检查项，六项逐项打勾或显性标“内容未变、注记已刷”，缺一即该收口的文档保真项未完成：
+
+| # | 文档 | 本轮（R7，基线 ba64414） |
+|---|---|---|
+| 1 | 本盘点表（表头 + 复核日期 + 刷新记录） | 已刷（见文末 R7 #8 刷新记录） |
+| 2 | 规则文档 `docs/rules-priority.md`（H1 与正文基线） | 已刷（R7 #8 保真注记，引擎 5b93f74→ba64414 零改动） |
+| 3 | 计量披露页 `docs/governance/metering-disclosure.md`（页首三项） | 由 R7 #7 同步刷新，本条只列入清单、不代刷（不得两处各写一套基线） |
+| 4 | 客群决策单 `docs/governance/audience-decision.md`（基线注记，只刷注记不改“待 Tan”状态） | 已刷（R7 注记：悬空三轮，状态不变） |
+| 5 | ACP 指针页 `docs/governance/acp-extension-hosting-pointer.md`（复核节） | 已刷（R7 #8 复核节） |
+| 6 | 本地通道指针页 `docs/local-channel-spike-pointer.md`（复核注记） | 已刷（R7 复核注记） |
+
+机制细则：指针页与主本的同步责任引用既有约定（修订只改主本，指针页随后同步状态行），不重立；披露页与设计稿的口径同步仍由 #7 负责，本机制只保证基线数字不分裂；刷注记不得删键、改占位符名、改主本结论或改决策单状态，违者视为未刷新。
 
 ## 本轮验证（实测）
 
@@ -173,6 +188,13 @@ grep -rn "tab\.settingsync'" apps/desktop/src apps/desktop/tests || echo "orphan
 - 别名清理后键集合复核：zh/en 各 65 个，双向 0 差；`tab.settingsync` 全树零引用。
 - 仓库 `data/factory.db`：mtime 仍为 2026-10-19，无 WAL/SHM，未污染；e2e 进程（server/electron/Xvfb/vite）均已由 harness 杀净。
 - 注意：i18n 两文件的工作树 diff 除本轮删的 2 行外另有兄弟任务（R4 #5）的 `budget.estimatedSuffix` 新增行，不属本轮；收口 commit 时须按行认领，不得整文件打包。
+
+## R7 #8 刷新记录（2026-11-04，基线 ba64414）
+
+- 触发：S2 触发条件 (1)，本地 main 基线由 `5b93f74` 变更为 `ba64414`；`apps/desktop/src/App.tsx`、`apps/desktop/src/navigation/tiers.ts` 与 `apps/desktop/src/i18n/` 在 `5b93f74` → `ba64414` 间零改动（`git diff --name-only` 为空），表内容仍准，本次只刷表头、复核日期与占位符比对结果数字。
+- 四项全重跑（脚本 `~/v3r7-8-shots/verify-inventory.mjs` 与 `~/v3r7-8-shots/compare-placeholders.mjs`，由 R6 版脚本原样复用）：`CENTER_TABS` 65 个、无重名；App.tsx 显性分支 64 个、唯一无显性分支为 Editor（默认分支），无多余分支；分层 common 12 / expert 14 / advanced 39，合计 65；盘点表 65 行与 `CENTER_TABS` 顺序与集合完全一致；i18n 派生 `tab.*` 键 zh/en 各 65 个、双向 0 差；键集合总量 zh/en 各 3321、双向 0 差；占位符比对差异 1 条（`changes.changeCount` 有意例外，与单测 ALLOWLIST 一致），其余 3320 键同名同数。
+- 旧别名 grep 口径分开写：`apps/desktop/src` 与 `apps/desktop/tests` 内 `tab.settingsync'`（单 s）为 0 命中；全树 grep 除本盘点表自身的清理记录文字外同样 0 命中（打包产物 `release/` 内二进制 asar 的一次匹配为构建产物，不是源码引用，不计入）。盘点表自身的全树声称引用时须注明为盘点表声称，不得 bare 写成全树已证——本条即按此口径写。
+- 机制段落盘：收口清单“基线注记刷新”机制见下节“维护责任”新增的收口清单机制段与 `docs/governance/baseline-note-refresh.md`，本轮六项打勾见该机制文档。
 
 ## R6 #8 刷新记录（2026-11-04，基线 5b93f74）
 
