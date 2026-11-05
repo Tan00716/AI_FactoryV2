@@ -216,9 +216,20 @@ export class McpServerLauncher {
     // refused outright — never silently dropped, never silently
     // overwritten. Checked before any lease is taken, so a rejected
     // launch leaves no half-injected state behind.
+    // R9 #6 N1 (G1 fix): the protected set also merges the SERVER
+    // record's own runtimePolicy key sets (allowlist + fixed keys).
+    // The production route (routes/mcp.ts) passes no policy, so the
+    // resolved policy above is the default — but a server record may
+    // carry its own stdioEnvFixed keys, and those keys were outside
+    // the #6 A set. Only KEY NAMES are merged: server fixed VALUES
+    // are never copied into the child env (filterStdioEnv still runs
+    // on the resolved policy only), so this does not depend on
+    // whether stored fixed values were stripped at write time.
     const protectedKeys = new Set([
       ...policy.stdioEnvAllowlist,
       ...Object.keys(policy.stdioEnvFixed ?? {}),
+      ...(server.runtimePolicy?.stdioEnvAllowlist ?? []),
+      ...Object.keys(server.runtimePolicy?.stdioEnvFixed ?? {}),
     ]);
     for (const varName of Object.keys(secretEnv)) {
       if (protectedKeys.has(varName)) {
