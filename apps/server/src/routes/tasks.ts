@@ -84,8 +84,15 @@
  *  - `type: "shell"` never invokes a shell; `;`, `|`, `$(...)` are NOT
  *    interpreted (VS Code shell semantics intentionally narrowed).
  *  - Env is additive only; PATH, LD_PRELOAD, LD_LIBRARY_PATH, DYLD_*,
- *    and NODE_OPTIONS cannot be overridden and credential-looking env
- *    vars are scrubbed.
+ *    and NODE_OPTIONS cannot be overridden via tasks.json options.env
+ *    (parse-time ENV_DENYLIST rejection in packages/tasks/src/parse.ts),
+ *    and credential-looking env vars are scrubbed from the parent env.
+ *    NOTE (R12 #8): the denylist does NOT cover the explicit .env overlay
+ *    path (R6-A8): overlay values are merged after the credential scrub
+ *    and win over the parent env, so an operator-supplied .env entry for
+ *    one of these names would override it. The overlay is operator action
+ *    via routes/env.ts, not a task declaration; "cannot be overridden"
+ *    above applies to task declarations only.
  *  - Run records: full timelines stay process-local (restart clears
  *    step cards and outputs); run METADATA persists across restarts in
  *    <dataDir>/run-history.json (V3.0 audit round 2, item #10) so the

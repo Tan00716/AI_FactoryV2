@@ -1,19 +1,23 @@
-# Rule Priority Disclosure (AI Factory, baseline 95a4dcc)
+# Rule Priority Disclosure (AI Factory, baseline 18d3ae9)
 
 This document discloses how AI Factory merges rule files into the
 effective view. It only describes current behavior; it does not change
 the rule engine, and it does not claim any precedence order beyond what
 the code implements.
 
-Status date: 2026-11-05. Baseline commit: 95a4dcc. R11 fidelity note:
-H1 and body aligned to 95a4dcc; packages/rules and
-apps/server/src/routes/rules.ts are unchanged between 1078973 and
-95a4dcc (git diff --name-only empty; the interval is 9 documentation
+Status date: 2026-11-05. Baseline commit: 18d3ae9. R12 fidelity note:
+H1 and body aligned to 18d3ae9; packages/rules and
+apps/server/src/routes/rules.ts are unchanged between 95a4dcc and
+18d3ae9 (git diff --name-only empty; the interval is 8 documentation
 files only), so semantics are unchanged. Review this document
 whenever packages/rules or apps/server/src/routes/rules.ts changes.
 Next review: the next V3.0 audit round, or immediately when
 packages/rules or apps/server/src/routes/rules.ts changes, whichever
 comes first.
+Fidelity review (V3R11 #8): the engine files were also unchanged between
+1078973 and 95a4dcc (verified with git diff --name-only over
+packages/rules and apps/server/src/routes/rules.ts: zero files).
+Title baseline and body baseline now both read 95a4dcc; semantics unchanged.
 Fidelity review (V3R10 #8): the engine files were also unchanged between
 d87523c and 1078973 (verified with git diff --name-only over
 packages/rules and apps/server/src/routes/rules.ts: zero files).
