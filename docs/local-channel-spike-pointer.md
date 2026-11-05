@@ -64,3 +64,4 @@
 - R8 复核注记（2026-11-04，基线 `7f6876d`）：指针页内容与主本逐项核对一致，无需修正；spike 四条件仍未齐（需求确认、靶运行时、探针目标、egress 检查点定义均未补），本体继续暂缓；源码 grep（Ollama / LM Studio / llama.cpp）在 packages 与 apps/server 下仍 0 命中，无新增本地适配器。
 - R9 复核注记（2026-11-05，基线 `d87523c`）：指针页内容与主本逐项核对一致，无需修正；spike 四条件仍未齐（需求确认、靶运行时、探针目标、egress 检查点定义均未补），本体继续暂缓；源码 grep（Ollama / LM Studio / llama.cpp）在 packages 与 apps/server 下仍 0 命中，无新增本地适配器。
 - R10 复核注记（2026-11-05，基线 `1078973`）：指针页内容与主本逐项核对一致，无需修正；spike 四条件仍未齐（需求确认、靶运行时、探针目标、egress 检查点定义均未补），本体继续暂缓；源码 grep（Ollama / LM Studio / llama.cpp）在 packages 与 apps/server 下仍 0 命中，无新增本地适配器。
+- R11 复核注记（2026-11-05，基线 `95a4dcc`）：指针页内容与主本逐项核对一致，无需修正；spike 四条件仍未齐（需求确认、靶运行时、探针目标、egress 检查点定义均未补），本体继续暂缓；源码 grep（Ollama / LM Studio / llama.cpp）在 packages 与 apps/server 下仍 0 命中，无新增本地适配器；`1078973` → `95a4dcc` 区间 9 个文件全部为文档，本地通道相关代码面零改动。
