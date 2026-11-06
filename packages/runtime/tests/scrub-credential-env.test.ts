@@ -46,4 +46,37 @@ describe('scrubCredentialEnv', () => {
       FACTORY_API_TOKEN_TTL: '3600',
     });
   });
+
+  it('R17 N1: removes AI_FACTORY_TOKEN, FACTORY_PRLINK_TOKEN, FACTORY_WEBHOOK_SECRET', () => {
+    // The server itself reads these three as credentials (MCP server-mode
+    // Bearer token, PR-link provider token, webhook HMAC key), so they
+    // belong in the scrub table alongside the older token names.
+    const out = scrubCredentialEnv({
+      PATH: '/usr/bin',
+      AI_FACTORY_TOKEN: 'mcp-bearer-token-value',
+      FACTORY_PRLINK_TOKEN: 'prlink-provider-token',
+      FACTORY_WEBHOOK_SECRET: 'webhook-hmac-secret',
+      FACTORY_API_TOKEN: 'admin-token',
+      FACTORY_API_TOKENS: 'viewer:a,admin:b',
+      FACTORY_SECRET_ALPHA: 's3cr3t-value',
+      FACTORY_SECRETS_DIR: '/data/secrets',
+    });
+    // Line-start assignment-line assertions over a printenv-style
+    // serialisation: a full-text substring assertion would be tripped by
+    // ambient values that happen to contain a key name as text (e.g. the
+    // local harness JARVIS_TRACE_CONTEXT value contains FACTORY_API_TOKEN).
+    const lines = Object.entries(out).map(([k, v]) => `${k}=${v}`);
+    for (const k of [
+      'AI_FACTORY_TOKEN',
+      'FACTORY_PRLINK_TOKEN',
+      'FACTORY_WEBHOOK_SECRET',
+      'FACTORY_API_TOKEN',
+      'FACTORY_API_TOKENS',
+      'FACTORY_SECRET_ALPHA',
+    ]) {
+      assert.ok(!lines.some((l) => l.startsWith(`${k}=`)), `${k} must be scrubbed`);
+    }
+    // Pointer/config vars are not credential values and must survive.
+    assert.deepEqual(out, { PATH: '/usr/bin', FACTORY_SECRETS_DIR: '/data/secrets' });
+  });
 });

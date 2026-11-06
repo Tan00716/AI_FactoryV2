@@ -49,8 +49,10 @@ import {
   updateScratch,
   ScratchError,
 } from '@ai-factory/scratch';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { redactText } from '@ai-factory/diagpack';
+import { redactAmbientCredentialValues, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import type { RouteContext } from './context';
+import type { ExecSandboxDecision } from '../exec-sandbox';
 
 const PREFIX = '/api/scratches';
 const SCRATCHES_DIR = 'scratches';
@@ -65,6 +67,14 @@ export interface ScratchDeps {
   checkCommandPolicy: (command: string) => string[];
   /** Control-plane data-dir guard. */
   commandHitsControlDir: (cwd: string, tokens: string[]) => boolean;
+  /**
+   * OS sandbox decision for a scratch run (V3R17 #6(k)(a)). Wired by
+   * index.ts to decideExecSandbox; absent only when the module is
+   * imported straight from src by a unit test, in which case runs
+   * proceed without a sandbox (the 'disabled' tier) exactly as
+   * before — production always wires it.
+   */
+  decideSandbox?: (cwd: string) => Promise<ExecSandboxDecision>;
 }
 
 let deps: ScratchDeps | null = null;
@@ -87,6 +97,8 @@ function scratchErrorToStatus(e: ScratchError): number {
   switch (e.code) {
     case 'not-found':
       return 404;
+    case 'sandbox-unavailable':
+      return 403;
     case 'bad-id':
     case 'bad-name':
     case 'bad-language':
@@ -140,19 +152,39 @@ async function runScratch(d: ScratchDeps, id: string): Promise<RunResult> {
     if (d.commandHitsControlDir(runDir, tokens)) {
       throw new ScratchError('control-dir', 'scratch run touches the control-plane data dir (refused)');
     }
+    // V3R17 #6(k)(a): a scratch run is confined in the same bwrap
+    // sandbox as /api/exec (workspace-write, cwd = the isolated temp
+    // run dir). Fail-closed: when bwrap is unavailable the run does
+    // not start — never silently unisolated.
+    const sb: ExecSandboxDecision = d.decideSandbox
+      ? await d.decideSandbox(runDir)
+      : { mode: 'disabled', prefix: [], reason: null, sandboxed: false, refused: false, refuseCode: null };
+    if (sb.refused) {
+      throw new ScratchError(
+        'sandbox-unavailable',
+        `${sb.refuseCode ?? 'SANDBOX_UNAVAILABLE'}: scratch runs require OS-enforced isolation (bwrap), ` +
+          `but no working bwrap was found${sb.reason ? ` (${sb.reason})` : ''} — refusing to run unisolated`,
+      );
+    }
+    const argv = [...sb.prefix, ...tokens];
     return await new Promise<RunResult>((resolve) => {
       execFile(
-        tokens[0] as string,
-        tokens.slice(1),
+        argv[0] as string,
+        argv.slice(1),
         {
           cwd: runDir,
           timeout: RUN_TIMEOUT_MS,
           maxBuffer: RUN_OUTPUT_CAP,
-          env: { ...scrubCredentialEnv(process.env) },
+          // V3R17 #6(k)(b): control-plane pointer vars are stripped
+          // from the child env on top of the credential scrub, so the
+          // run cannot locate the vault or the admin token file.
+          env: { ...stripControlPlanePointerEnv(scrubCredentialEnv(process.env)) },
         },
         (err, stdout, stderr) => {
-          const out = String(stdout ?? '');
-          const errOut = String(stderr ?? '');
+          // V3R17 #6(h): the run result is returned verbatim to the
+          // API, so ambient credential values are redacted here.
+          const out = redactAmbientCredentialValues(redactText(String(stdout ?? '')));
+          const errOut = redactAmbientCredentialValues(redactText(String(stderr ?? '')));
           const truncated = out.length >= RUN_OUTPUT_CAP || errOut.length >= RUN_OUTPUT_CAP;
           if (err) {
             const e = err as NodeJS.ErrnoException & { code?: string | number; killed?: boolean; signal?: string };

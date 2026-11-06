@@ -25,7 +25,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { redactText } from '@ai-factory/diagpack';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { redactAmbientCredentialValues, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 
 export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'Stop';
 
@@ -153,8 +153,10 @@ export function runHook(hook: HookConfig, payload: HookPayload): Promise<HookRun
       'sh',
       ['-c', hook.command],
       // V3R14 #6(e): scrub the server's own credential env vars from the
-      // ambient inheritance (same rule as pty.ts childEnv).
-      { timeout: hook.timeoutMs, maxBuffer: MAX_HOOK_OUTPUT, env: scrubCredentialEnv(process.env) },
+      // ambient inheritance (same rule as pty.ts childEnv). V3R17
+      // #6(k)(b): control-plane pointer vars are stripped as well, so
+      // the hook cannot locate the vault or the admin token file.
+      { timeout: hook.timeoutMs, maxBuffer: MAX_HOOK_OUTPUT, env: stripControlPlanePointerEnv(scrubCredentialEnv(process.env)) },
       (error, stdout, stderr) => {
         const out = String(stdout ?? '').slice(0, MAX_HOOK_OUTPUT);
         const errOut = String(stderr ?? '').slice(0, MAX_HOOK_OUTPUT);
@@ -187,6 +189,8 @@ export function runHook(hook: HookConfig, payload: HookPayload): Promise<HookRun
         // V3R14 #6(e): redact secret-shaped values from captured output
         // before returning (verdict parsing above runs on the raw first
         // line, so a verdict is never redacted out of recognition).
+        // V3R17 #6(h): ambient credential VALUES are redacted too —
+        // redactText's key-shape matching is blind to a bare value.
         resolve({
           hookId: hook.id,
           event: hook.event,
@@ -194,9 +198,9 @@ export function runHook(hook: HookConfig, payload: HookPayload): Promise<HookRun
           timedOut,
           exitCode,
           verdict,
-          reason: reason === null ? null : redactText(reason),
-          stdout: redactText(out),
-          stderr: redactText(errOut),
+          reason: reason === null ? null : redactAmbientCredentialValues(redactText(reason)),
+          stdout: redactAmbientCredentialValues(redactText(out)),
+          stderr: redactAmbientCredentialValues(redactText(errOut)),
         });
       },
     );

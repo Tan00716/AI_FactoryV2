@@ -416,18 +416,29 @@ function normalizeOptions(opts: ShellRunOptions): Required<Omit<ShellRunOptions,
  * Strip the server's own credential env vars before a child process
  * inherits the environment (§46.2, H4 audit). Without this, any
  * operator who can run a command (`printenv`) recovers
- * FACTORY_API_TOKEN / FACTORY_API_TOKENS / FACTORY_SECRET_* in
+ * FACTORY_API_TOKEN / FACTORY_API_TOKENS / FACTORY_SECRET_* /
+ * AI_FACTORY_TOKEN / FACTORY_PRLINK_TOKEN / FACTORY_WEBHOOK_SECRET in
  * plaintext — a straight operator→admin privilege escalation, since
  * the API token is the admin credential. Secrets reach children only
  * through explicit secretEnv injection (which output redaction then
  * covers); the ambient inheritance carried them silently.
  *
- * Only credential material is removed — the two API token names
- * (exact) and every FACTORY_SECRET_* value (prefix); backend config
+ * Only credential material is removed — the five API token names
+ * (exact: FACTORY_API_TOKEN, FACTORY_API_TOKENS, AI_FACTORY_TOKEN,
+ * FACTORY_PRLINK_TOKEN, FACTORY_WEBHOOK_SECRET) and every
+ * FACTORY_SECRET_* value (prefix); backend config
  * (FACTORY_SECRETS_DIR/BACKEND), PATH, HOME, DB_PATH and everything
- * else pass through untouched.
+ * else pass through untouched. AI_FACTORY_TOKEN is the MCP server-mode
+ * Bearer token, FACTORY_PRLINK_TOKEN the PR-link provider token, and
+ * FACTORY_WEBHOOK_SECRET the webhook HMAC key — all three are read by
+ * the server itself as credentials (R17 N1), so they belong in the
+ * scrub table even though only the first two token names predate it.
+ * Known residual (Red Team S5, not a new item): non-FACTORY_ ambient
+ * credential vars (e.g. GH_TOKEN, OPENAI_API_KEY) are NOT in this
+ * table; the table is an explicit allow-by-name list, not a scan for
+ * anything that looks like a secret.
  */
-const CREDENTIAL_ENV_RE = /^(FACTORY_API_TOKEN$|FACTORY_API_TOKENS$|FACTORY_SECRET_)/;
+const CREDENTIAL_ENV_RE = /^(FACTORY_API_TOKEN$|FACTORY_API_TOKENS$|FACTORY_SECRET_|AI_FACTORY_TOKEN$|FACTORY_PRLINK_TOKEN$|FACTORY_WEBHOOK_SECRET$)/;
 
 export function scrubCredentialEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };

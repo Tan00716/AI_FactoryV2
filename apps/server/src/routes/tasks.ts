@@ -142,9 +142,11 @@ import {
   RunHistoryCorruptError,
   type RunHistoryMeta,
 } from '@ai-factory/runhistory';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { redactText } from '@ai-factory/diagpack';
+import { redactAmbientCredentialValues, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import type { RouteContext } from './context';
 import type { ParseStats, ProblemMatcherDef } from '../problem-matchers';
+import type { ExecSandboxDecision } from '../exec-sandbox';
 
 const PREFIX = '/api/tasks';
 const TASKS_FILE = '.ai-factory/tasks.json';
@@ -185,6 +187,14 @@ export interface TaskRunnerDeps {
   resolveMatchers: (projectId: string) => ProblemMatcherDef[];
   /** One named matcher (custom or builtin) for a project. */
   getMatcher: (projectId: string, name: string) => ProblemMatcherDef | null;
+  /**
+   * OS sandbox decision for a task run (V3R17 #6(k)(a)). Wired by
+   * index.ts to decideExecSandbox; absent only when the module is
+   * imported straight from src by a unit test, in which case runs
+   * proceed without a sandbox (the 'disabled' tier) exactly as
+   * before — production always wires it.
+   */
+  decideSandbox?: (cwd: string) => Promise<ExecSandboxDecision>;
 }
 
 let deps: TaskRunnerDeps | null = null;
@@ -537,7 +547,10 @@ function runOne(
         cwd,
         timeout: timeoutMs,
         maxBuffer: OUTPUT_CAP_BYTES,
-        env: { ...scrubCredentialEnv(process.env), ...(env ?? {}) },
+        // V3R17 #6(k)(b): control-plane pointer vars are stripped from
+        // the ambient env; an explicit task/overlay env is applied
+        // after the strip, so a deliberate operator value survives.
+        env: { ...stripControlPlanePointerEnv(scrubCredentialEnv(process.env)), ...(env ?? {}) },
       },
       (err, stdout, stderr) => {
         const out = String(stdout ?? '');
@@ -689,6 +702,23 @@ async function runTask(
     return fail('denied', 'command refused: the control-plane data directory is off-limits');
   }
 
+  // V3R17 #6(k)(a): a task run is confined in the same bwrap sandbox
+  // as /api/exec (workspace-write, cwd = the project dir). Fail-closed:
+  // when bwrap is unavailable the task is refused, never run
+  // unisolated. The vault shadowing for a cwd that contains the
+  // control-plane data dir lives in decideExecSandbox (#6(k)(a2)).
+  const sb: ExecSandboxDecision = d.decideSandbox
+    ? await d.decideSandbox(cwd)
+    : { mode: 'disabled', prefix: [], reason: null, sandboxed: false, refused: false, refuseCode: null };
+  if (sb.refused) {
+    return fail(
+      'denied',
+      `${sb.refuseCode ?? 'SANDBOX_UNAVAILABLE'}: task runs require OS-enforced isolation (bwrap), ` +
+        `but no working bwrap was found${sb.reason ? ` (${sb.reason})` : ''} — refusing to run unisolated`,
+    );
+  }
+  argv = [...sb.prefix, ...argv];
+
   const timeoutMs = task.options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let ran: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean };
   try {
@@ -698,6 +728,12 @@ async function runTask(
   }
   const combined = `${ran.stdout}\n${ran.stderr}`;
   const truncated = combined.length >= OUTPUT_CAP_BYTES;
+  // V3R17 #6(h): the chain result returns each step's output verbatim,
+  // so ambient credential values are redacted from the returned
+  // output. The problem-matcher parse below still reads the raw
+  // combined text — its stored diagnostics are structured matches,
+  // not an output echo.
+  const redacted = redactAmbientCredentialValues(redactText(combined));
 
   // Problem-matcher parse: task-declared matcher names, else the
   // project's default enabled set. Unknown declared names are reported
@@ -732,7 +768,7 @@ async function runTask(
   if (ran.timedOut) {
     return {
       label: task.label, status: 'timeout', exitCode: ran.exitCode, durationMs,
-      output: combined.slice(0, OUTPUT_CAP_BYTES), truncated: true,
+      output: redacted.slice(0, OUTPUT_CAP_BYTES), truncated: true,
       diagnosticsAdded: added, matchRate,
       error: `task timed out after ${timeoutMs}ms`,
       ...(notes ? { notes } : {}),
@@ -741,7 +777,7 @@ async function runTask(
   if (ran.exitCode !== 0) {
     return {
       label: task.label, status: 'failed', exitCode: ran.exitCode, durationMs,
-      output: combined.slice(0, OUTPUT_CAP_BYTES), truncated,
+      output: redacted.slice(0, OUTPUT_CAP_BYTES), truncated,
       diagnosticsAdded: added, matchRate,
       error: `task exited with code ${ran.exitCode}`,
       ...(notes ? { notes } : {}),
@@ -749,7 +785,7 @@ async function runTask(
   }
   return {
     label: task.label, status: 'ok', exitCode: 0, durationMs,
-    output: combined.slice(0, OUTPUT_CAP_BYTES), truncated,
+    output: redacted.slice(0, OUTPUT_CAP_BYTES), truncated,
     diagnosticsAdded: added, matchRate,
     ...(notes ? { notes } : {}),
   };

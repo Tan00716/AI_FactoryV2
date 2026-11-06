@@ -372,20 +372,38 @@ const req = (method: string) => ({ method }) as IncomingMessage;
 const res = {} as ServerResponse;
 const url = (p: string) => new URL(`http://127.0.0.1${p}`);
 
-function mockFlakyCtx(body: unknown): { ctx: RouteContext; calls: Array<{ code: number; body: unknown }> } {
+function mockFlakyCtx(
+  body: unknown,
+  auditSink?: Array<{ action: string; details: Record<string, unknown> }>,
+): { ctx: RouteContext; calls: Array<{ code: number; body: unknown }> } {
   const calls: Array<{ code: number; body: unknown }> = [];
   const ctx = {
     json: (_res: unknown, code: number, b: unknown) => {
       calls.push({ code, body: b });
     },
     readBody: async () => body as Record<string, unknown>,
-    audit: { record: () => undefined },
+    audit: {
+      record: (
+        _actor: unknown,
+        action: string,
+        _entity: unknown,
+        _id: unknown,
+        details: Record<string, unknown>,
+      ) => {
+        auditSink?.push({ action, details });
+      },
+    },
   } as unknown as RouteContext;
   return { ctx, calls };
 }
 
-async function callFlaky(method: string, path: string, body: unknown) {
-  const { ctx, calls } = mockFlakyCtx(body);
+async function callFlaky(
+  method: string,
+  path: string,
+  body: unknown,
+  auditSink?: Array<{ action: string; details: Record<string, unknown> }>,
+) {
+  const { ctx, calls } = mockFlakyCtx(body, auditSink);
   const handled = await handleFlakyRoutes(req(method), res, url(path), ctx);
   assert.equal(handled, true, `${method} ${path} was not handled`);
   assert.equal(calls.length, 1, `${method} ${path} must produce exactly one response`);
@@ -465,6 +483,49 @@ test('R16 N3: credential-bearing test names are not read back via GET /api/flaky
     else process.env.FACTORY_API_TOKEN = prevToken;
     if (prevSecret === undefined) delete process.env.FACTORY_SECRET_ALPHA;
     else process.env.FACTORY_SECRET_ALPHA = prevSecret;
+    if (prevHistory === undefined) delete process.env.AI_FACTORY_FLAKY_HISTORY_FILE;
+    else process.env.AI_FACTORY_FLAKY_HISTORY_FILE = prevHistory;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('R17 N4: FLAKY_RUN_RECORDED audit must not carry a literal credential in label', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'flaky-6l-'));
+  const historyFile = join(dir, 'flaky-history.json');
+  const projectId = 'flaky-6l-probe';
+  const prevHistory = process.env.AI_FACTORY_FLAKY_HISTORY_FILE;
+  process.env.AI_FACTORY_FLAKY_HISTORY_FILE = historyFile;
+  try {
+    const auditSink: Array<{ action: string; details: Record<string, unknown> }> = [];
+    const tap = 'TAP version 13\nok 1 - some test\n1..1\n';
+    // Unique fake marker: a value-substring assert is safe here (R13 iron
+    // rule) — this value cannot occur in ambient env. redactText masks the
+    // api_key= shape (boolean probe on the real dist function), so the
+    // audit label must carry the masked form, not the value.
+    const marker = 'PROOFONLYFAKELABEL1234567890';
+    const label = `nightly api_key=sk-${marker}`;
+    const recCall = await callFlaky(
+      'POST',
+      '/api/flaky/record',
+      { projectId, tap, file: 'manual.test.ts', label },
+      auditSink,
+    );
+    assert.equal(recCall.code, 200, `record failed: ${JSON.stringify(recCall.body)}`);
+    const recorded = auditSink.find((a) => a.action === 'FLAKY_RUN_RECORDED');
+    assert.ok(recorded, 'FLAKY_RUN_RECORDED audit must be emitted');
+    assert.ok(
+      !String(recorded.details.label).includes(marker),
+      'audit label must not contain the credential value',
+    );
+    assert.ok(
+      String(recorded.details.label).includes('nightly'),
+      'audit label keeps its non-secret prefix (field retained, value masked)',
+    );
+    // Known boundary (documented in routes/flaky.ts): redactText does NOT
+    // mask a literal `FACTORY_API_TOKEN=`-shaped value — that shape needs
+    // the planned #6(h) value-aware redaction, so it is deliberately not
+    // asserted here.
+  } finally {
     if (prevHistory === undefined) delete process.env.AI_FACTORY_FLAKY_HISTORY_FILE;
     else process.env.AI_FACTORY_FLAKY_HISTORY_FILE = prevHistory;
     rmSync(dir, { recursive: true, force: true });

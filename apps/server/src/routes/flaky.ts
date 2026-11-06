@@ -36,6 +36,7 @@ import { existsSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { redactText } from '@ai-factory/diagpack';
 import type { RouteContext } from './context';
 import type { QualityGateRunResult } from '../quality-gate';
 import {
@@ -278,7 +279,14 @@ export async function handleFlakyRoutes(
       const result = store.recordRun(projectId, parsed.outcomes, { label, file: file || undefined });
       ctx.audit.record(actor, 'FLAKY_RUN_RECORDED', 'flaky', projectId, {
         runId: result.summary.runId,
-        label,
+        // R17 N4: the label is operator-supplied free text and can carry a
+        // literal credential shape; redact it before it enters the
+        // append-only audit chain (viewer-readable via GET /api/audit),
+        // same as the runhistory side already does (store.ts record()).
+        // Known boundary: redactText does NOT mask a literal
+        // `FACTORY_API_TOKEN=`-shaped value — that shape needs the planned
+        // #6(h) value-aware redaction, so it is deliberately not asserted.
+        label: redactText(label),
         file: file || null,
         total: result.summary.total,
         passed: result.summary.passed,
@@ -359,7 +367,10 @@ export async function handleFlakyRoutes(
           newlyFlaky,
         });
         ctx.audit.record(actor, 'FLAKY_RUN_RECORDED', 'flaky', projectId, {
-          label: `server run ${rel}`,
+          // R17 N4, second call site: the label embeds the operator-supplied
+          // file path, so it gets the same redactText treatment as the
+          // record route's label above (same action, same field).
+          label: redactText(`server run ${rel}`),
           file: rel,
           exitCode: run.exitCode,
           timedOut: run.timedOut,

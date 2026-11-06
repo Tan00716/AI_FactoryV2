@@ -203,6 +203,47 @@ test('runQualityCommand: credential env is scrubbed from the child, output is re
   }
 });
 
+// ---------- V3R17 #6(h): ambient credential VALUES printed literally are redacted ----------
+
+test('runQualityCommand: ambient credential values printed literally are redacted, not echoed', async () => {
+  // Value-assertion probe (R16 TOP10 #6(h) probe 2): the command prints
+  // the credential assignment lines literally — the values do NOT come
+  // from the child env (the scrub already removed them). The returned
+  // output must carry no credential value.
+  const values: Record<string, string> = {
+    FACTORY_API_TOKEN: 'test-value-for-factory_api_token-1234567890',
+    FACTORY_SECRET_PROBE: 'test-value-for-factory_secret_probe-1234567890',
+  };
+  const saved = new Map<string, string | undefined>();
+  for (const [k, v] of Object.entries(values)) {
+    saved.set(k, process.env[k]);
+    process.env[k] = v;
+  }
+  try {
+    const script = Object.entries(values)
+      .map(([k, v]) => `console.log('${k}=${v}');`)
+      .join(' ');
+    const r = await runQualityCommand(`node -e "${script}"`, { timeoutMs: 10000 });
+    assert.equal(r.ok, true);
+    const lines = r.stdout.split('\n');
+    for (const [k, v] of Object.entries(values)) {
+      // No credential VALUE anywhere in the output.
+      assert.ok(!r.stdout.includes(v), `stdout leaked the value for ${k}`);
+      // No line still carries the real value as an assignment.
+      assert.ok(!lines.some((line) => line.startsWith(`${k}=${v}`)), `stdout leaked ${k} as an assignment`);
+      // The line survives with the value replaced by the redaction
+      // marker — redactors replace values, not key names (the secret
+      // is the value; `KEY=***` discloses nothing).
+      assert.ok(lines.some((line) => line === `${k}=***`), `expected the redacted ${k}=*** line`);
+    }
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
 // ---------- runQualityGate ----------
 
 test('runQualityGate: unconfigured step is skipped, not failed', async () => {

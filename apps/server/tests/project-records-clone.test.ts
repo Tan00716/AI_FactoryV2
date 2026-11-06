@@ -19,10 +19,14 @@
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// The clone route is imported compiled (dual-mode import rule, AGENTS.md):
+// routes/projects.ts value-imports sibling modules extensionless.
+import { stripCloneUrlUserinfo, stripUserinfoFromText } from '../dist/routes/projects.js';
 
 const TOKEN = 'projects-records-33-test-token-0123456789';
 
@@ -66,6 +70,9 @@ async function bootServer(
     DB_PATH: dbFile,
     FACTORY_API_TOKEN: TOKEN,
     FACTORY_SECRETS_DIR: secretsDir,
+    // Never let git block on an interactive credential prompt while a
+    // clone is under test (R17 N3: the fake 401 server below).
+    GIT_TERMINAL_PROMPT: '0',
   };
   const child = spawn(process.execPath, [serverMain], {
     cwd: serverCwd,
@@ -239,6 +246,95 @@ describe('§6.1 project records + clone', () => {
     const after = (await api(srv!.port, 'GET', '/api/projects')).body;
     assert.equal(after.length, before.length);
     assert.ok(!after.some((p: any) => p.name === 'failed-clone'));
+  });
+
+  // Fake credential values used ONLY as leak markers in this test. They are
+  // invented here, never real secrets, and never leave the temp dirs.
+  it('R17 N3: clone URL userinfo is stripped from the audit chain', async () => {
+    const fakePass = 'CLONE-DUMMY-PASS-987654321';
+    // Reachable host that always answers 401 (Red Team S4: the R17 audit's
+    // negative probe only covered an unreachable host, not a 401).
+    const fakeGit = createServer((_req, res) => {
+      res.writeHead(401, { 'www-authenticate': 'Basic realm="fake-git"' });
+      res.end('authentication required');
+    });
+    await new Promise<void>((resolve) => fakeGit.listen(0, '127.0.0.1', resolve));
+    const fakePort = (fakeGit.address() as { port: number }).port;
+    const target = join(dir, 'userinfo-target');
+    try {
+      const r = await api(srv!.port, 'POST', '/api/projects/clone', {
+        url: `http://cloneuser:${fakePass}@127.0.0.1:${fakePort}/repo.git`,
+        name: 'userinfo-clone',
+        dir: target,
+      });
+      assert.equal(r.status, 502, JSON.stringify(r.body).slice(0, 300));
+      assert.equal(r.body.code, 'CLONE_FAILED');
+      // 502 branch negative case: git strips embedded credentials from its
+      // own stderr, so the failure message must not carry the password.
+      // (The fake password is unique to this test, so a value-substring
+      // assert is safe here — R13 iron rule.)
+      assert.ok(
+        !JSON.stringify(r.body).includes(fakePass),
+        '502 failure message must not contain the URL password',
+      );
+      const audit = await api(srv!.port, 'GET', '/api/audit');
+      const items = (audit.body.items ?? audit.body) as Array<any>;
+      const rec = items.find(
+        (e: any) => e.action === 'PROJECT_CLONE_FAILED' && e.details?.dir === target,
+      );
+      assert.ok(rec, 'PROJECT_CLONE_FAILED audit must be present');
+      assert.equal(
+        rec.details.url,
+        `http://127.0.0.1:${fakePort}/repo.git`,
+        'audit URL must keep host/port/path but drop the userinfo segment',
+      );
+      assert.ok(!String(rec.details.url).includes(fakePass), 'audit URL must not contain the password');
+      assert.ok(!String(rec.details.url).includes('cloneuser'), 'audit URL must not contain the username');
+      // Same leak via the audit `reason` field: Node's `Command failed:
+      // git clone <url> …` argv echo carries the URL with userinfo, so the
+      // reason must be scrubbed too (R17 N3 / Red Team S4).
+      assert.ok(!String(rec.details.reason).includes(fakePass), 'audit reason must not contain the password');
+      assert.ok(!String(rec.details.reason).includes('cloneuser'), 'audit reason must not contain the username');
+    } finally {
+      await new Promise<void>((resolve) => fakeGit.close(() => resolve()));
+    }
+  });
+
+  it('R17 N3: stripCloneUrlUserinfo shapes', () => {
+    assert.equal(
+      stripCloneUrlUserinfo('https://user:s3cret@example.com/org/repo.git'),
+      'https://example.com/org/repo.git',
+    );
+    assert.equal(
+      stripCloneUrlUserinfo('https://user@example.com/org/repo.git'),
+      'https://example.com/org/repo.git',
+    );
+    assert.equal(
+      stripCloneUrlUserinfo('https://example.com/org/repo.git'),
+      'https://example.com/org/repo.git',
+    );
+    assert.equal(
+      stripCloneUrlUserinfo('https://user:s3cret@example.com:8443/org/repo.git'),
+      'https://example.com:8443/org/repo.git',
+    );
+    // scp-like, local path and file:// URLs have no userinfo segment.
+    assert.equal(stripCloneUrlUserinfo('git@example.com:org/repo.git'), 'git@example.com:org/repo.git');
+    assert.equal(stripCloneUrlUserinfo('/tmp/local/repo'), '/tmp/local/repo');
+    assert.equal(stripCloneUrlUserinfo('file:///tmp/local/repo'), 'file:///tmp/local/repo');
+  });
+
+  it('R17 N3: stripUserinfoFromText shapes (Red Team S4)', () => {
+    assert.equal(
+      stripUserinfoFromText(
+        "Command failed: git clone http://user:s3cret@example.com/org/repo.git /tmp/t\nfatal: Authentication failed for 'http://example.com/org/repo.git/'",
+      ),
+      "Command failed: git clone http://example.com/org/repo.git /tmp/t\nfatal: Authentication failed for 'http://example.com/org/repo.git/'",
+    );
+    assert.equal(stripUserinfoFromText('no url here'), 'no url here');
+    assert.equal(
+      stripUserinfoFromText('https://example.com/org/repo.git'),
+      'https://example.com/org/repo.git',
+    );
   });
 
   it('§6.1 fields survive a true SIGKILL restart', async () => {

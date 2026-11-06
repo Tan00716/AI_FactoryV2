@@ -60,6 +60,7 @@ import { resolve, sep, basename } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
 import { redactText } from '@ai-factory/diagpack';
+import { redactAmbientCredentialValues } from '@ai-factory/runtime';
 import {
   DebugClient,
   DebugError,
@@ -447,7 +448,9 @@ async function handleStartSession(req: IncomingMessage, res: ServerResponse, ctx
     // so secret-shaped values are redacted before buffering (runhistory /
     // quality-gate precedent). The primary fix is the scrubbed target env;
     // this only covers values the target prints from its own config.
-    session.output.push({ seq: session.outputSeq, category: String(body.category ?? 'stdout'), output: redactText(String(body.output ?? '')) });
+    // V3R17 #6(h): ambient credential VALUES are redacted too —
+    // redactText's key-shape matching is blind to a bare value.
+    session.output.push({ seq: session.outputSeq, category: String(body.category ?? 'stdout'), output: redactAmbientCredentialValues(redactText(String(body.output ?? ''))) });
     if (session.output.length > MAX_OUTPUT_LINES) session.output.splice(0, session.output.length - MAX_OUTPUT_LINES);
   });
 
@@ -730,7 +733,11 @@ async function handleEvaluate(req: IncomingMessage, res: ServerResponse, ctx: Ro
     if (!expression || expression.length > 10000) throw new DebugRouteError('expression is required (max 10000 chars)', 'bad-params');
     const frameId = typeof body.frameId === 'number' && body.frameId >= 1 ? Math.floor(body.frameId) : undefined;
     const context = typeof body.context === 'string' && ['repl', 'watch', 'hover'].includes(body.context) ? body.context : 'repl';
-    ctx.json(res, 200, await client.evaluate(expression, { frameId, context }));
+    // V3R17 #6(h): the evaluated value is returned verbatim to the API,
+    // so ambient credential values are redacted from it before it
+    // leaves the server.
+    const evaluated = await client.evaluate(expression, { frameId, context });
+    ctx.json(res, 200, { ...evaluated, result: redactAmbientCredentialValues(redactText(evaluated.result)) });
   } catch (e) {
     const err = mapDebugError(e);
     ctx.json(res, err.status, { error: err.message, code: err.code });

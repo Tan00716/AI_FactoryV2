@@ -38,7 +38,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
 import { resolveSessionWorktreePath } from '../worktrees';
 import { UnverifiedBackend } from '@ai-factory/security';
-import { PtyUnavailableError, runCommandPty, scrubCredentialEnv } from '@ai-factory/runtime';
+import { PtyUnavailableError, ambientCredentialValues, runCommandPty, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import { SecretNotFoundError, redactSecretValues, redactSecretValuesCounted } from '@ai-factory/secrets';
 import { recordRedactionHit } from '../redaction-monitor';
 import { evaluateHooks } from '../hooks';
@@ -760,8 +760,17 @@ export async function handleExecRoutes(
   // injections: with credential env scrubbed from childEnv, the
   // remaining inline-paste risk is a value the command itself echoes
   // back — and the broker-wide set already includes the injected ones.
-  const outputValues: readonly string[] =
-    redactionValues.length > 0 ? redactionValues : injectedValues;
+  // V3R17 #6(h): the server's own ambient credential values are part
+  // of the set too, so a command that prints them verbatim (e.g. read
+  // back through /proc/<server-pid>/environ) has them redacted here —
+  // redactText's key-shape matching is blind to a bare value on its
+  // own line. Scrub stays the primary fix; this is the second line.
+  const outputValues: readonly string[] = [
+    ...new Set([
+      ...(redactionValues.length > 0 ? redactionValues : injectedValues),
+      ...ambientCredentialValues(),
+    ]),
+  ];
 
   // 3db) OS sandbox tiers (exec-sandbox.ts + sandbox-modes.ts):
   // read-only / workspace-write confine the command inside a bwrap
@@ -1028,8 +1037,13 @@ export async function handleExecRoutes(
       // §46.2 (H4): the child never inherits the server's own credential
       // env vars (FACTORY_API_TOKEN[S], FACTORY_SECRET_*) — secrets enter
       // only through explicit secretEnv injection, whose values the
-      // output redaction below covers.
-      env: { ...scrubCredentialEnv(process.env), ...injectedEnv },
+      // output redaction below covers. V3R17 #6(k)(b): control-plane
+      // POINTER vars (FACTORY_SECRETS_DIR, FACTORY_API_TOKEN_FILE,
+      // DB_PATH, …) are stripped as well — they would tell the child
+      // where the vault and the admin token file live. Explicit
+      // injectedEnv is applied after the strip, so a deliberate
+      // operator injection still wins.
+      env: { ...stripControlPlanePointerEnv(scrubCredentialEnv(process.env)), ...injectedEnv },
     });
     const { text, truncated } = truncate(
       redactExecOutput(

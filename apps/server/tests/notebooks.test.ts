@@ -57,6 +57,11 @@ async function startServer(): Promise<Running> {
     // even on loopback since V3-#1, so notebook HTTP tests boot with
     // explicit open-local mode.
     FACTORY_ALLOW_OPEN_LOCAL: '1',
+    // Test-harness opt-out (V3R17 #6(k)): cell runs are confined in
+    // the exec bwrap sandbox, and this machine has no bwrap — without
+    // the explicit opt-out every run would be fail-closed refused.
+    // (Same opt-out as the terminal-sessions / hooks tests.)
+    FACTORY_EXEC_SANDBOX: '0',
   };
   for (const k of ['FACTORY_API_TOKEN', 'FACTORY_SECRETS_DIR', 'FACTORY_RUNTIME_TOOLS']) {
     delete env[k];

@@ -52,7 +52,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { redactText } from '@ai-factory/diagpack';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { redactAmbientCredentialValues, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 
 /* ------------------------------------------------------------------ */
 /* Errors                                                              */
@@ -715,8 +715,10 @@ export function runShellCommand(cmd: string, cwd: string, timeoutMs: number): Pr
     let child;
     try {
       // V3R14 #6(e): scrub the server's own credential env vars from the
-      // ambient inheritance (same rule as pty.ts childEnv).
-      child = spawn('sh', ['-c', cmd], { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: scrubCredentialEnv(process.env) });
+      // ambient inheritance (same rule as pty.ts childEnv). V3R17
+      // #6(k)(b): control-plane pointer vars are stripped as well, so
+      // the shell step cannot locate the vault or the admin token file.
+      child = spawn('sh', ['-c', cmd], { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: stripControlPlanePointerEnv(scrubCredentialEnv(process.env)) });
     } catch (e) {
       done({ ok: false, exitCode: -1, ms: Date.now() - t0, output: `spawn failed: ${(e as Error).message}` });
       return;
@@ -745,8 +747,12 @@ export function runShellCommand(cmd: string, cwd: string, timeoutMs: number): Pr
       const combined = (out + (err ? `\n[stderr]\n${err}` : '')).slice(0, 41_000);
       const truncated = out.length >= CAP || err.length >= CAP;
       // V3R14 #6(e): redact secret-shaped values from captured output
-      // before returning (runhistory precedent: redactText).
-      const redacted = redactText(combined);
+      // before returning (runhistory precedent: redactText). V3R17
+      // #6(h): ambient credential VALUES are redacted too — redactText's
+      // key-shape matching is blind to a bare value. The redacted
+      // output is what gets stored in stepResults[].output and served
+      // by GET /api/batch-changes/:id, so this one site covers both.
+      const redacted = redactAmbientCredentialValues(redactText(combined));
       done({
         ok: code === 0,
         exitCode: code ?? -1,

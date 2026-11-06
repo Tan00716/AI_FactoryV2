@@ -16,12 +16,15 @@
  * ADAPTER_NOT_IMPLEMENTED — never silently reinterpreted as Node.
  *
  * Probing spawns a short-lived process (10s timeout, loopback-free, no
- * shell). Child env always has NODE_TEST_CONTEXT / NODE_TEST_WORKER_ID
- * stripped, matching the DebugClient contract.
+ * shell). Child env is the scrubbed server env: credential vars are
+ * stripped via scrubCredentialEnv (same table as the pty childEnv), and
+ * NODE_TEST_CONTEXT / NODE_TEST_WORKER_ID are stripped as well, matching
+ * the DebugClient contract.
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { scrubCredentialEnv } from '@ai-factory/runtime';
 import { DebugError } from './client';
 
 /**
@@ -102,9 +105,17 @@ export function getAdapterInfo(kind: string): AdapterInfo {
   return found;
 }
 
-function scrubbedEnv(): Record<string, string> {
+/**
+ * Env for a probe child: the server env with credentials scrubbed
+ * (scrubCredentialEnv — same table as the pty childEnv, R17 #6(j)
+ * hygiene fix; the old name `scrubbedEnv` was a misnomer, it copied the
+ * full env and only deleted the two NODE_TEST_* vars), then the two
+ * NODE_TEST_* vars deleted as well so a spawned `node --test`
+ * grandchild does not silently degrade to zero outcomes.
+ */
+function probeChildEnv(): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
+  for (const [k, v] of Object.entries(scrubCredentialEnv(process.env))) {
     if (v !== undefined) env[k] = v;
   }
   delete env.NODE_TEST_CONTEXT;
@@ -139,7 +150,7 @@ export function probeAdapter(
   for (const c of candidates) {
     tried.push(`${c.command} ${c.args.join(' ')}`);
     try {
-      const r = spawnSync(c.command, c.args, { timeout: 10000, encoding: 'utf8', env: scrubbedEnv() });
+      const r = spawnSync(c.command, c.args, { timeout: 10000, encoding: 'utf8', env: probeChildEnv() });
       if (r.error) {
         const code = (r.error as NodeJS.ErrnoException).code;
         if (code === 'ENOENT') continue;

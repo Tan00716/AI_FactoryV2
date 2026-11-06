@@ -48,7 +48,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { redactText } from '@ai-factory/diagpack';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { redactAmbientCredentialValues, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 
 export type QualityGateKind = 'lint' | 'test';
 
@@ -550,12 +550,14 @@ export function runQualityCommand(
       // V3R14 #6(e): redact secret-shaped values from captured output
       // before returning, so a credential can never be echoed back
       // verbatim in the gate result (runhistory precedent: redactText).
+      // V3R17 #6(h): ambient credential VALUES are redacted too —
+      // redactText's key-shape matching is blind to a bare value.
       resolve({
         ...partial,
-        stdout: redactText(partial.stdout),
+        stdout: redactAmbientCredentialValues(redactText(partial.stdout)),
         stderr: partial.spawnError
-          ? redactText(`${partial.spawnError}${partial.stderr ? '\n' + partial.stderr : ''}`.slice(0, MAX_QUALITY_OUTPUT))
-          : redactText(partial.stderr),
+          ? redactAmbientCredentialValues(redactText(`${partial.spawnError}${partial.stderr ? '\n' + partial.stderr : ''}`.slice(0, MAX_QUALITY_OUTPUT)))
+          : redactAmbientCredentialValues(redactText(partial.stderr)),
         durationMs: Date.now() - start,
         startedAt,
       });
@@ -564,8 +566,10 @@ export function runQualityCommand(
     let child;
     try {
       // V3R14 #6(e): scrub the server's own credential env vars from the
-      // ambient inheritance (same rule as pty.ts childEnv).
-      child = spawn('sh', ['-c', command], { cwd: opts.cwd ?? process.cwd(), env: scrubCredentialEnv(process.env) });
+      // ambient inheritance (same rule as pty.ts childEnv). V3R17
+      // #6(k)(b): control-plane pointer vars are stripped as well, so
+      // the gate command cannot locate the vault or the admin token file.
+      child = spawn('sh', ['-c', command], { cwd: opts.cwd ?? process.cwd(), env: stripControlPlanePointerEnv(scrubCredentialEnv(process.env)) });
     } catch (e) {
       finish({
         ok: false,

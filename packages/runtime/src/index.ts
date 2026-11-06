@@ -25,6 +25,7 @@ export * from './types';
 export * from './loop';
 export * from './harness';
 export * from './pty';
+export * from './ambient-credentials';
 export * from './pty-session';
 export * from './adapters';
 export * from './adapter-contract';

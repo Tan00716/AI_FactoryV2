@@ -21,7 +21,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import { redactText } from '@ai-factory/diagpack';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { redactAmbientCredentialValues, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import type { CaseResult, RunOutcome, RunSummary } from './types';
 
 /** Absolute path of the compiled runner child script. */
@@ -59,7 +59,9 @@ export async function runTests(req: RunRequest): Promise<RunOutcome> {
   // V3R14 #6(e): scrub the server's own credential env vars from the
   // ambient inheritance (same rule as pty.ts childEnv). The two
   // node-test vars below stay deleted for the test-spawn leak rule.
-  const env: NodeJS.ProcessEnv = { ...scrubCredentialEnv(process.env) };
+  // V3R17 #6(k)(b): control-plane pointer vars are stripped as well,
+  // so a test file cannot locate the vault or the admin token file.
+  const env: NodeJS.ProcessEnv = { ...stripControlPlanePointerEnv(scrubCredentialEnv(process.env)) };
   delete env['NODE_TEST_CONTEXT'];
   delete env['NODE_TEST_WORKER_ID'];
 
@@ -127,8 +129,9 @@ export async function runTests(req: RunRequest): Promise<RunOutcome> {
               file: obj['__file'] as string,
               // V3R14 #6(e) channel (c): fileErrors stderr echo is a live
               // read-back channel — redact before it reaches the API.
+              // V3R17 #6(h): ambient credential VALUES are redacted too.
               error: typeof obj['error'] === 'string' && obj['error']
-                ? redactText(obj['error'] as string)
+                ? redactAmbientCredentialValues(redactText(obj['error'] as string))
                 : 'file failed to load (no cases reported)',
             });
           }
@@ -158,8 +161,9 @@ export async function runTests(req: RunRequest): Promise<RunOutcome> {
           if (typeof obj['error'] === 'string' && obj['error']) {
             // V3R14 #6(e) channel (b): assertion/throw echo is a live
             // read-back channel — cap first, then redact before it
-            // reaches the API.
-            r.error = redactText(cap(obj['error'] as string, CASE_ERROR_CAP).text);
+            // reaches the API. V3R17 #6(h): ambient credential VALUES
+            // are redacted too.
+            r.error = redactAmbientCredentialValues(redactText(cap(obj['error'] as string, CASE_ERROR_CAP).text));
           }
           results.push(r);
         }
@@ -187,8 +191,9 @@ export async function runTests(req: RunRequest): Promise<RunOutcome> {
       }
       // V3R14 #6(e): runError is composed from fileErrors / summary
       // errors, both live read-back channels — redact the composed
-      // value before it reaches the API.
-      if (runError !== undefined) runError = redactText(runError);
+      // value before it reaches the API. V3R17 #6(h): ambient
+      // credential VALUES are redacted too.
+      if (runError !== undefined) runError = redactAmbientCredentialValues(redactText(runError));
       resolve({
         results,
         summary: computed,

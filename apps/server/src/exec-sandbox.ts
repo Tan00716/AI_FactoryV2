@@ -79,6 +79,48 @@ import {
   BWRAP_BIN_ENV,
 } from './build-sandbox';
 import type { SandboxMode } from './sandbox-modes';
+import { existsSync } from 'node:fs';
+import { dirname, resolve, sep } from 'node:path';
+
+/**
+ * Control-plane directories that must never be visible inside a sandbox
+ * whose cwd contains them (V3.0 audit round 17, item #6 sub-item (k)(a2)).
+ *
+ * The vault lives under the control-plane data dir by default
+ * (<data>/secrets — packages/secrets/src/config.ts), and the server's
+ * cwd IS the workspace root, so a run whose cwd is the server cwd (or
+ * an ancestor of the data dir) would otherwise have the vault inside
+ * its one writable bind. The exclusion is enforced by mounting an
+ * empty tmpfs over each such directory AFTER the cwd bind, so the
+ * child sees an empty directory there instead of the vault.
+ *
+ * Candidates (absolute, deduplicated, only those strictly UNDER cwd —
+ * a run whose cwd IS the control dir itself is not silently repaired
+ * here; the control-dir argv guard and the project-root cwd jail are
+ * what keep runs out of the data dir in the first place):
+ *   - dirname(DB_PATH) — the control-plane data dir (routes/exec.ts
+ *     CONTROL_DATA_DIR uses the same derivation);
+ *   - FACTORY_SECRETS_DIR, when set (vault moved out of the data dir);
+ *   - AI_FACTORY_DATA_DIR, when set (user data dir, may differ from
+ *     dirname(DB_PATH) in tests and custom layouts).
+ * A candidate that does not exist on the host is skipped — there is
+ * nothing to hide — which also keeps the prefix stable for runs
+ * whose vault was never created.
+ */
+export function sandboxExcludeDirs(cwd: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const base = resolve(cwd);
+  const prefix = base.endsWith(sep) ? base : base + sep;
+  const candidates: string[] = [dirname(resolve(env.DB_PATH ?? './data/factory.db'))];
+  if (env.FACTORY_SECRETS_DIR) candidates.push(resolve(env.FACTORY_SECRETS_DIR));
+  if (env.AI_FACTORY_DATA_DIR) candidates.push(resolve(env.AI_FACTORY_DATA_DIR));
+  const out: string[] = [];
+  for (const dir of candidates) {
+    const abs = resolve(dir);
+    if (abs === base || !abs.startsWith(prefix)) continue;
+    if (!out.includes(abs)) out.push(abs);
+  }
+  return out;
+}
 
 /** Re-exported for tests: drop the cached probe so the next call re-probes. */
 export { resetSandboxProbeCache as resetExecSandboxProbeCacheForTests };
@@ -143,7 +185,7 @@ export function execSandboxConfigFromEnv(
  */
 export function buildExecSandboxPrefix(
   cwd: string,
-  opts: { network: boolean; bwrapBin: string; extraRoBinds: string[] },
+  opts: { network: boolean; bwrapBin: string; extraRoBinds: string[]; excludeDirs?: string[] },
 ): string[] {
   if (!cwd || !cwd.startsWith('/')) {
     throw new Error('buildExecSandboxPrefix: cwd must be an absolute path');
@@ -177,7 +219,16 @@ export function buildExecSandboxPrefix(
     );
   }
   // The single writable bind: the request's cwd, at its real path.
-  a.push('--bind', cwd, cwd, '--chdir', cwd);
+  a.push('--bind', cwd, cwd);
+  // V3R17 #6(k)(a2): control-plane dirs under the cwd (the vault) are
+  // shadowed by empty tmpfs mounts AFTER the bind, so the child sees
+  // an empty directory there. Only dirs that exist on the host are
+  // overlaid — a missing dir has nothing to hide and bwrap would fail
+  // the mount.
+  for (const dir of opts.excludeDirs ?? []) {
+    if (existsSync(dir)) a.push('--tmpfs', dir);
+  }
+  a.push('--chdir', cwd);
   a.push('--');
   return a;
 }
@@ -191,7 +242,7 @@ export function buildExecSandboxPrefix(
  */
 export function buildReadOnlySandboxPrefix(
   cwd: string,
-  opts: { network: boolean; bwrapBin: string; extraRoBinds: string[] },
+  opts: { network: boolean; bwrapBin: string; extraRoBinds: string[]; excludeDirs?: string[] },
 ): string[] {
   if (!cwd || !cwd.startsWith('/')) {
     throw new Error('buildReadOnlySandboxPrefix: cwd must be an absolute path');
@@ -220,7 +271,13 @@ export function buildReadOnlySandboxPrefix(
     );
   }
   // The cwd, READ-ONLY, at its real path. No writable bind at all.
-  a.push('--ro-bind', cwd, cwd, '--chdir', cwd);
+  a.push('--ro-bind', cwd, cwd);
+  // V3R17 #6(k)(a2): same control-plane shadowing as the writable
+  // tier — a read-only bind still EXPOSES the vault for reading.
+  for (const dir of opts.excludeDirs ?? []) {
+    if (existsSync(dir)) a.push('--tmpfs', dir);
+  }
+  a.push('--chdir', cwd);
   a.push('--');
   return a;
 }
@@ -289,10 +346,14 @@ export async function decideExecSandbox(
   }
   const probe = await probeSandbox(config.bwrapBin);
   if (probe.available) {
+    // V3R17 #6(k)(a2): the exclusion is computed here, once, so every
+    // caller of decideExecSandbox — /api/exec, terminal, and the four
+    // R17 routes — gets the vault shadowing for free. A caller that
+    // builds a prefix directly must pass excludeDirs itself.
     const prefix =
       config.mode === 'read-only'
-        ? buildReadOnlySandboxPrefix(cwd, config)
-        : buildExecSandboxPrefix(cwd, config);
+        ? buildReadOnlySandboxPrefix(cwd, { ...config, excludeDirs: sandboxExcludeDirs(cwd) })
+        : buildExecSandboxPrefix(cwd, { ...config, excludeDirs: sandboxExcludeDirs(cwd) });
     return { mode: config.mode, prefix, reason: null, sandboxed: true, refused: false, refuseCode: null };
   }
   return {

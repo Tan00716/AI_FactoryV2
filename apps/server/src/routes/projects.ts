@@ -113,6 +113,47 @@ function registrationErrorToStatus(err: TemplateRegistrationError): number {
   }
 }
 
+/**
+ * R17 N3 — strip the userinfo (embedded credentials) from a clone URL
+ * before it is written to the audit chain. `https://user:password@host/x`
+ * becomes `https://host/x` (host, port and path preserved); URLs without
+ * userinfo, scp-like `git@host:x` forms, file:// URLs and local paths pass
+ * through unchanged. Unparseable input is returned unchanged.
+ *
+ * 口径说明（既有链）: the audit chain is append-only and cannot be
+ * rewritten, so PROJECT_CLONE_FAILED / PROJECT_CLONED records written
+ * before this fix may still carry a raw userinfo segment. Only records
+ * written from this fix onward are stripped; nothing here rewrites history.
+ * The project record itself keeps the raw URL in `repository_refs` (it is
+ * the asserted source for future fetches) — only the audit copy is stripped.
+ */
+export function stripCloneUrlUserinfo(repoUrl: string): string {
+  try {
+    const u = new URL(repoUrl);
+    if (u.username === '' && u.password === '') return repoUrl;
+    u.username = '';
+    u.password = '';
+    return u.toString();
+  } catch {
+    return repoUrl;
+  }
+}
+
+/**
+ * R17 N3 (Red Team S4) — strip embedded credentials from free text that
+ * may carry a clone URL, e.g. a child-process error message. git strips
+ * credentials from its own stderr on a reachable host answering 401
+ * (`fatal: Authentication failed for 'http://host/repo.git/'`), but
+ * Node's `Command failed: git clone http://user:password@host/repo.git …`
+ * prefix echoes the full argv, so the message must be scrubbed before it
+ * is stored in the audit `reason` field or returned in the 502 response.
+ * Only `scheme://…@` segments before the first `/` are touched; URLs
+ * without userinfo and plain text pass through unchanged.
+ */
+export function stripUserinfoFromText(text: string): string {
+  return text.replace(/(https?:\/\/)[^\s/]+@/g, '$1');
+}
+
 export async function handleProjectsRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -324,12 +365,19 @@ export async function handleProjectsRoutes(
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // R17 N3 (Red Team S4): strip any userinfo the error message itself
+      // carries (Node's `Command failed: git clone <url> …` argv echo)
+      // before it is stored in the audit `reason` field or returned in the
+      // 502 response — the `url` strip above is not enough on its own.
+      const safeMsg = stripUserinfoFromText(msg);
       ctx.audit.record(actor, 'PROJECT_CLONE_FAILED', 'project', name, {
-        url: repoUrl,
+        // R17 N3: strip embedded credentials from the URL before it enters
+        // the append-only audit chain (viewer-readable via GET /api/audit).
+        url: stripCloneUrlUserinfo(repoUrl),
         dir: target,
-        reason: msg.slice(0, 500),
+        reason: safeMsg.slice(0, 500),
       });
-      ctx.json(res, 502, { error: `git clone failed: ${msg.slice(0, 500)}`, code: 'CLONE_FAILED' });
+      ctx.json(res, 502, { error: `git clone failed: ${safeMsg.slice(0, 500)}`, code: 'CLONE_FAILED' });
       return true;
     }
     const p = ctx.fdb.createProject({
@@ -341,7 +389,8 @@ export async function handleProjectsRoutes(
     });
     ctx.audit.record(actor, 'PROJECT_CLONED', 'project', p.id, {
       name,
-      url: repoUrl,
+      // R17 N3: same userinfo strip as the failure branch above.
+      url: stripCloneUrlUserinfo(repoUrl),
       dir: target,
       branch: branch ?? null,
     });

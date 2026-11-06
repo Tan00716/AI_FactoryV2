@@ -70,8 +70,10 @@ import {
   type CellRunResult,
   type Notebook,
 } from '@ai-factory/notebook';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { redactText } from '@ai-factory/diagpack';
+import { redactAmbientCredentialValues, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import type { RouteContext } from './context';
+import type { ExecSandboxDecision } from '../exec-sandbox';
 
 const PREFIX = '/api/notebooks';
 const NOTEBOOKS_DIR = 'notebooks';
@@ -84,6 +86,14 @@ export interface NotebookDeps {
   checkCommandPolicy: (command: string) => string[];
   /** Control-plane data-dir guard. */
   commandHitsControlDir: (cwd: string, tokens: string[]) => boolean;
+  /**
+   * OS sandbox decision for a cell run (V3R17 #6(k)(a)). Wired by
+   * index.ts to decideExecSandbox; absent only when the module is
+   * imported straight from src by a unit test, in which case runs
+   * proceed without a sandbox (the 'disabled' tier) exactly as
+   * before — production always wires it.
+   */
+  decideSandbox?: (cwd: string) => Promise<ExecSandboxDecision>;
 }
 
 let deps: NotebookDeps | null = null;
@@ -106,6 +116,8 @@ function notebookErrorToStatus(e: NotebookError): number {
   switch (e.code) {
     case 'not-found':
       return 404;
+    case 'sandbox-unavailable':
+      return 403;
     case 'bad-id':
     case 'bad-name':
     case 'bad-language':
@@ -155,19 +167,42 @@ async function runCell(d: NotebookDeps, nb: Notebook, cellId: string): Promise<C
     if (d.commandHitsControlDir(runDir, tokens)) {
       throw new NotebookError('control-dir', 'cell run touches the control-plane data dir (refused)');
     }
+    // V3R17 #6(k)(a): a cell runs inside the same bwrap sandbox as
+    // /api/exec (workspace-write, cwd = the isolated temp run dir).
+    // Fail-closed: when bwrap is unavailable the cell does not run —
+    // never silently unisolated. The vault shadowing for a cwd that
+    // contains the control-plane data dir lives in decideExecSandbox
+    // itself (#6(k)(a2)); the temp run dir never contains it.
+    const sb: ExecSandboxDecision = d.decideSandbox
+      ? await d.decideSandbox(runDir)
+      : { mode: 'disabled', prefix: [], reason: null, sandboxed: false, refused: false, refuseCode: null };
+    if (sb.refused) {
+      throw new NotebookError(
+        'sandbox-unavailable',
+        `${sb.refuseCode ?? 'SANDBOX_UNAVAILABLE'}: cell runs require OS-enforced isolation (bwrap), ` +
+          `but no working bwrap was found${sb.reason ? ` (${sb.reason})` : ''} — refusing to run unisolated`,
+      );
+    }
+    const argv = [...sb.prefix, ...tokens];
     return await new Promise<CellRunResult>((resolve) => {
       execFile(
-        tokens[0] as string,
-        tokens.slice(1),
+        argv[0] as string,
+        argv.slice(1),
         {
           cwd: runDir,
           timeout: RUN_TIMEOUT_MS,
           maxBuffer: RUN_OUTPUT_BUFFER,
-          env: { ...scrubCredentialEnv(process.env) },
+          // V3R17 #6(k)(b): control-plane pointer vars are stripped
+          // from the child env on top of the credential scrub, so the
+          // cell cannot locate the vault or the admin token file.
+          env: { ...stripControlPlanePointerEnv(scrubCredentialEnv(process.env)) },
         },
         (err, stdout, stderr) => {
-          const out = String(stdout ?? '');
-          const errOut = String(stderr ?? '');
+          // V3R17 #6(h): the cell result is stored in the notebook
+          // AND returned, so ambient credential values are redacted
+          // here, before applyRunResult persists anything.
+          const out = redactAmbientCredentialValues(redactText(String(stdout ?? '')));
+          const errOut = redactAmbientCredentialValues(redactText(String(stderr ?? '')));
           const durationMs = Date.now() - started;
           const bufferOverflow =
             (err as NodeJS.ErrnoException | null)?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
@@ -448,7 +483,11 @@ async function handleNotebookAction(
           truncated: result.truncated,
         });
       } catch (e) {
-        if (e instanceof NotebookError && (e.code === 'runner-unsupported' || e.code === 'control-dir')) {
+        // Per-cell refusals (unsupported runner, control-dir touch,
+        // sandbox unavailable) fail that cell and let the rest run;
+        // a sandbox refusal fails every cell identically, but the
+        // run-all envelope still reports per-cell results.
+        if (e instanceof NotebookError && (e.code === 'runner-unsupported' || e.code === 'control-dir' || e.code === 'sandbox-unavailable')) {
           results.push({ cellId: cell.id, ok: false, exitCode: null });
           continue;
         }

@@ -148,6 +148,7 @@ import { handleUpdateRoutes, performUpdateCheck } from './routes/updates';
 import { getUpdateConfig } from './updates';
 import { handlePolicyRoutes } from './routes/policy';
 import { checkCommandPolicy, commandHitsControlDir, handleExecRoutes, resolveExecCwd } from './routes/exec';
+import { decideExecSandbox, execSandboxConfigFromEnv } from './exec-sandbox';
 import { handleTerminalRoutes, getTerminalTailForContext } from './routes/terminal';
 import { handleSecretRoutes } from './routes/secrets';
 import { handleFileRoutes, setFileScopeLookup } from './routes/files';
@@ -861,6 +862,9 @@ setTaskRunnerDeps({
   resolveRoot: (root) => resolveInspectionRoot(root),
   checkCommandPolicy: (command) => checkCommandPolicy(command),
   commandHitsControlDir: (cwd, tokens) => commandHitsControlDir(cwd, tokens),
+  // V3R17 #6(k)(a): task runs are confined in the exec bwrap sandbox;
+  // the decision (including the vault shadowing) lives in exec-sandbox.
+  decideSandbox: (cwd) => decideExecSandbox(cwd, execSandboxConfigFromEnv()),
   resolveCwd: (cwd) => resolveExecCwd(cwd),
   parseAndStore: (projectId, defs, text) => {
     const { diagnostics, stats } = parseOutput(text, defs, 'tasks');
@@ -934,6 +938,8 @@ setTaskQueueDeps({
   resolveRoot: (root) => resolveInspectionRoot(root),
   checkCommandPolicy: (command) => checkCommandPolicy(command),
   commandHitsControlDir: (cwd, tokens) => commandHitsControlDir(cwd, tokens),
+  // V3R17 #6(k)(a): job task runs are confined in the exec bwrap sandbox.
+  decideSandbox: (cwd) => decideExecSandbox(cwd, execSandboxConfigFromEnv()),
   resolveCwd: (cwd) => resolveExecCwd(cwd),
   resolveMatchers: (projectId) => resolveMatchers(projectId),
   getMatcher: (projectId, name) => {
@@ -952,6 +958,8 @@ setScratchDeps({
   resolveDataDir: () => process.env.AI_FACTORY_DATA_DIR ?? 'data',
   checkCommandPolicy: (command) => checkCommandPolicy(command),
   commandHitsControlDir: (cwd, tokens) => commandHitsControlDir(cwd, tokens),
+  // V3R17 #6(k)(a): scratch runs are confined in the exec bwrap sandbox.
+  decideSandbox: (cwd) => decideExecSandbox(cwd, execSandboxConfigFromEnv()),
 });
 // Round-7 R7-#2: notebooks live in the user data dir
 // (AI_FACTORY_DATA_DIR/notebooks/), never in a project tree. Cell runs
@@ -961,6 +969,8 @@ setNotebookDeps({
   resolveDataDir: () => process.env.AI_FACTORY_DATA_DIR ?? 'data',
   checkCommandPolicy: (command) => checkCommandPolicy(command),
   commandHitsControlDir: (cwd, tokens) => commandHitsControlDir(cwd, tokens),
+  // V3R17 #6(k)(a): cell runs are confined in the exec bwrap sandbox.
+  decideSandbox: (cwd) => decideExecSandbox(cwd, execSandboxConfigFromEnv()),
 });
 // Round-7 R7-#10: settings sync reads the same files the owning
 // routes use (keybindings user layer in the data dir, global rules

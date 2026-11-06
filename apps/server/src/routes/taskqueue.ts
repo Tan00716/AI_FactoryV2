@@ -68,9 +68,11 @@ import {
   type JobSummary,
   type JobTaskResult,
 } from '@ai-factory/taskqueue';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { redactText } from '@ai-factory/diagpack';
+import { redactAmbientCredentialValues, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import type { RouteContext } from './context';
 import type { ParseStats, ProblemDiagnostic, ProblemMatcherDef } from '../problem-matchers';
+import type { ExecSandboxDecision } from '../exec-sandbox';
 
 const PREFIX = '/api/taskqueue';
 const TASKS_FILE = '.ai-factory/tasks.json';
@@ -108,6 +110,14 @@ export interface TaskQueueDeps {
    * diagnostics store (job diagnostics live on the job record).
    */
   parseOutput: (defs: ProblemMatcherDef[], text: string) => { diagnostics: ProblemDiagnostic[]; stats: ParseStats };
+  /**
+   * OS sandbox decision for a job task run (V3R17 #6(k)(a)). Wired by
+   * index.ts to decideExecSandbox; absent only when the module is
+   * imported straight from src by a unit test, in which case runs
+   * proceed without a sandbox (the 'disabled' tier) exactly as
+   * before — production always wires it.
+   */
+  decideSandbox?: (cwd: string) => Promise<ExecSandboxDecision>;
 }
 
 let deps: TaskQueueDeps | null = null;
@@ -233,18 +243,26 @@ function spawnCancellable(
     let stdout = '';
     let stderr = '';
     const push = (buf: string, which: 'out' | 'err'): void => {
-      queue.appendLog(jobId, buf);
+      // V3R17 #6(h): the job log is returned verbatim by GET /log, so
+      // each chunk is redacted before it is appended or accumulated.
+      // A value split across a chunk boundary can still slip through
+      // a single chunk; GET /log re-redacts the whole stored log.
+      const clean = redactAmbientCredentialValues(redactText(buf));
+      queue.appendLog(jobId, clean);
       if (which === 'out') {
-        stdout += buf;
+        stdout += clean;
         if (stdout.length > OUTPUT_CAP_BYTES) stdout = stdout.slice(0, OUTPUT_CAP_BYTES);
       } else {
-        stderr += buf;
+        stderr += clean;
         if (stderr.length > OUTPUT_CAP_BYTES) stderr = stderr.slice(0, OUTPUT_CAP_BYTES);
       }
     };
     const child = spawn(argv[0], argv.slice(1), {
       cwd,
-      env: { ...scrubCredentialEnv(process.env), ...(env ?? {}) },
+      // V3R17 #6(k)(b): control-plane pointer vars are stripped from
+      // the ambient env; an explicit task env is applied after the
+      // strip, so a deliberate operator value survives.
+      env: { ...stripControlPlanePointerEnv(scrubCredentialEnv(process.env)), ...(env ?? {}) },
       detached: true,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -307,12 +325,28 @@ async function runJobTask(
     return fail('denied', 'command refused: the control-plane data directory is off-limits');
   }
 
+  // V3R17 #6(k)(a): a job task run is confined in the same bwrap
+  // sandbox as /api/exec (workspace-write, cwd = the project dir).
+  // Fail-closed: when bwrap is unavailable the task is refused, never
+  // run unisolated. The vault shadowing for a cwd that contains the
+  // control-plane data dir lives in decideExecSandbox (#6(k)(a2)).
+  const sb: ExecSandboxDecision = d.decideSandbox
+    ? await d.decideSandbox(cwd)
+    : { mode: 'disabled', prefix: [], reason: null, sandboxed: false, refused: false, refuseCode: null };
+  if (sb.refused) {
+    return fail(
+      'denied',
+      `${sb.refuseCode ?? 'SANDBOX_UNAVAILABLE'}: task runs require OS-enforced isolation (bwrap), ` +
+        `but no working bwrap was found${sb.reason ? ` (${sb.reason})` : ''} — refusing to run unisolated`,
+    );
+  }
+
   const timeoutMs = task.options.timeoutMs ?? 60_000;
   queue.setCurrentTask(jobId, task.label);
   queue.appendLog(jobId, `\n$ ${argv.join(' ')}\n`);
   let ran: SpawnOutcome;
   try {
-    ran = await spawnCancellable(jobId, argv, cwd, task.options.env, timeoutMs);
+    ran = await spawnCancellable(jobId, [...sb.prefix, ...argv], cwd, task.options.env, timeoutMs);
   } catch (e) {
     return fail('failed', `spawn failed: ${(e as Error).message}`);
   } finally {
@@ -546,7 +580,11 @@ export async function handleTaskQueueRoutes(
           ctx.json(res, 404, { error: 'unknown job', code: 'unknown-job' });
           return true;
         }
-        ctx.json(res, 200, { jobId: id, log: job.log, truncated: job.logTruncated, byteLength: Buffer.byteLength(job.log, 'utf8') });
+        // V3R17 #6(h): re-redact the whole stored log at read time —
+        // a credential value split across streamed chunks is only
+        // caught once the full text is visible.
+        const log = redactAmbientCredentialValues(redactText(job.log));
+        ctx.json(res, 200, { jobId: id, log, truncated: job.logTruncated, byteLength: Buffer.byteLength(log, 'utf8') });
         return true;
       }
       if (suffix === 'cancel' && method === 'POST') {

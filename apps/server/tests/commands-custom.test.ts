@@ -75,6 +75,9 @@ async function startServer(): Promise<Running> {
     DB_PATH: path.join(dir, 'factory.db'),
     AI_FACTORY_DATA_DIR: path.join(dir, 'data'),
     FACTORY_INSPECT_ROOTS: proj,
+    // R17 #6(k): task runs are fail-closed without bwrap; this test
+    // exercises the chain itself, so it opts out explicitly.
+    FACTORY_EXEC_SANDBOX: '0',
   };
   for (const k of ['FACTORY_API_TOKEN', 'FACTORY_SECRETS_DIR', 'FACTORY_RUNTIME_TOOLS']) {
     delete env[k];

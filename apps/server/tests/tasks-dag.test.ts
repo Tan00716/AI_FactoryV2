@@ -69,6 +69,9 @@ async function startServer(): Promise<Running> {
     // Test-harness opt-in: the server is fail-closed without a token
     // even on loopback since V3-#1.
     FACTORY_ALLOW_OPEN_LOCAL: '1',
+    // R17 #6(k): task runs are fail-closed without bwrap; this test
+    // exercises the DAG itself, so it opts out explicitly.
+    FACTORY_EXEC_SANDBOX: '0',
   };
   for (const k of ['FACTORY_API_TOKEN', 'FACTORY_SECRETS_DIR', 'FACTORY_RUNTIME_TOOLS', 'BRAVE_SEARCH_API_KEY', 'TAVILY_API_KEY']) {
     delete env[k];
