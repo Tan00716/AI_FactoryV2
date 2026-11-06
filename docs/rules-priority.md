@@ -1,24 +1,28 @@
-# Rule Priority Disclosure (AI Factory, baseline 46d0d66)
+# Rule Priority Disclosure (AI Factory, baseline b8a9424)
 
 This document discloses how AI Factory merges rule files into the
 effective view. It only describes current behavior; it does not change
 the rule engine, and it does not claim any precedence order beyond what
 the code implements.
 
-Status date: 2026-11-06. Baseline commit: 46d0d66. R15 fidelity note:
-H1 and body aligned to 46d0d66; packages/rules and
-apps/server/src/routes/rules.ts are unchanged between ff1308d and
-46d0d66 (git diff --name-only empty; the interval is 21 files: 8
+Status date: 2026-11-06. Baseline commit: b8a9424. R16 fidelity note:
+H1 and body aligned to b8a9424; packages/rules and
+apps/server/src/routes/rules.ts are unchanged between 46d0d66 and
+b8a9424 (git diff --name-only empty; the interval is 23 files: 9
 documentation files plus package-lock.json, apps/server
-quality-gate / hooks / batch-changes / recipes source and tests, and
-packages/testexplorer package.json / src/run.ts / tests/run.test.ts
-(#6(e) scrub change), which touches no rule engine file), so semantics
+recipes source/routes/tests (#6(g) fix) and debug/remote routes
+(#6(f) scrub), and packages/debugger and packages/remote
+source/tests (#6(f) scrub change), which touches no rule engine file), so semantics
 are unchanged.
 Review this document
 whenever packages/rules or apps/server/src/routes/rules.ts changes.
 Next review: the next V3.0 audit round, or immediately when
 packages/rules or apps/server/src/routes/rules.ts changes, whichever
 comes first.
+Fidelity review (V3R15 #8): the engine files were also unchanged between
+ff1308d and 46d0d66 (verified with git diff --name-only over
+packages/rules and apps/server/src/routes/rules.ts: zero files).
+Title baseline and body baseline now both read 46d0d66; semantics unchanged.
 Fidelity review (V3R14 #8): the engine files were also unchanged between
 cc7e499 and ff1308d (verified with git diff --name-only over
 packages/rules and apps/server/src/routes/rules.ts: zero files).

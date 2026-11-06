@@ -31,6 +31,10 @@ const MAX_LINE_CHARS = 500;
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', 'coverage', '.next', 'out',
   'vendor', '__pycache__', 'target', '.idea', '.vscode', '.turbo',
+  // R16 N2 defense-in-depth: the server data dir (mutation run reports,
+  // flaky history, …) must never be searchable — persisted reports can
+  // hold child output, and search hits are returned verbatim.
+  'data',
 ]);
 
 /** Fail-closed normalization of a caller query. Throws CodeSearchError. */

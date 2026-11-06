@@ -66,7 +66,14 @@ export interface MutantRunResult {
   /** Child exit code; null when the child never exited (timeout/spawn error). */
   exitCode: number | null;
   timedOut: boolean;
-  /** Tail of combined child output (capped). */
+  /** Tail of combined child output (capped).
+   *
+   * Persisted reports replace this field with
+   * PERSISTED_OUTPUT_TAIL_NOTE (see stripReportForPersist in report.ts):
+   * child output tails are never stored on disk, because mutant test
+   * output can echo ambient credentials and persisted reports are
+   * readable back through cross-feature file readers (R16 N2). The
+   * in-memory report keeps the real tail. */
   outputTail: string;
   /** Short machine note, e.g. 'node --check failed' or 'budget exceeded'. */
   note: string;

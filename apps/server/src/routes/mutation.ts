@@ -45,6 +45,7 @@ import {
   readTargetFile,
   runMutantTests,
   sampleMutants,
+  stripReportForPersist,
   validateSamplingConfig,
   type Mutant,
   type MutantRunResult,
@@ -323,8 +324,13 @@ async function executeRun(
     state.report = report;
     state.status = 'done';
     state.finishedAt = new Date().toISOString();
-    atomicWriteJson(join(runsDir(), `${state.runId}.json`), report);
-    atomicWriteJson(latestPath(state.projectId), report);
+    // Persist the stripped copy only: child output tails are never stored
+    // on disk (R16 N2 — persisted reports are readable back through
+    // codesearch/todo-scan). The in-memory state.report keeps the real
+    // tails; the API only ever returns reportSummary (no results).
+    const persisted = stripReportForPersist(report);
+    atomicWriteJson(join(runsDir(), `${state.runId}.json`), persisted);
+    atomicWriteJson(latestPath(state.projectId), persisted);
     ctx.audit.record(state.actor, 'MUTATION_RUN_FINISHED', 'mutation', `${state.projectId}:run`, {
       runId: state.runId,
       ...report.totals,

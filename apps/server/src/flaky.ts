@@ -35,14 +35,22 @@
  *     lookup keys and UI labels and the wrapper would make both
  *     unreadable. They are rendered as escaped text in the UI and must be
  *     quoted-as-data by any future model consumer.
+ *  7. Names are redacted with diagpack `redactText` in recordRun before
+ *     they reach the persisted history (R16 N3): a test name can carry
+ *     a credential-shaped literal, and history is returned verbatim by
+ *     GET /api/flaky. redactText does not mask `FACTORY_API_TOKEN=`
+ *     lines — that shape needs the planned #6(h) value-aware
+ *     redaction, not a silent pattern-table change here.
  *
- * This module is pure node builtins with no sibling value imports, so
- * server tests may import it straight from src under node's
+ * This module is node builtins plus one package import (@ai-factory/
+ * diagpack, resolved to its built dist), with no sibling value imports,
+ * so server tests may import it straight from src under node's
  * type-stripping ESM loader (dual-mode import rule — see AGENTS.md).
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
+import { redactText } from '@ai-factory/diagpack';
 
 // ---------------------------------------------------------------------------
 // TAP parsing
@@ -407,7 +415,25 @@ export class FlakyHistoryStore {
     let todo = 0;
     const newlyFlaky: string[] = [];
     const newlyStable: string[] = [];
-    for (const o of outcomes) {
+    for (const raw of outcomes) {
+      // R16 N3: test names are operator content and are stored as lookup
+      // keys + UI labels, so redact them BEFORE they reach the persisted
+      // history (flaky-history.json) and the GET readback. The scrub in
+      // runTapFile stops env-derived values; this is defense-in-depth for
+      // literal credential-shaped values in a test name (e.g. an sk-…
+      // literal). The key and the name are redacted together so the
+      // stored identity stays consistent across runs. Known boundary:
+      // redactText does not mask `FACTORY_API_TOKEN=`-shaped lines, so a
+      // literal of that shape in a name still survives — closing that
+      // needs the value-aware output redaction of planned #6(h), not a
+      // silent SECRET_PATTERNS change here. Gate-linkage lookups use the
+      // raw parsed key, so a redacted entry is simply not matched there
+      // (annotation-only, fail-closed).
+      const o: TapTestOutcome = {
+        ...raw,
+        key: redactText(raw.key),
+        name: redactText(raw.name),
+      };
       let entry = data.tests[o.key];
       if (!entry) {
         entry = {

@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -16,6 +16,7 @@ import {
   handleCodeSearchRoutes,
   setCodeSearchRootResolver,
 } from '../src/routes/codesearch.ts';
+import { scanTodos } from '../src/todo-scan.ts';
 import type { RouteContext } from '../src/routes/context.ts';
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), 'codesearch-srv-test-'));
@@ -97,4 +98,33 @@ test('unrelated paths are not handled', async () => {
   const handled = await handleCodeSearchRoutes(req('GET'), res, url('/api/codesearch/other'), ctx);
   assert.equal(handled, false);
   assert.equal(calls.length, 0);
+});
+
+test('codesearch and todo-scan skip the server data dir (R16 N2)', async () => {
+  const MARKER = 'PROOF-ONLY-6i-MARKER-1234';
+  mkdirSync(join(TEST_ROOT, 'data'), { recursive: true });
+  writeFileSync(join(TEST_ROOT, 'data', 'leak.txt'), `token line ${MARKER}\n// TODO ${MARKER} fix later\n`);
+  writeFileSync(join(TEST_ROOT, 'visible.ts'), `export const x = '${MARKER}';\n// TODO ${MARKER} visible\n`);
+  // Control: the marker file really exists on disk with the marker in it —
+  // the exclusion below must be due to SKIP_DIRS, not missing content.
+  assert.ok(readFileSync(join(TEST_ROOT, 'data', 'leak.txt'), 'utf8').includes(MARKER));
+
+  // Codesearch: the data/ hit must be absent; the visible hit proves the
+  // search itself works and only data/ is excluded.
+  const { code, body } = await run('POST', '/api/codesearch/search', { query: MARKER });
+  assert.equal(code, 200);
+  const b = body as { totalMatches: number; groups: Array<{ file: string }> };
+  assert.deepEqual(b.groups.map((g) => g.file), ['visible.ts']);
+  // Two matching lines in the one visible file (the const + the TODO
+  // comment); the data/ file contributes zero.
+  assert.equal(b.totalMatches, 2);
+
+  // Todo-scan: no data/ item may be returned, while the visible TODO is.
+  const { items } = scanTodos(TEST_ROOT);
+  assert.ok(!items.some((i) => i.file.startsWith('data/')), 'todo-scan must not return data/ items');
+  assert.ok(!items.some((i) => i.message.includes(MARKER) && i.file.startsWith('data/')));
+  assert.ok(
+    items.some((i) => i.file === 'visible.ts' && i.message.includes(MARKER)),
+    'control: the visible TODO must still be found',
+  );
 });

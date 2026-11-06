@@ -90,6 +90,10 @@ export class TodoScanError extends Error {
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', 'coverage', '.next', 'out',
   'vendor', '__pycache__', 'target', '.idea', '.vscode', '.turbo',
+  // R16 N2 defense-in-depth: the server data dir must never be scanned —
+  // persisted reports can hold child output, and todo messages are
+  // returned verbatim (capped at 300 chars).
+  'data',
 ]);
 const MAX_FILE_BYTES = 1 * 1024 * 1024;
 const MAX_TODO_SCAN_FILES = 20_000;

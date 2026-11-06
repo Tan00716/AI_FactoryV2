@@ -10,7 +10,8 @@
 - R13 复核基线：本地 main `cc7e499`（2026-11-06，R13 #8；结论见文末 R13 #8 复核节）
 - R14 复核基线：本地 main `ff1308d`（2026-11-06，R14 #8；结论见文末 R14 #8 复核节）
 - R15 复核基线：本地 main `46d0d66`（2026-11-06，R15 #8；结论见文末 R15 #8 复核节）
-- 页首 da648a1 行保留理由：该行是本指针页写于 R5 时的历史事实（写页时的审计基线），不改写；现时基线以各轮复核基线行为准，最新为上行 R15 行。
+- R16 复核基线：本地 main `b8a9424`（2026-11-06，R16 #8；结论见文末 R16 #8 复核节）
+- 页首 da648a1 行保留理由：该行是本指针页写于 R5 时的历史事实（写页时的审计基线），不改写；现时基线以各轮复核基线行为准，最新为上行 R16 行。
 - 本页性质：指针页（指针优先规则 M14）。评估本体不在仓内，不复制全文。
 
 ## 主本（唯一评估本体）
@@ -130,3 +131,9 @@ R4 原文“无签名须显式信任决定”现分两支，须在主本 §1.1 �
 - 范围核对：`ff1308d` → `46d0d66` 的 21 个文件清单为 8 个文档 + package-lock.json + apps/server 的 quality-gate / hooks / batch-changes / recipes 四文件源码与测试（#6(e) scrub 改动）+ packages/testexplorer 的 package.json / src/run.ts / tests/run.test.ts（#6(e) scrub 改动），无 `packages/extensions/`、`packages/plugins/`、`packages/mcp/` 文件，无 `apps/server/src/mcp-launcher.ts`、`apps/server/src/routes/extensions.ts`、`apps/server/src/routes/plugins.ts`、`apps/server/src/routes/mcp.ts`，三包盘点结论所依赖的代码面零改动；本页与主本结论一致性不变。
 - 时效引用（本轮现测，不得再出现指针与主本各写一套）：三包源码内 `acp` 仍 0 命中；`apps/server/src/routes/extensions.ts` 内 `requireRole` 仍 0 命中，分发层角色强制点仍未知；`packages/extensions/demo/` 仍为 4 个 bundle（另有 sign-demo.mjs 脚本，非 bundle），真实第三方扩展数仍 0，路线触发门（盘点完成 AND（真实第三方扩展数达到 3 个以上 OR 客群判定））仍未满足，路线继续暂缓。
 - 结论：R4 评估整体仍成立；R6 #8 后段写回内容（持久信任与逐次确认两支、§1.5 四项加固字段）继续有效，现时子进程环境结论以 R8 #6 C 收紧句为准（部分确认，连接器层仍依赖调用方；自 R8 #6 A 起冲突键现被拒绝，注入值只覆盖非保护键；R9 #6 N1 后保护键集合含 server 记录 allowlist + fixed 键名）；主本行号引用本轮复核无漂移（叠加行仍为 `mcp-launcher.ts:290`，runtimePolicy `filterStdioEnv` 定义 66 行、stdio-connector env 合并 100-101 行均实测无漂移，R15 #6 不再单独立项重写已闭合的刷新），本节不另写一套；强制默认值仍待 Tan 一句话，对外口径不变。
+
+## R16 #8 复核（2026-11-06，复核基线 b8a9424）
+
+- 范围核对：`46d0d66` → `b8a9424` 的 23 个文件清单为 9 个文档 + package-lock.json + apps/server 的 recipes 源码/路由/测试与 debug、remote 路由/测试（#6(f)/(g) scrub 改动）+ packages/debugger 的 package.json / src/client.ts / src/node-adapter.ts / tests/node-adapter.test.ts + packages/remote 的 package.json / src/transport.ts（#6(f) scrub 改动），无 `packages/extensions/`、`packages/plugins/`、`packages/mcp/` 文件，无 `apps/server/src/mcp-launcher.ts`、`apps/server/src/routes/extensions.ts`、`apps/server/src/routes/plugins.ts`、`apps/server/src/routes/mcp.ts`，三包盘点结论所依赖的代码面零改动；本页与主本结论一致性不变。
+- 时效引用（本轮现测，不得再出现指针与主本各写一套）：三包源码内 `acp` 仍 0 命中；`apps/server/src/routes/extensions.ts` 内 `requireRole` 仍 0 命中，分发层角色强制点仍未知；`packages/extensions/demo/` 仍为 4 个 bundle（另有 sign-demo.mjs 脚本，非 bundle），真实第三方扩展数仍 0，路线触发门（盘点完成 AND（真实第三方扩展数达到 3 个以上 OR 客群判定））仍未满足，路线继续暂缓。
+- 结论：R4 评估整体仍成立；R6 #8 后段写回内容（持久信任与逐次确认两支、§1.5 四项加固字段）继续有效，现时子进程环境结论以 R8 #6 C 收紧句为准（部分确认，连接器层仍依赖调用方；自 R8 #6 A 起冲突键现被拒绝，注入值只覆盖非保护键；R9 #6 N1 后保护键集合含 server 记录 allowlist + fixed 键名）；主本行号引用本轮复核无漂移（叠加行仍为 `mcp-launcher.ts:290`，runtimePolicy `filterStdioEnv` 定义 66 行、stdio-connector env 合并 100-101 行均实测无漂移，R16 #6 不再单独立项重写已闭合的刷新），本节不另写一套；强制默认值仍待 Tan 一句话，对外口径不变。

@@ -22,6 +22,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import { scrubCredentialEnv } from '@ai-factory/runtime';
 import type { Mutant, MutantRunOptions, MutantRunResult } from './types';
 
 const SKIP_COPY = new Set(['node_modules', '.git', 'dist', 'build', 'coverage']);
@@ -35,9 +36,17 @@ const SKIP_COPY = new Set(['node_modules', '.git', 'dist', 'build', 'coverage'])
  * test process and `node --test` grandchildren silently run in a degraded
  * mode (exit 0 without really running the tests) — every mutant would
  * "survive". Strip them so each mutant run is a fresh top-level runner.
+ *
+ * Credential scrub (R16 N2): the ambient env carries the admin credential
+ * (FACTORY_API_TOKEN) and FACTORY_SECRET_* values. A planted mutant test
+ * that prints `process.env.*` would echo them into outputTail, which used
+ * to be persisted to disk and readable back via codesearch/todo-scan.
+ * Scrub first (same semantics as pty.ts childEnv), then strip the runner
+ * context vars. Explicit per-run env overrides are not supported here —
+ * the mutant test command runs with the scrubbed ambient env only.
  */
 export function childEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
+  const env = scrubCredentialEnv(process.env);
   delete env.NODE_TEST_CONTEXT;
   delete env.NODE_TEST_WORKER_ID;
   return env;

@@ -35,6 +35,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'http';
+import { scrubCredentialEnv } from '@ai-factory/runtime';
 import type { RouteContext } from './context';
 import type { QualityGateRunResult } from '../quality-gate';
 import {
@@ -66,6 +67,17 @@ function projectIdOf(value: unknown): string | null {
   const id = value.trim();
   if (!id || id.length > 128) return null;
   return id;
+}
+
+/**
+ * Strip the node --test runner context vars from a child env (see
+ * runTapFile): without this, a `node --test` grandchild inherits
+ * NODE_TEST_CONTEXT and silently runs in degraded mode.
+ */
+function stripTestRunnerContext(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  delete env.NODE_TEST_CONTEXT;
+  delete env.NODE_TEST_WORKER_ID;
+  return env;
 }
 
 function storeOf(): FlakyHistoryStore {
@@ -109,7 +121,19 @@ function runTapFile(root: string, file: string, timeoutMs: number): Promise<TapR
     const child = spawn(
       process.execPath,
       [resolve(root, 'scripts/run-tests-tmp.mjs'), '--test', '--test-reporter=tap', file],
-      { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] },
+      // R16 N3: scrub the ambient credential env — without `env`, spawn
+      // inherits the full parent env, and a test name built from
+      // process.env.FACTORY_API_TOKEN lands verbatim in tests[].key/name.
+      // Also strip the node --test runner context vars (same reason as
+      // the mutation runner's childEnv): a `node --test` grandchild that
+      // inherits NODE_TEST_CONTEXT silently degrades — exit 0 without
+      // really running the tests — so a flaky run triggered while the
+      // server itself runs under a test harness would record nothing.
+      {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: stripTestRunnerContext(scrubCredentialEnv(process.env)),
+      },
     );
     let stdout = '';
     let stderr = '';

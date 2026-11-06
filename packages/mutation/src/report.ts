@@ -59,6 +59,38 @@ export function buildReport(input: FlowInput, results: MutantRunResult[], genera
   };
 }
 
+/**
+ * Marker put in place of a result's outputTail in persisted reports.
+ * Persisted reports are plain JSON under the server data dir and are
+ * readable back through cross-feature file readers (codesearch,
+ * todo-scan), so child output must never be stored on disk.
+ */
+export const PERSISTED_OUTPUT_TAIL_NOTE =
+  '[omitted from persisted report: child output tails are not stored on disk]';
+
+/**
+ * Strip child output tails for the persisted copy of a report (R16 N2).
+ *
+ * The in-memory report keeps the real tails (the API only ever returns
+ * reportSummary, which excludes results, so they are not API-visible).
+ * The persisted copy — `data/mutation-runs/<runId>.json` and
+ * `latest-<project>.json` — replaces every result's outputTail with
+ * PERSISTED_OUTPUT_TAIL_NOTE. This is a deliberate field-value change,
+ * not a silent schema change: the `outputTail` key stays present with
+ * the note as its value, so readers see why the tail is absent.
+ * Redacting instead of stripping was rejected: diagpack `redactText`
+ * does not mask `FACTORY_API_TOKEN=` lines, and a planted test can
+ * print a literal credential line that no key-shape redactor would
+ * catch. Stripping is the only shape that closes the readback for
+ * arbitrary literal output. Returns a copy; the input is untouched.
+ */
+export function stripReportForPersist(report: MutationReport): MutationReport {
+  return {
+    ...report,
+    results: report.results.map((r) => ({ ...r, outputTail: PERSISTED_OUTPUT_TAIL_NOTE })),
+  };
+}
+
 function pct(score: number | null): string {
   return score === null ? 'n/a' : `${(score * 100).toFixed(1)}%`;
 }
