@@ -56,6 +56,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { redactText } from '@ai-factory/diagpack';
+import { scrubCredentialEnv } from '@ai-factory/runtime';
 
 /* ------------------------------------------------------------------ */
 /* Errors                                                              */
@@ -1216,7 +1218,9 @@ export function runVerifyCommand(cmd: string, cwd: string, timeoutMs = 600_000):
     };
     let child;
     try {
-      child = spawn('sh', ['-c', cmd], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      // V3R14 #6(e): scrub the server's own credential env vars from the
+      // ambient inheritance (same rule as pty.ts childEnv).
+      child = spawn('sh', ['-c', cmd], { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: scrubCredentialEnv(process.env) });
     } catch (e) {
       done({ ok: false, exitCode: -1, ms: Date.now() - t0, output: `spawn failed: ${(e as Error).message}` });
       return;
@@ -1244,11 +1248,14 @@ export function runVerifyCommand(cmd: string, cwd: string, timeoutMs = 600_000):
       clearTimeout(timer);
       const combined = (out + (err ? `\n[stderr]\n${err}` : '')).slice(0, 41_000);
       const truncated = out.length >= CAP || err.length >= CAP;
+      // V3R14 #6(e): redact secret-shaped values from captured output
+      // before returning (runhistory precedent: redactText).
+      const redacted = redactText(combined);
       done({
         ok: code === 0,
         exitCode: code ?? -1,
         ms: Date.now() - t0,
-        output: truncated ? combined + '\n[output truncated at 20KB/stream — truncation does not affect the exit-code verdict]' : combined,
+        output: truncated ? redacted + '\n[output truncated at 20KB/stream — truncation does not affect the exit-code verdict]' : redacted,
       });
     });
   });

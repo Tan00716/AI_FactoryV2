@@ -24,6 +24,8 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { redactText } from '@ai-factory/diagpack';
+import { scrubCredentialEnv } from '@ai-factory/runtime';
 
 export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'Stop';
 
@@ -150,7 +152,9 @@ export function runHook(hook: HookConfig, payload: HookPayload): Promise<HookRun
     const child = execFile(
       'sh',
       ['-c', hook.command],
-      { timeout: hook.timeoutMs, maxBuffer: MAX_HOOK_OUTPUT },
+      // V3R14 #6(e): scrub the server's own credential env vars from the
+      // ambient inheritance (same rule as pty.ts childEnv).
+      { timeout: hook.timeoutMs, maxBuffer: MAX_HOOK_OUTPUT, env: scrubCredentialEnv(process.env) },
       (error, stdout, stderr) => {
         const out = String(stdout ?? '').slice(0, MAX_HOOK_OUTPUT);
         const errOut = String(stderr ?? '').slice(0, MAX_HOOK_OUTPUT);
@@ -180,6 +184,9 @@ export function runHook(hook: HookConfig, payload: HookPayload): Promise<HookRun
           verdict = 'deny';
           reason = reason ?? `hook exited with code ${exitCode}`;
         }
+        // V3R14 #6(e): redact secret-shaped values from captured output
+        // before returning (verdict parsing above runs on the raw first
+        // line, so a verdict is never redacted out of recognition).
         resolve({
           hookId: hook.id,
           event: hook.event,
@@ -187,9 +194,9 @@ export function runHook(hook: HookConfig, payload: HookPayload): Promise<HookRun
           timedOut,
           exitCode,
           verdict,
-          reason,
-          stdout: out,
-          stderr: errOut,
+          reason: reason === null ? null : redactText(reason),
+          stdout: redactText(out),
+          stderr: redactText(errOut),
         });
       },
     );

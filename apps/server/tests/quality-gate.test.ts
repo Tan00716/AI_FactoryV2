@@ -2,7 +2,8 @@
  * Quality gate unit tests (deterministic lint/test runner).
  *
  * Imports ../src/quality-gate.ts directly: the module uses node builtins
- * only (plus type-only imports), so it resolves under node's
+ * plus package-level @ai-factory/runtime / @ai-factory/diagpack
+ * (which resolve via main -> dist), so it resolves under node's
  * type-stripping ESM loader.
  *
  * Run: node scripts/run-tests-tmp.mjs --test apps/server/tests/quality-gate.test.ts
@@ -163,6 +164,43 @@ test('runQualityCommand: captures stdout and stderr separately', async () => {
   assert.equal(r.ok, true);
   assert.match(r.stdout, /out/);
   assert.match(r.stderr, /err/);
+});
+
+// ---------- V3R14 #6(e): credential env scrub + output redaction ----------
+
+test('runQualityCommand: credential env is scrubbed from the child, output is redacted', async () => {
+  const keys = ['FACTORY_API_TOKEN', 'FACTORY_API_TOKENS', 'FACTORY_SECRET_PROBE'];
+  const saved = new Map<string, string | undefined>();
+  for (const k of keys) {
+    saved.set(k, process.env[k]);
+    process.env[k] = `test-value-for-${k.toLowerCase()}-1234567890`;
+  }
+  try {
+    const r = await runQualityCommand('printenv', { timeoutMs: 10000 });
+    assert.equal(r.ok, true);
+    // Assert on env-assignment LINES, not raw substrings: unrelated
+    // ambient vars (e.g. a runtime trace-context blob) can legitimately
+    // contain the key NAME as text; the threat is the child receiving
+    // the credential as its own env assignment (R13 #6(d) precedent).
+    const lines = r.stdout.split('\n');
+    for (const k of keys) {
+      assert.ok(!lines.some((line) => line.startsWith(`${k}=`)), `stdout leaked ${k}`);
+      assert.ok(!r.stdout.includes(`test-value-for-${k.toLowerCase()}`), `stdout leaked the value for ${k}`);
+    }
+    // Scrub is credential-only: benign ambient vars still pass through.
+    assert.match(r.stdout, /^PATH=/m);
+    // Secret-shaped values echoed by the command are masked, not echoed
+    // verbatim (redactText masks the value with an ellipsis marker).
+    const echo = await runQualityCommand(`echo "api_key=sk-proj-v3r14qgEchoToken123456"`, { timeoutMs: 10000 });
+    assert.equal(echo.ok, true);
+    assert.ok(!echo.stdout.includes('sk-proj-v3r14qgEchoToken123456'), 'stdout echoed the secret value verbatim');
+    assert.ok(echo.stdout.includes('\u2026'), 'masked preview expected');
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
 });
 
 // ---------- runQualityGate ----------

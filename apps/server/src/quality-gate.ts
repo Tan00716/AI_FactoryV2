@@ -12,8 +12,13 @@
  *     scope.
  *   - Commands are operator-authored and run via `sh -c` with the same
  *     trust posture as lifecycle hooks (hooks.ts): the command string is
- *     trusted, the environment is not hardened. Do not point a gate at a
- *     command you would not run yourself.
+ *     trusted, but the child never inherits the server's own credential
+ *     env vars — FACTORY_API_TOKEN / FACTORY_API_TOKENS /
+ *     FACTORY_SECRET_* are scrubbed from the ambient env before spawn
+ *     (V3.0 audit round 14, item #6 sub-item (e) — same fail-closed
+ *     scrub as the pty/tasks/projects paths), and captured output is
+ *     passed through redactText before it is returned. Do not point a
+ *     gate at a command you would not run yourself.
  *   - Commands run with cwd = the server process's working directory and
  *     inherit its environment. There is deliberately no per-project
  *     workspace-root resolution — the server has no such concept.
@@ -42,6 +47,8 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { redactText } from '@ai-factory/diagpack';
+import { scrubCredentialEnv } from '@ai-factory/runtime';
 
 export type QualityGateKind = 'lint' | 'test';
 
@@ -540,11 +547,15 @@ export function runQualityCommand(
       truncated: boolean;
       spawnError?: string;
     }) => {
+      // V3R14 #6(e): redact secret-shaped values from captured output
+      // before returning, so a credential can never be echoed back
+      // verbatim in the gate result (runhistory precedent: redactText).
       resolve({
         ...partial,
+        stdout: redactText(partial.stdout),
         stderr: partial.spawnError
-          ? `${partial.spawnError}${partial.stderr ? '\n' + partial.stderr : ''}`.slice(0, MAX_QUALITY_OUTPUT)
-          : partial.stderr,
+          ? redactText(`${partial.spawnError}${partial.stderr ? '\n' + partial.stderr : ''}`.slice(0, MAX_QUALITY_OUTPUT))
+          : redactText(partial.stderr),
         durationMs: Date.now() - start,
         startedAt,
       });
@@ -552,7 +563,9 @@ export function runQualityCommand(
 
     let child;
     try {
-      child = spawn('sh', ['-c', command], { cwd: opts.cwd ?? process.cwd() });
+      // V3R14 #6(e): scrub the server's own credential env vars from the
+      // ambient inheritance (same rule as pty.ts childEnv).
+      child = spawn('sh', ['-c', command], { cwd: opts.cwd ?? process.cwd(), env: scrubCredentialEnv(process.env) });
     } catch (e) {
       finish({
         ok: false,

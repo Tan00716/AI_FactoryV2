@@ -2,8 +2,9 @@
  * Batch Changes unit tests (declarative multi-repo batch changes).
  *
  * Imports ../src/batch-changes.ts directly: the module value-imports
- * node builtins only, so it resolves under node's type-stripping ESM
- * loader.
+ * node builtins plus package-level @ai-factory/runtime /
+ * @ai-factory/diagpack, which resolve via main -> dist under node's
+ * type-stripping ESM loader.
  *
  * Target repos are throwaway git repositories under a temp dir — never
  * any real project directory.
@@ -22,6 +23,7 @@ import {
   createRepoRegistry,
   parseBatchSpecYaml,
   parseYamlSubset,
+  runShellCommand,
 } from '../src/batch-changes.ts';
 
 function tmpRoot(): string {
@@ -445,4 +447,40 @@ test('store: corrupt file fails closed', () => {
 test('BatchError carries codes', () => {
   const e = new BatchError('SPEC_INVALID', 'x');
   assert.equal(e.code, 'SPEC_INVALID');
+});
+
+// ---------- V3R14 #6(e): credential env scrub + output redaction ----------
+
+test('runShellCommand: credential env is scrubbed from the child, output is redacted', async () => {
+  const keys = ['FACTORY_API_TOKEN', 'FACTORY_API_TOKENS', 'FACTORY_SECRET_PROBE'];
+  const saved = new Map<string, string | undefined>();
+  for (const k of keys) {
+    saved.set(k, process.env[k]);
+    process.env[k] = `test-value-for-${k.toLowerCase()}-1234567890`;
+  }
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'aif-batch-6e-'));
+  try {
+    const r = await runShellCommand('printenv', cwd, 10_000);
+    assert.equal(r.ok, true);
+    // Line-prefix assertions (R13 #6(d) precedent): the key NAME may
+    // legitimately appear as text in unrelated ambient vars.
+    const lines = r.output.split('\n');
+    for (const k of keys) {
+      assert.ok(!lines.some((line) => line.startsWith(`${k}=`)), `output leaked ${k}`);
+      assert.ok(!r.output.includes(`test-value-for-${k.toLowerCase()}`), `output leaked the value for ${k}`);
+    }
+    assert.match(r.output, /^PATH=/m);
+    // Secret-shaped values echoed by the step are masked, not echoed
+    // verbatim (redactText masks the value with an ellipsis marker).
+    const echo = await runShellCommand(`echo "api_key=sk-proj-v3r14bcEchoToken123456"`, cwd, 10_000);
+    assert.equal(echo.ok, true);
+    assert.ok(!echo.output.includes('sk-proj-v3r14bcEchoToken123456'), 'output echoed the secret value verbatim');
+    assert.ok(echo.output.includes('\u2026'), 'masked preview expected');
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });

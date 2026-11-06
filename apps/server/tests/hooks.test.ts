@@ -1,7 +1,9 @@
 /**
  * Hooks tests (W-B) — deterministic lifecycle hooks.
  *
- * Unit level (imports ../src/hooks.ts directly — node builtins only):
+ * Unit level (imports ../src/hooks.ts directly — node builtins plus
+ *   package-level @ai-factory/runtime / @ai-factory/diagpack, which
+ *   resolve via main -> dist):
  *   PreToolUse: {"decision":"deny"} verdict → veto; non-zero exit → veto;
  *     timeout → veto (fail-closed); {"decision":"allow"} → allowed;
  *     no verdict + exit 0 → allowed; tool matcher filters.
@@ -97,6 +99,44 @@ describe('runHook verdict parsing', () => {
       { event: 'PreToolUse', tool: 'exec' },
     );
     assert.equal(r.verdict, 'allow');
+  });
+
+  it('V3R14 #6(e): credential env is scrubbed from the child, output is redacted', async () => {
+    const keys = ['FACTORY_API_TOKEN', 'FACTORY_API_TOKENS', 'FACTORY_SECRET_PROBE'];
+    const saved = new Map<string, string | undefined>();
+    for (const k of keys) {
+      saved.set(k, process.env[k]);
+      process.env[k] = `test-value-for-${k.toLowerCase()}-1234567890`;
+    }
+    try {
+      const r = await runHook(
+        mkHook({ command: 'printenv' }),
+        { event: 'PreToolUse', tool: 'exec' },
+      );
+      assert.equal(r.ok, true);
+      // Line-prefix assertions (R13 #6(d) precedent): the key NAME may
+      // legitimately appear as text in unrelated ambient vars.
+      const lines = r.stdout.split('\n');
+      for (const k of keys) {
+        assert.ok(!lines.some((line) => line.startsWith(`${k}=`)), `stdout leaked ${k}`);
+        assert.ok(!r.stdout.includes(`test-value-for-${k.toLowerCase()}`), `stdout leaked the value for ${k}`);
+      }
+      assert.match(r.stdout, /^PATH=/m);
+      // Secret-shaped values echoed by the hook are masked, not echoed
+      // verbatim (redactText masks the value with an ellipsis marker).
+      const echo = await runHook(
+        mkHook({ command: `echo "api_key=sk-proj-v3r14hkEchoToken123456"` }),
+        { event: 'PreToolUse', tool: 'exec' },
+      );
+      assert.equal(echo.ok, true);
+      assert.ok(!echo.stdout.includes('sk-proj-v3r14hkEchoToken123456'), 'stdout echoed the secret value verbatim');
+      assert.ok(echo.stdout.includes('\u2026'), 'masked preview expected');
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   });
 });
 

@@ -10,9 +10,18 @@
  * Environment hygiene (see AGENTS.md: test-spawn env leak): the child
  * must NOT inherit NODE_TEST_CONTEXT / NODE_TEST_WORKER_ID, or the
  * nested `node --test` silently downgrades and reports nothing.
+ *
+ * Credential hygiene (V3.0 audit round 14, item #6 sub-item (e)): the
+ * child must NOT inherit the server's own credential env vars either
+ * (scrubCredentialEnv, same rule as pty.ts childEnv), and the failure
+ * text that flows back to the API — per-case error, fileErrors error,
+ * runError — is passed through redactText, so a secret-shaped value a
+ * planted test file echoes can never be read back verbatim.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
+import { redactText } from '@ai-factory/diagpack';
+import { scrubCredentialEnv } from '@ai-factory/runtime';
 import type { CaseResult, RunOutcome, RunSummary } from './types';
 
 /** Absolute path of the compiled runner child script. */
@@ -47,7 +56,10 @@ export async function runTests(req: RunRequest): Promise<RunOutcome> {
   for (const f of req.files) args.push('--file', f);
   for (const p of req.patterns ?? []) args.push('--pattern', p);
 
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  // V3R14 #6(e): scrub the server's own credential env vars from the
+  // ambient inheritance (same rule as pty.ts childEnv). The two
+  // node-test vars below stay deleted for the test-spawn leak rule.
+  const env: NodeJS.ProcessEnv = { ...scrubCredentialEnv(process.env) };
   delete env['NODE_TEST_CONTEXT'];
   delete env['NODE_TEST_WORKER_ID'];
 
@@ -113,8 +125,10 @@ export async function runTests(req: RunRequest): Promise<RunOutcome> {
           if (obj['failed'] === true) {
             fileErrors.push({
               file: obj['__file'] as string,
+              // V3R14 #6(e) channel (c): fileErrors stderr echo is a live
+              // read-back channel — redact before it reaches the API.
               error: typeof obj['error'] === 'string' && obj['error']
-                ? (obj['error'] as string)
+                ? redactText(obj['error'] as string)
                 : 'file failed to load (no cases reported)',
             });
           }
@@ -142,7 +156,10 @@ export async function runTests(req: RunRequest): Promise<RunOutcome> {
             durationMs: typeof obj['durationMs'] === 'number' ? (obj['durationMs'] as number) : 0,
           };
           if (typeof obj['error'] === 'string' && obj['error']) {
-            r.error = cap(obj['error'] as string, CASE_ERROR_CAP).text;
+            // V3R14 #6(e) channel (b): assertion/throw echo is a live
+            // read-back channel — cap first, then redact before it
+            // reaches the API.
+            r.error = redactText(cap(obj['error'] as string, CASE_ERROR_CAP).text);
           }
           results.push(r);
         }
@@ -168,6 +185,10 @@ export async function runTests(req: RunRequest): Promise<RunOutcome> {
         const tail = (errCapped.text.trim() || outCapped.text.trim()).slice(-2000);
         runError = tail ? `runner exited ${exitCode}: ${tail}` : `runner exited ${exitCode} with no results`;
       }
+      // V3R14 #6(e): runError is composed from fileErrors / summary
+      // errors, both live read-back channels — redact the composed
+      // value before it reaches the API.
+      if (runError !== undefined) runError = redactText(runError);
       resolve({
         results,
         summary: computed,

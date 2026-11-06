@@ -2,7 +2,9 @@
  * Recipe migration unit tests (deterministic recipe-based migration).
  *
  * Imports ../src/recipes.ts directly: the module value-imports node
- * builtins only, so it resolves under node's type-stripping ESM loader.
+ * builtins plus package-level @ai-factory/runtime /
+ * @ai-factory/diagpack, which resolve via main -> dist under node's
+ * type-stripping ESM loader.
  *
  * Fixture projects are throwaway directories under a temp dir — never
  * any real project directory.
@@ -25,6 +27,7 @@ import {
   parseRecipeJson,
   recipeErrorStatus,
   resolveProjectDir,
+  runVerifyCommand,
   validateRecipe,
   type ApprovalChecker,
   type RecipeSpec,
@@ -487,4 +490,40 @@ test('custom recipes: builtin name shadowing refused; regex + insert ops work en
   const after = fs.readFileSync(path.join(proj, 'src/app.ts'), 'utf8');
   assert.ok(after.includes("from 'preact'"));
   assert.ok(after.includes('// inserted by recipe'));
+});
+
+// ---------- V3R14 #6(e): credential env scrub + output redaction ----------
+
+test('runVerifyCommand: credential env is scrubbed from the child, output is redacted', async () => {
+  const keys = ['FACTORY_API_TOKEN', 'FACTORY_API_TOKENS', 'FACTORY_SECRET_PROBE'];
+  const saved = new Map<string, string | undefined>();
+  for (const k of keys) {
+    saved.set(k, process.env[k]);
+    process.env[k] = `test-value-for-${k.toLowerCase()}-1234567890`;
+  }
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'aif-recipes-6e-'));
+  try {
+    const r = await runVerifyCommand('printenv', cwd);
+    assert.equal(r.ok, true);
+    // Line-prefix assertions (R13 #6(d) precedent): the key NAME may
+    // legitimately appear as text in unrelated ambient vars.
+    const lines = r.output.split('\n');
+    for (const k of keys) {
+      assert.ok(!lines.some((line) => line.startsWith(`${k}=`)), `output leaked ${k}`);
+      assert.ok(!r.output.includes(`test-value-for-${k.toLowerCase()}`), `output leaked the value for ${k}`);
+    }
+    assert.match(r.output, /^PATH=/m);
+    // Secret-shaped values echoed by the verify command are masked, not
+    // echoed verbatim (redactText masks the value with an ellipsis marker).
+    const echo = await runVerifyCommand(`echo "api_key=sk-proj-v3r14rcEchoToken123456"`, cwd);
+    assert.equal(echo.ok, true);
+    assert.ok(!echo.output.includes('sk-proj-v3r14rcEchoToken123456'), 'output echoed the secret value verbatim');
+    assert.ok(echo.output.includes('\u2026'), 'masked preview expected');
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });

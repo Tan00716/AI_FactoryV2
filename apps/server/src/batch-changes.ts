@@ -51,6 +51,8 @@ import {
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { redactText } from '@ai-factory/diagpack';
+import { scrubCredentialEnv } from '@ai-factory/runtime';
 
 /* ------------------------------------------------------------------ */
 /* Errors                                                              */
@@ -694,7 +696,11 @@ export interface RunCommandResult {
  * Trust posture = quality-gate / hooks: operator's own privileges,
  * exit-code-only judgment, 20KB-per-stream truncation disclosed,
  * no sandbox claim. Sync spawn would block the event loop on slow
- * commands; we use async spawn with a hard timeout kill.
+ * commands; we use async spawn with a hard timeout kill. The child
+ * never inherits the server's own credential env vars (V3.0 audit
+ * round 14, item #6 sub-item (e) — scrubCredentialEnv, same rule as
+ * pty.ts childEnv), and captured output is passed through redactText
+ * before it is returned.
  */
 export function runShellCommand(cmd: string, cwd: string, timeoutMs: number): Promise<RunCommandResult> {
   const t0 = Date.now();
@@ -708,7 +714,9 @@ export function runShellCommand(cmd: string, cwd: string, timeoutMs: number): Pr
     };
     let child;
     try {
-      child = spawn('sh', ['-c', cmd], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      // V3R14 #6(e): scrub the server's own credential env vars from the
+      // ambient inheritance (same rule as pty.ts childEnv).
+      child = spawn('sh', ['-c', cmd], { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: scrubCredentialEnv(process.env) });
     } catch (e) {
       done({ ok: false, exitCode: -1, ms: Date.now() - t0, output: `spawn failed: ${(e as Error).message}` });
       return;
@@ -736,11 +744,14 @@ export function runShellCommand(cmd: string, cwd: string, timeoutMs: number): Pr
       clearTimeout(timer);
       const combined = (out + (err ? `\n[stderr]\n${err}` : '')).slice(0, 41_000);
       const truncated = out.length >= CAP || err.length >= CAP;
+      // V3R14 #6(e): redact secret-shaped values from captured output
+      // before returning (runhistory precedent: redactText).
+      const redacted = redactText(combined);
       done({
         ok: code === 0,
         exitCode: code ?? -1,
         ms: Date.now() - t0,
-        output: truncated ? combined + '\n[output truncated at 20KB/stream — truncation does not affect the exit-code verdict]' : combined,
+        output: truncated ? redacted + '\n[output truncated at 20KB/stream — truncation does not affect the exit-code verdict]' : redacted,
       });
     });
   });
