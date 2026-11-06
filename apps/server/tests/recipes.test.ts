@@ -527,3 +527,59 @@ test('runVerifyCommand: credential env is scrubbed from the child, output is red
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+// ---------- V3R15 #6(g): recipes `source` key round-trip ----------
+
+test('custom recipes round-trip: persisted file has no `source` key, re-read store lists and plans it', async () => {
+  const root = tmpRoot();
+  process.env.FACTORY_RECIPE_ROOTS = root;
+  const proj = fixture(root, 'app', { 'a.txt': 'old\n' });
+  const events: AuditEvent[] = [];
+  const approvals = fakeApprovals();
+  const executor = makeExecutor(root, approvals.checker, events);
+  const recipeJson = JSON.stringify({
+    name: 'round-trip-demo',
+    version: '1.0.0',
+    description: 'd',
+    match: { files: ['a.txt'] },
+    transform: [{ op: 'replace', file: 'a.txt', search: 'old', replace: 'new' }],
+  });
+  const added = executor.addCustomRecipe(recipeJson, 'tester');
+  assert.equal(added.source, 'custom');
+  const customPath = path.join(root, 'custom.json');
+  // Write side: the persisted file must not carry the `source` stamp —
+  // pre-fix it did, and every re-read rejected the whole store as corrupt.
+  const disk = fs.readFileSync(customPath, 'utf8');
+  assert.ok(!disk.includes('"source"'), `persisted file still carries source: ${disk.slice(0, 200)}`);
+  // Read side: a fresh store re-reading the file lists the recipe, and a
+  // fresh executor can plan it (pre-fix: isCorrupt=true, list empty,
+  // createPlan threw RECIPE_NOT_FOUND → 404).
+  const store2 = new CustomRecipeStore(customPath);
+  assert.equal(store2.isCorrupt(), false);
+  assert.equal(store2.list().length, 1);
+  assert.equal(store2.list()[0].name, 'round-trip-demo');
+  const executor2 = makeExecutor(root, approvals.checker, events);
+  const run = executor2.createPlan('round-trip-demo', proj, 'tester');
+  assert.equal(run.status, 'planned');
+  // Read-side tolerance: a legacy poison file (written pre-fix, with
+  // `"source": "custom"`) now loads instead of corrupting the store.
+  const parsed = JSON.parse(disk) as { recipes: Record<string, unknown>[] };
+  fs.writeFileSync(
+    customPath,
+    JSON.stringify({ recipes: [{ ...parsed.recipes[0], source: 'custom' }] }, null, 2),
+    'utf8',
+  );
+  const store3 = new CustomRecipeStore(customPath);
+  assert.equal(store3.isCorrupt(), false);
+  assert.equal(store3.list().length, 1);
+  // ...while a mismatched `source` value is still rejected (strict-key
+  // posture kept — the R15 #6(g) tolerance is equality-gated).
+  fs.writeFileSync(
+    customPath,
+    JSON.stringify({ recipes: [{ ...parsed.recipes[0], source: 'builtin' }] }, null, 2),
+    'utf8',
+  );
+  const store4 = new CustomRecipeStore(customPath);
+  assert.equal(store4.isCorrupt(), true);
+  assert.equal(store4.list().length, 0);
+});

@@ -119,6 +119,12 @@ export async function handleRecipesRoutes(
   if (runStore.isCorrupt()) {
     return ctx.json(res, 503, { error: 'STORE_CORRUPT', message: 'recipe run store is corrupt; refuses reads/writes' }), true;
   }
+  // R15 #6(g): a corrupt custom store must fail loudly like the run store,
+  // not silently degrade to "builtins only" while plan/execute 404.
+  const customStore = new CustomRecipeStore();
+  if (customStore.isCorrupt()) {
+    return ctx.json(res, 503, { error: 'STORE_CORRUPT', message: 'custom recipe store is corrupt; refuses reads/writes' }), true;
+  }
 
   // GET /api/recipes/runs → list runs.
   if (rest === '/runs' && method === 'GET') {

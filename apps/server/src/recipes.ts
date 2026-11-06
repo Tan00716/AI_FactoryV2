@@ -285,6 +285,14 @@ export function validateRecipe(raw: unknown, source: 'builtin' | 'custom'): Reci
   if (!isPlainObject(raw)) throw new RecipeError('RECIPE_INVALID', 'recipe must be a JSON object');
   const allowed = new Set(['name', 'version', 'description', 'tags', 'match', 'transform', 'verify', 'notes']);
   for (const k of Object.keys(raw)) {
+    // R15 #6(g): `source` is tolerated on re-read, but only when it equals
+    // the source this call is validating for (the value validateRecipe
+    // itself stamps on the returned object). Any other value is still an
+    // unknown key — the strict-key posture is unchanged.
+    if (k === 'source') {
+      if (raw['source'] !== source) throw new RecipeError('RECIPE_INVALID', 'unknown recipe key "source"');
+      continue;
+    }
     if (!allowed.has(k)) throw new RecipeError('RECIPE_INVALID', `unknown recipe key "${k}"`);
   }
   const name = asString(raw['name'], 'recipe.name');
@@ -1170,7 +1178,15 @@ export class CustomRecipeStore {
     if (this.corrupt) throw new RecipeError('STORE_CORRUPT', 'custom recipe store is corrupt; writes refused');
     mkdirSync(dirname(this.path), { recursive: true });
     const tmp = `${this.path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ recipes: this.recipes }, null, 2), 'utf8');
+    // R15 #6(g): `source` is an in-memory stamp only (validateRecipe adds
+    // it); persisting it made every re-read reject the whole store as
+    // corrupt (unknown key "source"). Strip it at serialization time.
+    const disk = this.recipes.map((r) => {
+      const { source: _dropped, ...rest } = r;
+      void _dropped;
+      return rest;
+    });
+    writeFileSync(tmp, JSON.stringify({ recipes: disk }, null, 2), 'utf8');
     renameSync(tmp, this.path);
   }
 

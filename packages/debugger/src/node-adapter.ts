@@ -22,6 +22,7 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { get } from 'node:http';
+import { scrubCredentialEnv } from '@ai-factory/runtime';
 import { DapFramer, encodeMessage } from './framer';
 import { CdpClient, CdpEvent } from './cdp';
 import type { DapBreakpoint, DapEvent, DapRequest, DapResponse, DapSourceBreakpoint, DapStackFrame } from './types';
@@ -294,7 +295,10 @@ function finishSession(exitCode: number | null): void {
 
 function scrubEnv(extra: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
+  // R15 #6(f): the ambient env is scrubbed of credential material first
+  // (same scrubCredentialEnv as pty.ts childEnv / R13 #6(d)); explicit
+  // launch-config env still overrides afterwards, as before.
+  for (const [k, v] of Object.entries(scrubCredentialEnv(process.env))) {
     if (v !== undefined) env[k] = v;
   }
   // Never leak the test-runner context into a debugged child (AGENTS.md:

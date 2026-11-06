@@ -9,11 +9,14 @@
  *     late requests reject immediately
  *   - no response in time    → request rejects with DAP_TIMEOUT (default 20s)
  *   - adapter answers success:false → request rejects with DAP_ERROR
- *   - child env always has NODE_TEST_CONTEXT / NODE_TEST_WORKER_ID stripped
+ *   - child env always has credential material scrubbed (R15 #6(f):
+ *     scrubCredentialEnv, same rule as pty.ts childEnv) and
+ *     NODE_TEST_CONTEXT / NODE_TEST_WORKER_ID stripped
  *     (a debugged `node --test` child must never silently no-op)
  */
 import { spawn, ChildProcess } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
+import { scrubCredentialEnv } from '@ai-factory/runtime';
 import { DapFramer, encodeMessage } from './framer';
 import type {
   DapBreakpoint,
@@ -53,7 +56,10 @@ export type SpawnFn = (
 
 function scrubEnv(extra?: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
+  // R15 #6(f): scrub credential material from the ambient env first (same
+  // scrubCredentialEnv as pty.ts childEnv / R13 #6(d)); explicit env still
+  // overrides afterwards, as before.
+  for (const [k, v] of Object.entries(scrubCredentialEnv(process.env))) {
     if (v !== undefined) env[k] = v;
   }
   delete env.NODE_TEST_CONTEXT;

@@ -41,6 +41,7 @@
  */
 import * as path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { redactText } from '@ai-factory/diagpack';
 import {
   FILE_MAX_BYTES,
   RemoteConnectionStore,
@@ -228,7 +229,11 @@ export async function handleRemoteRoutes(
           exitCode: out.exitCode,
           stdoutChars: out.stdout.length,
         }));
-        ctx.json(res, 200, { stdout: out.stdout, stderr: out.stderr, exitCode: out.exitCode });
+        // R15 #6(f): the exec response is returned verbatim to the API, so
+        // secret-shaped values are redacted before returning (runhistory /
+        // quality-gate precedent). The primary fix is the scrubbed child
+        // env in transport.ts spawnCollect.
+        ctx.json(res, 200, { stdout: redactText(out.stdout), stderr: redactText(out.stderr), exitCode: out.exitCode });
         return true;
       }
       // GET /api/remote/connections/:id/files?path=

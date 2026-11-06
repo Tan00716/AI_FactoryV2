@@ -59,6 +59,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve, sep, basename } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
+import { redactText } from '@ai-factory/diagpack';
 import {
   DebugClient,
   DebugError,
@@ -442,7 +443,11 @@ async function handleStartSession(req: IncomingMessage, res: ServerResponse, ctx
   client.on('output', (b) => {
     const body = b as { category?: string; output?: string };
     session.outputSeq += 1;
-    session.output.push({ seq: session.outputSeq, category: String(body.category ?? 'stdout'), output: String(body.output ?? '') });
+    // R15 #6(f): the buffered output is returned verbatim by GET /output,
+    // so secret-shaped values are redacted before buffering (runhistory /
+    // quality-gate precedent). The primary fix is the scrubbed target env;
+    // this only covers values the target prints from its own config.
+    session.output.push({ seq: session.outputSeq, category: String(body.category ?? 'stdout'), output: redactText(String(body.output ?? '')) });
     if (session.output.length > MAX_OUTPUT_LINES) session.output.splice(0, session.output.length - MAX_OUTPUT_LINES);
   });
 

@@ -8,6 +8,9 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { join } from 'node:path';
 import { DebugClient, resolveNodeAdapterScript, DapVariable } from '../src/index';
 
@@ -173,6 +176,89 @@ describe('node-adapter real debugging', () => {
       await assert.rejects(client.launch({ program: '/nonexistent/nope.mjs' }), /does not exist/);
     } finally {
       await client.stop();
+    }
+  });
+});
+
+// ---------- V3R15 #6(f): credential env scrub ----------
+
+describe('node-adapter credential env scrub (R15 #6(f))', () => {
+  it('target process never sees FACTORY_API_TOKEN / FACTORY_SECRET_*', async () => {
+    const keys = ['FACTORY_API_TOKEN', 'FACTORY_SECRET_PROBE'] as const;
+    const values: Record<string, string> = {
+      FACTORY_API_TOKEN: 'test-value-for-factory_api_token-1234567890',
+      FACTORY_SECRET_PROBE: 'test-value-for-factory_secret_probe-1234567890',
+    };
+    const saved = new Map<string, string | undefined>();
+    for (const k of keys) {
+      saved.set(k, process.env[k]);
+      process.env[k] = values[k];
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aif-debugger-6f-'));
+    // The debug target is always a Node script file (there is no "run a
+    // command" entry point), so the probe script prints the credentials
+    // itself and then parks (node --inspect keeps the process alive until
+    // the debugger disconnects) — output buffering only keeps the last
+    // 200 lines, so nothing may be printed after the secret lines.
+    const script = path.join(dir, 'pwn.mjs');
+    fs.writeFileSync(
+      script,
+      [
+        `console.log('FACTORY_API_TOKEN=' + process.env.FACTORY_API_TOKEN);`,
+        `console.log('FACTORY_SECRET_PROBE=' + process.env.FACTORY_SECRET_PROBE);`,
+        `console.log('PATH=' + process.env.PATH);`,
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const client = new DebugClient(resolveNodeAdapterScript());
+    try {
+      const outputs: string[] = [];
+      client.on('output', (b) => {
+        outputs.push((b as { output?: string }).output ?? '');
+      });
+      await client.start();
+      await client.initialize();
+      await client.launch({ program: script, stopOnEntry: false });
+      await client.configurationDone();
+      // The target prints and then parks (a node --inspect process stays
+      // alive until the debugger disconnects), so there is no natural
+      // 'terminated' to wait for — wait for the output itself instead.
+      const deadline = Date.now() + 20000;
+      for (;;) {
+        const text = outputs.join('');
+        if (
+          text.includes('FACTORY_API_TOKEN=') &&
+          text.includes('FACTORY_SECRET_PROBE=') &&
+          text.includes('PATH=')
+        ) {
+          break;
+        }
+        if (Date.now() > deadline) {
+          throw new Error(`timed out waiting for target output; got: ${text.slice(-500)}`);
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const text = outputs.join('');
+      const lines = text.split('\n');
+      // Line-prefix assertions (R13 #6(d) precedent): the key NAME may
+      // legitimately appear as text in unrelated ambient vars.
+      for (const k of keys) {
+        assert.ok(!lines.some((line) => line.startsWith(`${k}=${values[k]}`)), `target env leaked ${k}`);
+        assert.ok(!text.includes(values[k]), `target output leaked the value for ${k}`);
+      }
+      assert.ok(lines.some((line) => line === 'FACTORY_API_TOKEN=undefined'), `expected scrubbed token line; got: ${text.slice(-500)}`);
+      assert.ok(lines.some((line) => line.startsWith('PATH=/')), 'PATH must still pass through to the target');
+      const terminated = waitForEvent(client, 'terminated');
+      await client.terminate();
+      await terminated;
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      await client.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

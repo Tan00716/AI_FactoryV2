@@ -220,3 +220,46 @@ test('recipes HTTP: library, plan, approval gate, execute, audit', async () => {
     srv.proc.kill('SIGKILL');
   }
 });
+
+// ---------- V3R15 #6(g): corrupt custom store fails loudly ----------
+
+test('recipes HTTP: corrupt custom store answers explicit 503 on list', async () => {
+  const srv = await startServer();
+  try {
+    // Baseline: the library reads fine before any poison file exists.
+    let r = await api(srv.port, 'GET', '/api/recipes');
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    // A still-corrupt custom store file: a recipe whose `source` value
+    // does not equal the source being validated for. (A legacy pre-fix
+    // poison file with `"source": "custom"` is healed by the R15 #6(g)
+    // read-side tolerance and must NOT 503 — it loads normally.)
+    const customPath = path.join(srv.dir, 'data', 'recipes-custom.json');
+    fs.mkdirSync(path.dirname(customPath), { recursive: true });
+    fs.writeFileSync(
+      customPath,
+      JSON.stringify(
+        {
+          recipes: [
+            {
+              name: 'poison-demo',
+              version: '1.0.0',
+              description: 'd',
+              match: { files: ['a.txt'] },
+              transform: [{ op: 'replace', file: 'a.txt', search: 'old', replace: 'new' }],
+              source: 'builtin',
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    // The list path — not just plan — must fail loudly with 503.
+    r = await api(srv.port, 'GET', '/api/recipes');
+    assert.equal(r.status, 503, JSON.stringify(r.body));
+    assert.equal(r.body.error, 'STORE_CORRUPT');
+  } finally {
+    srv.proc.kill('SIGKILL');
+  }
+});

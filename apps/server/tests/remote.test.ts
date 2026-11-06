@@ -105,7 +105,7 @@ process.exit(1);
   return dir;
 }
 
-async function startServer(): Promise<Running> {
+async function startServer(extraEnv: NodeJS.ProcessEnv = {}): Promise<Running> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-http-'));
   const shimDir = makeShim();
   const port = await freePort();
@@ -121,6 +121,9 @@ async function startServer(): Promise<Running> {
   for (const k of ['FACTORY_API_TOKEN', 'FACTORY_SECRETS_DIR', 'FACTORY_RUNTIME_TOOLS']) {
     delete env[k];
   }
+  // Injected after the credential purge so a test can plant known
+  // credentials in the server child env (R15 #6(f) probe).
+  Object.assign(env, extraEnv);
   const proc = spawn(process.execPath, [serverEntry], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   const deadline = Date.now() + 30_000;
   for (;;) {
@@ -157,10 +160,11 @@ async function api(
   method: string,
   p: string,
   body?: unknown,
+  extraHeaders?: Record<string, string>,
 ): Promise<{ status: number; body: any }> {
   const res = await fetch(`http://127.0.0.1:${port}${p}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...extraHeaders },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: res.status, body: await res.json() };
@@ -279,6 +283,48 @@ test('remote development end to end over HTTP', async () => {
 
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(sshRoot, { recursive: true, force: true });
+  } finally {
+    await stopServer(srv);
+  }
+});
+
+// ---------- V3R15 #6(f): credential env scrub + output redaction ----------
+
+test('remote local exec: credential env is scrubbed from the child, output is redacted', async () => {
+  const token = 'test-value-for-factory_api_token-1234567890';
+  const secret = 'test-value-for-factory_secret_probe-1234567890';
+  const srv = await startServer({ FACTORY_API_TOKEN: token, FACTORY_SECRET_PROBE: secret });
+  // A configured token disables the open-local bypass: every call below
+  // must carry Authorization: Bearer <token> (auth.ts gate semantics).
+  const auth = { Authorization: `Bearer ${token}` };
+  try {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-6f-root-'));
+    try {
+      let r = await api(srv.port, 'POST', '/api/remote/connections', {
+        name: 'local-scrub',
+        kind: 'local',
+        remoteRoot: root,
+      }, auth);
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      const id = r.body.connection.id as string;
+      r = await api(srv.port, 'POST', `/api/remote/connections/${id}/probe`, undefined, auth);
+      assert.equal(r.body.probe.online, true, JSON.stringify(r.body));
+      // Full `printenv` dump (exit 0), never `printenv KEY` (exit 1 when
+      // the key is absent, which would hide the scrub behind a failure).
+      r = await api(srv.port, 'POST', `/api/remote/connections/${id}/exec`, { command: 'printenv' }, auth);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      const out = String(r.body.stdout ?? '');
+      const lines = out.split('\n');
+      // Line-prefix assertions (R13 #6(d) precedent): the key NAME may
+      // legitimately appear as text in unrelated ambient vars.
+      assert.ok(!lines.some((line) => line.startsWith('FACTORY_API_TOKEN=')), 'exec leaked FACTORY_API_TOKEN');
+      assert.ok(!lines.some((line) => line.startsWith('FACTORY_SECRET_PROBE=')), 'exec leaked FACTORY_SECRET_PROBE');
+      assert.ok(!out.includes(token), 'exec leaked the token value');
+      assert.ok(!out.includes(secret), 'exec leaked the secret value');
+      assert.ok(lines.some((line) => line.startsWith('PATH=/')), 'PATH must still pass through to the child');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   } finally {
     await stopServer(srv);
   }

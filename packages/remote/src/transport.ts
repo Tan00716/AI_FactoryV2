@@ -20,6 +20,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as posix from 'node:path/posix';
+import { scrubCredentialEnv } from '@ai-factory/runtime';
 import { RemoteError, type RemoteConnection } from './types';
 
 export interface TransportRunOptions {
@@ -80,7 +81,11 @@ function spawnCollect(
     try {
       child = spawn(cmd, args, {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: opts.env ?? process.env,
+        // R15 #6(f): single choke point — when the caller passes no explicit
+        // env, the child inherits the ambient env scrubbed of credential
+        // material (same scrubCredentialEnv as pty.ts childEnv / R13 #6(d)).
+        // An explicit opts.env still passes through as before.
+        env: opts.env ?? scrubCredentialEnv(process.env),
       });
     } catch (e) {
       reject(new RemoteError('TRANSPORT_UNAVAILABLE', `${cmd} could not start: ${(e as Error).message}`));
