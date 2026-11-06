@@ -28,7 +28,7 @@
 
 import { realpathSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, resolve, sep, isAbsolute } from 'path';
+import { basename, dirname, join, resolve, sep, isAbsolute } from 'path';
 import { REASON_CODES } from '@ai-factory/api-contracts';
 import { resolvePolicy, SandboxTier, SandboxViolationError } from './sandbox';
 
@@ -407,4 +407,54 @@ export function resolveConfinedPathSync(root: string, userPath: string): string 
 
 function realpathSyncSafe(p: string): string {
   return realpathSync(p);
+}
+
+/**
+ * V3R19 #6(p): canonicalize a path through symlinks (realpath).
+ *
+ * The credential-leak family's path checks (control-dir guards, sandbox
+ * exclusions, workspace/file jails) were all lexical (`path.resolve` +
+ * string prefix) and therefore blind to a symlink component: a cwd or
+ * file path that lexically sits inside the workspace can resolve to
+ * the vault directory. Every such check must decide on the canonical
+ * path instead.
+ *
+ * A path that does not exist yet resolves through its nearest existing
+ * ancestor, with the not-yet-existing tail re-attached lexically — the
+ * same pattern as resolveConfinedPathSync above. The tail cannot itself
+ * be a symlink (it does not exist), so a lexical tail is not a bypass;
+ * every component that exists on disk is resolved. Fallback semantics
+ * (TOP10 #6(p): "不存在时回落词法并拒绝或报错"): this helper never
+ * silently returns a lexical path as verified — callers that require
+ * the path to exist (jailFile, resolveCwd's spawn) still fail
+ * downstream with not-found, and callers that decide security on the
+ * result decide on the resolved ancestor, never on an unverified
+ * lexical form. TOCTOU between check and use cannot be closed at this
+ * layer (same caveat as resolveConfinedPathSync); callers needing
+ * atomicity must use an OS backend.
+ */
+export function canonicalizePathSync(p: string): string {
+  const abs = resolve(p);
+  try {
+    return realpathSync(abs);
+  } catch {
+    // Walk up to the nearest existing ancestor.
+    const tail: string[] = [];
+    let probe = abs;
+    for (;;) {
+      const parent = dirname(probe);
+      if (parent === probe) return abs; // filesystem root: nothing left to resolve
+      tail.unshift(basename(probe));
+      try {
+        return resolve(realpathSync(parent), ...tail);
+      } catch {
+        probe = parent;
+      }
+    }
+  }
+}
+
+/** Canonical containment: `candidate` equals `root` or lives under it (both canonical). */
+export function canonicalPathIsInside(candidate: string, root: string): boolean {
+  return candidate === root || candidate.startsWith(root + sep);
 }

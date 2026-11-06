@@ -1,10 +1,11 @@
 /**
  * Egress firewall tests — imports ../src/egress.ts straight from src
  * under node's type-stripping ESM loader (the module is node builtins
- * only, so it resolves — dual-mode import rule in AGENTS.md). The last
- * test exercises a REAL outbound point: @ai-factory/search's fetchText
- * with the process guard installed (deny refuses before dialing; an
- * allowed call reaches a real local server).
+ * plus the compiled @ai-factory/diagpack package, so it resolves —
+ * dual-mode import rule in AGENTS.md). The last test exercises a REAL
+ * outbound point: @ai-factory/search's fetchText with the process guard
+ * installed (deny refuses before dialing; an allowed call reaches a real
+ * local server).
  *
  * Run: npm run test:server (TMPDIR wrapper); or
  *   node --test apps/server/tests/egress.test.ts

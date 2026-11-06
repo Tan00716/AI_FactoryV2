@@ -86,12 +86,16 @@
  *     process-memory only and resets on restart — the audit record is
  *     the durable trail).
  *
- * Dual-mode note: this module imports node builtins ONLY, so server
- * tests may import it straight from src with type-stripping.
+ * Dual-mode note: this module imports node builtins plus the compiled
+ * @ai-factory/diagpack package (stripUserinfoFromText, R19 N6 — the
+ * package resolves to compiled dist via node_modules, same as
+ * routes/httpclient.ts), so server tests may import it straight from
+ * src with type-stripping.
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
+import { stripUserinfoFromText } from '@ai-factory/diagpack';
 
 export const EGRESS_DATA_DIR_ENV = 'AI_FACTORY_DATA_DIR';
 export const EGRESS_BLOCKED_CODE = 'EGRESS_BLOCKED';
@@ -713,9 +717,16 @@ export function ruleLabel(rule: EgressRule): string {
 export function checkEgress(url: string, ctx: EgressCheckContext): EgressVerdict {
   const verdict = evaluateEgress(url, egressStore().layersFor(ctx));
   if (!verdict.allowed) {
+    // R19 N6: strip embedded credentials BEFORE the entry is built — the
+    // audit sink, the notification sink and the in-memory block log all
+    // read `entry.url`, so this one change covers all three write points.
+    // Strip first, then truncate: userinfo sits at the head of the URL,
+    // so slicing first would keep it (a 600-char URL sliced to 512 still
+    // carries the whole userinfo segment). Malformed, default-deny and
+    // non-http-scheme refusals all walk this branch.
     const entry: EgressBlockEntry = {
       at: new Date().toISOString(),
-      url: url.slice(0, 512),
+      url: stripUserinfoFromText(url).slice(0, 512),
       hostname: verdict.hostname,
       source: ctx.source,
       reason: verdict.reason,

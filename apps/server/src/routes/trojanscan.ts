@@ -30,9 +30,10 @@
  */
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
+import { canonicalPathIsInside, canonicalizePathSync } from '@ai-factory/security';
 import type { Checker, Finding } from '../inspections';
 import { scanText, type TrojanHit } from '@ai-factory/trojanscan';
 
@@ -75,8 +76,12 @@ function jailFile(root: string, raw: unknown): string {
   if (typeof raw !== 'string' || !raw.trim() || raw.length > 1024) {
     throw new TrojanRouteError('path is required');
   }
-  const abs = resolve(root, raw);
-  if (abs !== root && !abs.startsWith(root + sep)) {
+  // V3R19 #6(p): decide on the canonical path — a symlink inside the
+  // scan root that points outside it must be refused exactly like a
+  // direct path outside the root.
+  const abs = canonicalizePathSync(resolve(root, raw));
+  const realRoot = canonicalizePathSync(root);
+  if (abs !== realRoot && !canonicalPathIsInside(abs, realRoot)) {
     throw new TrojanRouteError(`path escapes the scan root: ${raw.slice(0, 80)}`, 403);
   }
   let st: ReturnType<typeof statSync>;

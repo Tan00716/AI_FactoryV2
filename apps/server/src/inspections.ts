@@ -312,6 +312,8 @@ function suppressedByNosec(line: string, kind: string): boolean {
 // so existing importers of this module keep working.
 import {
   SECRET_PATTERNS,
+  canonicalPathIsInside,
+  canonicalizePathSync,
   isPlaceholderValue,
   maskSecret,
   type SecretPattern,
@@ -695,20 +697,27 @@ export class InspectionRootError extends Error {
 /** Allowed inspection roots from FACTORY_INSPECT_ROOTS (default: process cwd). */
 export function inspectRoots(): string[] {
   const raw = (process.env.FACTORY_INSPECT_ROOTS ?? '').split(delimiter).map((s) => s.trim()).filter(Boolean);
-  if (raw.length === 0) return [process.cwd()];
-  return raw.map((r) => resolve(r));
+  // V3R19 #6(p): canonicalize — an allowed root reached through a
+  // symlink must compare equal to a candidate that resolves to the
+  // same real directory.
+  if (raw.length === 0) return [canonicalizePathSync(process.cwd())];
+  return raw.map((r) => canonicalizePathSync(resolve(r)));
 }
 
 /**
  * Resolve the requested root, jailed inside inspectRoots(). No root
  * given → the first allowed root. Throws InspectionRootError
  * fail-closed when the root escapes the jail.
+ *
+ * V3R19 #6(p): the containment test runs on canonical paths — a root
+ * that is (or sits under) a symlink to outside the allowed roots must
+ * be refused exactly like a direct path outside the jail.
  */
 export function resolveInspectionRoot(root?: string): string {
   const roots = inspectRoots();
-  const candidate = root && root.trim() ? resolve(root.trim()) : roots[0];
+  const candidate = canonicalizePathSync(root && root.trim() ? resolve(root.trim()) : roots[0]);
   for (const allowed of roots) {
-    if (candidate === allowed || candidate.startsWith(allowed + sep)) return candidate;
+    if (candidate === allowed || canonicalPathIsInside(candidate, allowed)) return candidate;
   }
   throw new InspectionRootError(`inspection root is outside the allowed roots: ${candidate}`);
 }

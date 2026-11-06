@@ -142,7 +142,7 @@ import {
   RunHistoryCorruptError,
   type RunHistoryMeta,
 } from '@ai-factory/runhistory';
-import { redactText } from '@ai-factory/diagpack';
+import { redactCredentialAssignments, redactText, stripUserinfoFromText } from '@ai-factory/diagpack';
 import { redactAmbientCredentialValues, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import type { RouteContext } from './context';
 import type { ParseStats, ProblemMatcherDef } from '../problem-matchers';
@@ -830,7 +830,19 @@ async function executeChain(
   const flat = flattenPlan(planned.plan);
   ctx.audit.record(actor, 'TASK_CHAIN_STARTED', 'task', label, {
     chain: flat.map((t) => t.label),
-    ...(extraArgs && extraArgs.length > 0 ? { extraArgs: extraArgs.slice(0, 20) } : {}),
+    // R19 N10: desensitize extraArgs before audit ingestion — same four
+    // layers as PROJECT_EXEC (see routes/projects.ts): URL userinfo
+    // strip, redactText, value-aware ambient redaction,
+    // credential-assignment redaction (the `KEY=VALUE` form redactText is
+    // blind to). The same value is appended to argv by buildArgv, so the
+    // audit copy must not carry what the process actually receives.
+    ...(extraArgs && extraArgs.length > 0
+      ? {
+          extraArgs: extraArgs
+            .map((a) => redactCredentialAssignments(redactAmbientCredentialValues(redactText(stripUserinfoFromText(a)))))
+            .slice(0, 20),
+        }
+      : {}),
   });
   const chain = await executePlan(d, planned.plan, root, projectId, ctx, actor, envOverlay, extraArgs, label);
   // V3-#7: the timeline is the chain's per-step record; the flattened plan

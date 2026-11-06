@@ -35,7 +35,8 @@
  */
 import { statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'http';
-import { resolve, sep } from 'node:path';
+import { resolve } from 'node:path';
+import { canonicalPathIsInside, canonicalizePathSync } from '@ai-factory/security';
 import { isIgnoredSync } from '../ignore-gate';
 import { resolveInspectionRoot } from '../inspections';
 import {
@@ -67,8 +68,12 @@ function jailFile(root: string, raw: unknown): string {
   if (typeof raw !== 'string' || !raw.trim() || raw.length > 1024) {
     throw new TodoScanError('path is required');
   }
-  const abs = resolve(root, raw);
-  if (abs !== root && !abs.startsWith(root + sep)) {
+  // V3R19 #6(p): decide on the canonical path — a symlink inside the
+  // scan root that points outside it must be refused exactly like a
+  // direct path outside the root.
+  const abs = canonicalizePathSync(resolve(root, raw));
+  const realRoot = canonicalizePathSync(root);
+  if (abs !== realRoot && !canonicalPathIsInside(abs, realRoot)) {
     throw new TodoScanError(`path escapes the scan root: ${raw.slice(0, 80)}`);
   }
   let st: ReturnType<typeof statSync>;

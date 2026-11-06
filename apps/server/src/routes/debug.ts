@@ -62,6 +62,7 @@ import type { RouteContext } from './context';
 import type { ExecSandboxDecision } from '../exec-sandbox';
 import { redactText } from '@ai-factory/diagpack';
 import { redactAmbientCredentialValues } from '@ai-factory/runtime';
+import { canonicalPathIsInside, canonicalizePathSync } from '@ai-factory/security';
 import {
   DebugClient,
   DebugError,
@@ -154,8 +155,13 @@ function jailFile(root: string, file: string, label: string): string {
   if (typeof file !== 'string' || !file.trim() || file.length > 1024) {
     throw new DebugRouteError(`invalid ${label}: ${String(file).slice(0, 80)}`, 'bad-file');
   }
-  const abs = resolve(root, file);
-  if (abs !== root && !abs.startsWith(root + sep)) {
+  // V3R19 #6(p): decide on the canonical path — a symlink inside the
+  // target dir that points outside it must be refused exactly like a
+  // direct path outside the dir (the existsSync check below still runs
+  // on the canonical path, so a dangling link is 'not-found' as before).
+  const abs = canonicalizePathSync(resolve(root, file));
+  const realRoot = canonicalizePathSync(root);
+  if (abs !== realRoot && !canonicalPathIsInside(abs, realRoot)) {
     throw new DebugRouteError(`${label} escapes the target dir: ${file}`, 'jail');
   }
   if (!existsSync(abs)) {

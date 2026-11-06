@@ -13,9 +13,10 @@
  *   if (await handleFileRoutes(req, res, url, ctx)) return;
  */
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname, relative, resolve, sep } from 'path';
+import { dirname, relative, resolve } from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
+import { canonicalPathIsInside, canonicalizePathSync } from '@ai-factory/security';
 import {
   ScopeLockDeniedError,
   checkScopedWrite,
@@ -24,7 +25,7 @@ import {
 } from '../scope-lock';
 import { snapshotOnSave, type SnapshotRecord } from '../local-history';
 
-const WORKSPACE_ROOT = resolve(process.cwd());
+const WORKSPACE_ROOT = canonicalizePathSync(resolve(process.cwd()));
 const MAX_FILE_BYTES = 1024 * 1024; // 1 MiB — prototype cap
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.next', 'out', '__pycache__']);
 
@@ -36,16 +37,23 @@ const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.next', 'out', '__py
  * database replacement, audit chain included. The binary-file check
  * on GET happened to block .db *reads*, but nothing blocked writes.
  * Both read and write now refuse the control-plane tree.
+ * V3R19 #6(p): canonicalized — the guard must see through a symlink
+ * inside the workspace that points at the control dir, exactly like
+ * the exec argv guard (R19 N1 family).
  */
-const CONTROL_DATA_DIR = dirname(resolve(process.env.DB_PATH ?? './data/factory.db'));
+const CONTROL_DATA_DIR = canonicalizePathSync(dirname(resolve(process.env.DB_PATH ?? './data/factory.db')));
 
 function hitsControlDir(abs: string): boolean {
-  return abs === CONTROL_DATA_DIR || abs.startsWith(CONTROL_DATA_DIR + sep);
+  return abs === CONTROL_DATA_DIR || canonicalPathIsInside(abs, CONTROL_DATA_DIR);
 }
 
 /** Confine a relative path to the workspace tree. Returns absolute path. */
 export function resolveWorkspacePath(raw: string | undefined | null): string {
-  const abs = resolve(WORKSPACE_ROOT, raw ?? '.');
+  // V3R19 #6(p): decide on the canonical path — a path that is (or
+  // sits under) a symlink to outside the workspace must be refused
+  // exactly like the lexical path would be (same shape as
+  // routes/exec.ts resolveCwd).
+  const abs = canonicalizePathSync(resolve(WORKSPACE_ROOT, raw ?? '.'));
   const rel = relative(WORKSPACE_ROOT, abs);
   if (rel === '..' || rel.startsWith(`..${'/'}`)) {
     throw new Error(`path must stay inside the workspace (${WORKSPACE_ROOT})`);

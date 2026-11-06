@@ -116,6 +116,76 @@ export function selfCheckSecretPatterns(serialized: string): string[] {
   return hit;
 }
 
+/**
+ * R19 N8–N10 — redact credential-shaped assignment values in free text
+ * before it is written to the audit chain (PROJECT_EXEC `command`,
+ * COMMAND_EXECUTED `args` / `expandedArgs`, TASK_CHAIN_STARTED
+ * `extraArgs`). Command text is the conventional carrier for
+ * `KEY=VALUE` inline assignments (`FACTORY_API_TOKEN=<value> node …`)
+ * and `--token <value>` flags, and both shapes survive redactText:
+ * `generic-api-key` does not match `API_TOKEN` (it needs `api_key` /
+ * `access_token` / … literally), `generic-password` needs a quoted
+ * value, and both generic shapes need a value of >= 8 characters.
+ * redactAmbientCredentialValues (runtime) only knows ambient values, so
+ * an operator-pasted marker is invisible to it as well.
+ *
+ * Coverage (key name kept — it is diagnostic — value replaced with
+ * `***`, the R17 (h) convention; no value fragment is retained because
+ * the audit chain is cross-principal readable):
+ *  - `KEY=VALUE` / `KEY: VALUE` (quoted or bare, `Bearer <value>` after
+ *    a colon included) where KEY contains TOKEN | SECRET | KEY |
+ *    PASSWORD | PASSWD | PWD | AUTH | CREDENTIAL | PRIVATE
+ *    (case-insensitive; the literal key `KEY` itself matches). A bare
+ *    value stops at whitespace or a shell metacharacter (`;`, `&`, `|`),
+ *    so `?token=abc&other=1` keeps `&other=1`.
+ *  - `--flag value` / `--flag=value` where the flag name contains TOKEN
+ *    | SECRET | PASSWORD | PASSWD | PWD | API_KEY | AUTH | CREDENTIAL |
+ *    PRIVATE.
+ *
+ * Deliberately NOT a SECRET_PATTERNS change: the shared table is the
+ * secret scanner's and the prompt gate's single source of truth, and
+ * widening it there would change scanner/gate behaviour repo-wide
+ * (R19 TOP10 #6(r):改表须另议). This is an audit-ingestion helper only,
+ * layered after stripUserinfoFromText / redactText /
+ * redactAmbientCredentialValues at the three call sites. Over-masking
+ * is fail-closed here: a key like `monkey` contains `KEY` and its value
+ * is masked too — acceptable in an audit field, where the key name is
+ * what a reviewer needs.
+ */
+const CREDENTIAL_KEY_PART =
+  '[A-Za-z0-9_.-]*(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|PWD|AUTH|CREDENTIAL|PRIVATE)[A-Za-z0-9_.-]*';
+
+export function redactCredentialAssignments(text: string): string {
+  if (!text) return text;
+  let out = text;
+  // Assignment form: KEY=VALUE / KEY: VALUE / KEY="..." / KEY='...'.
+  // The bare-value charset excludes quotes and angle brackets so a
+  // closing quote is never swallowed into the masked value.
+  const assignmentRe = new RegExp(
+    `(${CREDENTIAL_KEY_PART})(\\s*[:=]\\s*)((?:"[^"]*"|'[^']*'|(?:Bearer\\s+)?[^\\s;&|"'<>]+))`,
+    'gi',
+  );
+  out = out.replace(assignmentRe, (_m, key: string, sep: string, value: string) => {
+    // Keep surrounding quotes (shape is diagnostic); the value itself is gone.
+    const quote = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))
+      ? value[0]
+      : '';
+    return `${key}${sep}${quote}***${quote}`;
+  });
+  // Long-flag form: --token value / --token=value (also --api-key, --password …).
+  const flagRe = new RegExp(
+    `(^|\\s)(--[A-Za-z0-9-]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PWD|API[-_]?KEY|AUTH|CREDENTIAL|PRIVATE)[A-Za-z0-9-]*)(\\s*=\\s*|\\s+)((?:"[^"]*"|'[^']*'|[^\\s;&|"'<>]+))`,
+    'gi',
+  );
+  out = out.replace(flagRe, (_m, lead: string, flag: string, sep: string, value: string) => {
+    const quote = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))
+      ? value[0]
+      : '';
+    return `${lead}${flag}${sep}${quote}***${quote}`;
+  });
+  return out;
+}
+
 /** Mask a single config-ish value with the shared convention. */
 export function maskValue(value: string): string {
   return maskSecret(value);

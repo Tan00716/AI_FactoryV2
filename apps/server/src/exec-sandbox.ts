@@ -80,7 +80,8 @@ import {
 } from './build-sandbox';
 import type { SandboxMode } from './sandbox-modes';
 import { existsSync } from 'node:fs';
-import { dirname, resolve, sep } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
+import { canonicalizePathSync, canonicalPathIsInside } from '@ai-factory/security';
 
 /**
  * Control-plane directories that must never be visible inside a sandbox
@@ -107,6 +108,12 @@ import { dirname, resolve, sep } from 'node:path';
  * A candidate that does not exist on the host is skipped — there is
  * nothing to hide — which also keeps the prefix stable for runs
  * whose vault was never created.
+ *
+ * V3R19 #6(p): candidates are canonicalized (realpath, nearest
+ * existing ancestor for a not-yet-existing tail). A control dir
+ * reached through a symlink must compare equal to a cwd that resolves
+ * to the same real directory, and vice versa — lexical comparison
+ * let both directions slip past (R19 N1).
  */
 export function controlPlaneDirs(env: NodeJS.ProcessEnv = process.env): string[] {
   const candidates: string[] = [dirname(resolve(env.DB_PATH ?? './data/factory.db'))];
@@ -114,7 +121,7 @@ export function controlPlaneDirs(env: NodeJS.ProcessEnv = process.env): string[]
   if (env.AI_FACTORY_DATA_DIR) candidates.push(resolve(env.AI_FACTORY_DATA_DIR));
   const out: string[] = [];
   for (const dir of candidates) {
-    const abs = resolve(dir);
+    const abs = canonicalizePathSync(dir);
     if (!out.includes(abs)) out.push(abs);
   }
   return out;
@@ -131,7 +138,10 @@ export function controlPlaneDirs(env: NodeJS.ProcessEnv = process.env): string[]
  * can never drift apart.
  */
 export function controlDirForCwd(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  const base = resolve(cwd);
+  // V3R19 #6(p): compare canonical paths — a cwd that is a symlink to
+  // a control dir (or to a path under one) must refuse exactly like
+  // the lexical cwd would.
+  const base = canonicalizePathSync(resolve(cwd));
   for (const dir of controlPlaneDirs(env)) {
     if (dir === base) return dir;
   }
@@ -139,12 +149,18 @@ export function controlDirForCwd(cwd: string, env: NodeJS.ProcessEnv = process.e
 }
 
 export function sandboxExcludeDirs(cwd: string, env: NodeJS.ProcessEnv = process.env): string[] {
-  const base = resolve(cwd);
-  const prefix = base.endsWith(sep) ? base : base + sep;
+  // V3R19 #6(p): the containment test runs on canonical paths, but
+  // the returned dirs are expressed UNDER THE LEXICAL cwd: inside the
+  // sandbox only the cwd bind is visible, so the tmpfs must be mounted
+  // at a path under the lexical cwd (the kernel follows the symlink
+  // when the child resolves it). Mounting the canonical path would
+  // fail — it does not exist in the namespace.
+  const realCwd = canonicalizePathSync(resolve(cwd));
   const out: string[] = [];
   for (const abs of controlPlaneDirs(env)) {
-    if (abs === base || !abs.startsWith(prefix)) continue;
-    if (!out.includes(abs)) out.push(abs);
+    if (abs === realCwd || !canonicalPathIsInside(abs, realCwd)) continue;
+    const lexical = resolve(cwd, relative(realCwd, abs));
+    if (!out.includes(lexical)) out.push(lexical);
   }
   return out;
 }

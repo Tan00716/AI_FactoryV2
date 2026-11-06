@@ -33,11 +33,11 @@
  */
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { dirname, relative, resolve, sep } from 'path';
+import { dirname, relative, resolve } from 'path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
 import { resolveSessionWorktreePath } from '../worktrees';
-import { UnverifiedBackend } from '@ai-factory/security';
+import { UnverifiedBackend, canonicalPathIsInside, canonicalizePathSync } from '@ai-factory/security';
 import { PtyUnavailableError, ambientCredentialValues, runCommandPty, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import { SecretNotFoundError, redactSecretValues, redactSecretValuesCounted } from '@ai-factory/secrets';
 import { recordRedactionHit } from '../redaction-monitor';
@@ -129,25 +129,37 @@ function execProjectId(body: Record<string, unknown>): string | null {
 
 /**
  * Workspace root — the ai-factory project root (the server is started from
- * it). All execution is confined to this tree.
+ * it). All execution is confined to this tree. V3R19 #6(p): canonicalized,
+ * so a workspace reached through a symlink compares equal to its real
+ * path in resolveCwd.
  */
-const WORKSPACE_ROOT = resolve(process.cwd());
+const WORKSPACE_ROOT = canonicalizePathSync(resolve(process.cwd()));
 
 /**
  * SPEC §4.1 — control-plane data directory. The control DB lives here
  * (same default as index.ts: DB_PATH ?? './data/factory.db'); agents must
  * never read or write it, even through `node -e`. Human terminals are only
  * barred from this one directory — everything else keeps working.
+ * V3R19 #6(p): canonicalized (realpath, nearest existing ancestor for a
+ * not-yet-existing tail), like SECRETS_DIR / DATA_DIR below.
  */
-const CONTROL_DATA_DIR = dirname(resolve(process.env.DB_PATH ?? './data/factory.db'));
+const CONTROL_DATA_DIR = canonicalizePathSync(dirname(resolve(process.env.DB_PATH ?? './data/factory.db')));
 // V3R18 #6(n): the vault may live outside the control-plane data dir
 // (FACTORY_SECRETS_DIR); the argv guard recognises it with the same
 // treatment as CONTROL_DATA_DIR. Read at module load like
 // CONTROL_DATA_DIR — both are set at server start, before this module
-// loads. AI_FACTORY_DATA_DIR is deliberately NOT an argv guard dir: it
-// defaults to the data dir itself (already covered) and is only a
-// sandbox equal-cwd refusal member, not an argv target.
-const SECRETS_DIR = process.env.FACTORY_SECRETS_DIR ? resolve(process.env.FACTORY_SECRETS_DIR) : null;
+// loads.
+const SECRETS_DIR = process.env.FACTORY_SECRETS_DIR ? canonicalizePathSync(resolve(process.env.FACTORY_SECRETS_DIR)) : null;
+// V3R19 #6(s): AI_FACTORY_DATA_DIR joins the argv guard set (same
+// treatment as FACTORY_SECRETS_DIR, resolved at module load like
+// CONTROL_DATA_DIR). R18 deliberately left it out ("defaults to the
+// data dir itself, already covered"); R19 N5 showed the custom-layout
+// gap — a custom data dir outside dirname(DB_PATH) was unguarded in
+// disabled/danger modes — so the guard now covers it. Choice recorded:
+// EXPAND the guard set (not accept-risk comment). In the default
+// layout the dir equals dirname(DB_PATH) and is already covered, so
+// this changes nothing there.
+const DATA_DIR = process.env.AI_FACTORY_DATA_DIR ? canonicalizePathSync(resolve(process.env.AI_FACTORY_DATA_DIR)) : null;
 
 const TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_CHARS = 32 * 1024;
@@ -251,7 +263,11 @@ function tokenize(command: string): string[] {
 
 /** Confine a requested cwd to the workspace tree. Returns absolute dir. */
 function resolveCwd(raw: string | undefined): string {
-  const abs = resolve(WORKSPACE_ROOT, raw ?? '.');
+  // V3R19 #6(p): decide on the canonical path — a cwd that is (or sits
+  // under) a symlink to outside the workspace must be refused exactly
+  // like the lexical path would be. The returned cwd is the real path
+  // (the same directory, so spawn/chdir behaviour is unchanged).
+  const abs = canonicalizePathSync(resolve(WORKSPACE_ROOT, raw ?? '.'));
   const rel = relative(WORKSPACE_ROOT, abs);
   if (rel === '..' || rel.startsWith(`..${'/'}`)) {
     throw new Error(`cwd must stay inside the workspace (${WORKSPACE_ROOT})`);
@@ -479,14 +495,23 @@ export function checkAiShellLine(line: string): string[][] {
 /**
  * §4.1 control-plane guard as a reusable check: true when the cwd or
  * any argument touches the control-plane data directory.
+ *
+ * V3R19 #6(p): the containment test runs on canonical paths — a token
+ * or cwd that names a control dir through a symlink must hit exactly
+ * like the direct path would. The lexical `includes` net is kept as
+ * the coarse first layer (it catches `--config=<dir>/...` spellings
+ * that never resolve to a path). V3R19 #6(s): the guarded set now also
+ * includes AI_FACTORY_DATA_DIR (see DATA_DIR above).
  */
 export function commandHitsControlDir(cwd: string, tokens: string[]): boolean {
-  const guarded = SECRETS_DIR ? [CONTROL_DATA_DIR, SECRETS_DIR] : [CONTROL_DATA_DIR];
+  const guarded: string[] = [CONTROL_DATA_DIR];
+  if (SECRETS_DIR) guarded.push(SECRETS_DIR);
+  if (DATA_DIR) guarded.push(DATA_DIR);
   const hitsForbidden = (p: string): boolean => {
     for (const dir of guarded) {
       if (p.includes(dir)) return true;
-      const r = resolve(cwd, p);
-      if (r === dir || r.startsWith(dir + sep)) return true;
+      const r = canonicalizePathSync(resolve(cwd, p));
+      if (r === dir || canonicalPathIsInside(r, dir)) return true;
     }
     return false;
   };

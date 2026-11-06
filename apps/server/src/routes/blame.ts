@@ -33,7 +33,7 @@
  */
 import { readFileSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { dirname, relative, resolve, sep } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import {
   blameFile,
   fuseTimeline,
@@ -45,6 +45,7 @@ import {
   BlameError,
   type TimelinePoint,
 } from '@ai-factory/blame';
+import { canonicalPathIsInside, canonicalizePathSync } from '@ai-factory/security';
 import { listSnapshots, readSnapshot } from '../local-history';
 import type { RouteContext } from './context';
 
@@ -89,8 +90,12 @@ function jailFile(root: string, raw: unknown): { abs: string; rel: string } {
   if (typeof raw !== 'string' || !raw.trim() || raw.length > 1024) {
     throw new BlameRouteError('path is required', 400, 'bad-path');
   }
-  const abs = resolve(root, raw);
-  if (abs !== root && !abs.startsWith(root + sep)) {
+  // V3R19 #6(p): decide on the canonical path — a symlink inside the
+  // inspection root that points outside it must be refused exactly
+  // like a direct path outside the root.
+  const abs = canonicalizePathSync(resolve(root, raw));
+  const realRoot = canonicalizePathSync(root);
+  if (abs !== realRoot && !canonicalPathIsInside(abs, realRoot)) {
     throw new BlameRouteError(`path escapes the inspection root: ${raw.slice(0, 80)}`, 403, 'path-escaped');
   }
   let st: ReturnType<typeof statSync>;
@@ -100,7 +105,7 @@ function jailFile(root: string, raw: unknown): { abs: string; rel: string } {
     throw new BlameRouteError(`path does not exist: ${raw.slice(0, 80)}`, 404, 'path-missing');
   }
   if (!st.isFile()) throw new BlameRouteError(`path is not a file: ${raw.slice(0, 80)}`, 400, 'not-a-file');
-  return { abs, rel: relative(root, abs) };
+  return { abs, rel: relative(realRoot, abs) };
 }
 
 function blameStatus(e: unknown): { status: number; code: string } {

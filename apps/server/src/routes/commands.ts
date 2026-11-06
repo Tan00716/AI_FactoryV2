@@ -62,6 +62,22 @@ import { executeQualityGate, type QualityGateKind } from './quality';
 import { getRepoMapService } from './repomap';
 import { RepoMapError } from '@ai-factory/repomap';
 import { CONTEXT_PROVIDER_METAS } from './context-providers';
+import { redactCredentialAssignments, redactText, stripUserinfoFromText } from '@ai-factory/diagpack';
+import { redactAmbientCredentialValues } from '@ai-factory/runtime';
+
+/**
+ * R19 N9: desensitize slash-command arguments before audit ingestion —
+ * same four layers as PROJECT_EXEC (see routes/projects.ts): URL userinfo
+ * strip, redactText (specific token shapes), value-aware ambient
+ * redaction (bare ambient values), credential-assignment redaction (the
+ * `KEY=VALUE` / `--token <value>` forms redactText is blind to). Slash
+ * parameters are the conventional carrier for both forms.
+ */
+function redactAuditArgs(text: string): string {
+  return redactCredentialAssignments(
+    redactAmbientCredentialValues(redactText(stripUserinfoFromText(text))),
+  );
+}
 
 const PREFIX = '/api/commands';
 
@@ -543,13 +559,13 @@ export async function handleCommandRoutes(
       const warning = shadowWarning(custom);
       if (custom.kind === 'template') {
         const text = expandTemplate(custom.template, args);
-        ctx.audit.record(actor, 'COMMAND_EXECUTED', 'command', name, { kind: 'template', args: args.slice(0, 200) });
+        ctx.audit.record(actor, 'COMMAND_EXECUTED', 'command', name, { kind: 'template', args: redactAuditArgs(args).slice(0, 200) });
         ctx.json(res, 200, { type: 'template', name, text, ...(warning ? { warning } : {}) });
         return true;
       }
       if (custom.kind === 'command') {
         const expanded = expandTemplate(custom.template, args);
-        ctx.audit.record(actor, 'COMMAND_EXECUTED', 'command', name, { kind: 'command', target: custom.target, args: args.slice(0, 200) });
+        ctx.audit.record(actor, 'COMMAND_EXECUTED', 'command', name, { kind: 'command', target: custom.target, args: redactAuditArgs(args).slice(0, 200) });
         ctx.json(res, 200, { type: 'command', name, commandId: custom.target, args: expanded, ...(warning ? { warning } : {}) });
         return true;
       }
@@ -568,7 +584,7 @@ export async function handleCommandRoutes(
         });
         return true;
       }
-      ctx.audit.record(actor, 'COMMAND_EXECUTED', 'command', name, { kind: 'task', target: custom.target, expandedArgs: expandedArgs.slice(0, 20) });
+      ctx.audit.record(actor, 'COMMAND_EXECUTED', 'command', name, { kind: 'task', target: custom.target, expandedArgs: expandedArgs.map(redactAuditArgs).slice(0, 20) });
       ctx.json(res, 200, {
         type: 'task', name, label: custom.target, expandedArgs,
         chain: outcome.chain, ...(warning ? { warning } : {}),

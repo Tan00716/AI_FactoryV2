@@ -1,7 +1,8 @@
 /**
  * Egress first-run wizard tests (V3-#5) — store-level + pure merge.
  * Run: node --test apps/server/tests/egress-wizard.test.ts (type-stripping;
- * egress.ts imports node builtins only, so src import is safe).
+ * egress.ts imports node builtins plus the compiled @ai-factory/diagpack
+ * package, so src import is safe).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

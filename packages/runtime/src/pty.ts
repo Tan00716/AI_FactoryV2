@@ -49,6 +49,7 @@
  *     gate, the server's exec policy). Nothing here grants permission.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { stripControlPlanePointerEnv } from './ambient-credentials';
 import { FactoryError, MissingBinaryError } from './types';
 import type { ToolImpl } from './harness';
 
@@ -449,7 +450,15 @@ export function scrubCredentialEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 function childEnv(opts: ShellRunOptions, pty: boolean): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...scrubCredentialEnv(process.env), ...(opts.env ?? {}) };
+  // V3R19 #6(p): strip the control-plane pointer vars as well as the
+  // credential vars (R17 #6(k) pattern). The pointers let a terminal
+  // child name the vault without guessing (R19 O1, stacked on N1);
+  // the strip is defence in depth here — the sandbox decision and the
+  // argv guard are the primary lines — not a precondition. Explicit
+  // operator overlays (opts.env) are applied after the strip, so a
+  // deliberate operator-supplied value survives, as at every other
+  // (k)/(m) call site.
+  const env: NodeJS.ProcessEnv = { ...stripControlPlanePointerEnv(scrubCredentialEnv(process.env)), ...(opts.env ?? {}) };
   // A real terminal session carries a TERM; without one, color- and
   // capability-aware programs cannot behave as they do on a terminal.
   // Only fill it in when nothing in the chain set one.

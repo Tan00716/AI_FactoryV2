@@ -1,19 +1,24 @@
-# Rule Priority Disclosure (AI Factory, baseline 3f6d50c)
+# Rule Priority Disclosure (AI Factory, baseline 1454295)
 
 This document discloses how AI Factory merges rule files into the
 effective view. It only describes current behavior; it does not change
 the rule engine, and it does not claim any precedence order beyond what
 the code implements.
 
-Status date: 2026-11-06. Baseline commit: 3f6d50c. R18 fidelity note:
-H1 and body aligned to 3f6d50c; packages/rules and
-apps/server/src/routes/rules.ts are unchanged between f6641d5 and
-3f6d50c (git diff --name-only empty; the interval is 40 files: 9
-documentation files plus package-lock.json, apps/server
-(h)+(k) source/routes/tests, and packages/runtime, packages/debugger
-and packages/testexplorer source/tests (#6(h)/(j)/(k)/(l) changes),
-which touches no rule engine file), so semantics
-are unchanged.
+Status date: 2026-11-06. Baseline commit: 1454295. R19 fidelity note:
+H1 and body aligned to 1454295; packages/rules and
+apps/server/src/routes/rules.ts are unchanged between 3f6d50c and
+1454295 (git diff --name-only empty; the interval is 33 files: 9
+documentation files, apps/server (m)+(n)+(o) source/routes/tests,
+packages/debugger src/node-adapter.ts, packages/diagpack
+src/redact.ts / tests/strip-userinfo.test.ts, packages/mutation
+src/runner.ts / src/types.ts, and packages/remote src/transport.ts
+(#6(m)/(n)/(o) changes), which touches no rule engine file), so
+semantics are unchanged.
+Fidelity review (V3R18 #8): the engine files were also unchanged between
+f6641d5 and 3f6d50c (verified with git diff --name-only over
+packages/rules and apps/server/src/routes/rules.ts: zero files).
+Title baseline and body baseline now both read 3f6d50c; semantics unchanged.
 Review this document
 whenever packages/rules or apps/server/src/routes/rules.ts changes.
 Next review: the next V3.0 audit round, or immediately when

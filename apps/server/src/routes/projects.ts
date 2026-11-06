@@ -62,7 +62,8 @@ import {
 } from '@ai-factory/db';
 import type { FactoryDatabase } from '@ai-factory/db';
 import type { AuditLog } from '@ai-factory/core';
-import { stripCloneUrlUserinfo, stripUserinfoFromText } from '@ai-factory/diagpack';
+import { redactCredentialAssignments, redactText, stripCloneUrlUserinfo, stripUserinfoFromText } from '@ai-factory/diagpack';
+import { redactAmbientCredentialValues } from '@ai-factory/runtime';
 import type { RouteContext } from './context';
 
 /**
@@ -395,13 +396,34 @@ export async function handleProjectsRoutes(
       agentId: actor,
       timeoutMs,
       onAudit: (event) => {
+        // R19 N8: desensitize the command before audit ingestion. The
+        // executor redacts stdout/stderr with redactText but passes
+        // `command` through raw, and command text is the conventional
+        // carrier for `KEY=VALUE` inline assignments and `--token <value>`
+        // flags. Layers, innermost first: URL userinfo strip, redactText
+        // (specific token shapes), value-aware ambient redaction (bare
+        // ambient values), credential-assignment redaction (the
+        // `FACTORY_API_TOKEN=` form redactText is blind to). No layer
+        // alone suffices — see redactCredentialAssignments.
+        // The same composition covers `reason`: most fail() reasons are
+        // fixed policy strings, but the whitelist rejection embeds the
+        // command's first token (`command not in whitelist:
+        // 'FACTORY_API_TOKEN=<value>' …), so a rejected assignment-first
+        // command would leak through `reason` even with `command`
+        // redacted. Same event, same root cause — not a new gap.
+        const clean = (s: string | undefined): string | undefined =>
+          s === undefined
+            ? undefined
+            : redactCredentialAssignments(
+                redactAmbientCredentialValues(redactText(stripUserinfoFromText(s))),
+              );
         ctx.audit.record(event.agentId, 'PROJECT_EXEC', 'workspace', event.cwd, {
-          command: event.command,
+          command: clean(event.command) ?? '',
           kind: event.kind,
           exitCode: event.exitCode,
           timedOut: event.timedOut,
           durationMs: event.durationMs,
-          reason: event.reason,
+          reason: clean(event.reason),
         });
       },
     });

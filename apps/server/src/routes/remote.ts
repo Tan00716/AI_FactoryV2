@@ -43,6 +43,7 @@ import * as path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { redactText } from '@ai-factory/diagpack';
 import { redactAmbientCredentialValues } from '@ai-factory/runtime';
+import { canonicalPathIsInside, canonicalizePathSync } from '@ai-factory/security';
 import type { ExecSandboxDecision } from '../exec-sandbox';
 import {
   FILE_MAX_BYTES,
@@ -106,30 +107,37 @@ export function setRemoteSandboxDecider(fn: ((cwd: string) => Promise<ExecSandbo
 }
 
 /**
- * V3R18 #6(m): the read jail for `local` file reads. A local connection's
+ * V3R18 #6(m): the file jail for `local` connections. A local connection's
  * remoteRoot can point anywhere on the host, and GET /file is viewer-
  * readable — without a jail a viewer could read the vault (or any other
  * host file) by creating a local connection rooted at the secrets dir.
  * Allowed roots: the workspace (server cwd) plus FACTORY_REMOTE_ALLOWED_ROOTS
  * (path-delimiter separated, same shape as FACTORY_INSPECT_ROOTS). The
  * allowlist is read per request, so tests can set it in the server env.
- * Only GET /file is jailed (the audited readback surface); list/write
- * are out of this round's scope.
+ *
+ * V3R19 #6(q): the jail now covers the whole local file surface — GET
+ * /file (R18 (m)), GET /files list (R19 N3: it had no jail at all) and
+ * POST /file write (R19 N4) all check the same jail before touching
+ * the transport. V3R19 #6(p): the check runs on canonical paths —
+ * a symlink inside an allowed root that points outside it must be
+ * refused exactly like a direct path outside the jail (R19 N2).
+ * `resolveRemotePath`'s `..` rejection stays the first layer.
  */
 function remoteReadJailRoots(): string[] {
-  const roots = [path.resolve(process.cwd())];
+  const roots = [canonicalizePathSync(path.resolve(process.cwd()))];
   const extra = process.env.FACTORY_REMOTE_ALLOWED_ROOTS;
   if (extra) {
     for (const r of extra.split(path.delimiter)) {
       const t = r.trim();
-      if (t) roots.push(path.resolve(t));
+      if (t) roots.push(canonicalizePathSync(path.resolve(t)));
     }
   }
   return roots;
 }
 
-function isPathInRemoteReadJail(abs: string): boolean {
-  return remoteReadJailRoots().some((root) => abs === root || abs.startsWith(root + path.sep));
+function isPathInRemoteFileJail(abs: string): boolean {
+  const real = canonicalizePathSync(abs);
+  return remoteReadJailRoots().some((root) => real === root || canonicalPathIsInside(real, root));
 }
 
 function storePath(): string {
@@ -330,6 +338,17 @@ export async function handleRemoteRoutes(
       if (method === 'GET' && seg.length === 3 && seg[2] === 'files') {
         requireOnline(conn);
         const rel = url.searchParams.get('path') ?? '.';
+        // V3R19 #6(q): list gets the same jail as GET /file — without
+        // it a viewer could enumerate any directory name (R19 N3),
+        // including through a symlink that escapes the jail (R19 N2
+        // family: the check runs on the canonical path).
+        if (conn.kind === 'local') {
+          const abs = path.resolve(resolveRemotePath(conn.remoteRoot, rel));
+          if (!isPathInRemoteFileJail(abs)) {
+            ctx.json(res, 400, { error: 'INVALID_PATH', detail: `path is outside the remote file jail: ${rel}` });
+            return true;
+          }
+        }
         const entries = await listDir(conn, rel);
         ctx.json(res, 200, { path: rel, entries });
         return true;
@@ -346,11 +365,13 @@ export async function handleRemoteRoutes(
           // V3R18 #6(m): local file reads are jailed to the workspace
           // or an allowlisted root (see remoteReadJailRoots). Without
           // this, a viewer could read the vault through a local
-          // connection rooted at the secrets dir.
+          // connection rooted at the secrets dir. V3R19 #6(p): the
+          // jail decides on the canonical path, so a symlink inside
+          // the jail that points outside it is refused (R19 N2).
           if (conn.kind === 'local') {
             const abs = path.resolve(resolveRemotePath(conn.remoteRoot, rel));
-            if (!isPathInRemoteReadJail(abs)) {
-              ctx.json(res, 400, { error: 'INVALID_PATH', detail: `path is outside the remote read jail: ${rel}` });
+            if (!isPathInRemoteFileJail(abs)) {
+              ctx.json(res, 400, { error: 'INVALID_PATH', detail: `path is outside the remote file jail: ${rel}` });
               return true;
             }
           }
@@ -373,6 +394,20 @@ export async function handleRemoteRoutes(
           if (Buffer.byteLength(content, 'utf8') > FILE_MAX_BYTES) {
             ctx.json(res, 400, { error: 'INVALID_INPUT', detail: `content exceeds ${FILE_MAX_BYTES} bytes` });
             return true;
+          }
+          // V3R19 #6(q): writes get the same jail as reads — without
+          // it an operator could write to any host path the server
+          // uid can write (R19 N4), including through a symlink that
+          // escapes the jail. The check canonicalizes, so a not-yet-
+          // existing target resolves through its nearest existing
+          // ancestor (a new file under a symlinked dir is still
+          // caught, a new file inside the jail still passes).
+          if (conn.kind === 'local') {
+            const abs = path.resolve(resolveRemotePath(conn.remoteRoot, rel));
+            if (!isPathInRemoteFileJail(abs)) {
+              ctx.json(res, 400, { error: 'INVALID_PATH', detail: `path is outside the remote file jail: ${rel}` });
+              return true;
+            }
           }
           await writeFile(conn, rel, content);
           ctx.audit.record('human', REMOTE_FILE_WRITTEN, 'remote', conn.id, auditDetails(conn, { path: rel }));

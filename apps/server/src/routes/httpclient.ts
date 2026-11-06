@@ -608,7 +608,29 @@ async function executeSend(ctx: RouteContext, input: SendInput, projectId: strin
 
 function recordHistory(store: ApiStore, partial: Omit<HistoryEntry, 'id' | 'at' | 'spec'> & { spec: HistoryEntry['spec'] }): string {
   const id = randomUUID();
-  const entry: HistoryEntry = { id, at: Date.now(), ...partial };
+  // R19 N7: strip embedded credentials at the single ingestion point —
+  // both executeSend branches (blocked + sent) flow through here, so one
+  // change covers spec.url, urlTemplate, error and spec.body. The audit
+  // side already strips error (R18 N6, :604); the history store did not.
+  // 口径说明（既有链）: the history store is append-only in practice and
+  // is never rewritten, so entries recorded before this fix may still
+  // carry a raw userinfo segment; handleListHistory strips at read time
+  // so old entries no longer leak through the viewer-readable endpoint.
+  // Known trade-off: rerun of a URL that carried embedded credentials
+  // loses them (the stored template no longer has them) and fails auth —
+  // deliberate, storage must not hold credentials; use an auth profile.
+  const entry: HistoryEntry = {
+    id,
+    at: Date.now(),
+    ...partial,
+    urlTemplate: stripUserinfoFromText(partial.urlTemplate),
+    ...(partial.error !== undefined ? { error: stripUserinfoFromText(partial.error) } : {}),
+    spec: {
+      ...partial.spec,
+      url: stripUserinfoFromText(partial.spec.url),
+      ...(partial.spec.body !== undefined ? { body: stripUserinfoFromText(partial.spec.body) } : {}),
+    },
+  };
   store.history = [entry, ...store.history].slice(0, MAX_HISTORY);
   saveStore(store);
   return id;
@@ -904,11 +926,22 @@ async function handleListHistory(res: ServerResponse, ctx: RouteContext): Promis
   try {
     // History entries are redacted by construction (template URLs,
     // auth-stripped specs); still strip any stray credential header.
+    // R19 N7: also strip urlTemplate / spec.url / error / spec.body at
+    // read time — entries recorded before the recordHistory fix still
+    // carry raw userinfo in the store, and this endpoint is
+    // viewer-readable. Display-only: the stored entry is untouched.
     const store = loadStore();
     const names = apiKeyHeaderNames(store);
     const history = store.history.map((h) => ({
       ...h,
-      spec: { ...h.spec, headers: stripAuthHeaders(h.spec.headers, names) },
+      urlTemplate: stripUserinfoFromText(h.urlTemplate),
+      ...(h.error !== undefined ? { error: stripUserinfoFromText(h.error) } : {}),
+      spec: {
+        ...h.spec,
+        url: stripUserinfoFromText(h.spec.url),
+        headers: stripAuthHeaders(h.spec.headers, names),
+        ...(h.spec.body !== undefined ? { body: stripUserinfoFromText(h.spec.body) } : {}),
+      },
     }));
     ctx.json(res, 200, { history });
   } catch (e) {
