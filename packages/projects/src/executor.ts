@@ -12,11 +12,24 @@
  *  - a kill timer aborts over-long commands (default 30s);
  *  - stdout/stderr are truncated to a byte cap;
  *  - every attempt — allowed or rejected — emits an audit event.
+ *  - the child never inherits the server's own credential env vars:
+ *    FACTORY_API_TOKEN / FACTORY_API_TOKENS / FACTORY_SECRET_* are
+ *    scrubbed from the ambient env before spawn (V3.0 audit round 13,
+ *    item #6 sub-item (d) — same fail-closed scrub as the pty/tasks
+ *    paths, §46.2 H4). Explicit per-run `opts.env` values pass through
+ *    unscrubbed, exactly like the pty childEnv rule: secrets reach a
+ *    child only through explicit injection, never ambient inheritance.
+ *  - captured stdout/stderr are passed through redactText before they
+ *    are returned, so secret-shaped values can never be echoed back
+ *    verbatim in the ExecResult (runhistory precedent).
  *
- * Zero external deps; node built-ins only.
+ * Zero npm deps; node built-ins plus @ai-factory/runtime (scrub) and
+ * @ai-factory/diagpack (redactText).
  */
 import { spawn } from 'node:child_process';
 import { resolve, sep } from 'node:path';
+import { redactText } from '@ai-factory/diagpack';
+import { scrubCredentialEnv } from '@ai-factory/runtime';
 import {
   assertConfinementForAutonomousShell,
   UnverifiedBackend,
@@ -248,7 +261,11 @@ export class WorkspaceExecutor {
     const child = spawn(command, {
       cwd,
       shell: '/bin/sh',
-      env: { ...process.env, ...(opts.env ?? {}) },
+      // V3R13 #6(d): scrub the server's own credential env vars from the
+      // ambient inheritance (same rule as pty.ts childEnv). Explicit
+      // per-run opts.env passes through unscrubbed — secrets reach a
+      // child only through explicit injection, never ambient inheritance.
+      env: { ...scrubCredentialEnv(process.env), ...(opts.env ?? {}) },
       windowsHide: true,
       // Own process group so a timeout kills the whole tree (e.g. the
       // `sleep` child of `/bin/sh -c "sleep 5"`), not just the shell.
@@ -298,12 +315,15 @@ export class WorkspaceExecutor {
     });
     clearTimeout(timer);
 
+    // V3R13 #6(d): redact secret-shaped values from captured output
+    // before returning, so a credential can never be echoed back
+    // verbatim in the ExecResult (runhistory precedent: redactText).
     const result: ExecResult = {
       command,
       cwd,
       exitCode,
-      stdout,
-      stderr,
+      stdout: redactText(stdout),
+      stderr: redactText(stderr),
       timedOut,
       truncated,
       durationMs: Date.now() - started,

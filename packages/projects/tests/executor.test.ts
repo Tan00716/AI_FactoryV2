@@ -136,6 +136,60 @@ describe('WorkspaceExecutor timeouts and output', () => {
   });
 });
 
+describe('WorkspaceExecutor credential env scrub (V3R13 #6d)', () => {
+  const CREDENTIAL_KEYS = ['FACTORY_API_TOKEN', 'FACTORY_API_TOKENS', 'FACTORY_SECRET_DEMO'];
+
+  it('does not pass ambient credential env vars to the child', async () => {
+    const saved = new Map<string, string | undefined>();
+    for (const k of CREDENTIAL_KEYS) {
+      saved.set(k, process.env[k]);
+      process.env[k] = `test-value-for-${k.toLowerCase()}-1234567890`;
+    }
+    try {
+      const ex = makeExecutor();
+      const res = await ex.exec('env');
+      assert.equal(res.exitCode, 0);
+      // Assert on env-assignment LINES, not raw substrings: unrelated
+      // ambient vars (e.g. a runtime trace-context blob) can legitimately
+      // contain the key NAME as text; the threat is the child receiving
+      // the credential as its own env assignment.
+      const lines = res.stdout.split('\n');
+      for (const k of CREDENTIAL_KEYS) {
+        assert.ok(
+          !lines.some((line) => line.startsWith(`${k}=`)),
+          `stdout leaked ${k}`,
+        );
+        assert.ok(
+          !res.stdout.includes(`test-value-for-${k.toLowerCase()}`),
+          `stdout leaked the value for ${k}`,
+        );
+      }
+      // Scrub is credential-only: benign ambient vars still pass through.
+      assert.match(res.stdout, /^PATH=/m);
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
+  it('still passes explicit non-credential opts.env through', async () => {
+    const ex = makeExecutor();
+    const res = await ex.exec('echo $MY_MARKER_VALUE', { env: { MY_MARKER_VALUE: 'marker-12345' } });
+    assert.equal(res.exitCode, 0);
+    assert.match(res.stdout, /marker-12345/);
+  });
+
+  it('redacts secret-shaped values from captured stdout', async () => {
+    const ex = makeExecutor();
+    const token = 'sk-proj-abcdefghij1234567890';
+    const res = await ex.exec(`echo 'api_key=${token}'`);
+    assert.equal(res.exitCode, 0);
+    assert.ok(!res.stdout.includes(token), 'stdout echoed the secret value verbatim');
+  });
+});
+
 describe('WorkspaceExecutor audit', () => {
   it('audits successful and rejected executions', async () => {
     const ex = makeExecutor();
