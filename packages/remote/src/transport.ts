@@ -20,7 +20,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as posix from 'node:path/posix';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import { RemoteError, type RemoteConnection } from './types';
 
 export interface TransportRunOptions {
@@ -28,6 +28,15 @@ export interface TransportRunOptions {
   maxBytes?: number;
   input?: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * V3R18 #6(m): argv prefix to prepend to the spawned command (the
+   * exec bwrap sandbox prefix). Only the server route passes it, and
+   * only for `local` connections — ssh/wsl/container commands run on
+   * the remote host, where a local bwrap prefix is meaningless. The
+   * transport applies it blindly to whatever spawnCollect call carries
+   * it, so the route must never set it for a non-local kind.
+   */
+  argvPrefix?: string[];
 }
 
 export interface TransportResult {
@@ -79,13 +88,22 @@ function spawnCollect(
   return new Promise((resolve, reject) => {
     let child: ChildProcess;
     try {
-      child = spawn(cmd, args, {
+      // V3R18 #6(m): the sandbox prefix (when the route passed one)
+      // goes in front of the command argv — bwrap first, then the
+      // command. The env strip below is the single choke point for
+      // every kind: when the caller passes no explicit env, the child
+      // inherits the ambient env scrubbed of credential material AND
+      // stripped of the control-plane pointer vars, so a remote exec
+      // cannot locate the vault or the admin token file.
+      const argv =
+        opts.argvPrefix && opts.argvPrefix.length > 0 ? [...opts.argvPrefix, cmd, ...args] : [cmd, ...args];
+      child = spawn(argv[0] as string, argv.slice(1), {
         stdio: ['pipe', 'pipe', 'pipe'],
         // R15 #6(f): single choke point — when the caller passes no explicit
         // env, the child inherits the ambient env scrubbed of credential
         // material (same scrubCredentialEnv as pty.ts childEnv / R13 #6(d)).
         // An explicit opts.env still passes through as before.
-        env: opts.env ?? scrubCredentialEnv(process.env),
+        env: opts.env ?? stripControlPlanePointerEnv(scrubCredentialEnv(process.env)),
       });
     } catch (e) {
       reject(new RemoteError('TRANSPORT_UNAVAILABLE', `${cmd} could not start: ${(e as Error).message}`));

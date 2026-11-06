@@ -59,6 +59,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve, sep, basename } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
+import type { ExecSandboxDecision } from '../exec-sandbox';
 import { redactText } from '@ai-factory/diagpack';
 import { redactAmbientCredentialValues } from '@ai-factory/runtime';
 import {
@@ -123,6 +124,18 @@ export function setDebugInspectionRootResolver(fn: ((root?: string) => string) |
 let adapterSpawnFn: SpawnFn | null = null;
 export function setDebugAdapterSpawnFn(fn: SpawnFn | null): void {
   adapterSpawnFn = fn;
+}
+
+/**
+ * Sandbox decider: coordinator-injected decideExecSandbox (V3R18 #6(m)).
+ * Same setter-injection pattern as the other wiring above — this module
+ * is imported from src by tests, so it must not value-import
+ * ../exec-sandbox (dual-mode import rule). Unwired → 'disabled'
+ * decision (sessions launch as before); production always wires it.
+ */
+let debugSandboxDecider: ((cwd: string) => Promise<ExecSandboxDecision>) | null = null;
+export function setDebugSandboxDecider(fn: ((cwd: string) => Promise<ExecSandboxDecision>) | null): void {
+  debugSandboxDecider = fn;
 }
 
 function resolveTargetDir(rawDir?: string): string {
@@ -412,6 +425,28 @@ async function handleStartSession(req: IncomingMessage, res: ServerResponse, ctx
     return true;
   }
 
+  // V3R18 #6(m): the debuggee executes inside the exec bwrap sandbox
+  // (cwd = the launch config's cwd, jailed to the target root by
+  // normalizeConfig; the server cwd when the config sets none). The
+  // sandbox prefix travels to the adapter inside the DAP launch args
+  // and the adapter prepends it to the debuggee spawn argv. Fail-closed:
+  // when bwrap is unavailable the session is not created — never
+  // launched unisolated. The adapter process itself is server code and
+  // is not sandboxed; only the operator-supplied debuggee is.
+  const debuggeeCwd = cfg.cwd ?? process.cwd();
+  const sb: ExecSandboxDecision = debugSandboxDecider
+    ? await debugSandboxDecider(debuggeeCwd)
+    : { mode: 'disabled', prefix: [], reason: null, sandboxed: false, refused: false, refuseCode: null };
+  if (sb.refused) {
+    ctx.json(res, 403, {
+      error:
+        `${sb.refuseCode ?? 'SANDBOX_UNAVAILABLE'}: debug sessions require OS-enforced isolation (bwrap), ` +
+        `but no working bwrap was found${sb.reason ? ` (${sb.reason})` : ''} — refusing to launch unisolated`,
+      code: sb.refuseCode ?? 'SANDBOX_UNAVAILABLE',
+    });
+    return true;
+  }
+
   const sessionId = randomUUID();
   const client = new DebugClient(resolveNodeAdapterScript(), {
     spawnFn: adapterSpawnFn ?? undefined,
@@ -466,6 +501,9 @@ async function handleStartSession(req: IncomingMessage, res: ServerResponse, ctx
         env: cfg.env,
       };
       if (cfg.cwd) args.cwd = cfg.cwd;
+      // V3R18 #6(m): the sandbox prefix for the debuggee spawn (only
+      // present when the decision actually sandboxed the session).
+      if (sb.prefix.length > 0) args.sandboxPrefix = sb.prefix;
       await withTimeout(client.launch(args), LAUNCH_TIMEOUT_MS, 'launch handshake timed out');
     } else {
       await withTimeout(

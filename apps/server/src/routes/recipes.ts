@@ -21,6 +21,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ApprovalManager } from '@ai-factory/approvals';
 import type { RouteContext } from './context';
+import type { ExecSandboxDecision } from '../exec-sandbox';
 import {
   RecipeError,
   RecipeExecutor,
@@ -37,6 +38,22 @@ import {
 import { detectOutOfScopePaths, hasScope } from '../scope-lock';
 
 const PREFIX = '/api/recipes';
+
+/**
+ * Sandbox decider: coordinator-injected decideExecSandbox (V3R18 #6(m)).
+ * Same setter-injection pattern as the other routes — this module is
+ * imported from src by tests, so it must not value-import ../exec-sandbox
+ * (dual-mode import rule). Unwired → verify runs unsandboxed (pre-R18
+ * behavior); production always wires it in index.ts. The decider is
+ * passed into the RecipeExecutor, which consults it per verify step
+ * (cwd = the project dir). A refused decision fails the verify step
+ * (SANDBOX_UNAVAILABLE in verifyResults) and the run fails — never an
+ * unisolated verify.
+ */
+let recipesSandboxDecider: ((cwd: string) => Promise<ExecSandboxDecision>) | null = null;
+export function setRecipesSandboxDecider(fn: ((cwd: string) => Promise<ExecSandboxDecision>) | null): void {
+  recipesSandboxDecider = fn;
+}
 
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
@@ -114,6 +131,8 @@ export async function handleRecipesRoutes(
     customStore: new CustomRecipeStore(),
     audit: ctx.audit,
     approvals: approvalChecker,
+    // V3R18 #6(m): verify commands run inside the exec bwrap sandbox.
+    decideSandbox: recipesSandboxDecider ?? undefined,
   });
   const runStore = new RecipeRunStore();
   if (runStore.isCorrupt()) {

@@ -43,6 +43,7 @@ import * as path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { redactText } from '@ai-factory/diagpack';
 import { redactAmbientCredentialValues } from '@ai-factory/runtime';
+import type { ExecSandboxDecision } from '../exec-sandbox';
 import {
   FILE_MAX_BYTES,
   RemoteConnectionStore,
@@ -51,6 +52,7 @@ import {
   listForwards,
   probe,
   readFile,
+  resolveRemotePath,
   runCommand,
   startForward,
   stopAllForwards,
@@ -76,6 +78,58 @@ let execPolicy: ((command: string) => string[]) | null = null;
 
 export function setRemoteExecPolicy(fn: ((command: string) => string[]) | null): void {
   execPolicy = fn;
+}
+
+/**
+ * Control-dir argv guard: coordinator-injected commandHitsControlDir
+ * (V3R18 #6(m)) — the same guard /api/exec and the task runner use.
+ * Same setter-injection pattern as the exec policy above (this module
+ * must not value-import ./exec — dual-mode import rule).
+ */
+let controlDirGuard: ((cwd: string, tokens: string[]) => boolean) | null = null;
+
+export function setRemoteControlDirGuard(fn: ((cwd: string, tokens: string[]) => boolean) | null): void {
+  controlDirGuard = fn;
+}
+
+/**
+ * Sandbox decider: coordinator-injected decideExecSandbox (V3R18 #6(m)).
+ * Applies to `local` connections only — ssh/wsl/container commands run
+ * on the remote host, where a local bwrap prefix is meaningless.
+ * Unwired → 'disabled' decision (local exec runs as before); production
+ * always wires it in index.ts.
+ */
+let remoteSandboxDecider: ((cwd: string) => Promise<ExecSandboxDecision>) | null = null;
+
+export function setRemoteSandboxDecider(fn: ((cwd: string) => Promise<ExecSandboxDecision>) | null): void {
+  remoteSandboxDecider = fn;
+}
+
+/**
+ * V3R18 #6(m): the read jail for `local` file reads. A local connection's
+ * remoteRoot can point anywhere on the host, and GET /file is viewer-
+ * readable — without a jail a viewer could read the vault (or any other
+ * host file) by creating a local connection rooted at the secrets dir.
+ * Allowed roots: the workspace (server cwd) plus FACTORY_REMOTE_ALLOWED_ROOTS
+ * (path-delimiter separated, same shape as FACTORY_INSPECT_ROOTS). The
+ * allowlist is read per request, so tests can set it in the server env.
+ * Only GET /file is jailed (the audited readback surface); list/write
+ * are out of this round's scope.
+ */
+function remoteReadJailRoots(): string[] {
+  const roots = [path.resolve(process.cwd())];
+  const extra = process.env.FACTORY_REMOTE_ALLOWED_ROOTS;
+  if (extra) {
+    for (const r of extra.split(path.delimiter)) {
+      const t = r.trim();
+      if (t) roots.push(path.resolve(t));
+    }
+  }
+  return roots;
+}
+
+function isPathInRemoteReadJail(abs: string): boolean {
+  return remoteReadJailRoots().some((root) => abs === root || abs.startsWith(root + path.sep));
 }
 
 function storePath(): string {
@@ -217,9 +271,42 @@ export async function handleRemoteRoutes(
           ctx.json(res, 403, { error: 'POLICY_DENIED', detail: (e as Error).message });
           return true;
         }
+        // V3R18 #6(m): control-dir argv guard (same as /api/exec) —
+        // a remote exec must not touch the control-plane data dir or
+        // the vault dir, whatever the transport kind. The local
+        // transport spawns with the server cwd, so that is the guard's
+        // cwd; for ssh/wsl/container the guard still applies to the
+        // argv text itself (a path naming the control dir is refused
+        // before anything is sent to the remote host).
+        if (controlDirGuard && controlDirGuard(process.cwd(), tokens)) {
+          ctx.json(res, 403, { error: 'POLICY_DENIED', detail: 'command touches the control-plane data directory' });
+          return true;
+        }
+        // V3R18 #6(m): exec sandbox for the local transport only. The
+        // sandbox binds the server cwd; ssh/wsl/container commands run
+        // on the remote host, where a local bwrap prefix is meaningless
+        // (their env is still pointer-stripped at the transport choke
+        // point). Fail-closed: when bwrap is unavailable the local exec
+        // does not run — never silently unisolated.
+        let argvPrefix: string[] = [];
+        if (conn.kind === 'local') {
+          const sb: ExecSandboxDecision = remoteSandboxDecider
+            ? await remoteSandboxDecider(process.cwd())
+            : { mode: 'disabled', prefix: [], reason: null, sandboxed: false, refused: false, refuseCode: null };
+          if (sb.refused) {
+            ctx.json(res, 403, {
+              error: sb.refuseCode ?? 'SANDBOX_UNAVAILABLE',
+              detail:
+                `remote local exec requires OS-enforced isolation (bwrap), ` +
+                `but no working bwrap was found${sb.reason ? ` (${sb.reason})` : ''} — refusing to run unisolated`,
+            });
+            return true;
+          }
+          argvPrefix = sb.prefix;
+        }
         let out;
         try {
-          out = await runCommand(conn, tokens);
+          out = await runCommand(conn, tokens, argvPrefix.length > 0 ? { argvPrefix } : undefined);
         } catch (e) {
           if (e instanceof RemoteError && e.code === 'TRANSPORT_UNAVAILABLE') {
             st.setStatus(conn.id, { status: 'offline', lastError: e.message });
@@ -255,6 +342,17 @@ export async function handleRemoteRoutes(
           if (!rel) {
             ctx.json(res, 400, { error: 'INVALID_INPUT', detail: 'path query param is required' });
             return true;
+          }
+          // V3R18 #6(m): local file reads are jailed to the workspace
+          // or an allowlisted root (see remoteReadJailRoots). Without
+          // this, a viewer could read the vault through a local
+          // connection rooted at the secrets dir.
+          if (conn.kind === 'local') {
+            const abs = path.resolve(resolveRemotePath(conn.remoteRoot, rel));
+            if (!isPathInRemoteReadJail(abs)) {
+              ctx.json(res, 400, { error: 'INVALID_PATH', detail: `path is outside the remote read jail: ${rel}` });
+              return true;
+            }
           }
           const content = await readFile(conn, rel);
           ctx.json(res, 200, { path: rel, content });

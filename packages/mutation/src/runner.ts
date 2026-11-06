@@ -22,7 +22,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import type { Mutant, MutantRunOptions, MutantRunResult } from './types';
 
 const SKIP_COPY = new Set(['node_modules', '.git', 'dist', 'build', 'coverage']);
@@ -46,7 +46,11 @@ const SKIP_COPY = new Set(['node_modules', '.git', 'dist', 'build', 'coverage'])
  * the mutant test command runs with the scrubbed ambient env only.
  */
 export function childEnv(): NodeJS.ProcessEnv {
-  const env = scrubCredentialEnv(process.env);
+  // V3R18 #6(m): strip the control-plane pointer vars on top of the
+  // credential scrub, so a planted mutant test cannot locate the vault
+  // or the admin token file from the child env (the (k) pointer strip,
+  // same as the other operator code-execution paths).
+  const env = stripControlPlanePointerEnv(scrubCredentialEnv(process.env));
   delete env.NODE_TEST_CONTEXT;
   delete env.NODE_TEST_WORKER_ID;
   return env;
@@ -154,6 +158,25 @@ export async function runMutantTests(
     }
   }
   const [cmd, ...args] = opts.testCommand;
+  // V3R18 #6(m): the mutant test command runs inside the exec bwrap
+  // sandbox (cwd = this mutant's scratch dir — the decider is called
+  // with the scratch dir, so the prefix's --chdir matches the spawn
+  // cwd; the test files are relative paths under it). A refused
+  // decision throws: the route maps it to a failed run (or 403 at the
+  // pre-check), never an unisolated execution.
+  let sandboxPrefix: string[] = [];
+  if (opts.decideSandbox) {
+    const sb = await opts.decideSandbox(prep.scratchDir);
+    if (sb.refused) {
+      throw new Error(
+        `${sb.refuseCode ?? 'SANDBOX_UNAVAILABLE'}: mutant tests require OS-enforced isolation (bwrap), ` +
+          `but no working bwrap was found${sb.reason ? ` (${sb.reason})` : ''} — refusing to run unisolated`,
+      );
+    }
+    sandboxPrefix = sb.prefix;
+  }
+  const argv =
+    sandboxPrefix.length > 0 ? [sandboxPrefix[0], ...sandboxPrefix.slice(1), cmd, ...args] : [cmd, ...args];
   const outcome = await new Promise<{ exitCode: number | null; timedOut: boolean; output: string }>((resolve) => {
     let output = '';
     let settled = false;
@@ -164,7 +187,7 @@ export async function runMutantTests(
     };
     let child;
     try {
-      child = spawn(cmd, args, { cwd: prep.scratchDir, timeout: opts.timeoutMs, env: childEnv() });
+      child = spawn(argv[0] as string, argv.slice(1), { cwd: prep.scratchDir, timeout: opts.timeoutMs, env: childEnv() });
     } catch (e) {
       finish({ exitCode: null, timedOut: false, output: `spawn failed: ${(e as Error).message}` });
       return;

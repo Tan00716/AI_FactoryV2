@@ -57,6 +57,11 @@ async function startServer(): Promise<Running> {
     AI_FACTORY_DATA_DIR: path.join(dir, 'data'),
     FACTORY_RECIPE_ROOTS: dir,
     AI_FACTORY_RECIPES_BUILTIN_DIR: builtinDir,
+    // V3R18 #6(m): the recipes e2e verify must execute on this
+    // bwrap-less machine — the sandbox is explicitly disabled here, so
+    // the verify runs. The refusal branch is covered by
+    // v3r18-6mn.test.ts and the probe scripts, not here.
+    FACTORY_EXEC_SANDBOX: '0',
   };
   for (const k of ['FACTORY_API_TOKEN', 'FACTORY_SECRETS_DIR', 'FACTORY_RUNTIME_TOOLS']) {
     delete env[k];

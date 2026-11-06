@@ -57,7 +57,8 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { redactText } from '@ai-factory/diagpack';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
+import type { ExecSandboxDecision } from './exec-sandbox';
 
 /* ------------------------------------------------------------------ */
 /* Errors                                                              */
@@ -1222,8 +1223,34 @@ export interface ShellResult {
   output: string;
 }
 
-export function runVerifyCommand(cmd: string, cwd: string, timeoutMs = 600_000): Promise<ShellResult> {
+export async function runVerifyCommand(
+  cmd: string,
+  cwd: string,
+  timeoutMs = 600_000,
+  decideSandbox?: (cwd: string) => Promise<ExecSandboxDecision>,
+): Promise<ShellResult> {
   const t0 = Date.now();
+  // V3R18 #6(m): the verify command runs inside the exec bwrap sandbox
+  // (cwd = the project dir, the only writable bind). Fail-closed: when
+  // bwrap is unavailable the verify does not run — the step fails with
+  // SANDBOX_UNAVAILABLE and the recipe run fails (files stay applied;
+  // see the executor). The decider is optional so the src-direct unit
+  // tests keep running unwired (pre-R18 behavior).
+  let sandboxPrefix: string[] = [];
+  if (decideSandbox) {
+    const sb = await decideSandbox(cwd);
+    if (sb.refused) {
+      return {
+        ok: false,
+        exitCode: -1,
+        ms: Date.now() - t0,
+        output:
+          `${sb.refuseCode ?? 'SANDBOX_UNAVAILABLE'}: recipe verify requires OS-enforced isolation (bwrap), ` +
+          `but no working bwrap was found${sb.reason ? ` (${sb.reason})` : ''} — refusing to run unisolated`,
+      };
+    }
+    sandboxPrefix = sb.prefix;
+  }
   return new Promise((resolvePromise) => {
     let settled = false;
     const done = (r: ShellResult) => {
@@ -1236,7 +1263,18 @@ export function runVerifyCommand(cmd: string, cwd: string, timeoutMs = 600_000):
     try {
       // V3R14 #6(e): scrub the server's own credential env vars from the
       // ambient inheritance (same rule as pty.ts childEnv).
-      child = spawn('sh', ['-c', cmd], { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: scrubCredentialEnv(process.env) });
+      // V3R18 #6(m): strip the control-plane pointer vars on top of the
+      // scrub, so a verify command cannot locate the vault or the admin
+      // token file from the child env.
+      const argv =
+        sandboxPrefix.length > 0
+          ? [sandboxPrefix[0], ...sandboxPrefix.slice(1), 'sh', '-c', cmd]
+          : ['sh', '-c', cmd];
+      child = spawn(argv[0] as string, argv.slice(1), {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: stripControlPlanePointerEnv(scrubCredentialEnv(process.env)),
+      });
     } catch (e) {
       done({ ok: false, exitCode: -1, ms: Date.now() - t0, output: `spawn failed: ${(e as Error).message}` });
       return;
@@ -1304,6 +1342,11 @@ export interface RecipeExecutorOptions {
   audit: AuditHook;
   approvals: ApprovalChecker;
   now?: () => string;
+  /** V3R18 #6(m): sandbox decider for the verify commands, injected by
+   * the routes layer (coordinator-injected decideExecSandbox). Unset →
+   * verify runs unsandboxed (pre-R18 behavior, used by the src-direct
+   * unit tests); production always wires it. */
+  decideSandbox?: (cwd: string) => Promise<ExecSandboxDecision>;
 }
 
 /** Deterministic digest of the exact plan content — bound into the
@@ -1324,6 +1367,7 @@ export class RecipeExecutor {
   private readonly audit: AuditHook;
   private readonly approvals: ApprovalChecker;
   private readonly now: () => string;
+  private readonly decideSandbox?: (cwd: string) => Promise<ExecSandboxDecision>;
 
   constructor(opts: RecipeExecutorOptions) {
     this.runStore = opts.runStore;
@@ -1331,6 +1375,7 @@ export class RecipeExecutor {
     this.audit = opts.audit;
     this.approvals = opts.approvals;
     this.now = opts.now ?? (() => new Date().toISOString());
+    this.decideSandbox = opts.decideSandbox;
   }
 
   listRecipes(): RecipeSpec[] {
@@ -1516,7 +1561,7 @@ export class RecipeExecutor {
       if (recipe.verify.build) steps.push({ kind: 'build', command: recipe.verify.build });
       if (recipe.verify.test) steps.push({ kind: 'test', command: recipe.verify.test });
       for (const step of steps) {
-        const r = await runVerifyCommand(step.command, projectDir);
+        const r = await runVerifyCommand(step.command, projectDir, undefined, this.decideSandbox);
         run.verifyResults.push({ kind: step.kind, command: step.command, ok: r.ok, exitCode: r.exitCode, ms: r.ms, output: r.output });
         this.audit.record(actor, r.ok ? 'RECIPE_VERIFY_PASSED' : 'RECIPE_VERIFY_FAILED', 'recipe-run', run.id, {
           recipe: run.recipeName,

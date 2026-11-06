@@ -134,7 +134,7 @@ import { handleSearchRoutes } from './routes/search';
 import { getCodeIndexService, handleCodeIndexRoutes } from './routes/codeindex';
 import { handleLangSrvRoutes } from './routes/langsrv';
 import { handleTestExplorerRoutes } from './routes/testexplorer';
-import { handleRemoteRoutes, setRemoteExecPolicy } from './routes/remote';
+import { handleRemoteRoutes, setRemoteControlDirGuard, setRemoteExecPolicy, setRemoteSandboxDecider } from './routes/remote';
 import { getRepoMapService, handleRepoMapRoutes } from './routes/repomap';
 import { handleAttachmentRoutes } from './routes/attachments';
 import { handleMetricsRoutes, recordHealthLatency } from './routes/metrics';
@@ -212,10 +212,10 @@ import { resolveInspectionRoot, BUILTIN_VULNERABLE, versionInRange, setExtraChec
 import { handleAutoBackupRoutes, syncAutoBackupPolicy } from './routes/auto-backup';
 import { handleQualityRoutes, setImpactGateAnalyzer, setFlakyGateLinkage, setMutationGateLinkage } from './routes/quality';
 import { handleImpactRoutes, analyzeGateWorkingTree } from './routes/impact';
-import { handleFlakyRoutes, runFlakyGateLinkage } from './routes/flaky';
-import { handleMutationRoutes, runMutationGateLinkage, setMutationInspectionRootResolver } from './routes/mutation';
+import { handleFlakyRoutes, runFlakyGateLinkage, setFlakySandboxDecider } from './routes/flaky';
+import { handleMutationRoutes, runMutationGateLinkage, setMutationInspectionRootResolver, setMutationSandboxDecider } from './routes/mutation';
 import { handleRefactorRoutes, setRefactorInspectionRootResolver } from './routes/refactor';
-import { handleDebugRoutes, setDebugInspectionRootResolver } from './routes/debug';
+import { handleDebugRoutes, setDebugInspectionRootResolver, setDebugSandboxDecider } from './routes/debug';
 import { handleSsrRoutes, setSsrInspectionRootResolver, ssrCheckerProvider } from './routes/ssr';
 import {
   handleTrojanRoutes,
@@ -309,7 +309,7 @@ import {
 import { handleDbTimeTravelRoutes } from './routes/db-time-travel';
 import { handleInspectionRoutes } from './routes/inspections';
 import { handleBatchChangesRoutes } from './routes/batch-changes';
-import { handleRecipesRoutes } from './routes/recipes';
+import { handleRecipesRoutes, setRecipesSandboxDecider } from './routes/recipes';
 import { handleScopeRoutes, scopeRunCompleteCheck } from './routes/scope';
 import { validateScopeInput } from './scope-lock';
 import {
@@ -761,6 +761,18 @@ setImpactGateAnalyzer((root) => analyzeGateWorkingTree(root));
 setFlakyGateLinkage((args) => runFlakyGateLinkage(args));
 
 /**
+ * V3R18 #6(m): the five remaining operator code-execution paths run
+ * inside the exec bwrap sandbox (same decideExecSandbox as /api/exec
+ * and the four R17 routes). Flaky runs bind the repo root, the debugger
+ * debuggee binds the launch cwd, remote local exec binds the server
+ * cwd, mutation binds each mutant's scratch dir, recipes verify binds
+ * the project dir. The routes' fail-closed refusal (403 / failed run)
+ * applies when bwrap is unavailable — never an unisolated run.
+ */
+setFlakySandboxDecider((cwd) => decideExecSandbox(cwd, execSandboxConfigFromEnv()));
+setRecipesSandboxDecider((cwd) => decideExecSandbox(cwd, execSandboxConfigFromEnv()));
+
+/**
  * Mutation-testing gate linkage (round-3 task R3-T2) — installs the
  * advisory annotation the quality gate consults when a project enables
  * mutation.report. Same setter-injection pattern as the flaky linkage:
@@ -774,6 +786,9 @@ setMutationGateLinkage((args) => runMutationGateLinkage(args));
  * so the real resolveInspectionRoot is injected here.
  */
 setMutationInspectionRootResolver((root) => resolveInspectionRoot(root));
+// V3R18 #6(m): mutation runs inside the exec bwrap sandbox (see the
+// note above setFlakySandboxDecider).
+setMutationSandboxDecider((cwd) => decideExecSandbox(cwd, execSandboxConfigFromEnv()));
 
 /**
  * Structural search-and-replace wiring (round-4 task R4-A4) — same
@@ -1054,6 +1069,9 @@ setRefactorInspectionRootResolver((root) => resolveInspectionRoot(root));
  * the node adapter is spawned per session (DAP over stdio, CDP bridge).
  */
 setDebugInspectionRootResolver((root) => resolveInspectionRoot(root));
+// V3R18 #6(m): the debuggee runs inside the exec bwrap sandbox (see the
+// note above setFlakySandboxDecider).
+setDebugSandboxDecider((cwd) => decideExecSandbox(cwd, execSandboxConfigFromEnv()));
 
 /**
  * HTTP/REST debug client (round-4 task A6) — same setter-injection pattern
@@ -1569,6 +1587,11 @@ setEgressBlockSinks({
 // + egress summary (already viewer-visible via /api/egress/config).
 // R7-#1: remote exec uses the same command policy as /api/exec.
 setRemoteExecPolicy((command) => checkCommandPolicy(command));
+// V3R18 #6(m): remote exec uses the same control-dir argv guard as
+// /api/exec, and local remote exec runs inside the exec bwrap sandbox
+// (see the note above setFlakySandboxDecider).
+setRemoteControlDirGuard((cwd, tokens) => commandHitsControlDir(cwd, tokens));
+setRemoteSandboxDecider((cwd) => decideExecSandbox(cwd, execSandboxConfigFromEnv()));
 setDiagnosticsConfigProvider(() => {
   const g = egressStore().getGlobal();
   return {

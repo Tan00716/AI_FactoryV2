@@ -40,6 +40,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { sanitizeUntrusted } from '@ai-factory/security';
+import { stripUserinfoFromText } from '@ai-factory/diagpack';
 
 // ------------------------------------------------------------------ cron --
 
@@ -749,7 +750,11 @@ export class TaskScheduler {
     try {
       result = await this.executeJob(s);
     } catch (e) {
-      result = { ok: false, summary: `job failed: ${e instanceof Error ? e.message : String(e)}` };
+      // R18 N5: the thrown message may carry the raw webhook URL (e.g.
+      // fetchWebhook's `invalid webhook url: <url>`), so strip any
+      // userinfo before the summary enters the audit chain / run record.
+      const msg = e instanceof Error ? e.message : String(e);
+      result = { ok: false, summary: `job failed: ${stripUserinfoFromText(msg)}` };
     } finally {
       this.running.delete(s.id);
     }
@@ -808,13 +813,19 @@ export class TaskScheduler {
       return { ok: true, summary: `task ${task.id} created (no agent — run not started)`, taskId: task.id };
     }
     if (job.type === 'webhook') {
+      // R18 N5: summaries are written to the append-only audit chain
+      // (SCHEDULE_FIRED summary / SCHEDULE_FAILED error, viewer-readable)
+      // and to the run record, so the URL shown here must never carry
+      // embedded credentials. The real URL is still dialed as-is below;
+      // only the display form is stripped.
+      const safeUrl = stripUserinfoFromText(job.url);
       // Offline mode: fail closed with NETWORK_OFFLINE — never dial out.
       // The skip is recorded via SCHEDULE_FIRED/SCHEDULE_FAILED below,
       // so the audit trail shows exactly why nothing was sent.
       if (this.deps.isOffline?.()) {
         return {
           ok: false,
-          summary: `webhook ${job.url} skipped: offline mode is enabled (NETWORK_OFFLINE)`,
+          summary: `webhook ${safeUrl} skipped: offline mode is enabled (NETWORK_OFFLINE)`,
         };
       }
       const res = await this.deps.fetchWebhook(job.url, {
@@ -843,7 +854,7 @@ export class TaskScheduler {
       if (res.status < 200 || res.status >= 300) {
         return {
           ok: false,
-          summary: `webhook ${job.url} -> HTTP ${res.status} (body sanitized, ${sanitized.length} chars)`,
+          summary: `webhook ${safeUrl} -> HTTP ${res.status} (body sanitized, ${sanitized.length} chars)`,
           webhookStatus: res.status,
           output: sanitized,
           taskId,
@@ -852,7 +863,7 @@ export class TaskScheduler {
       }
       return {
         ok: true,
-        summary: `webhook ${job.url} -> HTTP ${res.status} (body sanitized, ${sanitized.length} chars)`,
+        summary: `webhook ${safeUrl} -> HTTP ${res.status} (body sanitized, ${sanitized.length} chars)`,
         webhookStatus: res.status,
         output: sanitized,
         taskId,

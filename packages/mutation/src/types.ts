@@ -43,6 +43,18 @@ export interface SamplingConfig {
   perFileCap: number;
 }
 
+/**
+ * Minimal structural sandbox decision (V3R18 #6(m)). The server's
+ * ExecSandboxDecision is assignable to this; the mutation package must
+ * not import the server's exec-sandbox module.
+ */
+export interface MutantSandboxDecision {
+  prefix: string[];
+  refused: boolean;
+  reason: string | null;
+  refuseCode: string | null;
+}
+
 /** Options for executing one mutant's tests. */
 export interface MutantRunOptions {
   /** Test command argv, e.g. ['node','--test','--test-reporter=tap','calc.test.ts']. */
@@ -56,6 +68,14 @@ export interface MutantRunOptions {
    * type-strip); syntax errors become the 'invalid' verdict instead
    * of 'killed'. */
   nodeCheck: boolean;
+  /** V3R18 #6(m): sandbox decider for the mutant test runs. When set,
+   * each mutant's test command runs inside the exec bwrap sandbox
+   * (cwd = the mutant's scratch dir); when the decision is refused the
+   * run throws SANDBOX_UNAVAILABLE. The decider receives the scratch
+   * dir — never the target dir — so the prefix's --chdir matches the
+   * spawn cwd. Unset → unsandboxed (pre-R18 behavior, used by the
+   * src-direct unit tests). */
+  decideSandbox?: (cwd: string) => Promise<MutantSandboxDecision>;
 }
 
 /** Outcome of running the tests against one mutant. */

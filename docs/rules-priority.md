@@ -1,24 +1,28 @@
-# Rule Priority Disclosure (AI Factory, baseline f6641d5)
+# Rule Priority Disclosure (AI Factory, baseline 3f6d50c)
 
 This document discloses how AI Factory merges rule files into the
 effective view. It only describes current behavior; it does not change
 the rule engine, and it does not claim any precedence order beyond what
 the code implements.
 
-Status date: 2026-11-06. Baseline commit: f6641d5. R17 fidelity note:
-H1 and body aligned to f6641d5; packages/rules and
-apps/server/src/routes/rules.ts are unchanged between b8a9424 and
-f6641d5 (git diff --name-only empty; the interval is 23 files: 9
+Status date: 2026-11-06. Baseline commit: 3f6d50c. R18 fidelity note:
+H1 and body aligned to 3f6d50c; packages/rules and
+apps/server/src/routes/rules.ts are unchanged between f6641d5 and
+3f6d50c (git diff --name-only empty; the interval is 40 files: 9
 documentation files plus package-lock.json, apps/server
-mutation/flaky source/routes/tests and codesearch/todo-scan (#6(i)
-fix), and packages/mutation and packages/codesearch
-source/tests (#6(i) change), which touches no rule engine file), so semantics
+(h)+(k) source/routes/tests, and packages/runtime, packages/debugger
+and packages/testexplorer source/tests (#6(h)/(j)/(k)/(l) changes),
+which touches no rule engine file), so semantics
 are unchanged.
 Review this document
 whenever packages/rules or apps/server/src/routes/rules.ts changes.
 Next review: the next V3.0 audit round, or immediately when
 packages/rules or apps/server/src/routes/rules.ts changes, whichever
 comes first.
+Fidelity review (V3R17 #8): the engine files were also unchanged between
+b8a9424 and f6641d5 (verified with git diff --name-only over
+packages/rules and apps/server/src/routes/rules.ts: zero files).
+Title baseline and body baseline now both read f6641d5; semantics unchanged.
 Fidelity review (V3R16 #8): the engine files were also unchanged between
 46d0d66 and b8a9424 (verified with git diff --name-only over
 packages/rules and apps/server/src/routes/rules.ts: zero files).

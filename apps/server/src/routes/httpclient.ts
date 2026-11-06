@@ -75,6 +75,7 @@ import {
   type HttpRunResult,
   type WsClient,
 } from '@ai-factory/httpclient';
+import { stripUserinfoFromText } from '@ai-factory/diagpack';
 import type { RouteContext } from './context';
 
 const PREFIX = '/api/http';
@@ -260,7 +261,12 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, ctx: RouteCo
       assertionsPassed: result.assertions.filter((a) => a.passed).length,
       assertionsTotal: result.assertions.length,
       ok: result.ok,
-      error: result.error ?? null,
+      // R18 N6: result.error may carry the raw operator URL
+      // (`invalid URL: https://user:password@…` for malformed URLs), and
+      // the audit chain is viewer-readable — strip any userinfo before
+      // ingestion. redactText alone is not enough here (it only masks
+      // URL userinfo when the password is >= 4 characters).
+      error: result.error ? stripUserinfoFromText(result.error) : null,
     });
     results.push(result);
   }
@@ -594,7 +600,8 @@ async function executeSend(ctx: RouteContext, input: SendInput, projectId: strin
   });
   ctx.audit.record('human', 'HTTP_API_RUN', 'http-client', `${projectId}:${historyId}`, {
     method: input.method, host: redacted.host, path: redacted.path, blocked: false,
-    status: result.status ?? null, durationMs: result.durationMs ?? null, ok: result.ok, error: result.error ?? null,
+    // R18 N6: same userinfo strip as HTTP_CLIENT_RUN above.
+    status: result.status ?? null, durationMs: result.durationMs ?? null, ok: result.ok, error: result.error ? stripUserinfoFromText(result.error) : null,
   });
   return { result, historyId };
 }

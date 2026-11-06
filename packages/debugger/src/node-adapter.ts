@@ -22,7 +22,7 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { get } from 'node:http';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import { DapFramer, encodeMessage } from './framer';
 import { CdpClient, CdpEvent } from './cdp';
 import type { DapBreakpoint, DapEvent, DapRequest, DapResponse, DapSourceBreakpoint, DapStackFrame } from './types';
@@ -298,7 +298,10 @@ function scrubEnv(extra: Record<string, string>): Record<string, string> {
   // R15 #6(f): the ambient env is scrubbed of credential material first
   // (same scrubCredentialEnv as pty.ts childEnv / R13 #6(d)); explicit
   // launch-config env still overrides afterwards, as before.
-  for (const [k, v] of Object.entries(scrubCredentialEnv(process.env))) {
+  // V3R18 #6(m): strip the control-plane pointer vars on top of the
+  // scrub, so the debuggee cannot locate the vault or the admin token
+  // file from its env.
+  for (const [k, v] of Object.entries(stripControlPlanePointerEnv(scrubCredentialEnv(process.env)))) {
     if (v !== undefined) env[k] = v;
   }
   // Never leak the test-runner context into a debugged child (AGENTS.md:
@@ -411,8 +414,17 @@ async function handleLaunch(args: Record<string, unknown>): Promise<void> {
   // Always --inspect-brk: the entry pause lets us install breakpoints before
   // the target runs (no race). Non-stopOnEntry launches auto-resume past it.
   const inspectFlag = '--inspect-brk=127.0.0.1:0';
+  // V3R18 #6(m): the server route passes the exec-sandbox argv prefix for
+  // the debuggee in the DAP launch args (sandboxPrefix, string[]). A
+  // malformed value is ignored (never trusted blindly); the prefix only
+  // ever comes from the server route's own sandbox decision.
+  const sandboxPrefix = Array.isArray(args.sandboxPrefix)
+    ? (args.sandboxPrefix as unknown[]).filter((a): a is string => typeof a === 'string')
+    : [];
+  const debuggeeArgv = [runtime, inspectFlag, program, ...progArgs];
+  const argv = sandboxPrefix.length > 0 ? [...sandboxPrefix, ...debuggeeArgv] : debuggeeArgv;
 
-  target = spawn(runtime, [inspectFlag, program, ...progArgs], {
+  target = spawn(argv[0] as string, argv.slice(1), {
     cwd,
     env: scrubEnv(env),
     stdio: ['ignore', 'pipe', 'pipe'],

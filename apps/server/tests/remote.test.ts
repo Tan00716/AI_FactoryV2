@@ -117,6 +117,14 @@ async function startServer(extraEnv: NodeJS.ProcessEnv = {}): Promise<Running> {
     FACTORY_PROJECTS_ROOT: path.join(dir, 'projects'),
     FACTORY_ALLOW_OPEN_LOCAL: '1',
     PATH: `${shimDir}:${process.env['PATH'] ?? ''}`,
+    // V3R18 #6(m): the local-exec round-trip must execute on this
+    // bwrap-less machine — the sandbox is explicitly disabled here, so
+    // the exec runs. The refusal branch is covered by
+    // v3r18-6mn.test.ts and the probe scripts, not here. The read jail
+    // allowlist covers os.tmpdir() because every remoteRoot in this
+    // file is created under it.
+    FACTORY_EXEC_SANDBOX: '0',
+    FACTORY_REMOTE_ALLOWED_ROOTS: os.tmpdir(),
   };
   for (const k of ['FACTORY_API_TOKEN', 'FACTORY_SECRETS_DIR', 'FACTORY_RUNTIME_TOOLS']) {
     delete env[k];

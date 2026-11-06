@@ -62,6 +62,7 @@ import {
 } from '@ai-factory/db';
 import type { FactoryDatabase } from '@ai-factory/db';
 import type { AuditLog } from '@ai-factory/core';
+import { stripCloneUrlUserinfo, stripUserinfoFromText } from '@ai-factory/diagpack';
 import type { RouteContext } from './context';
 
 /**
@@ -114,45 +115,12 @@ function registrationErrorToStatus(err: TemplateRegistrationError): number {
 }
 
 /**
- * R17 N3 — strip the userinfo (embedded credentials) from a clone URL
- * before it is written to the audit chain. `https://user:password@host/x`
- * becomes `https://host/x` (host, port and path preserved); URLs without
- * userinfo, scp-like `git@host:x` forms, file:// URLs and local paths pass
- * through unchanged. Unparseable input is returned unchanged.
- *
- * 口径说明（既有链）: the audit chain is append-only and cannot be
- * rewritten, so PROJECT_CLONE_FAILED / PROJECT_CLONED records written
- * before this fix may still carry a raw userinfo segment. Only records
- * written from this fix onward are stripped; nothing here rewrites history.
- * The project record itself keeps the raw URL in `repository_refs` (it is
- * the asserted source for future fetches) — only the audit copy is stripped.
+ * R17 N3 / R18 (o): URL-userinfo strippers for the audit chain. The
+ * canonical definitions live in @ai-factory/diagpack (next to redactText);
+ * this module re-exports them so existing callers and the R17 regression
+ * tests (which import them from this route's dist) keep working.
  */
-export function stripCloneUrlUserinfo(repoUrl: string): string {
-  try {
-    const u = new URL(repoUrl);
-    if (u.username === '' && u.password === '') return repoUrl;
-    u.username = '';
-    u.password = '';
-    return u.toString();
-  } catch {
-    return repoUrl;
-  }
-}
-
-/**
- * R17 N3 (Red Team S4) — strip embedded credentials from free text that
- * may carry a clone URL, e.g. a child-process error message. git strips
- * credentials from its own stderr on a reachable host answering 401
- * (`fatal: Authentication failed for 'http://host/repo.git/'`), but
- * Node's `Command failed: git clone http://user:password@host/repo.git …`
- * prefix echoes the full argv, so the message must be scrubbed before it
- * is stored in the audit `reason` field or returned in the 502 response.
- * Only `scheme://…@` segments before the first `/` are touched; URLs
- * without userinfo and plain text pass through unchanged.
- */
-export function stripUserinfoFromText(text: string): string {
-  return text.replace(/(https?:\/\/)[^\s/]+@/g, '$1');
-}
+export { stripCloneUrlUserinfo, stripUserinfoFromText };
 
 export async function handleProjectsRoutes(
   req: IncomingMessage,

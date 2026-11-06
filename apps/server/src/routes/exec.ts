@@ -140,6 +140,14 @@ const WORKSPACE_ROOT = resolve(process.cwd());
  * barred from this one directory — everything else keeps working.
  */
 const CONTROL_DATA_DIR = dirname(resolve(process.env.DB_PATH ?? './data/factory.db'));
+// V3R18 #6(n): the vault may live outside the control-plane data dir
+// (FACTORY_SECRETS_DIR); the argv guard recognises it with the same
+// treatment as CONTROL_DATA_DIR. Read at module load like
+// CONTROL_DATA_DIR — both are set at server start, before this module
+// loads. AI_FACTORY_DATA_DIR is deliberately NOT an argv guard dir: it
+// defaults to the data dir itself (already covered) and is only a
+// sandbox equal-cwd refusal member, not an argv target.
+const SECRETS_DIR = process.env.FACTORY_SECRETS_DIR ? resolve(process.env.FACTORY_SECRETS_DIR) : null;
 
 const TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_CHARS = 32 * 1024;
@@ -473,10 +481,14 @@ export function checkAiShellLine(line: string): string[][] {
  * any argument touches the control-plane data directory.
  */
 export function commandHitsControlDir(cwd: string, tokens: string[]): boolean {
+  const guarded = SECRETS_DIR ? [CONTROL_DATA_DIR, SECRETS_DIR] : [CONTROL_DATA_DIR];
   const hitsForbidden = (p: string): boolean => {
-    if (p.includes(CONTROL_DATA_DIR)) return true;
-    const r = resolve(cwd, p);
-    return r === CONTROL_DATA_DIR || r.startsWith(CONTROL_DATA_DIR + sep);
+    for (const dir of guarded) {
+      if (p.includes(dir)) return true;
+      const r = resolve(cwd, p);
+      if (r === dir || r.startsWith(dir + sep)) return true;
+    }
+    return false;
   };
   return hitsForbidden(cwd) || tokens.slice(1).some(hitsForbidden);
 }

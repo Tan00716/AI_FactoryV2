@@ -95,9 +95,10 @@ import { dirname, resolve, sep } from 'node:path';
  * child sees an empty directory there instead of the vault.
  *
  * Candidates (absolute, deduplicated, only those strictly UNDER cwd —
- * a run whose cwd IS the control dir itself is not silently repaired
+ * a run whose cwd IS the control dir itself is refused by
+ * decideExecSandbox (V3R18 #6(n)) instead of being silently repaired
  * here; the control-dir argv guard and the project-root cwd jail are
- * what keep runs out of the data dir in the first place):
+ * the other layers that keep runs out of the data dir):
  *   - dirname(DB_PATH) — the control-plane data dir (routes/exec.ts
  *     CONTROL_DATA_DIR uses the same derivation);
  *   - FACTORY_SECRETS_DIR, when set (vault moved out of the data dir);
@@ -107,15 +108,41 @@ import { dirname, resolve, sep } from 'node:path';
  * nothing to hide — which also keeps the prefix stable for runs
  * whose vault was never created.
  */
-export function sandboxExcludeDirs(cwd: string, env: NodeJS.ProcessEnv = process.env): string[] {
-  const base = resolve(cwd);
-  const prefix = base.endsWith(sep) ? base : base + sep;
+export function controlPlaneDirs(env: NodeJS.ProcessEnv = process.env): string[] {
   const candidates: string[] = [dirname(resolve(env.DB_PATH ?? './data/factory.db'))];
   if (env.FACTORY_SECRETS_DIR) candidates.push(resolve(env.FACTORY_SECRETS_DIR));
   if (env.AI_FACTORY_DATA_DIR) candidates.push(resolve(env.AI_FACTORY_DATA_DIR));
   const out: string[] = [];
   for (const dir of candidates) {
     const abs = resolve(dir);
+    if (!out.includes(abs)) out.push(abs);
+  }
+  return out;
+}
+
+/**
+ * V3R18 #6(n): the degenerate case — the run's cwd IS a control-plane
+ * directory (CONTROL_DATA_DIR, FACTORY_SECRETS_DIR or AI_FACTORY_DATA_DIR).
+ * Returns that directory, or null. decideExecSandbox refuses such runs
+ * outright (refuseCode CWD_IS_CONTROL_DIR) instead of binding the vault
+ * as the working directory: the tmpfs shadowing in sandboxExcludeDirs
+ * only covers directories strictly under cwd and cannot cover cwd
+ * itself. Shares the candidate list with sandboxExcludeDirs so the two
+ * can never drift apart.
+ */
+export function controlDirForCwd(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const base = resolve(cwd);
+  for (const dir of controlPlaneDirs(env)) {
+    if (dir === base) return dir;
+  }
+  return null;
+}
+
+export function sandboxExcludeDirs(cwd: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const base = resolve(cwd);
+  const prefix = base.endsWith(sep) ? base : base + sep;
+  const out: string[] = [];
+  for (const abs of controlPlaneDirs(env)) {
     if (abs === base || !abs.startsWith(prefix)) continue;
     if (!out.includes(abs)) out.push(abs);
   }
@@ -310,7 +337,7 @@ export interface ExecSandboxDecision {
    * SANDBOX_UNAVAILABLE) — never run it unisolated.
    */
   refused: boolean;
-  refuseCode: 'SANDBOX_UNAVAILABLE' | null;
+  refuseCode: 'SANDBOX_UNAVAILABLE' | 'CWD_IS_CONTROL_DIR' | null;
 }
 
 /**
@@ -321,6 +348,9 @@ export interface ExecSandboxDecision {
  *  - mode 'danger-full-access' → direct execution by design (the tier
  *    IS "no sandbox"); reported as 'danger-full-access'. The caller
  *    must have passed the danger approval gate first.
+ *  - cwd IS a control-plane directory (CONTROL_DATA_DIR /
+ *    FACTORY_SECRETS_DIR / AI_FACTORY_DATA_DIR) → refused=true,
+ *    CWD_IS_CONTROL_DIR (V3R18 #6(n)), checked before the probe.
  *  - mode 'read-only' / 'workspace-write' → probe bwrap:
  *      available → sandboxed prefix for the tier;
  *      unavailable → refused=true, SANDBOX_UNAVAILABLE. No fallback.
@@ -342,6 +372,29 @@ export async function decideExecSandbox(
       sandboxed: false,
       refused: false,
       refuseCode: null,
+    };
+  }
+  // V3R18 #6(n): degenerate case — the cwd IS a control-plane directory.
+  // The tmpfs shadowing in sandboxExcludeDirs only covers directories
+  // strictly under cwd and cannot cover cwd itself, so binding it would
+  // put the vault inside the one writable bind. Refuse outright
+  // (fail-closed), before the probe, so the refusal is deterministic on
+  // machines with and without bwrap. Choice recorded: REFUSE, not
+  // tmpfs-cover — covering cwd itself would also hide the staged run
+  // files that live there, failing the run mysteriously instead of
+  // refusing it honestly. The 'disabled' and 'danger-full-access'
+  // early returns above deliberately stay first: an explicit operator
+  // opt-out / a human-approved danger run is not a sandbox run at all,
+  // so there is nothing to refuse here.
+  const controlDir = controlDirForCwd(cwd);
+  if (controlDir !== null) {
+    return {
+      mode: config.mode,
+      prefix: [],
+      reason: `cwd is a control-plane directory (${controlDir}) — refusing to enter the sandbox with the vault bound as the working directory`,
+      sandboxed: false,
+      refused: true,
+      refuseCode: 'CWD_IS_CONTROL_DIR',
     };
   }
   const probe = await probeSandbox(config.bwrapBin);

@@ -1,8 +1,9 @@
 /**
  * Task scheduler tests (server-side local cron).
  *
- * scheduler.ts is pure (node builtins + @ai-factory/security only), so
- * this file imports it straight from src — no dist needed.
+ * scheduler.ts is pure (node builtins + @ai-factory/security +
+ * @ai-factory/diagpack only), so this file imports it straight from src
+ * — no dist needed.
  *
  *   - cron parsing: valid forms, invalid forms, nextCronTime
  *   - persistence: create/reload round-trip, corrupt fail-closed
@@ -334,6 +335,47 @@ test('webhook non-2xx is a failed firing', async () => {
   const result = await sched.trigger(s.id);
   assert.equal(result.ok, false);
   assert.equal(deps.store.get(s.id)!.lastStatus, 'failed');
+});
+
+test('R18 N5: webhook URL userinfo is stripped from audit summaries', async () => {
+  const url = 'https://hookuser:s3cret-pw@example.com/hook';
+  // Success path: the summary template carries the URL verbatim.
+  const { deps, audits } = makeDeps(tmpPath());
+  const sched = new TaskScheduler(deps);
+  const s = deps.store.create({
+    name: 'hook',
+    kind: 'interval',
+    intervalMs: 60_000,
+    job: { type: 'webhook', url },
+  });
+  await sched.trigger(s.id);
+  const fired = audits.find((a) => a.event === 'SCHEDULE_FIRED');
+  assert.ok(fired, 'SCHEDULE_FIRED must be recorded');
+  const summary = String(fired.details?.['summary'] ?? '');
+  assert.doesNotMatch(summary, /hookuser|s3cret-pw/, 'no userinfo in the audit summary');
+  assert.match(summary, /example\.com\/hook/, 'host + path are preserved');
+  // Failure path: fetchWebhook throws with the raw URL in the message
+  // (routes/schedules.ts `invalid webhook url: <url>` shape) — the
+  // `job failed:` summary must not carry it into SCHEDULE_FAILED.
+  const { deps: deps2, audits: audits2 } = makeDeps(tmpPath(), {
+    fetchWebhook: async () => {
+      throw new Error(`invalid webhook url: ${url}`);
+    },
+  });
+  const sched2 = new TaskScheduler(deps2);
+  const s2 = deps2.store.create({
+    name: 'hook-fail',
+    kind: 'interval',
+    intervalMs: 60_000,
+    job: { type: 'webhook', url },
+  });
+  await sched2.trigger(s2.id);
+  const failed = audits2.find((a) => a.event === 'SCHEDULE_FAILED');
+  assert.ok(failed, 'SCHEDULE_FAILED must be recorded');
+  assert.doesNotMatch(String(failed.details?.['error'] ?? ''), /hookuser|s3cret-pw/);
+  const fired2 = audits2.find((a) => a.event === 'SCHEDULE_FIRED');
+  assert.ok(fired2);
+  assert.doesNotMatch(String(fired2.details?.['summary'] ?? ''), /hookuser|s3cret-pw/);
 });
 
 // ------------------------------------------------------------------- boot --

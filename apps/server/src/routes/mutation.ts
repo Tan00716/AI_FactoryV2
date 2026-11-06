@@ -37,6 +37,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
+import type { ExecSandboxDecision } from '../exec-sandbox';
 import {
   applyMutant,
   buildReport,
@@ -82,6 +83,21 @@ let inspectionRootResolver: ((root?: string) => string) | null = null;
 
 export function setMutationInspectionRootResolver(fn: ((root?: string) => string) | null): void {
   inspectionRootResolver = fn;
+}
+
+/**
+ * Sandbox decider: coordinator-injected decideExecSandbox (V3R18 #6(m)).
+ * Same setter-injection pattern as the inspection-root resolver above.
+ * Unwired → 'disabled' decision (runs as before); production always
+ * wires it in index.ts. The decider is consulted twice: once here in
+ * POST /run as a pre-check (an immediate 403 when refused, before any
+ * run state is created), and once per mutant inside runMutantTests
+ * (with the mutant's scratch dir, so the prefix's --chdir matches the
+ * spawn cwd).
+ */
+let mutationSandboxDecider: ((cwd: string) => Promise<ExecSandboxDecision>) | null = null;
+export function setMutationSandboxDecider(fn: ((cwd: string) => Promise<ExecSandboxDecision>) | null): void {
+  mutationSandboxDecider = fn;
 }
 
 function resolveTargetDir(rawDir?: string): string {
@@ -290,7 +306,15 @@ async function executeRun(
           const r = await runMutantTests(
             mutant,
             { scratchDir: prep.scratchDir, mutatedFileAbs: prep.mutatedFileAbs },
-            { testCommand, timeoutMs: req.timeoutMs, maxOutputBytes: 256 * 1024, nodeCheck: true },
+            {
+              testCommand,
+              timeoutMs: req.timeoutMs,
+              maxOutputBytes: 256 * 1024,
+              nodeCheck: true,
+              // V3R18 #6(m): the mutant test command runs inside the exec
+              // bwrap sandbox (cwd = this mutant's scratch dir).
+              decideSandbox: mutationSandboxDecider ?? undefined,
+            },
           );
           results.push({ mutant, ...r });
         } finally {
@@ -403,6 +427,24 @@ export async function handleMutationRoutes(
       const code = e instanceof MutationRouteError ? 400 : 500;
       ctx.json(res, code, { error: (e as Error).message });
       return true;
+    }
+    // V3R18 #6(m): sandbox pre-check — refuse the run before any run
+    // state is created when the sandbox decision refuses (no bwrap on
+    // this host, or the target dir is a control-plane dir). The
+    // decision here is computed for the target dir; the per-mutant
+    // decisions inside runMutantTests use the scratch dirs and carry
+    // the actual prefixes.
+    if (mutationSandboxDecider) {
+      const sb = await mutationSandboxDecider(validated.targetDir);
+      if (sb.refused) {
+        ctx.json(res, 403, {
+          error:
+            `${sb.refuseCode ?? 'SANDBOX_UNAVAILABLE'}: mutation runs require OS-enforced isolation (bwrap), ` +
+            `but no working bwrap was found${sb.reason ? ` (${sb.reason})` : ''} — refusing to run unisolated`,
+          code: sb.refuseCode ?? 'SANDBOX_UNAVAILABLE',
+        });
+        return true;
+      }
     }
     // Pre-generate + sample synchronously so the caller learns the counts now.
     const sources = new Map(validated.files.map((f) => [f, readTargetFile(validated.targetDir, f)]));

@@ -35,8 +35,9 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'http';
-import { scrubCredentialEnv } from '@ai-factory/runtime';
+import { scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import { redactText } from '@ai-factory/diagpack';
+import type { ExecSandboxDecision } from '../exec-sandbox';
 import type { RouteContext } from './context';
 import type { QualityGateRunResult } from '../quality-gate';
 import {
@@ -61,6 +62,19 @@ export class FlakyRouteError extends Error {
     super(message);
     this.name = 'FlakyRouteError';
   }
+}
+
+/**
+ * Sandbox decider: coordinator-injected decideExecSandbox (V3R18 #6(m)).
+ * Same setter-injection pattern as the other routes — this module is
+ * imported from src by tests, so it must not value-import ../exec-sandbox
+ * (dual-mode import rule). Unwired → 'disabled' decision (runs as before);
+ * production always wires it in index.ts.
+ */
+let flakySandboxDecider: ((cwd: string) => Promise<ExecSandboxDecision>) | null = null;
+
+export function setFlakySandboxDecider(fn: ((cwd: string) => Promise<ExecSandboxDecision>) | null): void {
+  flakySandboxDecider = fn;
 }
 
 function projectIdOf(value: unknown): string | null {
@@ -117,11 +131,20 @@ interface TapRunResult {
   truncated: boolean;
 }
 
-function runTapFile(root: string, file: string, timeoutMs: number): Promise<TapRunResult> {
+function runTapFile(root: string, file: string, timeoutMs: number, sandboxPrefix: string[] = []): Promise<TapRunResult> {
   return new Promise((resolvePromise) => {
+    // V3R18 #6(m): the TAP run executes inside the exec bwrap sandbox
+    // (same shape as /api/exec — the prefix binds cwd = the repo root).
+    // The sandboxPrefix is the decision's argv prefix; empty when the
+    // sandbox is disabled/unwired. The wrapper path is repo-relative
+    // and stays visible: it lives under the bound cwd.
+    const argv =
+      sandboxPrefix.length > 0
+        ? [sandboxPrefix[0], ...sandboxPrefix.slice(1), process.execPath, resolve(root, 'scripts/run-tests-tmp.mjs'), '--test', '--test-reporter=tap', file]
+        : [process.execPath, resolve(root, 'scripts/run-tests-tmp.mjs'), '--test', '--test-reporter=tap', file];
     const child = spawn(
-      process.execPath,
-      [resolve(root, 'scripts/run-tests-tmp.mjs'), '--test', '--test-reporter=tap', file],
+      argv[0] as string,
+      argv.slice(1),
       // R16 N3: scrub the ambient credential env — without `env`, spawn
       // inherits the full parent env, and a test name built from
       // process.env.FACTORY_API_TOKEN lands verbatim in tests[].key/name.
@@ -130,10 +153,13 @@ function runTapFile(root: string, file: string, timeoutMs: number): Promise<TapR
       // inherits NODE_TEST_CONTEXT silently degrades — exit 0 without
       // really running the tests — so a flaky run triggered while the
       // server itself runs under a test harness would record nothing.
+      // V3R18 #6(m): strip the control-plane pointer vars on top of the
+      // scrub, so a test file cannot locate the vault or the admin
+      // token file from the child env.
       {
         cwd: root,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: stripTestRunnerContext(scrubCredentialEnv(process.env)),
+        env: stripTestRunnerContext(stripControlPlanePointerEnv(scrubCredentialEnv(process.env))),
       },
     );
     let stdout = '';
@@ -327,6 +353,23 @@ export async function handleFlakyRoutes(
     try {
       const root = repoRoot();
       const jailed = files.map((f) => jailTestFile(root, f));
+      // V3R18 #6(m): the TAP runs execute inside the exec bwrap sandbox
+      // (cwd = the repo root). Fail-closed: when bwrap is unavailable
+      // the runs do not execute — never silently unisolated. The
+      // decision is computed once for the root and reused for every
+      // file (the probe result is cached inside decideExecSandbox).
+      const sb: ExecSandboxDecision = flakySandboxDecider
+        ? await flakySandboxDecider(root)
+        : { mode: 'disabled', prefix: [], reason: null, sandboxed: false, refused: false, refuseCode: null };
+      if (sb.refused) {
+        ctx.json(res, 403, {
+          error:
+            `${sb.refuseCode ?? 'SANDBOX_UNAVAILABLE'}: flaky runs require OS-enforced isolation (bwrap), ` +
+            `but no working bwrap was found${sb.reason ? ` (${sb.reason})` : ''} — refusing to run unisolated`,
+          code: sb.refuseCode ?? 'SANDBOX_UNAVAILABLE',
+        });
+        return true;
+      }
       const store = storeOf();
       const perFile: Array<{
         file: string;
@@ -340,7 +383,7 @@ export async function handleFlakyRoutes(
       }> = [];
       for (let i = 0; i < jailed.length; i++) {
         const rel = files[i] as string;
-        const run = await runTapFile(root, jailed[i], FLAKY_RUN_TIMEOUT_MS);
+        const run = await runTapFile(root, jailed[i], FLAKY_RUN_TIMEOUT_MS, sb.prefix);
         const parsed = parseTapOutput(run.stdout, { file: rel });
         let newlyFlaky: string[] = [];
         let summary: { total: number; passed: number; failed: number } = {
