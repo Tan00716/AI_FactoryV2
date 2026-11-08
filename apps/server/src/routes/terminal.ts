@@ -55,6 +55,7 @@ import {
   PtySessionManager,
   PtySessionUnavailableError,
   PtySessionError,
+  redactAmbientCredentialValues,
   type PtySession,
 } from '@ai-factory/runtime';
 import {
@@ -64,6 +65,11 @@ import {
   bashIntegrationWrapper,
   generateBashIntegrationRc,
 } from '@ai-factory/termhistory';
+import {
+  redactCredentialAssignments,
+  redactText,
+  stripUserinfoFromText,
+} from '@ai-factory/diagpack';
 import {
   createCrossChunkRedactor,
   type CrossChunkRedactor,
@@ -128,6 +134,22 @@ function terminalHistoryStore(): HistoryStore | null {
     }
   }
   return historyStore;
+}
+
+/**
+ * R20 #6(v) N5/N6: desensitize terminal text (a denied AI line, its
+ * policy reason, a history entry, a tracked command) with the (r)
+ * four-layer composition (strip -> redactText -> value-aware ambient ->
+ * credential-assignment), the same composition as routes/projects.ts
+ * clean(). Exported so the R20 regression test can drive the exact
+ * function wired into the AI_LINE_DENIED record() entry and the two
+ * read endpoints below. Idempotent; benign text passes through
+ * unchanged.
+ */
+export function cleanTerminalText(s: string): string {
+  return redactCredentialAssignments(
+    redactAmbientCredentialValues(redactText(stripUserinfoFromText(s))),
+  );
 }
 
 /** True for the default interactive bash invocation (integration-safe). */
@@ -429,18 +451,22 @@ export async function handleTerminalRoutes(
         }),
       );
 
-    // AI line denials are audited (values never: only the caller's own
-    // refused line and the policy reason). The refused line is redacted
-    // against known secret values first (H4 audit): a denied line can
-    // itself contain a pasted secret, and the audit chain is
-    // viewer-readable. Redact-then-slice: slicing first could leave a
+    // AI line denials are audited. The refused line is redacted
+    // against known secret values first (H4 audit), then with the (r)
+    // four-layer composition inside record() below: the broker layer is
+    // value-aware-only, so an operator-pasted marker would otherwise
+    // survive it, and with no broker it never runs. The policy reason
+    // gets the same treatment — a whitelist refusal embeds the line's
+    // first token. (An earlier comment here claimed "values never";
+    // that was wrong: the old code was value-aware-only, not
+    // values-never.) Redact-then-slice: slicing first could leave a
     // partial secret visible.
     session.onDenied(({ line, reason }) => {
       const record = (safeLine: string) =>
         ctx.audit.record(actor, 'AI_LINE_DENIED', 'terminal', session.id, {
           principal,
-          line: safeLine.slice(0, 120),
-          reason,
+          line: cleanTerminalText(safeLine).slice(0, 120),
+          reason: cleanTerminalText(reason),
         });
       if (ctx.secretBroker) {
         ctx.secretBroker
@@ -522,7 +548,14 @@ export async function handleTerminalRoutes(
     if (principal === 'human' || principal === 'ai') {
       entries = entries.filter((e) => e.principal === principal);
     }
-    ctx.json(res, 200, { entries: entries.slice(0, limit), total: store?.count ?? 0 });
+    // R20 #6(v) N6: read-time desensitization — entries written before
+    // the append-entry fix still carry verbatim text on disk, so clean
+    // on the way out (the N7 read-time-strip precedent). Copies, never
+    // in place: the store's in-memory entries must not be rewritten.
+    const cleaned = entries
+      .slice(0, limit)
+      .map((e) => ({ ...e, command: cleanTerminalText(e.command) }));
+    ctx.json(res, 200, { entries: cleaned, total: store?.count ?? 0 });
     return true;
   }
 
@@ -697,7 +730,15 @@ export async function handleTerminalRoutes(
     const limit = Math.min(500, Math.max(1, parseInt(url.searchParams.get('limit') ?? '200', 10) || 200));
     ctx.json(res, 200, {
       integrated: tracker !== undefined,
-      commands: tracker ? tracker.getCommands().slice(-limit).reverse() : [],
+      // R20 #6(v) N6: read-time desensitization (same as the history
+      // endpoint above); the tracker holds the shell's verbatim lines.
+      commands: tracker
+        ? tracker
+            .getCommands()
+            .slice(-limit)
+            .reverse()
+            .map((c) => ({ ...c, command: cleanTerminalText(c.command) }))
+        : [],
     });
     return true;
   }

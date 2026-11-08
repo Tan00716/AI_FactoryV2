@@ -34,6 +34,12 @@ interface Running {
   proc: ChildProcess;
   dir: string;
   proj: string;
+  // R20 closeout: the server state dir (DB + data) lives apart from the
+  // fixture project. controlPlaneDirs() treats dirname(DB_PATH) as a
+  // control dir, and the #6(u) walker fail-closes a root inside one —
+  // nesting the fixture under the DB dir (as before) makes codeindex
+  // index zero files and impact analysis find no dependents.
+  stateDir: string;
 }
 
 async function freePort(): Promise<number> {
@@ -106,13 +112,14 @@ function buildFixture(dir: string): string {
 
 async function startServer(): Promise<Running> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aif-impact-http-'));
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aif-impact-state-'));
   const proj = buildFixture(dir);
   const port = await freePort();
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PORT: String(port),
-    DB_PATH: path.join(dir, 'factory.db'),
-    AI_FACTORY_DATA_DIR: path.join(dir, 'data'),
+    DB_PATH: path.join(stateDir, 'factory.db'),
+    AI_FACTORY_DATA_DIR: path.join(stateDir, 'data'),
     FACTORY_CODEINDEX_ROOTS: proj,
     FACTORY_INSPECT_ROOTS: proj,
   };
@@ -139,13 +146,14 @@ async function startServer(): Promise<Running> {
     await new Promise((r) => setTimeout(r, 100));
   }
   if (exited) throw new Error('server exited during startup');
-  return { port, proc, dir, proj };
+  return { port, proc, dir, proj, stateDir };
 }
 
 async function stopServer(s: Running): Promise<void> {
   s.proc.kill('SIGTERM');
   await new Promise((r) => s.proc.once('exit', r)).catch(() => undefined);
   fs.rmSync(s.dir, { recursive: true, force: true });
+  fs.rmSync(s.stateDir, { recursive: true, force: true });
 }
 
 async function api(s: Running, method: string, p: string, body?: unknown) {

@@ -16,6 +16,16 @@
  *  - The root is jailed by the injected resolver (the same
  *    resolveInspectionRoot(FACTORY_INSPECT_ROOTS, default cwd) as the
  *    quality-gate scan): a path escaping the root → 403.
+ *  - V3R20 #6(t): the resolved path is canonicalized before any
+ *    check, so a symlink inside the workspace that points at the
+ *    vault (or anywhere outside the root) is refused exactly like
+ *    the direct path would be (R19 (p) shape, files.ts
+ *    resolveWorkspacePath). Anything under the secrets directory
+ *    (the vault's home) → 403 before the format gate and before
+ *    any read, so an explicit format:'csv' cannot bypass it.
+ *    The rest of the data dir stays previewable: the route's
+ *    legitimate purpose is previewing data files, and the audit
+ *    probes place their legit .jsonl fixtures directly under data/.
  *  - Files over DATA_PREVIEW_MAX_FILE_BYTES → 413 (never loaded).
  *  - Rows past 100,000 stop the parse with `truncated: true`;
  *    malformed rows are skipped and counted, never guessed.
@@ -33,7 +43,8 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, statSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { canonicalizePathSync, canonicalPathIsInside } from '@ai-factory/security';
 import {
   DATA_PREVIEW_MAX_FILE_BYTES,
   DataPreviewError,
@@ -56,6 +67,32 @@ function resolveRoot(raw: unknown): string {
   if (!rootResolver) throw new DataPreviewError('data preview root resolver is not configured');
   const s = typeof raw === 'string' ? raw.trim() : '';
   return rootResolver(s ? s : undefined);
+}
+
+/**
+ * V3R20 #6(t) — the vault's home directory, derived the same way the
+ * secret broker derives it (packages/secrets/src/config.ts):
+ * FACTORY_SECRETS_DIR when set, else <dirname(DB_PATH)>/secrets.
+ * Computed once at module load, like files.ts / exec.ts derive
+ * CONTROL_DATA_DIR — the server reads these env vars at start, before
+ * this module loads. Both candidates are kept (a custom secrets dir
+ * does not erase a stale default one), canonicalized and deduplicated.
+ */
+const SECRETS_DIRS: string[] = (() => {
+  const dirs: string[] = [];
+  const add = (d: string): void => {
+    const c = canonicalizePathSync(d);
+    if (!dirs.includes(c)) dirs.push(c);
+  };
+  add(join(dirname(resolve(process.env.DB_PATH ?? './data/factory.db')), 'secrets'));
+  if (process.env.FACTORY_SECRETS_DIR) add(resolve(process.env.FACTORY_SECRETS_DIR));
+  return dirs;
+})();
+
+/** Canonical containment check against the secrets directory set. */
+function hitsSecretsDir(abs: string): boolean {
+  const canon = canonicalizePathSync(abs);
+  return SECRETS_DIRS.some((d) => canon === d || canonicalPathIsInside(canon, d));
 }
 
 export async function handleDataPreviewRoutes(
@@ -82,9 +119,18 @@ export async function handleDataPreviewRoutes(
     ctx.json(res, 400, { error: 'path is required' });
     return true;
   }
-  const abs = resolve(root, rel);
-  if (abs !== root && !abs.startsWith(root + sep)) {
+  const abs = canonicalizePathSync(resolve(root, rel));
+  const canonRoot = canonicalizePathSync(root);
+  if (abs !== canonRoot && !canonicalPathIsInside(abs, canonRoot)) {
     ctx.json(res, 403, { error: 'path escapes the project root' });
+    return true;
+  }
+  // V3R20 #6(t): the secrets guard runs before the format gate and
+  // before any read, so an explicit format:'csv' cannot bypass it.
+  // Deciding on the canonical path also refuses the symlink leg
+  // (evil.jsonl -> vault.json) exactly like the direct path.
+  if (hitsSecretsDir(abs)) {
+    ctx.json(res, 403, { error: 'path refused: the secrets directory is off-limits for data preview' });
     return true;
   }
   let format: DataPreviewFormat | null = null;

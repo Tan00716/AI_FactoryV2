@@ -28,6 +28,12 @@ interface Running {
   proc: ChildProcess;
   dir: string;
   projDir: string;
+  // R20 closeout: the server state dir (DB + data) lives apart from the
+  // fixture project. controlPlaneDirs() treats dirname(DB_PATH) as a
+  // control dir, and the #6(u) walker fail-closes a root inside one —
+  // nesting the fixture under the DB dir (as before) makes codeindex
+  // index zero files and the ignore-config files never appear.
+  stateDir: string;
 }
 
 async function freePort(): Promise<number> {
@@ -49,6 +55,7 @@ async function freePort(): Promise<number> {
 
 async function startServer(): Promise<Running> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aif-ign-http-'));
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aif-ign-state-'));
   const projDir = path.join(dir, 'projects', 'demo');
   fs.mkdirSync(path.join(projDir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(projDir, 'src', 'main.ts'), 'export function helloMain(): number { return 1; }\n');
@@ -57,8 +64,8 @@ async function startServer(): Promise<Running> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PORT: String(port),
-    DB_PATH: path.join(dir, 'factory.db'),
-    AI_FACTORY_DATA_DIR: path.join(dir, 'data'),
+    DB_PATH: path.join(stateDir, 'factory.db'),
+    AI_FACTORY_DATA_DIR: path.join(stateDir, 'data'),
     FACTORY_PROJECTS_ROOT: path.join(dir, 'projects'),
     FACTORY_CODEINDEX_ROOTS: projDir,
   };
@@ -86,7 +93,7 @@ async function startServer(): Promise<Running> {
       await new Promise((r) => setTimeout(r, 200));
     }
   }
-  return { port, proc, dir, projDir };
+  return { port, proc, dir, projDir, stateDir };
 }
 
 async function stopServer(r: Running): Promise<void> {
@@ -117,7 +124,7 @@ test('two-tier ignores end to end over HTTP', async () => {
     const projectId = 'ign-proj-1';
     {
       const { DatabaseSync } = await import('node:sqlite');
-      const db = new DatabaseSync(path.join(srv.dir, 'factory.db'));
+      const db = new DatabaseSync(path.join(srv.stateDir, 'factory.db'));
       const now = new Date().toISOString();
       db.prepare(
         'INSERT INTO projects (id, name, description, path, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',

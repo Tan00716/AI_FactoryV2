@@ -21,6 +21,29 @@ import {
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fuzzyScore } from './fuzzy.js';
+import {
+  redactCredentialAssignments,
+  redactText,
+  stripUserinfoFromText,
+} from '@ai-factory/diagpack';
+import { redactAmbientCredentialValues } from '@ai-factory/runtime';
+
+/**
+ * R20 #6(v) N6: desensitize a command with the (r) four-layer
+ * composition (strip -> redactText -> value-aware ambient ->
+ * credential-assignment), the same composition as routes/projects.ts
+ * clean(). History is viewer-readable (GET /api/terminal/history) and
+ * file-backed (history.jsonl), so a pasted credential must never land
+ * in the file in the first place; read-time desensitization at the
+ * route covers entries written before this fix. The function is
+ * idempotent (cleaning an already-clean string is a no-op) and benign
+ * commands pass through unchanged.
+ */
+function cleanHistoryCommand(command: string): string {
+  return redactCredentialAssignments(
+    redactAmbientCredentialValues(redactText(stripUserinfoFromText(command))),
+  );
+}
 
 export interface HistoryEntry {
   id: string;
@@ -111,13 +134,17 @@ export class HistoryStore {
    */
   append(n: NewHistoryEntry): HistoryEntry | null {
     if (!n.command) return null;
+    // R20 #6(v) N6: desensitize at the entry (see cleanHistoryCommand),
+    // before the consecutive-duplicate check so two dirty spellings of
+    // one command still dedupe.
+    const command = cleanHistoryCommand(n.command);
     const last = this.entries[this.entries.length - 1];
-    if (last && last.command === n.command) return null;
+    if (last && last.command === command) return null;
     const entry: HistoryEntry = {
       id: randomUUID(),
       sessionId: n.sessionId,
       principal: n.principal,
-      command: n.command,
+      command,
       exitCode: n.exitCode,
       at: n.at ?? this.now(),
     };

@@ -90,6 +90,13 @@ export interface CodeSearchOptions {
    * ignore gate here.
    */
   ignore?: (abs: string, isDir: boolean) => boolean;
+  /**
+   * Override for the control-plane directory set (R20 #6(u)). Defaults
+   * to controlPlaneDirs() from @ai-factory/security, read from the
+   * ambient process env. Tests may inject an explicit set to avoid
+   * depending on ambient env.
+   */
+  controlDirs?: string[];
   /** Override the match cap (still hard-capped at HARD_MAX_MATCHES). */
   maxMatches?: number;
   /** Clock injection for deterministic durationMs in tests. */

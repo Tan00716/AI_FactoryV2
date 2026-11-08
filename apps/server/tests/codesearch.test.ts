@@ -106,18 +106,28 @@ test('codesearch and todo-scan skip the server data dir (R16 N2)', async () => {
   writeFileSync(join(TEST_ROOT, 'data', 'leak.txt'), `token line ${MARKER}\n// TODO ${MARKER} fix later\n`);
   writeFileSync(join(TEST_ROOT, 'visible.ts'), `export const x = '${MARKER}';\n// TODO ${MARKER} visible\n`);
   // Control: the marker file really exists on disk with the marker in it —
-  // the exclusion below must be due to SKIP_DIRS, not missing content.
+  // the exclusion below must be due to the canonical control-dir
+  // derivation (R20 #6(u)), not missing content. DB_PATH points at
+  // TEST_ROOT/data, so TEST_ROOT/data IS the control dir (default
+  // layout); the old name-based 'data' skip is gone.
   assert.ok(readFileSync(join(TEST_ROOT, 'data', 'leak.txt'), 'utf8').includes(MARKER));
 
   // Codesearch: the data/ hit must be absent; the visible hit proves the
-  // search itself works and only data/ is excluded.
-  const { code, body } = await run('POST', '/api/codesearch/search', { query: MARKER });
-  assert.equal(code, 200);
-  const b = body as { totalMatches: number; groups: Array<{ file: string }> };
-  assert.deepEqual(b.groups.map((g) => g.file), ['visible.ts']);
-  // Two matching lines in the one visible file (the const + the TODO
-  // comment); the data/ file contributes zero.
-  assert.equal(b.totalMatches, 2);
+  // search itself works and only the control dir is excluded.
+  const prevDbPath = process.env.DB_PATH;
+  process.env.DB_PATH = join(TEST_ROOT, 'data', 'factory.db');
+  try {
+    const { code, body } = await run('POST', '/api/codesearch/search', { query: MARKER });
+    assert.equal(code, 200);
+    const b = body as { totalMatches: number; groups: Array<{ file: string }> };
+    assert.deepEqual(b.groups.map((g) => g.file), ['visible.ts']);
+    // Two matching lines in the one visible file (the const + the TODO
+    // comment); the data/ file contributes zero.
+    assert.equal(b.totalMatches, 2);
+  } finally {
+    if (prevDbPath === undefined) delete process.env.DB_PATH;
+    else process.env.DB_PATH = prevDbPath;
+  }
 
   // Todo-scan: no data/ item may be returned, while the visible TODO is.
   const { items } = scanTodos(TEST_ROOT);

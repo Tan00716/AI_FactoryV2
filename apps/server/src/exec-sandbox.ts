@@ -80,52 +80,26 @@ import {
 } from './build-sandbox';
 import type { SandboxMode } from './sandbox-modes';
 import { existsSync } from 'node:fs';
-import { dirname, relative, resolve } from 'node:path';
-import { canonicalizePathSync, canonicalPathIsInside } from '@ai-factory/security';
+import { relative, resolve } from 'node:path';
+import { canonicalizePathSync, canonicalPathIsInside, controlPlaneDirs } from '@ai-factory/security';
 
 /**
- * Control-plane directories that must never be visible inside a sandbox
- * whose cwd contains them (V3.0 audit round 17, item #6 sub-item (k)(a2)).
+ * Control-plane directories — re-exported from @ai-factory/security
+ * (R20 #6(u)): the candidate set is now the single shared derivation
+ * used by the sandbox exclusions here AND by the content services
+ * (codesearch, codeindex), so the three can never drift apart.
  *
- * The vault lives under the control-plane data dir by default
- * (<data>/secrets — packages/secrets/src/config.ts), and the server's
- * cwd IS the workspace root, so a run whose cwd is the server cwd (or
- * an ancestor of the data dir) would otherwise have the vault inside
- * its one writable bind. The exclusion is enforced by mounting an
- * empty tmpfs over each such directory AFTER the cwd bind, so the
- * child sees an empty directory there instead of the vault.
- *
- * Candidates (absolute, deduplicated, only those strictly UNDER cwd —
- * a run whose cwd IS the control dir itself is refused by
+ * Semantics (unchanged): dirname(DB_PATH) — the control-plane data dir
+ * (routes/exec.ts CONTROL_DATA_DIR uses the same derivation);
+ * FACTORY_SECRETS_DIR, when set (vault moved out of the data dir);
+ * AI_FACTORY_DATA_DIR, when set. Each candidate is canonicalized
+ * (realpath, nearest existing ancestor for a not-yet-existing tail —
+ * V3R19 #6(p)); a run whose cwd IS a control dir is refused by
  * decideExecSandbox (V3R18 #6(n)) instead of being silently repaired
- * here; the control-dir argv guard and the project-root cwd jail are
- * the other layers that keep runs out of the data dir):
- *   - dirname(DB_PATH) — the control-plane data dir (routes/exec.ts
- *     CONTROL_DATA_DIR uses the same derivation);
- *   - FACTORY_SECRETS_DIR, when set (vault moved out of the data dir);
- *   - AI_FACTORY_DATA_DIR, when set (user data dir, may differ from
- *     dirname(DB_PATH) in tests and custom layouts).
- * A candidate that does not exist on the host is skipped — there is
- * nothing to hide — which also keeps the prefix stable for runs
- * whose vault was never created.
- *
- * V3R19 #6(p): candidates are canonicalized (realpath, nearest
- * existing ancestor for a not-yet-existing tail). A control dir
- * reached through a symlink must compare equal to a cwd that resolves
- * to the same real directory, and vice versa — lexical comparison
- * let both directions slip past (R19 N1).
+ * by the tmpfs shadowing in sandboxExcludeDirs, which only covers
+ * directories strictly under cwd.
  */
-export function controlPlaneDirs(env: NodeJS.ProcessEnv = process.env): string[] {
-  const candidates: string[] = [dirname(resolve(env.DB_PATH ?? './data/factory.db'))];
-  if (env.FACTORY_SECRETS_DIR) candidates.push(resolve(env.FACTORY_SECRETS_DIR));
-  if (env.AI_FACTORY_DATA_DIR) candidates.push(resolve(env.AI_FACTORY_DATA_DIR));
-  const out: string[] = [];
-  for (const dir of candidates) {
-    const abs = canonicalizePathSync(dir);
-    if (!out.includes(abs)) out.push(abs);
-  }
-  return out;
-}
+export { controlPlaneDirs };
 
 /**
  * V3R18 #6(n): the degenerate case — the run's cwd IS a control-plane

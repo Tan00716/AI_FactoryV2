@@ -12,12 +12,19 @@
  *    than MAX_FILE_BYTES (1 MiB).
  *  - Skips symlinks entirely (never follows them — no escape from the
  *    root via symlink).
+ *  - R20 #6(u): prunes control-plane directories (dirname(DB_PATH),
+ *    FACTORY_SECRETS_DIR, AI_FACTORY_DATA_DIR — canonical path
+ *    containment, the shared derivation in @ai-factory/security).
+ *    A renamed vault dir is still recognised; the default layout is
+ *    NOT protected by the repo's .gitignore `data/` entry, which is an
+ *    accidental, non-security control.
  *  - Cap: MAX_FILES (200k); exceeding it stops the walk and reports
  *    `truncated: true`.
  */
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { canonicalizePathSync, canonicalPathIsInside, controlPlaneDirs } from '@ai-factory/security';
 
 export const MAX_FILE_BYTES = 1024 * 1024;
 export const MAX_FILES = 200_000;
@@ -30,7 +37,7 @@ const ALWAYS_SKIP_DIRS = new Set([
 export interface WalkResult {
   /** Absolute paths of indexable files. */
   files: string[];
-  /** Directories/files skipped by .gitignore (count only). */
+  /** Directories/files skipped by an exclusion gate (count only). */
   ignored: number;
   /** Binary or oversize files skipped (count only). */
   skippedBinary: number;
@@ -107,12 +114,37 @@ async function isBinary(filePath: string): Promise<boolean> {
  * which it returns true are PRUNED (never descended into) — this is
  * where the two-tier ignore gate (task ②, @ai-factory/ignores) plugs
  * in: hard-excluded paths never enter the index at all.
+ *
+ * `opts.controlDirs` (optional): override for the control-plane
+ * directory set (R20 #6(u)); defaults to controlPlaneDirs() from
+ * @ai-factory/security, read from the ambient process env.
  */
 export async function walkRepo(
   root: string,
-  opts: { ignore?: (abs: string, isDir: boolean) => boolean } = {},
+  opts: {
+    ignore?: (abs: string, isDir: boolean) => boolean;
+    controlDirs?: string[];
+  } = {},
 ): Promise<WalkResult> {
   const result: WalkResult = { files: [], ignored: 0, skippedBinary: 0, truncated: false };
+  // R20 #6(u): canonical control-plane exclusion — same derivation and
+  // rationale as grepProject in @ai-factory/codesearch. Decided on
+  // canonical paths (realpath) so a renamed or symlinked control dir
+  // is still recognised (R19 (p)). A file directly under the root
+  // cannot be inside a control dir without the root itself being one
+  // (the entry check below) or a walked subdir being one (pruned
+  // here) — symlinks are never followed — so no per-file check is
+  // needed.
+  const controlDirs = opts.controlDirs ?? controlPlaneDirs();
+  const isControlPath = (abs: string): boolean => {
+    const canon = canonicalizePathSync(abs);
+    return controlDirs.some((d) => canonicalPathIsInside(canon, d));
+  };
+  // Fail-closed: a root that IS (or is inside) a control dir walks nothing.
+  if (isControlPath(root)) {
+    result.ignored = 1;
+    return result;
+  }
   let ignoreRules: IgnoreRule[] = [];
   try {
     const gi = await fs.readFile(path.join(root, '.gitignore'), 'utf8');
@@ -136,6 +168,11 @@ export async function walkRepo(
       const isDir = e.isDirectory();
       if (e.isSymbolicLink()) continue; // Never follow symlinks.
       if (isDir && ALWAYS_SKIP_DIRS.has(e.name)) continue;
+      if (isDir && isControlPath(abs)) {
+        // R20 #6(u): control-plane dirs are pruned. Counted, never silent.
+        result.ignored++;
+        continue;
+      }
       if (matchesIgnore(rel, e.name, isDir, ignoreRules)) {
         result.ignored++;
         continue;

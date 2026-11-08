@@ -1,7 +1,7 @@
 # 中心 Tab 全量盘点（65 个）
 
-- 基线：本地 main `1454295`（V3R18 代码侧收口后；R19 #8 刷新。R18 快照基线为 `3f6d50c`，R17 快照基线为 `f6641d5`，R16 快照基线为 `b8a9424`，R15 快照基线为 `46d0d66`，R14 快照基线为 `ff1308d`，R13 快照基线为 `cc7e499`，R12 快照基线为 `18d3ae9`，R11 快照基线为 `95a4dcc`，R10 快照基线为 `1078973`，R9 快照基线为 `d87523c`，R8 快照基线为 `7f6876d`，R7 快照基线为 `ba64414`，R6 快照基线为 `5b93f74`，R5 快照基线为 `da648a1`，R4 快照基线为 `ce9ff66`，历史验证记录见“本轮验证”一节）。
-- 复核日期：2026-11-06（R19 #8 刷新；计数复核、旧别名 grep、占位符比对四项全重跑，见文末“R19 #8 刷新记录”）。
+- 基线：本地 main `8d9d634`（V3R19 代码侧收口后；R20 #8 刷新。R19 快照基线为 `1454295`，R18 快照基线为 `3f6d50c`，R17 快照基线为 `f6641d5`，R16 快照基线为 `b8a9424`，R15 快照基线为 `46d0d66`，R14 快照基线为 `ff1308d`，R13 快照基线为 `cc7e499`，R12 快照基线为 `18d3ae9`，R11 快照基线为 `95a4dcc`，R10 快照基线为 `1078973`，R9 快照基线为 `d87523c`，R8 快照基线为 `7f6876d`，R7 快照基线为 `ba64414`，R6 快照基线为 `5b93f74`，R5 快照基线为 `da648a1`，R4 快照基线为 `ce9ff66`，历史验证记录见“本轮验证”一节）。
+- 复核日期：2026-11-06（R20 #8 刷新；计数复核、旧别名 grep、占位符比对四项全重跑，见文末“R20 #8 刷新记录”）。
 - 范围：仅中心 tab（`CENTER_TABS`）。底部 12 个 tab（AI Activity、Terminal、Tests、Problems、TODO、Database、Tasks、Queue、Watch、Bookmarks、Logs、Evidence）不在本盘点内；底部 Terminal 与中心 Terminal 是两个独立入口，见“近似重复说明”。
 - 方法：`apps/desktop/src/navigation/tiers.ts` 的 `CENTER_TABS` 与 `apps/desktop/src/App.tsx` 的渲染分支双向比对；i18n 键按 App.tsx 的派生规则（`name.toLowerCase().replace('/', '')`）逐个核对；旧别名全树 grep 引用。
 - 复核方法：任一改动后重跑本节“计数复核”三条命令，tab 数、分支数、i18n 键数三者须同时吻合；复核周期：每次增删 tab 后更新本表，不得让表过期。维护责任见“维护责任（R5 #8 S2）”一节；基线过期须复核，不得静默沿用。
@@ -169,14 +169,14 @@ grep -rn "tab\.settingsync'" apps/desktop/src apps/desktop/tests || echo "orphan
 
 R5→R6→R7 三轮同一模式（每轮基线前进一步、文档注记落后一轮）证明：只改数字不改机制，下一轮还会再来一轮。此后每个代码侧收口提交必须含“基线注记刷新”检查项，六项逐项打勾或显性标“内容未变、注记已刷”，缺一即该收口的文档保真项未完成：
 
-| # | 文档 | 本轮（R19，基线 1454295） |
+| # | 文档 | 本轮（R20，基线 8d9d634） |
 |---|---|---|
-| 1 | 本盘点表（表头 + 复核日期 + 刷新记录） | 已刷（见文末 R19 #8 刷新记录） |
-| 2 | 规则文档 `docs/rules-priority.md`（H1 与正文基线） | 已刷（R19 #8 保真注记，引擎 3f6d50c→1454295 零改动） |
-| 3 | 计量披露页 `docs/governance/metering-disclosure.md`（页首三项） | 由 R19 #7 同步刷新，本条只列入清单、不代刷（不得两处各写一套基线） |
-| 4 | 客群决策单 `docs/governance/audience-decision.md`（基线注记，只刷注记不改“待 Tan”状态） | 已刷（R19 注记：悬空十五轮，状态不变） |
-| 5 | ACP 指针页 `docs/governance/acp-extension-hosting-pointer.md`（复核节） | 已刷（R19 #8 复核节） |
-| 6 | 本地通道指针页 `docs/local-channel-spike-pointer.md`（复核注记） | 已刷（R19 复核注记） |
+| 1 | 本盘点表（表头 + 复核日期 + 刷新记录） | 已刷（见文末 R20 #8 刷新记录） |
+| 2 | 规则文档 `docs/rules-priority.md`（H1 与正文基线） | 已刷（R20 #8 保真注记，引擎 1454295→8d9d634 零改动） |
+| 3 | 计量披露页 `docs/governance/metering-disclosure.md`（页首三项） | 由 R20 #7 同步刷新，本条只列入清单、不代刷（不得两处各写一套基线） |
+| 4 | 客群决策单 `docs/governance/audience-decision.md`（基线注记，只刷注记不改“待 Tan”状态） | 已刷（R20 注记：悬空十六轮，状态不变） |
+| 5 | ACP 指针页 `docs/governance/acp-extension-hosting-pointer.md`（复核节） | 已刷（R20 #8 复核节） |
+| 6 | 本地通道指针页 `docs/local-channel-spike-pointer.md`（复核注记） | 已刷（R20 复核注记） |
 
 机制细则：指针页与主本的同步责任引用既有约定（修订只改主本，指针页随后同步状态行），不重立；披露页与设计稿的口径同步仍由 #7 负责，本机制只保证基线数字不分裂；刷注记不得删键、改占位符名、改主本结论或改决策单状态，违者视为未刷新。
 
@@ -188,6 +188,15 @@ R5→R6→R7 三轮同一模式（每轮基线前进一步、文档注记落后�
 - 别名清理后键集合复核：zh/en 各 65 个，双向 0 差；`tab.settingsync` 全树零引用。
 - 仓库 `data/factory.db`：mtime 仍为 2026-10-19，无 WAL/SHM，未污染；e2e 进程（server/electron/Xvfb/vite）均已由 harness 杀净。
 - 注意：i18n 两文件的工作树 diff 除本轮删的 2 行外另有兄弟任务（R4 #5）的 `budget.estimatedSuffix` 新增行，不属本轮；收口 commit 时须按行认领，不得整文件打包。
+
+## R20 #8 刷新记录（2026-11-06，基线 8d9d634）
+
+- 触发：S2 触发条件 (1)，本地 main 基线由 `1454295` 变更为 `8d9d634`；`apps/desktop/src/App.tsx`、`apps/desktop/src/navigation/tiers.ts` 与 `apps/desktop/src/i18n/` 在 `1454295` → `8d9d634` 间零改动（`git diff --name-only` 为空；区间 31 个文件为 9 个文档 + apps/server 的 (p)+(q)+(r)+(s) 源码/路由/测试（#6(p)/(q)/(r)/(s) 修复：realpath 规范化、remote 文件面 jail、A5 守卫扩认、审计入库脱敏续）+ packages/diagpack 的 src/redact.ts / tests/redact-credential-assignments.test.ts + packages/runtime 的 src/pty.ts + packages/security 的 src/isolation.ts，表内容所依赖的代码面零改动），表内容仍准，本次只刷表头、复核日期与占位符比对结果数字。
+- 四项全重跑（脚本 `~/v3r20-8-shots/verify-inventory.mjs` 与 `~/v3r20-8-shots/compare-placeholders.mjs`，由 R19 版脚本原样复用；另行 `~/v3r20-8-shots/compare-table-order.mjs` 比对盘点表 65 行与 `CENTER_TABS` 顺序与集合）：`CENTER_TABS` 65 个、无重名；App.tsx 显性分支 64 个、唯一无显性分支为 Editor（默认分支），无多余分支；分层 common 12 / expert 14 / advanced 39，合计 65；盘点表 65 行与 `CENTER_TABS` 顺序与集合完全一致；i18n 派生 `tab.*` 键 zh/en 各 65 个、双向 0 差；键集合总量 zh/en 各 3321、双向 0 差；占位符比对差异 1 条（`changes.changeCount` 有意例外，与单测 ALLOWLIST 一致），其余 3320 键同名同数。
+- 旧别名 grep 口径分开写：`apps/desktop/src` 与 `apps/desktop/tests` 内 `tab.settingsync'`（单 s）为 0 命中；全树 grep（排除 node_modules / .git / dist / .ai-factory 构建物与版本库目录）除本盘点表自身的清理记录文字外同样 0 命中。
+- 机制段落盘：收口清单“基线注记刷新”机制六项打勾见“维护责任”收口清单机制段（R20 列）与 `docs/governance/baseline-note-refresh.md` 的 R20 打勾记录；披露页一项由 R20 #7 同步刷新，本条只列入清单、不代刷。六项打勾（机制执行情况）与七处注记（各文档基线状态）是两张表，不得混写。七处注记 canonical 清单（R19 #8 固定，Red Team S5）：五处主注记（盘点表、规则文档、ACP 指针页复核节、本地通道指针页、客群决策单）+ 两处清单外过期点（矩阵 §8、ACP 指针页页首）；R18 列表以机制文档代 ACP 页首为另一分解口径，总数同为 7，D-2 事实不受影响。
+- topo 边数口径注记：#8 执行时现测采纳重算口径 147 边（`node scripts/topo-build.mjs --order-only` 实测：order ok: 90 members, 147 edges；R17 报告写的 152 无法从报告还原），本盘点表不沿用 152。收口修正（R20 收口协调员，落定树实测 `npm run gate:cold-build`：90 members, 150 edges）：落定树 150 边 = 147 + #6(u) codesearch→security 1 条 + #6(v) termhistory→diagpack、termhistory→runtime 2 条；增量来自本轮 (u)/(v) 新增依赖接线，非注记口径变化。
+- i18n 计数口径注记：本轮按 R20 #8 brief 要求，键集合总量以 node 类型剥离直接 import 为权威口径（verify-inventory.mjs 与 compare-placeholders.mjs 均直接导入 i18n 导出对象，与 `apps/desktop/tests/unit/i18n.test.mjs` 同机制）；两种正则口径各漏计，不得作为总量依据；R21 复核须沿用直接 import 口径。
 
 ## R19 #8 刷新记录（2026-11-06，基线 1454295）
 

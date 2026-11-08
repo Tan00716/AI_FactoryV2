@@ -458,3 +458,34 @@ export function canonicalizePathSync(p: string): string {
 export function canonicalPathIsInside(candidate: string, root: string): boolean {
   return candidate === root || candidate.startsWith(root + sep);
 }
+
+/**
+ * Control-plane directories (R20 #6(u) — single derivation, moved here
+ * from apps/server/src/exec-sandbox.ts so every content surface shares
+ * the same candidate set and no call site can drift).
+ *
+ * The control plane is the small set of host directories whose contents
+ * must never be served back through a content surface (codesearch,
+ * codeindex, exec/terminal history, ...): the server database directory,
+ * the secrets vault, and the server data directory. Each candidate is
+ * canonicalized so a renamed or symlinked directory is still recognised
+ * (R19 (p) realpath rule); a candidate that cannot be canonicalized is
+ * skipped rather than trusted lexically.
+ *
+ * NOTE: a consumer MUST NOT read "not a control-plane dir" as "safe to
+ * serve" — this list only names the control plane; other gates (ignore
+ * files, jail, RBAC) still apply.
+ */
+export function controlPlaneDirs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const raw: string[] = [];
+  if (env.DB_PATH) raw.push(dirname(resolve(env.DB_PATH)));
+  if (env.FACTORY_SECRETS_DIR) raw.push(env.FACTORY_SECRETS_DIR);
+  if (env.AI_FACTORY_DATA_DIR) raw.push(env.AI_FACTORY_DATA_DIR);
+  if (raw.length === 0) raw.push(dirname(resolve('./data/factory.db')));
+  const out: string[] = [];
+  for (const dir of raw) {
+    const canon = canonicalizePathSync(dir);
+    if (!out.includes(canon)) out.push(canon);
+  }
+  return out;
+}

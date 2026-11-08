@@ -38,7 +38,8 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import type { RouteContext } from './context';
 import { resolveSessionWorktreePath } from '../worktrees';
 import { UnverifiedBackend, canonicalPathIsInside, canonicalizePathSync } from '@ai-factory/security';
-import { PtyUnavailableError, ambientCredentialValues, runCommandPty, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
+import { redactCredentialAssignments, redactText, stripUserinfoFromText } from '@ai-factory/diagpack';
+import { PtyUnavailableError, ambientCredentialValues, redactAmbientCredentialValues, runCommandPty, scrubCredentialEnv, stripControlPlanePointerEnv } from '@ai-factory/runtime';
 import { SecretNotFoundError, redactSecretValues, redactSecretValuesCounted } from '@ai-factory/secrets';
 import { recordRedactionHit } from '../redaction-monitor';
 import { evaluateHooks } from '../hooks';
@@ -618,6 +619,24 @@ function redactExecOutput(
   return r.text;
 }
 
+/**
+ * R20 #6(v) N4: desensitize a display/audit copy of a command with the
+ * (r) four-layer composition (strip -> redactText -> value-aware
+ * ambient -> credential-assignment), the same composition as
+ * routes/projects.ts clean(). redactSecretValues alone is
+ * value-aware-only (broker-known values), so an operator-pasted marker
+ * survives it and with no broker there is no desensitization at all.
+ * Idempotent; benign commands pass through unchanged. Applies to
+ * displayCommand AND to policy-denial reasons: a whitelist refusal
+ * embeds the command's first token
+ * (`binary 'FACTORY_API_TOKEN=...' not in whitelist`).
+ */
+function cleanDisplayCommand(s: string): string {
+  return redactCredentialAssignments(
+    redactAmbientCredentialValues(redactText(stripUserinfoFromText(s))),
+  );
+}
+
 export async function handleExecRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -662,6 +681,11 @@ export async function handleExecRoutes(
       redactionValues = [];
     }
   }
+  // R20 #6(v) N4: the broker layer above is value-aware-only — an
+  // operator-pasted marker survives it, and with no broker it never
+  // runs. Apply the (r) four-layer composition on top; the broker call
+  // stays untouched (it is the correct use of the broker value set).
+  displayCommand = cleanDisplayCommand(displayCommand);
 
   // §7.5 fail-closed: autonomous (non-human) shell execution requires a
   // verified isolation backend. This server runs commands on the host
@@ -689,7 +713,10 @@ export async function handleExecRoutes(
   } catch (err) {
     const denied = err as ExecPolicyDenied;
     ctx.audit.record(actor, 'EXEC_DENIED', 'exec', displayCommand.slice(0, 80), {
-      reason: denied.reason,
+      // R20 #6(v) N4: the whitelist refusal embeds the command's first
+      // token in the reason, so the reason gets the same four-layer
+      // treatment as displayCommand (the (r) reason-cleaning precedent).
+      reason: cleanDisplayCommand(denied.reason),
     });
     ctx.json(res, 403, { error: denied.message });
     return true;

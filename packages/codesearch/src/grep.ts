@@ -3,12 +3,14 @@
  * entries, no symlink following, binary sniff, size caps) and matches
  * line by line — literal substring or RegExp, per the query.
  *
- * No sibling value imports (dual-mode import rule): node builtins only,
- * so server tests can import this straight from src.
+ * No sibling value imports (dual-mode import rule): node builtins plus
+ * the @ai-factory/security package, so server tests can import this
+ * straight from src.
  */
 
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
+import { canonicalizePathSync, canonicalPathIsInside, controlPlaneDirs } from '@ai-factory/security';
 import {
   CodeSearchError,
   CodeSearchFileGroup,
@@ -31,10 +33,12 @@ const MAX_LINE_CHARS = 500;
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', 'coverage', '.next', 'out',
   'vendor', '__pycache__', 'target', '.idea', '.vscode', '.turbo',
-  // R16 N2 defense-in-depth: the server data dir (mutation run reports,
-  // flaky history, …) must never be searchable — persisted reports can
-  // hold child output, and search hits are returned verbatim.
-  'data',
+  // R20 #6(u): the old name-based 'data' skip (R16 N2) is REMOVED here.
+  // It only hid directories literally called "data": a renamed vault
+  // dir (R20 N2) was searchable. The control-plane exclusion in
+  // grepProject below replaces it — a directory is excluded because it
+  // IS a control dir (canonical path containment), not because of its
+  // name. (todo-scan keeps its own name-based skip; R21 candidate.)
 ]);
 
 /** Fail-closed normalization of a caller query. Throws CodeSearchError. */
@@ -151,6 +155,40 @@ export function grepProject(
 
   const ignored = opts.ignore;
 
+  // R20 #6(u): canonical control-plane exclusion. The control-plane
+  // directories (dirname(DB_PATH), FACTORY_SECRETS_DIR,
+  // AI_FACTORY_DATA_DIR — the single shared derivation in
+  // @ai-factory/security) must never be searchable: the vault holds
+  // credential material and persisted reports can hold child output,
+  // and search hits are returned verbatim. Decided on canonical paths
+  // (realpath) so a renamed or symlinked control dir is still
+  // recognised (R19 (p)). This REPLACES the old name-based 'data'
+  // skip above. A file directly under the root cannot be inside a
+  // control dir without the root itself being one (the entry check
+  // below) or a walked subdir being one (pruned here) — symlinks are
+  // never followed — so no per-file check is needed.
+  const controlDirs = opts.controlDirs ?? controlPlaneDirs();
+  const isControlPath = (abs: string): boolean => {
+    const canon = canonicalizePathSync(abs);
+    return controlDirs.some((d) => canonicalPathIsInside(canon, d));
+  };
+  // Fail-closed: a root that IS (or is inside) a control dir searches nothing.
+  if (isControlPath(root)) {
+    return {
+      query: nq,
+      groups: [],
+      totalMatches: 0,
+      stats: {
+        filesScanned: 0,
+        linesScanned: 0,
+        skippedBinary: 0,
+        skippedTooLarge: 0,
+        truncated: false,
+        durationMs: now() - t0,
+      },
+    };
+  }
+
   function walk(dir: string): void {
     if (truncated) return;
     let entries: Array<{ name: string; abs: string; isDir: boolean; isFile: boolean }>;
@@ -171,6 +209,7 @@ export function grepProject(
       if (ignored?.(e.abs, e.isDir)) continue;
       if (e.isDir) {
         if (SKIP_DIRS.has(e.name)) continue;
+        if (isControlPath(e.abs)) continue; // R20 #6(u): prune control dirs
         walk(e.abs);
         continue;
       }

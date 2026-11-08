@@ -19,6 +19,7 @@
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { canonicalizePathSync, canonicalPathIsInside, controlPlaneDirs } from '@ai-factory/security';
 import {
   buildIndex,
   defaultCacheDir,
@@ -119,10 +120,31 @@ export class CodeIndexService {
     return disk;
   }
 
-  /** Query-time ignore post-filter (task ②): drop hits on ignored files. */
+  /**
+   * Query-time post-filter (task ② + R20 #6(u)): drop hits on ignored
+   * files, and drop hits on files inside a control-plane directory.
+   * The control-dir leg is what keeps a STALE on-disk index from
+   * leaking a vault file that was indexed before the (u) exclusion
+   * landed: the walker prunes it on the next rebuild, but the stale
+   * records must not be served in the meantime (no INDEX_VERSION
+   * bump is needed — the filter closes the readback vector
+   * immediately and rebuilds drop the records naturally). Decided on
+   * canonical paths (realpath) so a renamed or symlinked control dir
+   * is still recognised (R19 (p)). Unconditional — unlike the
+   * ignoreCheck leg, it does not depend on the caller wiring a gate.
+   */
   private filterHits(real: string, hits: SearchHit[]): SearchHit[] {
-    if (!this.ignoreCheck) return hits;
-    return hits.filter((h) => !this.ignoreCheck!(real, path.join(real, h.file), false));
+    const controlDirs = controlPlaneDirs();
+    const isControlFile = (abs: string): boolean => {
+      const canon = canonicalizePathSync(abs);
+      return controlDirs.some((d) => canonicalPathIsInside(canon, d));
+    };
+    return hits.filter((h) => {
+      const abs = path.join(real, h.file);
+      if (isControlFile(abs)) return false;
+      if (this.ignoreCheck && this.ignoreCheck(real, abs, false)) return false;
+      return true;
+    });
   }
 
   async search(
